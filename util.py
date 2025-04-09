@@ -171,11 +171,14 @@ def load_photometry_data(session, one=None, one_local=None):
         rois = locations['ROI'].to_list()
     elif session['local_photometry']:  
         assert one_local is not None
-        assert session['ROI']
+        if len(session['ROI']) == 0:
+            raise ValueError(f"No ROIs for {session['eid']}")
         raw_data_path = one_local.eid2path(session['eid']) / 'raw_photometry_data' / 'raw_photometry.csv'
         photometry = io.from_raw_neurophotometrics_file_to_ibl_df(raw_data_path, version='old')
         photometry = photometry.drop(columns='index')
         rois = session['ROI']
+    else:
+        raise ValueError(f"Unclear how to find photometry for {session['eid']}")
     return photometry[rois + ['name']].set_index(photometry['times']).dropna()
 
 
@@ -184,10 +187,7 @@ def restrict_photometry_to_task(eid, photometry, one=None, buffer=2):
     if one is None:
         one = ONE()
     loader = SessionLoader(one, eid=eid)
-    try:
-        loader.load_trials()
-    except:
-        return
+    loader.load_trials()
     timings = [col for col in loader.trials.columns if col.endswith('_times')]
     t0 = loader.trials[timings].min().min()
     t1 = loader.trials[timings].max().max()
