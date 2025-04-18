@@ -64,13 +64,14 @@ def fetch_sessions(one, save=True, check_local=True):
     df_sessions = pd.DataFrame(sessions).rename(columns={'id': 'eid'})
     df_sessions.drop(columns='projects')
     # Unpack the extended qc from the session dict into dataframe columns
-    print("Unpacking extended qc data...")
-    # Note: .copy() is applied to de-fragment the dataframe after repeated column additions
-    df_sessions = df_sessions.progress_apply(_unpack_session_dict, one=one, axis='columns').copy()
+    # print("Unpacking extended qc data...")
+    # # Note: .copy() is applied to de-fragment the dataframe after repeated column additions
+    # df_sessions = df_sessions.progress_apply(_unpack_session_dict, one=one, axis='columns').copy()
     # Check if important datasets are present for the session
-    print("Checking datasets...")
+    print("Checking remote datasets...")
     df_sessions = df_sessions.progress_apply(_check_datasets, one=one, axis='columns').copy()
     if check_local:
+        print("Checking local datasets...")
         # Specify path to local cache & instantiate database connection
         local_cache = '/home/crombie/mnt/ccu-iblserver/kb/data/one'
         df_sessions = df_sessions.progress_apply(
@@ -161,25 +162,20 @@ def _unpack_session_dict(series, one=None):
             raise ValueError
     return series
 
-def load_photometry_data(session, one=None, one_local=None):
-    if one is None:
-        one = ONE()
+def load_photometry_data(session, one, extracted=True):
     photometry_data = {}
-    if session['remote_photometry']:
-        photometry = one.load_dataset(id=session['eid'], dataset='photometry.signal')
+    if extracted:
+        photometry = one.load_dataset(id=session['eid'], dataset='photometry.signal.pqt')
         locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt').reset_index()
         rois = locations['ROI'].to_list()
-    elif session['local_photometry']:  
-        assert one_local is not None
+    else:  
         if len(session['ROI']) == 0:
             raise ValueError(f"No ROIs for {session['eid']}")
-        raw_data_path = one_local.eid2path(session['eid']) / 'raw_photometry_data' / 'raw_photometry.csv'
+        raw_data_path = one.eid2path(session['eid']) / 'raw_photometry_data' / 'raw_photometry.csv'
         photometry = io.from_raw_neurophotometrics_file_to_ibl_df(raw_data_path, version='old')
         photometry = photometry.drop(columns='index')
         rois = session['ROI']
-    else:
-        raise ValueError(f"Unclear how to find photometry for {session['eid']}")
-    return photometry[rois + ['name']].set_index(photometry['times']).dropna()
+    return photometry[list(rois) + ['name']].set_index(photometry['times']).dropna()
 
 
 def restrict_photometry_to_task(eid, photometry, one=None, buffer=2):
@@ -187,7 +183,8 @@ def restrict_photometry_to_task(eid, photometry, one=None, buffer=2):
     if one is None:
         one = ONE()
     loader = SessionLoader(one, eid=eid)
-    loader.load_trials()
+    ## TODO: appropriately handle cases with multiple collections
+    loader.load_trials(collection='alf/task_00')
     timings = [col for col in loader.trials.columns if col.endswith('_times')]
     t0 = loader.trials[timings].min().min()
     t1 = loader.trials[timings].max().max()
