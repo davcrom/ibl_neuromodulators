@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from pandera.errors import SchemaError
+from datetime import datetime
 
 from one.api import ONE
 from one.alf.exceptions import ALFObjectNotFound
@@ -21,22 +22,15 @@ from util import load_photometry_data, restrict_photometry_to_task
 # Add example outliers to fig 1
 # Try 2D deviance, asymmetry plot
 # Separately compute low_freq_power_ratio or give dt kwarg
+# Note: what about stationarity? Noise should be stationary
 
 df_sessions = pd.read_parquet('metadata/sessions.pqt')
-df_sessions['local_photometry'] = df_sessions['local_photometry'].replace({'nan': False}).astype(bool)
-alf_datasets = ['alf/photometry/photometry.signal.pqt', 'alf/photometry/photometryROI.locations.pqt']
-df_sessions['remote_photometry'] = df_sessions.apply(lambda x: all([x[dset] for dset in alf_datasets]), axis='columns')
+df = df_sessions.query('local_photometry == True or remote_photometry == True').copy()
+df['new_recording'] = df['start_time'].apply(lambda x: datetime.fromisoformat(x) >  datetime(2024, 4, 1))
+df['target'] = df['target'].apply(lambda x: [x[0]] if len(np.unique(x)) == 1 else x)
+df['single_fiber'] = df.apply(lambda x: (len(x['roi']) == 1) and (len(x['target']) == 1), axis='columns') 
+df = df.query('(new_recording == True) or (single_fiber == True)')
 
-def _get_regions(series, df_regions=None):
-    assert df_regions is not None
-    eid = series['eid']
-    region = df_regions.query('eid == @eid')
-    series['ROI'] = region['ROI'].to_list()
-    return series
-df_regions = pd.read_csv('metadata/regions.csv')
-df_sessions = df_sessions.apply(_get_regions, df_regions=df_regions, axis='columns')
-
-df = df_sessions.query('local_photometry == True or remote_photometry == True')
 
 one_remote = ONE()
 one_local = ONE(cache_dir='/home/crombie/mnt/ccu-iblserver')
@@ -75,7 +69,7 @@ sliding_zscore_pars = {'w_len': 60}
 schema_errors = []
 qc_dicts = []
 for _, session in tqdm(df.iterrows(), total=len(df)):
-    info = session[['eid', 'subject', 'lab', 'start_time', 'strain', 'NM', 'session_type']].to_dict()
+    info = session[['eid', 'subject', 'lab', 'start_time', 'NM', 'session_type']].to_dict()
     try:
         if session['local_photometry']:
             raw_data = load_photometry_data(session, one_local, extracted=False)
@@ -92,9 +86,11 @@ for _, session in tqdm(df.iterrows(), total=len(df)):
         schema_errors.append(session['eid'])
         continue
     csv_qc = {metric:getattr(metrics, metric)(raw_data) for metric in csv_metrics}
-    for roi in io.infer_data_columns(raw_data):
+    for roi, target in zip(session['roi'], session['target']):
         raw_data = proc.fix_repeated_sampling(raw_data, roi=roi)
         assert metrics.n_repeated_samples(raw_data) == 0
+        info['roi'] = roi
+        info['target'] = target
         if session['remote_photometry']:
             try:
                 raw_data = restrict_photometry_to_task(session['eid'], raw_data, one_remote)
@@ -103,7 +99,6 @@ for _, session in tqdm(df.iterrows(), total=len(df)):
                 pass
         gcamp = raw_data.query('name == "GCaMP"')
         F = gcamp[[roi]]
-        info['ROI'] = [roi]
         raw_qc = qc_series(
             F[roi],
             {metric:{} for metric in raw_metrics},
@@ -114,13 +109,13 @@ for _, session in tqdm(df.iterrows(), total=len(df)):
             {metric:{} for metric in sliding_metrics},
             sliding_kwargs={metric:sliding_kwargs for metric in sliding_metrics}
         )
-        # F_proc = pipelines.run_pipeline([(proc.sliding_robust_zscore, sliding_zscore_pars)], F).dropna()
         F_proc = proc.sliding_robust_zscore_rolling(F[roi], **sliding_zscore_pars)
         if len(F_proc) == 0:
             print(f"Signal has no variance for {session['eid']}")
         else:
+            fs = 1 / np.median(np.diff(F_proc.index))
             metric_kwargs = {metric:{} for metric in processed_metrics}
-            metric_kwargs['low_freq_power_ratio'] = {'dt': np.median(np.diff(F_proc.index))}
+            metric_kwargs['low_freq_power_ratio'] = {'dt': 1 / fs} 
             processed_qc = qc_series(
                 F_proc,
                 metric_kwargs,
@@ -129,4 +124,4 @@ for _, session in tqdm(df.iterrows(), total=len(df)):
         qc_dicts.append({**info, **csv_qc, **raw_qc, **sliding_qc, **processed_qc})
 
 df_qc = pd.DataFrame(qc_dicts)
-df_qc.to_parquet('qc_photometry_60.pqt')
+df_qc.to_parquet('qc_photometry.pqt')
