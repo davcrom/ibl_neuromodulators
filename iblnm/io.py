@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from one.api import ONE
 ## TODO: use me!!
 from one.alf.exceptions import ALFObjectNotFound
 
@@ -68,7 +69,7 @@ def fetch_sessions(one, qc=False, check_local=True, save=True):
         df_sessions = df_sessions.progress_apply(_unpack_session_dict, one=one, axis='columns').copy()
     # Check if important datasets are present for the session
     print("Checking remote datasets...")
-    df_sessions = df_sessions.progress_apply(_check_datasets, one=one, axis='columns').copy()
+    df_sessions = df_sessions.progress_apply(_check_remote_datasets, one=one, axis='columns').copy()
     # All datasets must be present to set remote photometry to True
     df_sessions['remote_photometry'] = df_sessions.apply(lambda x: all([x[dset] for dset in EXTRACTED_PHOTOMETRY_DATASETS]), axis='columns')
     if check_local:
@@ -154,7 +155,6 @@ def _check_local_datasets(series, one=None, local_cache=None):
     if session_path is None:
         series['local_photometry'] = False
         return series
-    ## TODO: change this to looking at the raw data files, not extracted columns
     pnames = [reg.name for reg in session_path.joinpath('alf').glob('Region*')]
     photometry_pqt_paths = []
     for pname in pnames:

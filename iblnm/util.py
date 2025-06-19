@@ -26,6 +26,7 @@ LINE2NM = {
     'Ai148xChat': 'ACh',
     'Ai148xChAT': 'ACh',
     'C57BL/6J': 'none',
+    'TetOG6s-Cdh23 x Camk-Cdh23': 'none',
     None: 'none'
 }
 
@@ -48,6 +49,13 @@ QCVAL2NUM = {
     'WARNING': 0.66,
     'CRITICAL': 0.33,
     'FAIL': 0.1
+}
+
+EVENT2COLOR = {
+    'cue': 'blue', 
+    'movement': 'orange', 
+    'reward': 'green', 
+    'omission':'red'
 }
 
 

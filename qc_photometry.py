@@ -28,7 +28,7 @@ df_sessions = pd.read_parquet('metadata/sessions.pqt')
 df = df_sessions.query('local_photometry == True or remote_photometry == True').copy()
 df['new_recording'] = df['start_time'].apply(lambda x: datetime.fromisoformat(x) >  datetime(2024, 4, 1))
 df['target'] = df['target'].apply(lambda x: [x[0]] if len(np.unique(x)) == 1 else x)
-df['single_fiber'] = df.apply(lambda x: (len(x['roi']) == 1) and (len(x['target']) == 1), axis='columns') 
+df['single_fiber'] = df.apply(lambda x: (len(x['roi']) == 1) and (len(x['target']) == 1), axis='columns')
 df = df.query('(new_recording == True) or (single_fiber == True)')
 
 
@@ -48,6 +48,7 @@ raw_metrics = [
 ]
 
 sliding_metrics = [
+    # metrics.deviance  # callables
     'deviance',
     # 'n_spikes_dy',
     'n_expmax_violations',
@@ -115,7 +116,7 @@ for _, session in tqdm(df.iterrows(), total=len(df)):
         else:
             fs = 1 / np.median(np.diff(F_proc.index))
             metric_kwargs = {metric:{} for metric in processed_metrics}
-            metric_kwargs['low_freq_power_ratio'] = {'dt': 1 / fs} 
+            metric_kwargs['low_freq_power_ratio'] = {'dt': 1 / fs}
             processed_qc = qc_series(
                 F_proc,
                 metric_kwargs,
