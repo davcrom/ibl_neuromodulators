@@ -21,10 +21,15 @@ INSERTIONS_FPATH = 'metadata/insertions.csv'  # file with subject to brain regio
 SESSIONS_FPATH = 'metadata/sessions.pqt'
 
 ALYX_PHOTOMETRY_DATASETS = [
-    'alf/photometry/photometry.signal.pqt',
-    'alf/photometry/photometryROI.locations.pqt',
+    'raw_behavior_data/_iblrig_taskData.raw.jsonable',
+    'raw_behavior_data/_iblrig_taskSettings.raw.json',
+    'alf/_ibl_trials.table.pqt',
+    'alf/_ibl_wheel.position.npy',
     'raw_photometry_data/_neurophotometrics_fpData.channels.csv',
     'raw_photometry_data/_neurophotometrics_fpData.raw.pqt',
+    'alf/photometry/photometry.signal.pqt',
+    'alf/photometry/photometryROI.locations.pqt',
+    'raw_video_data/_iblrig_leftCamera.raw.mp4'
 ]
 EXTRACTED_PHOTOMETRY_DATASETS = [
     'alf/photometry/photometry.signal.pqt',
