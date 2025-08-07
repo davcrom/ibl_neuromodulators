@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import uuid
 from one.api import ONE
 from brainbox.io.one import SessionLoader
 
@@ -135,14 +136,26 @@ def _load_event_times(series, one=None):
         A list containing reward_times, cue_times, and movement_times.
     """
     assert one is not None
+    
+    if isinstance(series, pd.Series):
+        eid = series['eid']
+    elif isinstance(series, uuid.UUID):
+        eid = series
+        series = pd.Series(data={'eid': str(eid)})
+    else:
+        raise TypeError('series mus be pd.Series of uuid.UUID')
+    
     try:
-        trials = one.load_dataset(series['eid'], '*trials.table')
-        series['cue_times'] = trials['goCue_times'].values
-        series['movement_times'] = trials['firstMovement_times'].values
-        series['reward_times'] = trials.query('feedbackType == 1')['feedback_times'].values
-        series['omission_times'] = trials.query('feedbackType == -1')['feedback_times'].values
+        trials = one.load_dataset(eid, '*trials.table')
     except:
-        print(f"WARNING: no trial data found for {series['eid']}")
+        print(f"WARNING: no trial data found for {eid}")
+        return series
+    
+    series['cue_times'] = trials['goCue_times'].values
+    series['movement_times'] = trials['firstMovement_times'].values
+    series['reward_times'] = trials.query('feedbackType == 1')['feedback_times'].values
+    series['omission_times'] = trials.query('feedbackType == -1')['feedback_times'].values
+    
     return series
 
 
