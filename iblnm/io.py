@@ -4,6 +4,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from one.api import ONE
+from one.alf.spec import QC
 ## TODO: use me!!
 from one.alf.exceptions import ALFObjectNotFound
 
