@@ -2,7 +2,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib import colors
 
-from iblnm.util import QCVAL2NUM
+from iblnm import config
+from iblnm.config import QCVAL2NUM
 
 LABELFONTSIZE = 6
 plt.rcParams['figure.dpi'] = 180
@@ -77,6 +78,64 @@ def set_plotsize(w, h=None, ax=None):
     figw = float(w)/(r-l)
     figh = float(h)/(t-b)
     ax.figure.set_size_inches(figw, figh)
+
+
+def session_overview_matrix(df, index='subject', columns='day', ax=None):
+    df = df.copy()
+    df['session_type_float'] = df['session_type'].map(config.SESSIONTYPE2FLOAT)  # convert session type to numerical value
+
+    def _raise_error_on_duplicate(x):
+        if len(x) > 1:
+            raise ValueError(f"Duplicate entries found: {list(x)}")
+        return x.iloc[0]
+    
+    subject_matrix = df.pivot_table(
+        index=index, 
+        columns=columns, 
+        values='session_type_float',
+        aggfunc=_raise_error_on_duplicate,  # all duplicates should be gone
+        fill_value=0
+    )
+    
+    # Create categorical colormap
+    color_list = ['white'] + list(config.SESSIONTYPE2COLOR.values())
+    cmap = colors.ListedColormap(color_list)
+    
+    # Create boundaries for discrete categories
+    bounds = [0] + list(config.SESSIONTYPE2FLOAT.values()) + [1.01]
+    norm = colors.BoundaryNorm(bounds, cmap.N)
+    
+    # Plot the matrix with the custom colormap (figsize is determined by dimensions)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(0.15 * len(subject_matrix.columns), 0.15 * len(subject_matrix)))
+    im = ax.matshow(subject_matrix, cmap=cmap, norm=norm)
+    
+    # Format axes
+    ax.set_yticks(np.arange(len(subject_matrix)))
+    ax.set_yticklabels(subject_matrix.index)
+    ax.set_ylabel('Subject')
+    ax.xaxis.tick_top()
+    ax.set_xticks(np.arange(len(subject_matrix.columns)))
+    ax.tick_params(axis='x', rotation=90)
+    ax.xaxis.set_label_position('top')
+    ax.set_xlabel('Days since first training')
+    
+    # Add custom gridlines
+    for xtick in ax.get_xticks():
+        ax.axvline(xtick - 0.5, color='white')
+    for ytick in ax.get_yticks():
+        ax.axhline(ytick - 0.5, color='white')
+    
+    # Calculate tick positions at the center of each color segment for the colorbar
+    tick_positions = [(bounds[i] + bounds[i + 1]) / 2 for i in range(1, len(bounds) - 1)]  # skip the first entry for 0/absent
+    tick_labels = list(config.SESSIONTYPE2FLOAT.keys())  # these keys don't include 0/absent
+    
+    # Plot the colorbar
+    cbar = plt.colorbar(im, ax=ax, shrink=0.5, boundaries=bounds, ticks=tick_positions)
+    cbar.set_ticklabels(list(config.SESSIONTYPE2COLOR.keys()))
+    cbar.ax.set_ylim(bounds[1], bounds[-1])  # exclude 0/absent
+
+    return fig, ax
 
 
 def qc_grid(df, qc_columns=None, qcval2num=None, ax=None, yticklabels=None,

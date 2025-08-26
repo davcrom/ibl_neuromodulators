@@ -1,43 +1,26 @@
 import os
+import gc
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 from one.api import ONE
 from one.alf.spec import QC
-## TODO: use me!!
 from one.alf.exceptions import ALFObjectNotFound
 
-import sys
-sys.path.append('/home/crombie/code/ibl_photometry/src')
-import iblphotometry.io as io
-
-from iblnm.util import STRAIN2NM, LINE2NM, TARGET2NM
+from iblnm.config import *
 from iblnm.util import protocol2type, fill_empty_lists_from_group 
 
-LOCAL_CACHE = '/home/crombie/mnt/ccu-iblserver'
-REGIONS_FPATH = 'metadata/regions.csv'  # file with eid2roi mapping for photometry
-INSERTIONS_FPATH = 'metadata/insertions.csv'  # file with subject to brain region mapping
-SESSIONS_FPATH = 'metadata/sessions.pqt'
+# Note: currently, we need to import from config first for ibl-photometry to be in PATH
+import iblphotometry
 
-ALYX_PHOTOMETRY_DATASETS = [
-    'raw_behavior_data/_iblrig_taskData.raw.jsonable',
-    'raw_behavior_data/_iblrig_taskSettings.raw.json',
-    'alf/_ibl_trials.table.pqt',
-    'alf/_ibl_wheel.position.npy',
-    'raw_photometry_data/_neurophotometrics_fpData.channels.csv',
-    'raw_photometry_data/_neurophotometrics_fpData.raw.pqt',
-    'alf/photometry/photometry.signal.pqt',
-    'alf/photometry/photometryROI.locations.pqt',
-    'raw_video_data/_iblrig_leftCamera.raw.mp4'
-]
-EXTRACTED_PHOTOMETRY_DATASETS = [
-    'alf/photometry/photometry.signal.pqt',
-    'alf/photometry/photometryROI.locations.pqt'
-]
+def save_as_pqt(df, fpath):
+    # Map all columns with non-uniform data types to strings
+    df = df.apply(lambda col: col if col.map(type).nunique() == 1 else col.astype(str))
+    df.to_parquet(fpath, index=False)
+    
 
-
-def fetch_sessions(one, qc=False, check_local=True, save=True):
+def fetch_sessions(one, extended=True, save=True):
     """
     Query Alyx for sessions tagged in the psychedelics project and add session
     info to a dataframe. Sessions are restricted to those with the 
@@ -64,55 +47,68 @@ def fetch_sessions(one, qc=False, check_local=True, save=True):
     df_sessions = pd.DataFrame(sessions).rename(columns={'id': 'eid'})
     df_sessions.drop(columns='projects')
     df_sessions['session_type'] = df_sessions['task_protocol'].map(protocol2type)
-    # Add subject info to the dataframe
-    print("Adding subject info...")
-    # Note: .copy() is applied to de-fragment the dataframe after repeated column additions
-    df_sessions = df_sessions.progress_apply(_get_subject_info, one=one, axis='columns').copy()
-    strain_NM = df_sessions['strain'].replace(STRAIN2NM)
-    if qc:
-        # Unpack the extended qc from the session dict into dataframe columns
-        print("Unpacking extended qc data...")
+    # Save initial query before adding more detialed info
+    if save: save_as_pqt(df_sessions, SESSIONS_FPATH)
+    if extended:  # Note: .copy() is applied to de-fragment the dataframe after repeated column additions
+        print("Unpacking session dicts...")
         df_sessions = df_sessions.progress_apply(_unpack_session_dict, one=one, axis='columns').copy()
-    # Check if important datasets are present for the session
-    print("Checking remote datasets...")
-    df_sessions = df_sessions.progress_apply(_check_remote_datasets, one=one, axis='columns').copy()
-    # All datasets must be present to set remote photometry to True
-    df_sessions['remote_photometry'] = df_sessions.apply(lambda x: all([x[dset] for dset in EXTRACTED_PHOTOMETRY_DATASETS]), axis='columns')
-    if check_local:
-        print("Checking local datasets...")
-        # Instantiate connection to local database
-        df_sessions = df_sessions.progress_apply(
-            _check_local_datasets, 
-            one=ONE(cache_dir=LOCAL_CACHE),  # instantiate connection to local database
-            axis='columns'
-            ).copy()
-        df_sessions['local_photometry'] = df_sessions['local_photometry'].replace({'nan': False}).astype(bool)
+        print("Adding subject info...")
+        df_sessions = df_sessions.progress_apply(_get_subject_info, one=one, axis='columns').copy()
+        print("Checking datasets...")
+        df_sessions = df_sessions.progress_apply(_check_datasets, one=one, axis='columns').copy()
     # Get photometry ROIs and brain regions targeted
-    df_regions = pd.read_csv(REGIONS_FPATH)
+    df_recordings = pd.read_csv(RECORDINGS_FPATH).dropna()
     df_insertions = pd.read_csv(INSERTIONS_FPATH)
     df_sessions = df_sessions.progress_apply(
         _get_target_regions, 
         one=one, 
-        df_regions=df_regions, 
+        df_recordings=df_recordings, 
         df_insertions=df_insertions, 
         axis='columns'
     ).copy()
-    df_sessions = fill_empty_lists_from_group(df_sessions, 'target', 'subject')
-    # Guess missing NM values based on brain region targeted
-    df_sessions['NM'] = df_sessions.apply(
-        lambda x: TARGET2NM[x['target'][0]] 
-        if (x['NM'] == 'none') and x['target'] 
-        else x['NM'], axis='columns'
-    )
-    # Map all columns with non-uniform data types to strings
-    df_sessions = df_sessions.apply(lambda col: col if col.map(type).nunique() == 1 else col.astype(str))
-    # Label and sort by session number for each subject
-    df_sessions['session_n'] = df_sessions.groupby('subject')['start_time'].rank(method='dense').astype(int)
-    df_sessions = df_sessions.sort_values(by=['start_time', 'subject']).reset_index(drop=True)
-    # Save as csv
-    if save:
-        df_sessions.to_parquet(SESSIONS_FPATH, index=False)
+    if save: save_as_pqt(df_sessions, SESSIONS_FPATH)
     return df_sessions
+
+
+def _unpack_session_dict(series, one=None):
+    """
+    Unpack useful metadata and extended QC from the session dict for a given eid.
+    """
+    assert one is not None
+    # Fetch full session dict
+    session_dict = one.alyx.rest('sessions', 'read', id=series['eid'])
+    for key in SESSIONDICT_KEYS:
+        if key in session_dict.keys():
+            series[key] = session_dict[key]
+    series['qc_session'] = session_dict['qc']  # aggregate session QC value
+    # Add QC vals to series
+    if session_dict['extended_qc'] is not None:
+        for key, val in session_dict['extended_qc'].items():
+            # Clean up key names and add 'qc' tag
+            if key.endswith('_qc'):  key = key.rstrip('_qc')
+            if not key.startswith('_'): key = '_' + key
+            key = 'qc' + key
+            # Handle possible QC value types
+            if type(val) == list:  # pull val out of list
+                series[key.lstrip('qc_')] = val[1:]  # store values underlying QC outcome without the qc_ flag
+                val = val[0]  # lists have QC outcome as first entry
+            if type(val) == int:
+                try:
+                    series[key] = QC(val).name  # convert 0-100 values to string
+                except ValueError:
+                    series[key] = val
+            elif type(val) == bool:
+                series[key] = 'PASS' if val else 'FAIL'  # convert T/F to pass/fail
+            elif (type(val) == float) | (type(val) == str):
+                series[key] = val  # directly store strings & floats
+            elif val is None:
+                series[key] = 'NOT_SET'
+            else:
+                raise ValueError
+    # Add list of session datasets
+    if 'data_dataset_session_related' in session_dict.keys():
+        series['datasets'] = [d['name'] for d in session_dict['data_dataset_session_related']]
+    return series
 
 
 def _get_subject_info(series, one=None):
@@ -140,16 +136,80 @@ def _get_subject_info(series, one=None):
     return series
 
 
-def _check_remote_datasets(series, one=None):
+def _check_datasets(series, one=None, fullpath=False):
     """
     Create a boolean entry for each important dataset for the given eid.
     """
     assert one is not None
     # Fetch list of datasets listed under the given eid
     datasets = one.list_datasets(series['eid'])
-    for dataset in ALYX_PHOTOMETRY_DATASETS:
-        series[dataset] = dataset in datasets
+    if fullpath:
+        for dataset in ALYX_PHOTOMETRY_DATASETS:
+            series[dataset] = dataset in datasets
+    else:
+        datasets_names = [dset.split('/')[-1] for dset in datasets]
+        for dataset_name in ALYX_PHOTOMETRY_DATASETS_NAMES:
+            series[dataset_name] = dataset_name in datasets_names
     return series
+
+
+def _get_target_regions(session, one=None, df_recordings=None, df_insertions=None):
+    try:  # should work for all properly extracted data
+        assert one is not None
+        locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt')
+        session['roi'] = locations.index.to_list()
+        session['target'] = locations['brain_region'].to_list()
+        session['remote_photometry'] = True
+    except ALFObjectNotFound:  # default to using lookup tables
+        assert df_recordings is not None
+        assert df_insertions is not None
+        eid = session['eid']
+        rois = df_recordings.query('eid == @eid')
+        session['roi'] = rois['region'].to_list()
+        target = []
+        for fiber in rois['fiber']:
+            insertion = df_insertions.query('probename == @fiber')
+            if len(insertion) < 1:
+                print(f"Missing insertion entry for: {session['eid']}, {fiber}")
+            else:
+                assert len(insertion) == 1
+                assert insertion['subject'].iloc[0] == session['subject']
+                target.extend(insertion['targeted_regions'].to_list())
+        session['target'] = target
+        session['remote_photometry'] = False
+    return session
+
+
+def _get_ntrials_from_raw_taskData(session, one):
+    """
+    Get number of trials from the raw task data.
+    """
+    n_trials = np.nan
+    try:
+        raw_trials = one.load_dataset(session['eid'], dataset='_iblrig_taskData.raw.jsonable')
+        if raw_trials is not None:
+            n_trials = len(raw_trials)
+            del raw_trials
+            gc.collect()
+    except ALFObjectNotFound:
+        pass
+    return n_trials
+
+
+def load_photometry_data(session, one, extracted=True):
+    photometry_data = {}
+    if extracted:
+        photometry = one.load_dataset(id=session['eid'], dataset='photometry.signal.pqt')
+        locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt').reset_index()
+        rois = locations['ROI'].to_list()
+    else:  
+        if len(session['roi']) == 0:
+            raise ValueError(f"No ROIs for {session['eid']}")
+        raw_data_path = one.eid2path(session['eid']) / 'raw_photometry_data' / 'raw_photometry.csv'
+        photometry = iblphotometry.io.from_raw_neurophotometrics_file_to_ibl_df(raw_data_path, version='old')
+        photometry = photometry.drop(columns='index')
+        rois = session['roi']
+    return photometry[list(rois) + ['name']].set_index(photometry['times']).dropna()
 
 
 def _check_local_datasets(series, one=None, local_cache=None):
@@ -170,105 +230,3 @@ def _check_local_datasets(series, one=None, local_cache=None):
         return series
     series['local_photometry'] = all([os.path.isfile(pqt_path) for pqt_path in photometry_pqt_paths])
     return series
-
-
-def _unpack_session_dict(series, one=None):
-    """
-    Unpack the extended QC from the session dict for a given eid.
-    """
-    assert one is not None
-    # Fetch full session dict
-    session_dict = one.alyx.rest('sessions', 'read', id=series['eid'])
-    series['session_qc'] = session_dict['qc']  # aggregate session QC value
-    # Skip if there is no extended QC present
-    if session_dict['extended_qc'] is None:
-        return series
-    # Add QC vals to series
-    for key, val in session_dict['extended_qc'].items():
-        # Add _qc flag to any keys that don't have it 
-        if not key.endswith('_qc'): key += '_qc'
-        if type(val) == list:  
-            series[key.rstrip('_qc')] = val[1:]  # store underlying values
-            val = val[0]  # lists have QC outcome as first entry
-        if type(val) == int:
-            try:
-                series[key] = QC(val).name  # convert 0-100 values to string
-            except ValueError:
-                series[key] = val
-        elif type(val) == bool:
-            series[key] = 'PASS' if val else 'FAIL'  # convert T/F to pass/fail
-        elif (type(val) == float) | (type(val) == str):
-            series[key] = val  # directly store strings & floats
-        elif val is None:
-            series[key] = 'NOT_SET'
-        else:
-            raise ValueError
-    return series
-
-
-def _get_target_regions(session, one=None, df_regions=None, df_insertions=None):
-    if session['remote_photometry']:
-        assert one is not None
-        locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt')
-        session['roi'] = locations.index.to_list()
-        session['target'] = locations['brain_region'].to_list()
-    else:
-        assert df_regions is not None
-        assert df_insertions is not None
-        eid = session['eid']
-        rois = df_regions.query('eid == @eid')
-        session['roi'] = rois['ROI'].to_list()
-        subject = session['subject']
-        insertions = df_insertions.query('subject == @subject')
-        if len(insertions) > 1:
-            if any(insertions['targeted_regions'].apply(lambda x: not isinstance(x, str))):
-                raise ValueError
-        session['target'] = insertions['targeted_regions'].to_list()
-    return session
-
-
-def load_photometry_data(session, one, extracted=True):
-    photometry_data = {}
-    if extracted:
-        photometry = one.load_dataset(id=session['eid'], dataset='photometry.signal.pqt')
-        locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt').reset_index()
-        rois = locations['ROI'].to_list()
-    else:  
-        if len(session['roi']) == 0:
-            raise ValueError(f"No ROIs for {session['eid']}")
-        raw_data_path = one.eid2path(session['eid']) / 'raw_photometry_data' / 'raw_photometry.csv'
-        photometry = io.from_raw_neurophotometrics_file_to_ibl_df(raw_data_path, version='old')
-        photometry = photometry.drop(columns='index')
-        rois = session['roi']
-    return photometry[list(rois) + ['name']].set_index(photometry['times']).dropna()
-
-
-# def _get_targets(session, df_insertions=None, one=None):
-#     """
-#     For the given session, load the brain regions targeted for each fiber/ ROI.
-
-#     Parameters
-#     ----------
-#     session : pd.Series
-#         Series object containing the eid and photometry ROI labels.
-#     df_insertions : pd.DataFrame (optional)
-#         Dataframe containing subject to brain region mappings, will be used if
-#         mapping is not found in Alyx database
-
-#     Returns
-#     -------
-#     session : pd.Series
-#         Series object with a new entry for 'targeted_regions'
-#     """
-#     try:
-#         assert one is not None
-#         locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt')
-#         session['targeted_regions'] = locations.loc[session['ROI']]['brain_region'].to_list()
-#     except:
-#         assert df_insertions is not None
-#         subject = session['subject']
-#         insertions = df_insertions.query('subject == @subject')
-#         columns = ['fiber_diameter_um', 'fiber_length_mm', 'numerical_aperture', 'targeted_regions', 'expression']
-#         for col in columns:
-#             session[col] = insertions[col].dropna().tolist()
-#     return session

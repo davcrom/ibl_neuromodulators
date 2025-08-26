@@ -1,96 +1,103 @@
 import numpy as np
 import pandas as pd
 import uuid
+from datetime import datetime
 from one.api import ONE
 from brainbox.io.one import SessionLoader
 
-STRAIN2NM = {
-    'Ai148xSERTCre': '5HT',
-    'Ai148xDATCre': 'DA',
-    'Ai148xDbhCre': 'NE',
-    'Ai148xTHCre': 'NE',  ## TODO: double-check all THCre mice targeted LC-NE
-    'B6.Cg': 'none',
-    'Ai148xChATCre': 'ACh',
-    'Ai148xDbh-Cre': 'NE',
-    'B6.129S2': 'none',
-    'Ai95xSERTCre': '5HT',
-    'C57BL/6J': 'none',
-    None: 'none'
-}
-
-LINE2NM = {
-    'Ai148xSert': '5HT',
-    'Ai148xDat': 'DA',
-    'Ai148xDbh': 'NE',
-    'Ai148-G6f-cdh x Chat-cre': 'ACh',
-    'Ai148xTh': 'NE',
-    'Ai148xChat': 'ACh',
-    'Ai148xChAT': 'ACh',
-    'C57BL/6J': 'none',
-    'TetOG6s-Cdh23 x Camk-Cdh23': 'none',
-    None: 'none'
-}
-
-TARGET2NM = {
-    'VTA': 'DA',
-    'SNc': 'DA',
-    'DR': '5HT',
-    'MR': '5HT',
-    'LC': 'NE',
-    'NBM': 'ACh',
-    'SI': 'ACh',
-    'PPT': 'ACh'
-}
-
-QCVAL2NUM = {  
-    np.nan: 0.,
-    'NOT SET': 0.01,
-    'NOT_SET': 0.01,
-    'PASS': 1.,
-    'WARNING': 0.66,
-    'CRITICAL': 0.33,
-    'FAIL': 0.1
-}
-
-EVENT2COLOR = {
-    'cue': 'blue', 
-    'movement': 'orange', 
-    'reward': 'green', 
-    'omission':'red'
-}
+from iblnm import config
 
 
 def protocol2type(protocol):
-    types = np.array(['habituation', 'training', 'biased', 'ephys'])
-    type_mask = [t + 'ChoiceWorld' in protocol for t in types]
-    if sum(type_mask) == 1:
+    # Define session types
+    types = np.array(['habituation', 'training', 'biased', 'ephys', 'passive', 'histology'])
+    # Define red flags (if found in filename it indicates a non-standard protocol)
+    red_flags = ['RPE', 'DELAY', 'delay']
+    #
+    type_mask = [t + 'ChoiceWorld' in protocol for t in types[:-1]] + ['Histology' in protocol]
+
+    red_flags = [rf in protocol for rf in red_flags]
+    if (sum(type_mask) == 1) and not any(red_flags):
         return str(types[type_mask][0])
-    elif sum(type_mask) == 0:
+    elif (sum(type_mask) == 0) or any(red_flags):
         return 'misc'
     else:
         raise ValueError
 
 
+def _get_session_length(session):
+    dt = np.nan
+    try:
+        t0 = datetime.fromisoformat(session['start_time'])
+        t1 = datetime.fromisoformat(session['end_time'])
+        if t0.date() == t1.date():
+            dt = (t1 - t0).total_seconds()    
+        else:
+            print(f"WARNING: {session['eid']} session start and end time on different days!")
+    except:
+        pass
+    return dt
+
+
+def _resolve_session_status(session_group):
+    """
+    Resolve duplicate sessions by flagging them as 'good', 'junk', 'conflict', or 'missing'
+    """
+    # Create a copy to avoid modifying original data
+    group = session_group.copy()
+    
+    # Initialize all sessions as 'junk'
+    group['session_status'] = 'junk'
+    
+    # Find sessions that have behavior data AND meet quality criteria (trials OR length)
+    good_sessions_mask = group['has_taskData'] & (group['has_trials'] | group['has_length'])
+    good_sessions = group[good_sessions_mask]
+    
+    if len(good_sessions) == 1:
+        # One session has behavior and quality - mark as 'good', others remain 'junk'
+        group.loc[good_sessions.index, 'session_status'] = 'good'
+        
+    elif len(good_sessions) > 1:
+            group.loc[good_sessions.index, 'session_status'] = 'conflict'
+    
+    # No sessions have behavior data
+    else:
+        # Check for rare cases where there is no raw task data in Alyx, but the session dictionary says there should be
+        missing_behavior_mask = group['raw_taskData_in_sessionDict'] & ~group['raw_taskData_exists'] & (group['n_trials_sessionDict'] > config.MIN_NTRIALS)
+        missing_sessions = group[missing_behavior_mask]
+        
+        if len(missing_sessions) == 1:
+            # Single session with missing behavior - mark as 'missing'
+            group.loc[missing_sessions.index, 'session_status'] = 'missing'
+        elif len(missing_sessions) > 1:
+            # Multiple sessions with missing behavior - mark as 'missing_conflict'
+            group.loc[missing_sessions.index, 'session_status'] = 'missing_conflict'
+    
+    return group['session_status']
+    
+
 def fill_empty_lists_from_group(df, col, group_col='subject'):
-    # Ensure column contains actual lists (not strings)
     df = df.copy()
-    # Boolean mask for empty lists
-    empty_mask = df[col].apply(lambda x: isinstance(x, list) and len(x) == 0)
-    for idx in df[empty_mask].index:
-        subject = df.at[idx, group_col]
-        # Get all rows with same subject, skip empty lists
-        group = df[(df[group_col] == subject) & (~empty_mask)]
-        non_empty_values = group[col].tolist()
-        # Remove rows that don't contain lists
-        non_empty_values = [x for x in non_empty_values if isinstance(x, list)]
-        if len(non_empty_values) == 0:
-            continue  # no replacement possible
-        # Assert all lists are equal
-        first = non_empty_values[0]
-        assert all(x == first for x in non_empty_values), f"Inconsistent non-empty lists for subject {subject}"
-        # Replace empty list
-        df.at[idx, col] = first
-    return df
+    
+    def fill_group(group):
+        # Find non-empty lists
+        non_empty = group[group[col].apply(lambda x: isinstance(x, list) and len(x) > 0)]
+        
+        if len(non_empty) == 0:
+            return group  # No non-empty lists to use
+            
+        # Check consistency
+        first_list = non_empty[col].iloc[0]
+        assert all(x == first_list for x in non_empty[col]), \
+            f"Inconsistent lists in group"
+        
+        # Fill empty lists
+        group[col] = group[col].apply(
+            lambda x: first_list if isinstance(x, list) and len(x) == 0 else x
+        )
+        return group
+    
+    return df.groupby(group_col, group_keys=False).apply(fill_group)
 
 
 def restrict_photometry_to_task(eid, photometry, one=None, buffer=2):
