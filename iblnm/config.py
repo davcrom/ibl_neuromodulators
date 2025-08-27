@@ -81,6 +81,21 @@ TARGET2NM = {
 MIN_NTRIALS = 45
 MIN_SESSIONLENGTH = 20 * 60  # seconds
 
+SESSION_TYPES = [
+    'habituation',
+    'training', 
+    'biased',
+    'ephys',
+    'passive',
+    'histology'
+]
+
+PROTOCOL_RED_FLAGS = [
+    'RPE',
+    'DELAY',
+    'delay'
+]
+
 EXCLUDE_SESSION_TYPES = [
     'habituation',
     'passive',

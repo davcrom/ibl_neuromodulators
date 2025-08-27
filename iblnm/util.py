@@ -9,17 +9,18 @@ from iblnm import config
 
 
 def protocol2type(protocol):
-    # Define session types
-    types = np.array(['habituation', 'training', 'biased', 'ephys', 'passive', 'histology'])
+    # Define recognized session types
+    session_types = config.SESSION_TYPES
     # Define red flags (if found in filename it indicates a non-standard protocol)
-    red_flags = ['RPE', 'DELAY', 'delay']
-    #
-    type_mask = [t + 'ChoiceWorld' in protocol for t in types[:-1]] + ['Histology' in protocol]
-
+    red_flags = config.PROTOCOL_RED_FLAGS
+    # Determine which session types are found in the protocol name
+    type_mask = [t + 'ChoiceWorld' in protocol for t in session_types[:-1]] + ['Histology' in protocol]
+    # Determine if any red flags are present in the protocol name
     red_flags = [rf in protocol for rf in red_flags]
-    if (sum(type_mask) == 1) and not any(red_flags):
+    # Decide what session type to return
+    if (sum(type_mask) == 1) and not any(red_flags):  # only one session type and no red flags
         return str(types[type_mask][0])
-    elif (sum(type_mask) == 0) or any(red_flags):
+    elif (sum(type_mask) == 0) or any(red_flags):  # no/multiple session types or red flags
         return 'misc'
     else:
         raise ValueError
