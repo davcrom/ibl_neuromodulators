@@ -80,7 +80,7 @@ def set_plotsize(w, h=None, ax=None):
     ax.figure.set_size_inches(figw, figh)
 
 
-def session_overview_matrix(df, index='subject', columns='day', ax=None):
+def session_overview_matrix(df, columns='day_n', ax=None):
     df = df.copy()
     df['session_type_float'] = df['session_type'].map(config.SESSIONTYPE2FLOAT)  # convert session type to numerical value
 
@@ -88,19 +88,30 @@ def session_overview_matrix(df, index='subject', columns='day', ax=None):
         if len(x) > 1:
             raise ValueError(f"Duplicate entries found: {list(x)}")
         return x.iloc[0]
+
+    def _resolve_duplicates(x):
+        return 1 if any(x == 'good') else 0
     
     subject_matrix = df.pivot_table(
-        index=index, 
-        columns=columns, 
+        index='subject', 
+        columns=columns,
         values='session_type_float',
-        aggfunc=_raise_error_on_duplicate,  # all duplicates should be gone
+        aggfunc='first',
+        fill_value=0
+    )
+
+    overlay_matrix = df.pivot_table(
+        index='subject', 
+        columns=columns,
+        values='session_status',
+        # aggfunc=_raise_error_on_duplicate,  # all duplicates should be gone
+        aggfunc=_resolve_duplicates,
         fill_value=0
     )
     
     # Create categorical colormap
     color_list = ['white'] + list(config.SESSIONTYPE2COLOR.values())
     cmap = colors.ListedColormap(color_list)
-    
     # Create boundaries for discrete categories
     bounds = [0] + list(config.SESSIONTYPE2FLOAT.values()) + [1.01]
     norm = colors.BoundaryNorm(bounds, cmap.N)
@@ -108,7 +119,13 @@ def session_overview_matrix(df, index='subject', columns='day', ax=None):
     # Plot the matrix with the custom colormap (figsize is determined by dimensions)
     if ax is None:
         fig, ax = plt.subplots(figsize=(0.15 * len(subject_matrix.columns), 0.15 * len(subject_matrix)))
-    im = ax.matshow(subject_matrix, cmap=cmap, norm=norm)
+    im = ax.matshow(subject_matrix, cmap=cmap, norm=norm, alpha=0.5)
+    # Create a copy of subject_matrix for the overlay
+    overlay_subject_matrix = subject_matrix.copy()
+    # Set values to NaN where overlay_matrix is True (good sessions)
+    overlay_subject_matrix[~overlay_matrix.astype(bool)] = np.nan
+    # Plot the overlay with full opacity
+    im_overlay = ax.matshow(overlay_subject_matrix, cmap=cmap, norm=norm, alpha=1)
     
     # Format axes
     ax.set_yticks(np.arange(len(subject_matrix)))
@@ -118,7 +135,7 @@ def session_overview_matrix(df, index='subject', columns='day', ax=None):
     ax.set_xticks(np.arange(len(subject_matrix.columns)))
     ax.tick_params(axis='x', rotation=90)
     ax.xaxis.set_label_position('top')
-    ax.set_xlabel('Days since first training')
+    ax.set_xlabel(columns)
     
     # Add custom gridlines
     for xtick in ax.get_xticks():
@@ -135,7 +152,8 @@ def session_overview_matrix(df, index='subject', columns='day', ax=None):
     cbar.set_ticklabels(list(config.SESSIONTYPE2COLOR.keys()))
     cbar.ax.set_ylim(bounds[1], bounds[-1])  # exclude 0/absent
 
-    return fig, ax
+    return ax
+
 
 
 def qc_grid(df, qc_columns=None, qcval2num=None, ax=None, yticklabels=None,

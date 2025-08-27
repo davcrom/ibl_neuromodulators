@@ -163,8 +163,7 @@ if __name__ == "__main__":
     df_qc.query('raw_taskData_exists & (n_trials_sessionDict != n_trials_taskData)').to_parquet(session_qc_path / f'check_taskData_extraction_{timestamp}.pqt')
 
     # Make a session overview plot
-    fig, ax = vis.session_overview_matrix(
-        df_qc.query('session_status == "good"'),
-        columns='day_n'
-    )
-    fig.savefig(session_qc_path / f'IBL-NM_session_overview_{timestamp}.pdf')
+    ax = session_overview_matrix(df_qc, columns='day_n')
+    ax.get_figure().savefig(session_qc_path / f'IBL-NM_timeline_overview_{timestamp}.pdf')
+    ax = session_overview_matrix(df_qc, columns='session_n')
+    ax.get_figure().savefig(session_qc_path / f'IBL-NM_session_overview_{timestamp}.pdf')
