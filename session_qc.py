@@ -138,7 +138,7 @@ if __name__ == "__main__":
     # Clean up the columns
     columns_to_include = [
         'eid', 'session_status', 'subject', 'target', 'NM',
-        'day_n', 'start_time', 'end_time', 'session_length', 
+        'day_n', 'session_n', 'start_time', 'end_time', 'session_length', 
         'task_protocol', 'session_type', 'duplicate_session',
         'raw_taskData_exists', 'n_trials_taskData', 'n_trials_sessionDict',  
     ]
