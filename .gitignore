@@ -1,3 +1,15 @@
+# Project files
+merge_region_tables.py
+metadata/recordings_old.csv
+metadata/regions.csv
+metadata/regions_fromfilenames.csv
+metadata/regions_frommanual.csv
+session_qc
+*.pdf
+*.png
+*.pqt
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
