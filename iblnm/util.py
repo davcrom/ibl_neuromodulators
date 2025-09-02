@@ -146,12 +146,13 @@ def _load_event_times(series, one=None):
     assert one is not None
     
     if isinstance(series, pd.Series):
+        series = series.copy()  # avoid SettingWithCopyWarning
         eid = series['eid']
     elif isinstance(series, uuid.UUID):
         eid = series
         series = pd.Series(data={'eid': str(eid)})
     else:
-        raise TypeError('series mus be pd.Series of uuid.UUID')
+        raise TypeError('series must be pd.Series or uuid.UUID')
     
     try:
         trials = one.load_dataset(eid, '*trials.table')
