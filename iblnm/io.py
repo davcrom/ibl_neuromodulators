@@ -11,7 +11,6 @@ from one.alf.exceptions import ALFObjectNotFound
 from iblnm.config import *
 from iblnm.util import protocol2type, fill_empty_lists_from_group 
 
-# Note: currently, we need to import from config first for ibl-photometry to be in PATH
 import iblphotometry
 
 def save_as_pqt(df, fpath):
@@ -22,11 +21,9 @@ def save_as_pqt(df, fpath):
 
 def fetch_sessions(one, extended=True, save=True):
     """
-    Query Alyx for sessions tagged in the psychedelics project and add session
-    info to a dataframe. Sessions are restricted to those with the 
-    passiveChoiceWorld task protocol, quality control metadata is unpacked, and
-    a list of key datasets is checked. Sessions are sorted and labelled
-    (session_n) by their order.
+    Query Alyx for sessions tagged in the neuromodulators project and add session
+    info to a dataframe. Quality control metadata is unpacked, and a list of key datasets
+    is checked.
 
     Parameters
     ----------
@@ -122,8 +119,10 @@ def _get_subject_info(series, one=None):
     sNM = STRAIN2NM[series['strain']]
     lNM = LINE2NM[series['line']]
     if (sNM != 'none') and (lNM != 'none'):
-        assert sNM == lNM
-        NM = sNM
+        if sNM == lNM:
+            NM = sNM
+        else:
+            NM = 'conflict'
     elif (sNM == 'none') and (lNM != 'none'): 
         NM = lNM
     elif (sNM != 'none') and (lNM == 'none'): 
@@ -136,7 +135,7 @@ def _get_subject_info(series, one=None):
     return series
 
 
-def _check_datasets(series, one=None, fullpath=False):
+def _check_datasets(series, one=None, fullpath=True):
     """
     Create a boolean entry for each important dataset for the given eid.
     """

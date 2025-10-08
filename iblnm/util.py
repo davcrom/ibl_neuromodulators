@@ -3,6 +3,7 @@ import pandas as pd
 import uuid
 from datetime import datetime
 from one.api import ONE
+from one.alf.exceptions import ALFObjectNotFound
 from brainbox.io.one import SessionLoader
 
 from iblnm import config
@@ -14,17 +15,32 @@ def protocol2type(protocol):
     # Define red flags (if found in filename it indicates a non-standard protocol)
     red_flags = config.PROTOCOL_RED_FLAGS
     # Determine which session types are found in the protocol name
-    type_mask = [t + 'ChoiceWorld' in protocol for t in session_types[:-1]] + ['Histology' in protocol]
+    choiceworld_type_mask = [t + 'ChoiceWorld' in protocol for t in session_types[:-1]] + ['Histology' in protocol]
+    type_mask = [t in protocol for t in session_types[:-1]] + ['Histology' in protocol]
     # Determine if any red flags are present in the protocol name
     red_flag_mask = [rf in protocol for rf in red_flags]
     # Decide what session type to return
-    if (sum(type_mask) == 1) and not any(red_flag_mask):  # only one session type and no red flags
+    if (sum(choiceworld_type_mask or type_mask) == 1) and not any(red_flag_mask):  # only one session type and no red flags
         return str(session_types[type_mask][0])
-    elif (sum(type_mask) == 0) or any(red_flag_mask):  # no/multiple session types or red flags
+    elif (sum(choiceworld_type_mask) == 0) or any(red_flag_mask):  # no/multiple session types or red flags
         return 'misc'
     else:
         raise ValueError
 
+SESSION_TYPES = [
+    'habituation',
+    'training', 
+    'biased',
+    'ephys',
+    'passive',
+    'histology'
+]
+
+PROTOCOL_RED_FLAGS = [
+    'RPE',  # reward amount manipulated (omission or amount manipulation)
+    'DELAY',  # delay between choice and feedback
+    'delay'
+]
 
 def _get_session_length(session):
     dt = np.nan
@@ -127,7 +143,7 @@ def _agg_sliding_metric(series, metric=None, agg_func=np.mean, window=300):
     return agg_func(evs)
     
 
-def _load_event_times(series, one=None):
+def _load_event_times(series, one=None, collection='alf/task_00'):
     """
     Extracts reward_times, cue_times, and movement_times for a single row.
 
@@ -155,8 +171,8 @@ def _load_event_times(series, one=None):
         raise TypeError('series must be pd.Series or uuid.UUID')
     
     try:
-        trials = one.load_dataset(eid, '*trials.table')
-    except:
+        trials = one.load_dataset(eid, '*trials.table', collection=collection)
+    except ALFObjectNotFound:
         print(f"WARNING: no trial data found for {eid}")
         return series
     

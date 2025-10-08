@@ -155,6 +155,35 @@ def session_overview_matrix(df, columns='day_n', ax=None):
     return ax
 
 
+def session_overview_scatter(df, x_col='day_n', ax=None):
+    if ax is None:
+        fig, ax = plt.subplots()
+    subject_y_pos = -1 * df.groupby('subject')['start_time'].min().argsort()
+    
+    for _, session in df.iterrows():
+        ax.scatter(
+            session[x_col], 
+            subject_y_pos.loc[session['subject']],
+            color=config.SESSIONTYPE2COLOR[session['session_type']],
+            alpha=1 if session['session_status'] == 'good' else 0.5,
+        )
+
+    # Dummy points for legend
+    for session_type, color in config.SESSIONTYPE2COLOR.items():
+        ax.scatter(-1, 1, color=color, label=session_type)
+    ax.legend(loc=2, bbox_to_anchor=(1, 1))
+    ax.set_xlim(left=0)
+    ax.set_ylim(top=0)
+    
+    # Format axes
+    ax.set_yticks(subject_y_pos.values, labels=subject_y_pos.index)
+    ax.set_ylabel('Subject')
+    ax.set_xticks(np.linspace(df[x_col].min(), df[x_col].max(), 21).astype(int))
+    # ax.tick_params(axis='x', rotation=90)
+    ax.set_xlabel(x_col)
+    
+    return ax
+
 
 def qc_grid(df, qc_columns=None, qcval2num=None, ax=None, yticklabels=None,
            legend=True):

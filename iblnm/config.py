@@ -3,13 +3,9 @@ import sys
 
 LOCAL_CACHE = '/home/crombie/mnt/ccu-iblserver'
 # REGIONS_FPATH = 'metadata/regions.csv'  # file with eid2roi mapping for photometry
-RECORDINGS_FPATH = 'metadata/recordings.csv'  # file with eid2roi mapping for photometry
+RECORDINGS_FPATH = 'metadata/recordings_new.csv'  # file with eid2roi mapping for photometry
 INSERTIONS_FPATH = 'metadata/insertions.csv'  # file with subject to brain region mapping
 SESSIONS_FPATH = 'metadata/sessions.pqt'
-
-## FIXME: once ibl-photometry is a stand-alone package we won't need this 
-IBLPHOTOMETRYPATH = '/home/davide/code/ibl-photometry/src'
-sys.path.append(IBLPHOTOMETRYPATH)
 
 # Values to extract from the session dict
 SESSIONDICT_KEYS = ['users', 'lab', 'end_time', 'n_trials']
@@ -23,6 +19,8 @@ ALYX_PHOTOMETRY_DATASETS = [
     'raw_video_data/_iblrig_leftCamera.raw.mp4',
     'alf/_ibl_trials.table.pqt',
     'alf/_ibl_wheel.position.npy',
+    'alf/task_00/_ibl_trials.table.pqt',
+    'alf/task_00/_ibl_wheel.position.npy',
     'alf/photometry/photometry.signal.pqt',
     'alf/photometry/photometryROI.locations.pqt',
     'raw_photometry_data/_neurophotometrics_fpData.channels.csv',
@@ -83,7 +81,9 @@ MIN_SESSIONLENGTH = 20 * 60  # seconds
 
 SESSION_TYPES = [
     'habituation',
-    'training', 
+    'training',
+    'advanced',
+    'neuromodulator',
     'biased',
     'ephys',
     'passive',
@@ -98,6 +98,8 @@ PROTOCOL_RED_FLAGS = [
 
 EXCLUDE_SESSION_TYPES = [
     'habituation',
+    'advanced',
+    'neuromodulator',
     'passive',
     'misc',
     'histology'
