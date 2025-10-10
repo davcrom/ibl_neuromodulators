@@ -96,7 +96,8 @@ def session_overview_matrix(df, columns='day_n', ax=None):
         index='subject', 
         columns=columns,
         values='session_type_float',
-        aggfunc='first',
+        # aggfunc=_resolve_duplicates,  # produces a completely blank plot
+        aggfunc='first',  # produces the plot I want
         fill_value=0
     )
 
@@ -104,7 +105,7 @@ def session_overview_matrix(df, columns='day_n', ax=None):
         index='subject', 
         columns=columns,
         values='session_status',
-        # aggfunc=_raise_error_on_duplicate,  # all duplicates should be gone
+        # aggfunc=_raise_error_on_duplicate,  # to be certain, if passing a df that should already have duplicates removed
         aggfunc=_resolve_duplicates,
         fill_value=0
     )

@@ -29,7 +29,7 @@ def protocol2type(protocol):
 
 SESSION_TYPES = [
     'habituation',
-    'training', 
+    'training',
     'biased',
     'ephys',
     'passive',
@@ -48,7 +48,7 @@ def _get_session_length(session):
         t0 = datetime.fromisoformat(session['start_time'])
         t1 = datetime.fromisoformat(session['end_time'])
         if t0.date() == t1.date():
-            dt = (t1 - t0).total_seconds()    
+            dt = (t1 - t0).total_seconds()
         else:
             print(f"WARNING: {session['eid']} session start and end time on different days!")
     except:
@@ -62,58 +62,58 @@ def _resolve_session_status(session_group):
     """
     # Create a copy to avoid modifying original data
     group = session_group.copy()
-    
+
     # Initialize all sessions as 'junk'
     group['session_status'] = 'junk'
-    
+
     # Find sessions that have behavior data AND meet quality criteria (trials OR length)
     good_sessions_mask = group['has_taskData'] & (group['has_trials'] | group['has_length'])
     good_sessions = group[good_sessions_mask]
-    
+
     if len(good_sessions) == 1:
         # One session has behavior and quality - mark as 'good', others remain 'junk'
         group.loc[good_sessions.index, 'session_status'] = 'good'
-        
+
     elif len(good_sessions) > 1:
             group.loc[good_sessions.index, 'session_status'] = 'conflict'
-    
+
     # No sessions have behavior data
     else:
         # Check for rare cases where there is no raw task data in Alyx, but the session dictionary says there should be
         missing_behavior_mask = group['raw_taskData_in_sessionDict'] & ~group['raw_taskData_exists'] & (group['n_trials_sessionDict'] > config.MIN_NTRIALS)
         missing_sessions = group[missing_behavior_mask]
-        
+
         if len(missing_sessions) == 1:
             # Single session with missing behavior - mark as 'missing'
             group.loc[missing_sessions.index, 'session_status'] = 'missing'
         elif len(missing_sessions) > 1:
             # Multiple sessions with missing behavior - mark as 'missing_conflict'
             group.loc[missing_sessions.index, 'session_status'] = 'missing_conflict'
-    
+
     return group['session_status']
-    
+
 
 def fill_empty_lists_from_group(df, col, group_col='subject'):
     df = df.copy()
-    
+
     def fill_group(group):
         # Find non-empty lists
         non_empty = group[group[col].apply(lambda x: isinstance(x, list) and len(x) > 0)]
-        
+
         if len(non_empty) == 0:
             return group  # No non-empty lists to use
-            
+
         # Check consistency
         first_list = non_empty[col].iloc[0]
         assert all(x == first_list for x in non_empty[col]), \
             f"Inconsistent lists in group"
-        
+
         # Fill empty lists
         group[col] = group[col].apply(
             lambda x: first_list if isinstance(x, list) and len(x) == 0 else x
         )
         return group
-    
+
     return df.groupby(group_col, group_keys=False).apply(fill_group)
 
 
@@ -141,47 +141,31 @@ def _agg_sliding_metric(series, metric=None, agg_func=np.mean, window=300):
     i0, i1 = t.searchsorted([t_mid - window, t_mid + window]).clip(0, len(t) - 1)
     evs = series[f'_{metric}_values'][i0:i1]
     return agg_func(evs)
-    
 
-def _load_event_times(series, one=None, collection='alf/task_00'):
+
+def _insert_event_times(session, trials):
     """
-    Extracts reward_times, cue_times, and movement_times for a single row.
+    Extracts reward_times, cue_times, and movement_times from a trials table
+    and enters them as columns in a session Series.
 
     Parameters
     ----------
-    row : pd.Series
-        A single row of the dataframe containing 'eid'.
-    one : object
-        The object used to load datasets like trials.
+    session : pd.Series
+    trials : pd.DataFrame
 
     Returns
     -------
-    list
-        A list containing reward_times, cue_times, and movement_times.
+    session : pd.Series
     """
-    assert one is not None
-    
-    if isinstance(series, pd.Series):
-        series = series.copy()  # avoid SettingWithCopyWarning
-        eid = series['eid']
-    elif isinstance(series, uuid.UUID):
-        eid = series
-        series = pd.Series(data={'eid': str(eid)})
-    else:
-        raise TypeError('series must be pd.Series or uuid.UUID')
-    
-    try:
-        trials = one.load_dataset(eid, '*trials.table', collection=collection)
-    except ALFObjectNotFound:
-        print(f"WARNING: no trial data found for {eid}")
-        return series
-    
-    series['cue_times'] = trials['goCue_times'].values
-    series['movement_times'] = trials['firstMovement_times'].values
-    series['reward_times'] = trials.query('feedbackType == 1')['feedback_times'].values
-    series['omission_times'] = trials.query('feedbackType == -1')['feedback_times'].values
-    
-    return series
+    events = ['goCue_times', 'firstMovement_times', 'feedback_times']
+    assert all([event in trials.columns for event in events])
+
+    session['cue_times'] = trials['goCue_times'].values
+    session['movement_times'] = trials['firstMovement_times'].values
+    session['reward_times'] = trials.query('feedbackType == 1')['feedback_times'].values
+    session['omission_times'] = trials.query('feedbackType == -1')['feedback_times'].values
+
+    return session
 
 
 def sample_recordings(df, metric, percentile_range):
@@ -202,5 +186,5 @@ def sample_recordings(df, metric, percentile_range):
 #         for col in [v for v in subj.columns if v != 'subject']:
 #             row[col] = subj[col].values
 #         return row
-#     df = df.apply(_merge_metadata, df=df_insertions, axis='columns')   
+#     df = df.apply(_merge_metadata, df=df_insertions, axis='columns')
 #     return df
