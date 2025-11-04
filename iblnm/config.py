@@ -1,20 +1,27 @@
-import numpy as np
 import sys
+from pathlib import Path
+import numpy as np
+
+# If data is in project root, not in psyfun/
+PACKAGE_ROOT = Path(__file__).parent
+PROJECT_ROOT = PACKAGE_ROOT.parent
+
+SESSIONS_FPATH = PROJECT_ROOT / 'metadata/sessions'
 
 LOCAL_CACHE = '/home/crombie/mnt/ccu-iblserver'
 # REGIONS_FPATH = 'metadata/regions.csv'  # file with eid2roi mapping for photometry
 RECORDINGS_FPATH = 'metadata/recordings_new.csv'  # file with eid2roi mapping for photometry
 INSERTIONS_FPATH = 'metadata/insertions.csv'  # file with subject to brain region mapping
-SESSIONS_FPATH = 'metadata/sessions.pqt'
+
 
 # Values to extract from the session dict
 SESSIONDICT_KEYS = ['users', 'lab', 'end_time', 'n_trials']
 
 # Key datasets to check for
 ALYX_PHOTOMETRY_DATASETS = [
-    'raw_behavior_data/_iblrig_taskData.raw.jsonable',
+    'raw_behavior_data/_iblrig_taskData.raw.jsonable',  # old data, before v8
     'raw_behavior_data/_iblrig_taskSettings.raw.json',
-    'raw_task_data_00/_iblrig_taskData.raw.jsonable',  # new data has a different collection structure
+    'raw_task_data_00/_iblrig_taskData.raw.jsonable',  # new data, >v8
     'raw_task_data_00/_iblrig_taskSettings.raw.json',
     'raw_video_data/_iblrig_leftCamera.raw.mp4',
     'alf/_ibl_trials.table.pqt',
@@ -106,16 +113,21 @@ EXCLUDE_SESSION_TYPES = [
 ]
 
 EXCLUDE_SUBJECTS = [
+    'SP076',
+    'SP075',
+    'SP074',
     'SP073',
     'SP072',
     'SP066',
     'VIV-47627',
-    'VIV-47615', 
-    'VIV-45598', 
-    'VIV-45585'
+    'VIV-47615',
+    'VIV-45598',
+    'VIV-45585',
+    'photometry_test_subject_A',
+    'photometry_test_subject_B',
 ]
 
-QCVAL2NUM = {  
+QCVAL2NUM = {
     np.nan: 0.,
     'NOT SET': 0.01,
     'NOT_SET': 0.01,
@@ -136,7 +148,7 @@ SESSIONTYPE2FLOAT = {
 SESSIONTYPE2COLOR = {
     'habituation': 'darkgray',
     'training': 'cornflowerblue',
-    'biased': 'mediumpurple', 
+    'biased': 'mediumpurple',
     'ephys': 'hotpink',
     'misc':  'sandybrown'
 }
@@ -153,8 +165,8 @@ TARGETNM2POSITION = {
 }
 
 EVENT2COLOR = {
-    'cue': 'blue', 
-    'movement': 'orange', 
-    'reward': 'green', 
+    'cue': 'blue',
+    'movement': 'orange',
+    'reward': 'green',
     'omission':'red'
 }

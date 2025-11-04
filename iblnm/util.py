@@ -10,6 +10,7 @@ from iblnm import config
 
 
 def protocol2type(protocol):
+    ## FIXME: check that the biasCW_ephyssession protocol is handled properly (BCW but with a template session?)
     # Define recognized session types
     session_types = np.array(config.SESSION_TYPES)
     # Define red flags (if found in filename it indicates a non-standard protocol)
@@ -27,22 +28,14 @@ def protocol2type(protocol):
     else:
         raise ValueError
 
-SESSION_TYPES = [
-    'habituation',
-    'training',
-    'biased',
-    'ephys',
-    'passive',
-    'histology'
-]
 
-PROTOCOL_RED_FLAGS = [
-    'RPE',  # reward amount manipulated (omission or amount manipulation)
-    'DELAY',  # delay between choice and feedback
-    'delay'
-]
+def save_timestamped_pqt(df, fpath):
+    timestamp = datetime.now().strftime("%Y-%m-%d-%Hh%M")
+    timestamped_fpath = fpath.with_stem(f"{fpath.stem}_{timestamp}.pqt")
+    df.to_parquet(timestamped_fpath)
 
-def _get_session_length(session):
+
+def get_session_length(session):
     dt = np.nan
     try:
         t0 = datetime.fromisoformat(session['start_time'])

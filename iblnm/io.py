@@ -1,5 +1,6 @@
 import os
 import gc
+from functools import lru_cache
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -9,15 +10,25 @@ from one.alf.spec import QC
 from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import *
-from iblnm.util import protocol2type, fill_empty_lists_from_group 
+from iblnm.util import protocol2type, fill_empty_lists_from_group
 
 import iblphotometry
+
+
+@lru_cache(maxsize=1)
+def _get_default_connection():
+    """
+    Create and cache the default database connection. Cached connection allows
+    repeated function calls without re-creating connection instance.
+    """
+    return ONE()
+
 
 def save_as_pqt(df, fpath):
     # Map all columns with non-uniform data types to strings
     df = df.apply(lambda col: col if col.map(type).nunique() == 1 else col.astype(str))
     df.to_parquet(fpath, index=False)
-    
+
 
 def fetch_sessions(one, extended=True, save=True):
     """
@@ -44,30 +55,31 @@ def fetch_sessions(one, extended=True, save=True):
     df_sessions = pd.DataFrame(sessions).rename(columns={'id': 'eid'})
     df_sessions.drop(columns='projects')
     df_sessions['session_type'] = df_sessions['task_protocol'].map(protocol2type)
+    print("Adding subject info...")
+    df_sessions = df_sessions.progress_apply(_get_subject_info, one=one, axis='columns').copy()
     # Save initial query before adding more detialed info
-    if save: save_as_pqt(df_sessions, SESSIONS_FPATH)
+    if save:
+        save_as_pqt(df_sessions, SESSIONS_FPATH)
     if extended:  # Note: .copy() is applied to de-fragment the dataframe after repeated column additions
         print("Unpacking session dicts...")
-        df_sessions = df_sessions.progress_apply(_unpack_session_dict, one=one, axis='columns').copy()
-        print("Adding subject info...")
-        df_sessions = df_sessions.progress_apply(_get_subject_info, one=one, axis='columns').copy()
+        df_sessions = df_sessions.progress_apply(unpack_session_dict, one=one, axis='columns').copy()
         print("Checking datasets...")
-        df_sessions = df_sessions.progress_apply(_check_datasets, one=one, axis='columns').copy()
+        df_sessions = df_sessions.progress_apply(check_datasets, one=one, axis='columns').copy()
     # Get photometry ROIs and brain regions targeted
     df_recordings = pd.read_csv(RECORDINGS_FPATH).dropna()
     df_insertions = pd.read_csv(INSERTIONS_FPATH)
     df_sessions = df_sessions.progress_apply(
-        _get_target_regions, 
-        one=one, 
-        df_recordings=df_recordings, 
-        df_insertions=df_insertions, 
+        _get_target_regions,
+        one=one,
+        df_recordings=df_recordings,
+        df_insertions=df_insertions,
         axis='columns'
     ).copy()
     if save: save_as_pqt(df_sessions, SESSIONS_FPATH)
     return df_sessions
 
 
-def _unpack_session_dict(series, one=None):
+def unpack_session_dict(series, one=None):
     """
     Unpack useful metadata and extended QC from the session dict for a given eid.
     """
@@ -108,34 +120,54 @@ def _unpack_session_dict(series, one=None):
     return series
 
 
-def _get_subject_info(series, one=None):
-    assert one is not None
-    subjects = one.alyx.rest('subjects', 'list', nickname=series['subject'])
+def get_subject_info(session, one=None):
+    """
+    Get the mouse strain, line, and genotype for a given session. Try to infer
+    the neuromodulatory cell type targeted using this info.
+
+    Parameters
+    ----------
+    session : pd.Series
+        A series representing an IBL session containing the mouse 'nickname' in
+        the 'subject' column.
+
+    one : one.api.OneAlyx
+        Alyx database connection instance.
+
+    Returns
+    -------
+    session : pd.Series
+        The session series with new entries for mouse 'strain', 'line', and
+        'genotype'.
+    """
+    if one is None:
+        one = _get_default_connection()
+    subjects = one.alyx.rest('subjects', 'list', nickname=session['subject'])
     assert len(subjects) == 1
     subject = subjects[0]
     for key in ['strain', 'line', 'genotype']:
-        series[key] = subject[key]
+        session[key] = subject[key]
     ## FIXME: this is horrendous...
-    sNM = STRAIN2NM[series['strain']]
-    lNM = LINE2NM[series['line']]
+    sNM = STRAIN2NM[session['strain']]
+    lNM = LINE2NM[session['line']]
     if (sNM != 'none') and (lNM != 'none'):
         if sNM == lNM:
             NM = sNM
         else:
             NM = 'conflict'
-    elif (sNM == 'none') and (lNM != 'none'): 
+    elif (sNM == 'none') and (lNM != 'none'):
         NM = lNM
-    elif (sNM != 'none') and (lNM == 'none'): 
+    elif (sNM != 'none') and (lNM == 'none'):
         NM = sNM
-    elif (sNM == 'none') and (lNM == 'none'): 
+    elif (sNM == 'none') and (lNM == 'none'):
         NM = 'none'
     else:
         raise ValueError
-    series['NM'] = NM
-    return series
+    session['NM'] = NM
+    return session
 
 
-def _check_datasets(series, one=None, fullpath=True):
+def check_datasets(series, one=None, fullpath=True):
     """
     Create a boolean entry for each important dataset for the given eid.
     """
@@ -201,7 +233,7 @@ def load_photometry_data(session, one, extracted=True):
         photometry = one.load_dataset(id=session['eid'], dataset='photometry.signal.pqt')
         locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt').reset_index()
         rois = locations['ROI'].to_list()
-    else:  
+    else:
         if len(session['roi']) == 0:
             raise ValueError(f"No ROIs for {session['eid']}")
         raw_data_path = one.eid2path(session['eid']) / 'raw_photometry_data' / 'raw_photometry.csv'
