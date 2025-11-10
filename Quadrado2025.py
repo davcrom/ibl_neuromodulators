@@ -153,17 +153,17 @@ def get_response_magnitude(trial, method='mean', twindow=RESPONSE_WINDOW):
         raise NotImplementedError
 
 def plot_mean_response(
-    trials, color='black', twindow=PSTH_WINDOW, plot_all=False, ax=None, **kwargs
+    trials, col='response', color='black', twindow=PSTH_WINDOW, plot_all=False, ax=None, **kwargs
     ):
     if ax is None:
         fig, ax = plt.subplots()
 
     if plot_all:
         for _, trial in trials.iterrows():
-            ax.plot(trial['tpts'], trial['response'], color=color, alpha=0.1)
+            ax.plot(trial['tpts'], trial[col], color=color, alpha=0.1)
 
     tpts = trials['tpts'].iloc[0]
-    responses = np.stack(trials['response'])
+    responses = np.stack(trials[col])
     mean = np.mean(responses, axis=0)
     sem = stats.sem(responses, axis=0)
 
@@ -234,7 +234,6 @@ def nice_ticks(ymin, ymax, d=2, n_ticks=5):
     if ymin < 0 < ymax:
         # Include 0 and space evenly on both sides
         spacing = (ymax - ymin) / n_ticks
-        # ~spacing = np.round(spacing, d)
 
         # Ensure spacing is not zero after rounding
         if spacing == 0:
@@ -603,9 +602,17 @@ df_unbiased = df_responses.query('p_left == 0.5').copy()
 for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
     for event in EVENTS:
         event_name = event.split("_")[0]
-        df_event = df_target.query('event == @event')
+        df_event = df_target.query('event == @event').copy()
         n_sessions = df_target['eid'].nunique()
         n_mice = df_target['subject'].nunique()
+
+        # Center the means for each subject, then add the grand mean
+        grand_mean = np.stack(df_event['response']).mean(axis=0)
+        df_event['centered_response'] = df_event.groupby('subject')['response'].transform(
+            lambda x: list(np.vstack(x.values) - np.vstack(x.values).mean(axis=0))
+            )
+        df_event['centered_response'] = df_event['centered_response'].apply(lambda x: x + grand_mean)
+
         fig, axs = plt.subplots(1, 2)
         fig.suptitle(
             f'{target}-{NM} - {event_name} ({n_sessions} sessions, {n_mice} mice)'
@@ -618,6 +625,7 @@ for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
             for (contrast, trials), color in zip(trial_groups, colors):
                 plot_mean_response(
                     trials,
+                    col='centered_response',
                     ax=ax,
                     # ~color=CONTRAST_COLORS[f'contrast_{contrast}'],
                     color=color,
@@ -727,6 +735,7 @@ for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
                 )['centered_mean'].mean()
             y_min = condition_means.min()
             y_max = condition_means.max()
+        y_min = min(0, y_min)
         for ax in axs:
             ax.set_yticks(nice_ticks(y_min, y_max, d=3, n_ticks=3))
             ax.yaxis.set_major_formatter(FormatStrFormatter('%.3f'))
