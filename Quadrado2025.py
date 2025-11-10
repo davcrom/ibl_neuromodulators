@@ -7,11 +7,13 @@ tqdm.pandas()
 from datetime import datetime
 from scipy import stats
 from matplotlib import pyplot as plt
+from matplotlib.ticker import FormatStrFormatter
 
 from one.api import ONE
 from brainbox.io.one import PhotometrySessionLoader
 
 from iblphotometry import metrics
+from iblphotometry.processing import z
 
 
 #### SET PARAMETERS ############################################################
@@ -38,8 +40,9 @@ EVENTS = ['stimOn_times', 'feedback_times']
 N_TRIALS = 90
 PSTH_WINDOW = (-1, 1)
 
-RESPONSES_FNAME = 'responses_2025-11-07-20h00.pqt'
-RESPONSE_WINDOW = (0, 0.25)
+RESPONSES_FNAME = 'responses_2025-11-10-15h29.pqt'
+BASELINE_WINDOW = (-0.1, 0)
+RESPONSE_WINDOW = (0.1, 0.35)
 
 contrast_cmap = plt.get_cmap("inferno_r", 5)
 CONTRAST_COLORS = {
@@ -76,7 +79,7 @@ plt.rcParams.update({
 
 #### DEFINE HELPER FUNCTIONS ###################################################
 
-def get_responses(photometry, trials, event, time_window=(-1, 2)):
+def get_responses(photometry, trials, event, time_window=PSTH_WINDOW):
     """Return peri-event aligned zdFF and time axis."""
     t = photometry.index.values
     SAMPLING_RATE = int(1 / np.mean(np.diff(t)))
@@ -94,7 +97,7 @@ def get_responses(photometry, trials, event, time_window=(-1, 2)):
     responses = calcium[psth_idx]
     return responses
 
-def get_response_tpts(photometry, time_window=(-1, 2)):
+def get_response_tpts(photometry, time_window=PSTH_WINDOW):
     t = photometry.index.values
     SAMPLING_RATE = int(1 / np.mean(np.diff(t)))
     samples_window = np.arange(time_window[0]*SAMPLING_RATE, time_window[1]*SAMPLING_RATE)
@@ -133,12 +136,12 @@ def resample_response(trial, new_tpts, fill_value=np.nan):
         left=fill_value, right=fill_value
         )
 
-def get_response_magnitude(trial, method='mean', twindow=(0, 0.5)):
+def get_response_magnitude(trial, method='mean', twindow=RESPONSE_WINDOW):
     i0, i1 = trial['tpts'].searchsorted(twindow)
     if i0 == i1:
         return np.nan
     if method == 'mean':
-        return np.mean(trial['response'][i0:i1].mean())
+        return trial['response'][i0:i1].mean()
     elif method == 'slope':
         t = trial['tpts'][i0:i1]
         y = trial['response'][i0:i1]
@@ -222,6 +225,30 @@ def set_plotsize(w, h=None, ax=None):
     figw = float(w)/(r-l)
     figh = float(h)/(t-b)
     ax.figure.set_size_inches(figw, figh)
+
+def nice_ticks(ymin, ymax, d=2, n_ticks=5):
+    # Round bounds
+    ymin = np.floor(ymin * 10**d) / 10**d
+    ymax = np.ceil(ymax * 10**d) / 10**d
+
+    if ymin < 0 < ymax:
+        # Include 0 and space evenly on both sides
+        spacing = (ymax - ymin) / n_ticks
+        # ~spacing = np.round(spacing, d)
+
+        # Ensure spacing is not zero after rounding
+        if spacing == 0:
+            spacing = 10**(-d)
+
+        # Adjust bounds to align with step that includes 0
+        ymin_adj = -np.ceil(abs(ymin) / spacing) * spacing
+        ymax_adj = np.ceil(ymax / spacing) * spacing
+
+        ticks = np.arange(ymin_adj, ymax_adj + spacing, spacing)
+    else:
+        ticks = np.linspace(ymin, ymax, n_ticks)
+
+    return ticks
 
 def clip_axes_to_ticks(ax=None, spines=['left', 'bottom'], ext={}):
     """
@@ -464,6 +491,7 @@ df_responses[cols_to_fix] = df_responses[cols_to_fix].astype(float)
 
 # Save the response dataframe
 timestamp = datetime.now().strftime("%Y-%m-%d-%Hh%M")
+RESPONSES_FNAME = f'responses_{timestamp}.pqt'
 df_responses.to_parquet(f'responses_{timestamp}.pqt')
 
 
@@ -544,17 +572,18 @@ fig, ax = plt.subplots()
 parts = ax.violinplot(
     rts,
     showextrema=False,
-    showmeans=True,
+    showmedians=True,
     orientation='horizontal'
     )
 cmap = plt.colormaps['Greys']
 rt_colors = cmap(np.linspace(0.4, 0.99, len(rts)))
 for pc, color in zip(parts['bodies'], rt_colors):
     pc.set_facecolor(color)
-parts['cmeans'].set_colors(rt_colors)
+parts['cmedians'].set_colors(rt_colors)
 for i, rt in enumerate(rts):
+    median = np.median(rt)
     ax.text(
-        rt.mean(), i + 1, f'{10**rt.mean():.2f}s', rotation=45, ha='left', va='bottom'
+        median, i + 1, f'{10**median:.2f}s', rotation=45, ha='left', va='bottom'
         )
 contrasts = df_responses['contrast'].unique()
 ax.set_yticks(np.arange(1, len(contrasts) + 1))
@@ -570,14 +599,17 @@ set_plotsize(w=12, h=4, ax=ax)
 fig.savefig('figures/reaction_times.svg')
 
 # Plot responses by contrast for each target-NM in the 50-50 block
-df_unbiased = df_responses.query('p_left == 0.5')
+df_unbiased = df_responses.query('p_left == 0.5').copy()
 for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
     for event in EVENTS:
+        event_name = event.split("_")[0]
         df_event = df_target.query('event == @event')
         n_sessions = df_target['eid'].nunique()
         n_mice = df_target['subject'].nunique()
         fig, axs = plt.subplots(1, 2)
-        fig.suptitle(f'{target}-{NM} - {event} ({n_sessions} sessions, {n_mice} mice)')
+        fig.suptitle(
+            f'{target}-{NM} - {event_name} ({n_sessions} sessions, {n_mice} mice)'
+            )
         for ax, feedback in zip(axs, [1, -1]):
             label = 'Correct' if feedback == 1 else 'Incorrect'
             ax.set_title(f'{label} trials')
@@ -593,6 +625,7 @@ for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
                     )
             ax.axhline(0, ls='--', color='gray')
             ax.axvline(0, ls='--', color='gray')
+            ax.axvspan(*RESPONSE_WINDOW, color='gray', alpha=0.15)
             ax.set_xticks(np.linspace(PSTH_WINDOW[0], PSTH_WINDOW[1], 3))
             ax.set_xlabel('Time from event (s)')
             ax.set_ylabel('$\Delta$F / F')
@@ -607,48 +640,104 @@ for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
             clip_axes_to_ticks(ax=ax)
         set_plotsize(w=34, h=12, ax=ax)
         fig.tight_layout()
-        fig.savefig(f'figures/{event.split("_")[0]}_{target}-{NM}.svg')
+        fig.savefig(f'figures/{target}-{NM}_{event_name}.svg')
 
 # Plot response magnitude for signed contrasts in the 50-50 block
-df_unbiased = df_responses.query('p_left == 0.5')
+df_unbiased = df_responses.query('p_left == 0.5').copy()
+response_window = '-'.join([str(t) for t in RESPONSE_WINDOW])
+plot_subjects = False
 for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
     for event in EVENTS:
+        event_name = event.split("_")[0]
         df_event = df_target.query('event == @event').copy()
-        contrasts = df_event['contrast'].unique()
-        fig, axs = plt.subplots(1, 2, gridspec_kw={'wspace':0.05})
-        fig.suptitle(f'{target}-{NM} - {event.split("_")[0]}')
+
+        # Center the means for each subject, then add the grand mean
+        grand_mean = df_event['response_mean'].mean()
+        df_event['centered_mean'] = df_event.groupby('subject')['response_mean'].transform(
+            lambda x: x - x.mean()
+            ) + grand_mean
+
+        fig, axs = plt.subplots(1, 2, gridspec_kw={'wspace':0.05}, sharey=True)
+        fig.suptitle(f'{target}-{NM} - {event_name} ({response_window}s)')
         for ax, side in zip(axs, [True, False]):
             df_side = df_event.query('side == @side')
             contrasts = sorted(df_side['relative_contrast'].unique())
-            for feedback, alpha in zip([1, -1], [1, 0.5]):
+
+            # Plot individual subjects first (thin lines, no errorbars)
+            if plot_subjects:
+                for subject in df_side['subject'].unique():
+                    df_subj = df_side.query('subject == @subject')
+                    for feedback, linestyle in zip([1, -1], ['-', '--']):
+                        contrast_groups = df_subj.query('feedback == @feedback').groupby('relative_contrast')
+                        sorted_groups = [
+                            contrast_groups.get_group(c)
+                            if c in contrast_groups.groups else []
+                            for c in contrasts
+                            ]
+                        ax.plot(
+                            np.arange(len(contrasts)),
+                            [group['centered_mean'].mean() if len(group) > 5 else np.nan for group in sorted_groups],
+                            color=NM_COLORS[NM],
+                            alpha=0.3,
+                            linewidth=1,
+                            linestyle=linestyle
+                        )
+
+            for feedback, linestyle in zip([1, -1], ['-', '--']):
                 contrast_groups = df_side.query('feedback == @feedback').groupby('relative_contrast')
                 sorted_groups = [contrast_groups.get_group(c) for c in contrasts]
                 ax.errorbar(
                     np.arange(len(contrasts)),
-                    [group['response_mean'].mean() for group in sorted_groups],
-                    yerr=[group['response_mean'].sem() for group in sorted_groups],
+                    [group['centered_mean'].mean() if len(group) > 10 else np.nan for group in sorted_groups],
+                    yerr=[group['centered_mean'].sem() if len(group) > 10 else np.nan for group in sorted_groups],
                     marker='o',
                     color=NM_COLORS[NM],
-                    alpha=alpha,
+                    linestyle=linestyle,
                     label=feedback
                     )
+
             if side:
                 ax.text(0.05, 0.05, 'Contra', ha='left', va='bottom', transform=ax.transAxes)
             else:
                 ax.text(0.95, 0.05, 'Ipsi', ha='right', va='bottom', transform=ax.transAxes)
+
             ax.set_xticks(np.arange(len(contrasts)))
             ax.set_xticklabels([f'{c*100:.0f}' for c in contrasts])
             ax.set_xlabel('Contrast level')
+            ax.axhline(0, ls='--', color='gray')
             if side:
-                ax.set_yticks(ax.get_yticks())
                 ax.set_ylabel('$\Delta$F/F')
             else:
                 ax.yaxis.set_visible(False)
+                ax.tick_params(left=False)
                 ax.spines['left'].set_visible(False)
                 ax.legend(title='Reward', loc='upper left', bbox_to_anchor=(1, 1))
+
+        if plot_subjects:
+            # Calculate y-limits from subject means
+            subject_means = df_event.groupby(
+                ['subject', 'relative_contrast', 'feedback', 'side']
+                )['centered_mean'].mean()
+            y_min = subject_means.min()
+            y_max = subject_means.max()
+        else:
+            # Calculate y-limits from condition means
+            condition_means = df_event.groupby(
+                ['relative_contrast', 'feedback', 'side']
+                )['centered_mean'].mean()
+            y_min = condition_means.min()
+            y_max = condition_means.max()
+        for ax in axs:
+            ax.set_yticks(nice_ticks(y_min, y_max, d=3, n_ticks=3))
+            ax.yaxis.set_major_formatter(FormatStrFormatter('%.3f'))
             clip_axes_to_ticks(ax=ax)
+
         set_plotsize(w=18, h=12, ax=ax)
-        fig.savefig(f'figures/{target}-{NM}_{event}{RESPONSE_WINDOW[-1]}s_signedContrast.svg')
+
+        fname = f'{target}-{NM}_{event_name}_mean{response_window}s'
+        if plot_subjects:
+            fname += '_subjects'
+        fig.savefig('figures/' + fname + '.svg')
 
 
 #### STATISTICAL ANALYSIS ######################################################
@@ -656,37 +745,37 @@ for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
 # with statsmodels (pure python)
 
 from pymer4.models import Lmer
-# ~from rpy2.robjects import pandas2ri
-# ~pandas2ri.activate()
+from rpy2.robjects import pandas2ri
+pandas2ri.activate()
 
-df_unbiased = df_responses.query('p_left == 0.5')
+df_unbiased = df_responses.query('p_left == 0.5').copy()
+response_window = '-'.join([str(t) for t in RESPONSE_WINDOW])
 lmm_formula = f'response_mean ~ contrast * side * feedback + (1 | subject)'
 for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
     if df_target['subject'].nunique() < 2:
         continue
     for event in ['stimOn_times', 'feedback_times']:
+        event_name = event.split('_')[0]
         df_event = df_target.query('event == @event').copy().reset_index(drop=True)
         print("\n=================================================================")
-        print(f'{target}-{NM} -- {event}')
+        print(f'{target}-{NM} -- {event_name}')
         print(f'LMM: {lmm_formula}')
         print("=================================================================")
 
-        # ~df_event['contrast'] = df_event['contrast'].apply(lambda x: str(x)).astype('category')
         df_event['side'] = df_event['side'].apply(
             lambda x: 'Contra' if x else 'Ipsi'
         ).astype('category')
-        df_event['feedback'] = df_event['feedback'].astype('category')
+        df_event['feedback'] = df_event['feedback'].apply(lambda x: str(x)).astype('category')
         df_event['subject'] = df_event['subject']
         cols = ['subject', 'side', 'contrast', 'feedback', 'response_mean']
 
         model = Lmer(lmm_formula, data=df_event[cols])
         result = model.fit()
         print(model.warnings)
-        # ~if not model.warnings:
         print(result)
         df_result = result.copy()
         df_result['formula'] = lmm_formula
-        df_result.to_csv(f'results/LMM_{target}-{NM}_{event}{RESPONSE_WINDOW[-1]}s.csv')
+        df_result.to_csv(f'results/{target}-{NM}_{event_name}_mean{response_window}s.csv')
 
 
 #### DEBUGGING #################################################################
