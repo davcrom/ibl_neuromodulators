@@ -14,8 +14,10 @@ from iblnm.config import *
 from iblnm.data import PhotometrySession
 
 
+SESSIONS_FNAME = 'sessions_2025-11-07-12h07.pqt'
+
 # TODO: make session file name an arg
-df_sessions = pd.read_parquet('metadata/sessions_2025-10-31-20h08.pqt')
+df_sessions = pd.read_parquet(f'metadata/{SESSIONS_FNAME}')
 
 # Apply some filtering to sessions
 # ~df_sessions = df_sessions.query('subject.str.contains("CQ")').copy()
@@ -44,10 +46,11 @@ sliding_metrics = [
 # some custom settings for some metrics
 metrics_kwargs = {'percentile_asymmetry': {'pc_comp': 75}}
 
-sliding_kwargs = dict(
-    n_windows=10,
-    w_len=120,
-)
+sliding_kwargs = {
+    'n_windows': 10,
+    'w_len': 120,
+    'detrend': True
+}
 
 one = ONE()
 # ~df_sessions = df_sessions.query('NM == "ACh"')
@@ -88,124 +91,68 @@ qc_sliding = run_qc(
     metrics=sliding_metrics,
     metrics_kwargs=metrics_kwargs,
     sliding_kwargs=sliding_kwargs,
-    n_jobs=1,
+    n_jobs=-2,
 )
 
 """
-ALFMultipleCollectionsFound:
- The matching object/file(s) belong to more than one collection.  ALF names have the pattern collection/(_namespace_)object.attribute(_timescale).extension, e.g. for the file "alf/probe01/spikes.times.npy" the collection is "alf/probe01"
-> /home/davide/code/ibllib/brainbox/io/one.py(1351)_find_behaviour_collection()
-   1349                     f'e.g sl.load_{obj}(collection="{collections[0]}")'
-   1350                 )
--> 1351                 raise ALFMultipleCollectionsFound
-   1352
-   1353     def load_trials(self, collection=None):
+df_coords = pd.read_csv('metadata/NBM_coordinates.csv')
 
-ipdb> c
+# Get photometry location data
+df_coords = df_coords.set_index(['subject', 'brain_region'])
+photometry_sessions = []
+no_photometry_sessions = []
+for _, session in tqdm(df_sessions.iterrows(), total=len(df_sessions)):
+    try:
+        # Get fiber locations and ROIs
+        df_locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt')
+    except ALFObjectNotFound:
+        no_photometry_sessions.append(session)
+        continue
+    for roi, location in df_locations.iterrows():
+        photometry_session = pd.concat([session, df_coords.loc[session['subject'], location['brain_region']]])
+        photometry_session['roi'] = roi
+        photometry_sessions.append(photometry_session)
 
-In [4]: eid
-Out[4]: 'a2e95e09-530d-46b0-aee8-295b6486a166'
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from statsmodels.stats.anova import AnovaRM
+
+qc_cols = [col for col in df_qc.columns if 'qc' in col]
+xpos = {'original': 0, 'new_1': 1, 'new_2': 2}
+colors = {'CQ014': 'C0', 'CQ015': 'C1', 'CQ016': 'C2'}
+fig, axs = plt.subplots(1, len(qc_cols), figsize=(len(qc_cols) * 8, 8))
+fig.suptitle('NBM Raw Signal Quality Metrics')
+for ax, col in zip(axs, qc_cols):
+    print('\n', f'========== {col} ==========')
+
+    print('\n', 'ANOVA Results')
+    # print('=======================================================================')
+    # Simple ANOVA
+    model = smf.ols(f'{col} ~ C(label, Treatment("original"))', data=df_qc)
+    result = model.fit()
+    # Perform ANOVA
+    anova_table = sm.stats.anova_lm(result, typ=2)
+    print(anova_table)
+
+    # Linear Mixed-effects Model
+    model = smf.mixedlm(f'{col} ~ C(label, Treatment("original"))',  # main effects
+                        data=df_qc,
+                        groups=df_qc['subject'],  # group by mouse
+                        # groups=df_qc['eid'],  # group by session
+                        re_formula='~C(label, Treatment("original"))'  # random slopes
+                       )
+    result = model.fit()
+    print(result.summary())
+
+    for (coord, subject), data in df_qc.groupby(['label', 'subject']):
+        ax.scatter(xpos[coord] + np.random.uniform(-0.15, 0.15, len(data)), data[col], fc='none', ec=colors[subject], lw=2)
+    ax.set_xticks(list(xpos.values()))
+    ax.set_xticklabels(list(xpos.keys()))
+    ax.set_xlabel('Coordinate')
+    ax.ticklabel_format(axis='y', style='sci', scilimits=(-3, 3))
+    ax.set_ylabel(col)
 """
 
-"""
-ipdb> n_samples
-940
-ipdb> w_size
-1000
-ipdb> u
-> /home/davide/code/ibl-photometry/src/iblphotometry/metrics.py(148)n_outliers()
-    147     a = A.values if isinstance(A, pd.Series) else A
---> 148     return detect_outliers(a, w_size=w_size, alpha=alpha).shape[0]
-    149
-    150
-
-ipdb> u
-> /home/davide/code/ibl-photometry/src/iblphotometry/qc.py(77)qc_signals()
-     75                         'brain_region': brain_region,
-     76                         'metric': metric.__name__,
----> 77                         'value': metric(signal, **_metric_kwargs),
-     78                     }
-     79                 )
-
-ipdb> eid
-*** WARNING: file '/home/davide/code/ibl-photometry/src/iblphotometry/qc.py' was edited, running stale code until the program is rerun
-*** NameError: name 'eid' is not defined
-ipdb> u
-> /home/davide/code/ibl-photometry/src/iblphotometry/qc.py(8)qc_eid()
-      6 from brainbox.io.one import PhotometrySessionLoader
-      7 from tqdm import tqdm
-----> 8 from scipy.stats import linregress
-      9
-     10
-
-ipdb> eid
-'698a0dfe-0d17-4079-93be-d38fc964cff8'
-"""
-
-"""
-TypeError: A must be pd.Series or np.ndarray.
-> /home/davide/code/ibl-photometry/src/iblphotometry/metrics.py(89)percentile_asymmetry()
-     87     # TODO embrace pydantic
-     88     if not (isinstance(A, pd.Series) or isinstance(A, np.ndarray)):
----> 89         raise TypeError('A must be pd.Series or np.ndarray.')
-     90
-     91     a = np.absolute(percentile_distance(A, (50, pc_comp), axis=axis))
-
-ipdb> A
-                   SNc       SNc       SNc       SNc
-times
--4.943880     0.006399  0.004021  0.006399  0.004021
--4.877225     0.006395  0.004029  0.006395  0.004029
--4.810571     0.006423  0.004029  0.006423  0.004029
--4.743884     0.006406  0.004028  0.006406  0.004028
--4.677229     0.006385  0.004024  0.006385  0.004024
-...                ...       ...       ...       ...
- 2842.516883  0.005644  0.003984  0.005644  0.003984
- 2842.583570  0.005664  0.003986  0.005664  0.003986
- 2842.650225  0.005655  0.003989  0.005655  0.003989
- 2842.716880  0.005658  0.003983  0.005658  0.003983
- 2842.783534  0.005660  0.003988  0.005660  0.003988
-
-[42719 rows x 4 columns]
-ipdb> u
-> /home/davide/code/ibl-photometry/src/iblphotometry/qc.py(77)qc_signals()
-     75                         'brain_region': brain_region,
-     76                         'metric': metric.__name__,
----> 77                         'value': metric(signal, **_metric_kwargs),
-     78                     }
-     79                 )
-
-ipdb> signal
-                   SNc       SNc       SNc       SNc
-times
--4.943880     0.006399  0.004021  0.006399  0.004021
--4.877225     0.006395  0.004029  0.006395  0.004029
--4.810571     0.006423  0.004029  0.006423  0.004029
--4.743884     0.006406  0.004028  0.006406  0.004028
--4.677229     0.006385  0.004024  0.006385  0.004024
-...                ...       ...       ...       ...
- 2842.516883  0.005644  0.003984  0.005644  0.003984
- 2842.583570  0.005664  0.003986  0.005664  0.003986
- 2842.650225  0.005655  0.003989  0.005655  0.003989
- 2842.716880  0.005658  0.003983  0.005658  0.003983
- 2842.783534  0.005660  0.003988  0.005660  0.003988
-
-[42719 rows x 4 columns]
-ipdb> eid
-*** NameError: name 'eid' is not defined
-ipdb> brain_region
-'SNc'
-ipdb> u
-> /home/davide/code/ibl-photometry/src/iblphotometry/qc.py(131)qc_eid()
-    129     psl = PhotometrySessionLoader(eid=eid, one=one)
-    130     psl.load_photometry()
---> 131     qc_result = qc_signals(
-    132         psl.photometry,
-    133         metrics=metrics,
-
-ipdb> eid
-'bdfdec12-fa65-4cca-ab1f-c6f8c94ec204'
-"""
 
 #### Saving the old way of sliding metric application #########################
 

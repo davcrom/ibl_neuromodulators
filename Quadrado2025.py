@@ -12,7 +12,8 @@ from matplotlib.ticker import FormatStrFormatter
 from one.api import ONE
 from brainbox.io.one import PhotometrySessionLoader
 
-from iblphotometry import metrics
+from iblphotometry import processing, metrics
+from iblphotometry.pipelines import run_pipeline
 from iblphotometry.processing import z
 
 
@@ -34,6 +35,38 @@ EIDS_TO_DROP = [
 # '99d32415-3e41-468c-a21e-17f30063eb31'  # massive transients (VTA)
 # '3cafedfc-b78b-48ba-9bce-0402b71bbe90'  # piece-wise signal (DR)
 # n_unique samples >250 <500 don't seem terribly digitized, but mostly noise, not QC critical
+
+PREPROCESSING = [
+    dict(
+        function=processing.lowpass_bleachcorrect,
+        parameters=dict(
+            correction_method='subtract-divide',
+            N=3,
+            Wn=0.01,
+        ),
+        inputs=('signal',),
+        output='signal_bleach_corrected',
+    ),
+    dict(
+        function=processing.lowpass_bleachcorrect,
+        parameters=dict(
+            correction_method='subtract-divide',
+            N=3,
+            Wn=0.01,
+        ),
+        inputs=('reference',),
+        output='reference_bleach_corrected',
+    ),
+    dict(
+        function=processing.isosbestic_correct,
+        parameters=dict(
+            regression_method='mse',
+            correction_method='subtract',
+        ),
+        inputs=('signal_bleach_corrected', 'reference_bleach_corrected'),
+        output='result',
+    ),
+]
 
 
 EVENTS = ['stimOn_times', 'feedback_times']
@@ -373,9 +406,9 @@ for idx, session in tqdm(df_sessions.iterrows(), total=len(df_sessions)):
     insertions = df_insertions.query('subject == @subject')
 
     # Create a signed contrast column
-    loader.trials['contrastLeft'] = -1 * loader.trials['contrastLeft']
-    loader.trials['signed_contrast'] = loader.trials['contrastRight'].fillna(
-        loader.trials['contrastLeft']
+    loader.trials['signed_contrast'] = -1 * loader.trials['contrastLeft']
+    loader.trials['signed_contrast'] = loader.trials['signed_contrast'].fillna(
+        loader.trials['contrastRight']
         )
 
     loader.trials['reaction_times'] = (
@@ -384,7 +417,6 @@ for idx, session in tqdm(df_sessions.iterrows(), total=len(df_sessions)):
 
     # Loop over target brain areas for this subject
     for target in loader.photometry['GCaMP'].columns:
-        photometry = loader.photometry['GCaMP'][target]
 
         # Check we will be able to say which hemisphere the fiber is in
         try:
@@ -406,8 +438,9 @@ for idx, session in tqdm(df_sessions.iterrows(), total=len(df_sessions)):
             pprint(exception_info)
             continue
 
-        n_unique = metrics.n_unique_samples(photometry)
-        n_edges = metrics.n_edges(photometry)
+        # Raw signal quality control
+        n_unique = metrics.n_unique_samples(loader.photometry['GCaMP'][target])
+        n_edges = metrics.n_edges(loader.photometry['GCaMP'][target])
         try:
             assert n_unique > 500
         except Exception as e:
@@ -416,16 +449,24 @@ for idx, session in tqdm(df_sessions.iterrows(), total=len(df_sessions)):
                 'exception_type': type(e).__name__,
                 'exception_message': str(e),
                 'traceback': traceback.format_exc(),
-                'description': "digitzed signal"
+                'description': "digitized signal"
             }
             exceptions_log.append(exception_info)
             pprint(exception_info)
             continue
 
+        # Photobleaching and movement correction
+        photometry = run_pipeline(
+            PREPROCESSING,
+            loader.photometry['GCaMP'][target],
+            loader.photometry['Isosbestic'][target]
+            )
+
         # Use the appropriate information to assign laterality to the fiber
         if len(target.split('-')) == 2:  # try target name first
             hemisphere = target.split('-')[1]
         else:  # fall back to insertions table
+            #######################
             hemisphere = insertions['hemisphere'].iloc[0]
 
         # Get the time points relative to the event (same for all)
@@ -505,8 +546,7 @@ df_responses = df_responses.query('choice != 0').copy()
 # Drop trials where the reaction time is implausible
 df_responses = df_responses.query('reaction_time > 0.05').copy()
 
-# Drop ECW for now (some wierd photometry there)
-df_responses = df_responses.query('session_type == "biased"')
+# ~df_responses = df_responses[df_responses['session_type'] == 'biased']
 
 # Print some metadata
 n_mice = df_responses.groupby(['target', 'NM']).apply(
@@ -597,6 +637,55 @@ clip_axes_to_ticks(ax=ax)
 set_plotsize(w=12, h=4, ax=ax)
 fig.savefig('figures/reaction_times.svg')
 
+
+# Plot responses for each target-NM in the 50-50 block
+df_unbiased = df_responses.query('p_left == 0.5').copy()
+for event in EVENTS:
+    event_name = event.split("_")[0]
+    df_event = df_unbiased.query('event == @event').copy()
+    fig, axs = plt.subplots(1, 2)
+    fig.suptitle(event_name)
+    for ax, feedback in zip(axs, [1, -1]):
+        feedback_label = 'Correct' if feedback == 1 else 'Incorrect'
+        df_feedback = df_event.query('feedback == @feedback')
+        ax.set_title(f'{feedback_label} trials')
+        for (target, NM), df_target in df_feedback.groupby(['target', 'NM']):
+            if target == 'MR': continue
+            # Center the means for each subject, then add the grand mean
+            grand_mean = np.stack(df_target['response']).mean(axis=0)
+            df_target['centered_response'] = df_target.groupby('subject')['response'].transform(
+                lambda x: list(np.vstack(x.values) - np.vstack(x.values).mean(axis=0))
+                )
+            df_target['centered_response'] = df_target['centered_response'].apply(lambda x: x + grand_mean)
+            plot_mean_response(
+                df_target,
+                col='centered_response',
+                ax=ax,
+                color=NM_COLORS[NM],
+                alpha=0.5 if target == 'VTA' else 1,
+                label=f'{target}-{NM}'
+                )
+        ax.axhline(0, ls='--', color='gray')
+        ax.axvline(0, ls='--', color='gray')
+        ax.set_xticks(np.linspace(PSTH_WINDOW[0], PSTH_WINDOW[1], 3))
+        ax.set_xlabel('Time from event (s)')
+        ax.set_ylabel('$\Delta$F / F')
+        ax.legend(
+            frameon=False, loc='upper left', bbox_to_anchor=(1, 1)
+            )
+    # ~ymax = max([ax.get_yticks().max() for ax in axs])
+    # ~ymin = min([ax.get_yticks().min() for ax in axs])
+    ymin = -0.02
+    ymax = 0.03
+    for ax in axs:
+        ax.yaxis.set_major_formatter(plt.FormatStrFormatter('%.3f'))
+        ax.set_yticks(np.linspace(ymin, ymax, 5))
+        clip_axes_to_ticks(ax=ax)
+    set_plotsize(w=34, h=12, ax=ax)
+    fig.tight_layout()
+    fig.savefig(f'figures/{event_name}.svg')
+
+
 # Plot responses by contrast for each target-NM in the 50-50 block
 df_unbiased = df_responses.query('p_left == 0.5').copy()
 for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
@@ -649,6 +738,7 @@ for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
         set_plotsize(w=34, h=12, ax=ax)
         fig.tight_layout()
         fig.savefig(f'figures/{target}-{NM}_{event_name}.svg')
+
 
 # Plot response magnitude for signed contrasts in the 50-50 block
 df_unbiased = df_responses.query('p_left == 0.5').copy()
