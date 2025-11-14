@@ -144,30 +144,39 @@ def normalize_response(trial, bwin=(-0.1, 0), divide=True):
         resp_norm = resp_norm / bval
     return resp_norm
 
-def resample_response(trial, new_tpts, fill_value=np.nan):
+def resample_response(trial, new_tpts, fill_value=np.nan, sigma=None):
     """
     Resample response data to a new time base using linear interpolation.
 
     Parameters:
     -----------
-    row : pd.Series
+    trial : pd.Series
         Row containing 'tpts' and 'response' arrays
-    new_timebase : np.ndarray
+    new_tpts : np.ndarray
         Target time points for resampling
     fill_value : float, optional
         Value to use for points outside the original time range.
         Default is np.nan. Can also use a tuple (left_fill, right_fill)
         for different values on each side.
+    sigma : float, optional
+        Standard deviation for Gaussian smoothing kernel (in samples).
+        If None (default), no smoothing is applied.
+        Typical values: 1-3 for light smoothing.
 
     Returns:
     --------
     np.ndarray
-        Resampled response values at new_timebase points
+        Resampled (and optionally smoothed) response values at new_tpts points
     """
-    return np.interp(
+    resampled = np.interp(
         new_tpts, trial['tpts'], trial['response'],
         left=fill_value, right=fill_value
-        )
+    )
+
+    if sigma is not None:
+        resampled = gaussian_filter1d(resampled, sigma=sigma)
+
+    return resampled
 
 def get_response_magnitude(trial, method='mean', twindow=RESPONSE_WINDOW):
     i0, i1 = trial['tpts'].searchsorted(twindow)
@@ -582,7 +591,7 @@ df_responses.loc[:, 'response'] = df_responses.apply(
     )
 
 # Resample the responses to a common time-base
-new_tpts = np.linspace(-0.9, 1.9, 90)
+new_tpts = np.linspace(-0.9, 1.9, 60)
 df_responses.loc[:, 'response'] = df_responses.apply(
     lambda x: resample_response(x, new_tpts), axis='columns'
     )
@@ -628,7 +637,7 @@ contrasts = df_responses['contrast'].unique()
 ax.set_yticks(np.arange(1, len(contrasts) + 1))
 ax.set_yticklabels([f'{c*100:.0f}' for c in sorted(contrasts)])
 ax.set_ylabel('Contrast level')
-xticks = np.linspace(-2, 2, 6)
+xticks = np.linspace(-2, 2, 5)
 ax.set_xticks(xticks)
 ax.set_xticklabels(['$10^{%d}$' % t for t in xticks])
 ax.set_xlim([-2.1, 2])
@@ -745,6 +754,7 @@ df_unbiased = df_responses.query('p_left == 0.5').copy()
 response_window = '-'.join([str(t) for t in RESPONSE_WINDOW])
 plot_subjects = False
 for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
+    if target != 'NBM': continue
     for event in EVENTS:
         event_name = event.split("_")[0]
         df_event = df_target.query('event == @event').copy()
@@ -774,7 +784,7 @@ for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
                             ]
                         ax.plot(
                             np.arange(len(contrasts)),
-                            [group['centered_mean'].mean() if len(group) > 5 else np.nan for group in sorted_groups],
+                            [group['centered_mean'].mean() if len(group) > 2 else np.nan for group in sorted_groups],
                             color=NM_COLORS[NM],
                             alpha=0.3,
                             linewidth=1,
@@ -786,8 +796,8 @@ for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
                 sorted_groups = [contrast_groups.get_group(c) for c in contrasts]
                 ax.errorbar(
                     np.arange(len(contrasts)),
-                    [group['centered_mean'].mean() if len(group) > 10 else np.nan for group in sorted_groups],
-                    yerr=[group['centered_mean'].sem() if len(group) > 10 else np.nan for group in sorted_groups],
+                    [group['response_mean'].mean() if len(group) > 10 else np.nan for group in sorted_groups],
+                    yerr=[group['response_mean'].sem() if len(group) > 10 else np.nan for group in sorted_groups],
                     marker='o',
                     color=NM_COLORS[NM],
                     linestyle=linestyle,
@@ -825,6 +835,93 @@ for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
                 )['centered_mean'].mean()
             y_min = condition_means.min()
             y_max = condition_means.max()
+        y_min = min(0, y_min)
+        for ax in axs:
+            ax.set_yticks(nice_ticks(y_min, y_max, d=3, n_ticks=3))
+            ax.yaxis.set_major_formatter(FormatStrFormatter('%.3f'))
+            clip_axes_to_ticks(ax=ax)
+
+        set_plotsize(w=18, h=12, ax=ax)
+
+        fname = f'{target}-{NM}_{event_name}_mean{response_window}s'
+        if plot_subjects:
+            fname += '_subjects'
+        fig.savefig('figures/' + fname + '.svg')
+
+
+# Plot response magnitude for signed contrasts in the 50-50 block (mean-of-means)
+df_unbiased = df_responses.query('p_left == 0.5').copy()
+response_window = '-'.join([str(t) for t in RESPONSE_WINDOW])
+for (target, NM), df_target in df_unbiased.groupby(['target', 'NM']):
+    if target != 'NBM': continue
+    for event in EVENTS:
+        event_name = event.split("_")[0]
+        df_event = df_target.query('event == @event').copy()
+
+        # Center the means for each subject, then add the grand mean
+        grand_mean = df_event['response_mean'].mean()
+        df_event['centered_mean'] = df_event.groupby('subject')['response_mean'].transform(
+            lambda x: x - x.mean()
+            ) + grand_mean
+
+        fig, axs = plt.subplots(1, 2, gridspec_kw={'wspace':0.05}, sharey=True)
+        fig.suptitle(f'{target}-{NM} - {event_name} ({response_window}s)')
+        for ax, side in zip(axs, [True, False]):
+            df_side = df_event.query('side == @side')
+            contrasts = sorted(df_side['relative_contrast'].unique())
+
+            for feedback, linestyle in zip([1, -1], ['-', '--']):
+                contrast_groups = df_side.query('feedback == @feedback').groupby('relative_contrast')
+                sorted_groups = [contrast_groups.get_group(c) for c in contrasts]
+                # Compute mean-of-means: first mean per subject, then mean across subjects
+                means = []
+                stds = []
+                for group in sorted_groups:
+                    subject_means = group.groupby('subject')['centered_mean'].mean()
+                    means.append(subject_means.mean())
+                    stds.append(subject_means.sem())
+                ax.errorbar(
+                    np.arange(len(contrasts)),
+                    means,
+                    yerr=stds,
+                    marker='o',
+                    color=NM_COLORS[NM],
+                    linestyle=linestyle,
+                    label=feedback
+                )
+                # ~ax.errorbar(
+                    # ~np.arange(len(contrasts)),
+                    # ~[group['centered_mean'].mean() if len(group) > 10 else np.nan for group in sorted_groups],
+                    # ~yerr=[group['centered_mean'].std() if len(group) > 10 else np.nan for group in sorted_groups],
+                    # ~marker='o',
+                    # ~color=NM_COLORS[NM],
+                    # ~linestyle=linestyle,
+                    # ~label=feedback
+                    # ~)
+
+            if side:
+                ax.text(0.05, 0.05, 'Contra', ha='left', va='bottom', transform=ax.transAxes)
+            else:
+                ax.text(0.95, 0.05, 'Ipsi', ha='right', va='bottom', transform=ax.transAxes)
+
+            ax.set_xticks(np.arange(len(contrasts)))
+            ax.set_xticklabels([f'{c*100:.0f}' for c in contrasts])
+            ax.set_xlabel('Contrast level')
+            ax.axhline(0, ls='--', color='gray')
+            if side:
+                ax.set_ylabel('$\Delta$F/F')
+            else:
+                ax.yaxis.set_visible(False)
+                ax.tick_params(left=False)
+                ax.spines['left'].set_visible(False)
+                ax.legend(title='Reward', loc='upper left', bbox_to_anchor=(1, 1))
+
+        # Calculate y-limits from condition means
+        condition_means = df_event.groupby(
+            ['relative_contrast', 'feedback', 'side']
+            )['centered_mean'].mean()
+        y_min = condition_means.min()
+        y_max = condition_means.max()
         y_min = min(0, y_min)
         for ax in axs:
             ax.set_yticks(nice_ticks(y_min, y_max, d=3, n_ticks=3))
