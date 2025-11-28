@@ -1,24 +1,21 @@
 import sys
 from pathlib import Path
 import numpy as np
+from matplotlib import pyplot as plt
 
-# If data is in project root, not in psyfun/
+# Paths
 PACKAGE_ROOT = Path(__file__).parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
-
 SESSIONS_FPATH = PROJECT_ROOT / 'metadata/sessions'
-
-LOCAL_CACHE = '/home/crombie/mnt/ccu-iblserver'
-# REGIONS_FPATH = 'metadata/regions.csv'  # file with eid2roi mapping for photometry
-RECORDINGS_FPATH = 'metadata/recordings_new.csv'  # file with eid2roi mapping for photometry
-INSERTIONS_FPATH = 'metadata/insertions.csv'  # file with subject to brain region mapping
+INSERTIONS_FPATH = PROJECT_ROOT / 'metadata/insertions.csv'  # file with subject to brain region mapping
+QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry'
 
 
 # Values to extract from the session dict
 SESSIONDICT_KEYS = ['users', 'lab', 'end_time', 'n_trials']
 
-# Key datasets to check for
-ALYX_PHOTOMETRY_DATASETS = [
+# Key datasets
+ALYX_DATASETS = [
     'raw_behavior_data/_iblrig_taskData.raw.jsonable',  # old data, before v8
     'raw_behavior_data/_iblrig_taskSettings.raw.json',
     'raw_task_data_00/_iblrig_taskData.raw.jsonable',  # new data, >v8
@@ -33,17 +30,7 @@ ALYX_PHOTOMETRY_DATASETS = [
     'raw_photometry_data/_neurophotometrics_fpData.channels.csv',
     'raw_photometry_data/_neurophotometrics_fpData.raw.pqt',
 ]
-ALYX_PHOTOMETRY_DATASETS_NAMES = [
-    '_iblrig_taskData.raw.jsonable',
-    '_iblrig_taskSettings.raw.json',
-    '_iblrig_leftCamera.raw.mp4',
-    '_ibl_trials.table.pqt',
-    '_ibl_wheel.position.npy',
-    'photometry.signal.pqt',
-    'photometryROI.locations.pqt',
-    '_neurophotometrics_fpData.channels.csv',
-    '_neurophotometrics_fpData.raw.pqt',
-]
+
 
 STRAIN2NM = {
     'Ai148xSERTCre': '5HT',
@@ -83,9 +70,6 @@ TARGET2NM = {
     'PPT': 'ACh'
 }
 
-MIN_NTRIALS = 45
-MIN_SESSIONLENGTH = 20 * 60  # seconds
-
 SESSION_TYPES = [
     'habituation',
     'training',
@@ -96,6 +80,10 @@ SESSION_TYPES = [
     'passive',
     'histology'
 ]
+
+# QC parameters
+MIN_NTRIALS = 90
+MIN_SESSIONLENGTH = 20 * 60  # seconds
 
 PROTOCOL_RED_FLAGS = [
     'RPE',
@@ -137,6 +125,42 @@ QCVAL2NUM = {
     'FAIL': 0.1
 }
 
+EIDS_TO_DROP = [
+    'cd9d071e-c798-4900-891f-b65640ec22b1',  # huge photometry artifact (DR)
+    '16aa7570-578f-4daa-8244-844716fb1320',  # huge photometry artifact (DR)
+    'f4f1d7fe-d7c8-442b-a7d6-e214223febaf',  # huge photometry artifact (VTA)
+    'a60531cd-e1e8-4b3b-b4d9-94b76ccc69c2',  # huge photometry artifact (VTA)
+    '1c09046e-48d8-47f3-9d07-2241e3f3a136',  # huge photometry artifact (DR)
+]
+# '4ac35324-a13c-4517-a61f-7183a2f6ff44'  # severe movement artifacts (LC)
+# '46fe69ff-d001-4608-a15e-d5e029c14fc3'  # extreme photobleaching (SNc)
+# '69544b1b-7788-4b41-8cad-2d56d5958526'  # extreme photobleaching (SNc)
+# '26e1b376-61dd-4d64-b0ab-ac4e6b8b9385'  # extreme photobleaching (SNc)
+# '99d32415-3e41-468c-a21e-17f30063eb31'  # massive transients (VTA)
+# '3cafedfc-b78b-48ba-9bce-0402b71bbe90'  # piece-wise signal (DR)
+
+
+# Analysis parameters
+# Event-based analyses
+RESPONSE_WINDOW = (-1, 1)
+BASELINE_WINDOW = (-0.1, 0)
+RESPONSE_WINDOWS = {
+    'early': (0.1, 0.35),
+    'late': (0.35, 0.6)
+}
+
+
+# Plotting parameters
+# Set font sizes
+plt.rcParams.update({
+    'font.size': 18,
+    'axes.labelsize': 18,
+    'axes.titlesize': 18,
+    'xtick.labelsize': 18,
+    'ytick.labelsize': 18,
+    'legend.fontsize': 18
+})
+
 SESSIONTYPE2FLOAT = {
     'habituation': 0.01,
     'training': 0.33,
@@ -153,6 +177,30 @@ SESSIONTYPE2COLOR = {
     'misc':  'sandybrown'
 }
 
+EVENT2COLOR = {
+    'cue': 'blue',
+    'movement': 'orange',
+    'reward': 'green',
+    'omission':'red'
+}
+
+CONTRAST_CMAP = plt.get_cmap("inferno_r", 6)
+CONTRAST_COLORS = {
+    'contrast_0.0': CONTRAST_CMAP(1),  # skip first step, too light
+    'contrast_0.0625': CONTRAST_CMAP(2),
+    'contrast_0.125': CONTRAST_CMAP(3),
+    'contrast_0.25': CONTRAST_CMAP(4),
+    'contrast_1.0': CONTRAST_CMAP(5),
+}
+
+NM_CMAPS = {
+    'DA': plt.colormaps['Reds'],
+    '5HT': plt.colormaps['Purples'],
+    'NE': plt.colormaps['Blues'],
+    'ACh': plt.colormaps['Greens'],
+}
+NM_COLORS = {nm: cmap(0.8) for nm, cmap in NM_CMAPS.items()}
+
 TARGETNM2POSITION = {
     'VTA-DA': 0,
     'SNc-DA': 1,
@@ -164,9 +212,3 @@ TARGETNM2POSITION = {
     'PPT-ACh': 7
 }
 
-EVENT2COLOR = {
-    'cue': 'blue',
-    'movement': 'orange',
-    'reward': 'green',
-    'omission':'red'
-}

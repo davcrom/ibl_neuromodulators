@@ -83,7 +83,8 @@ def unpack_session_dict(series, one=None):
     """
     Unpack useful metadata and extended QC from the session dict for a given eid.
     """
-    assert one is not None
+    if one is None:
+        one = _get_default_connection()
     # Fetch full session dict
     session_dict = one.alyx.rest('sessions', 'read', id=series['eid'])
     for key in SESSIONDICT_KEYS:
@@ -167,20 +168,16 @@ def get_subject_info(session, one=None):
     return session
 
 
-def check_datasets(series, one=None, fullpath=True):
+def check_datasets(series, one=None):
     """
     Create a boolean entry for each important dataset for the given eid.
     """
-    assert one is not None
+    if one is None:
+        one = _get_default_connection()
     # Fetch list of datasets listed under the given eid
     datasets = one.list_datasets(series['eid'])
-    if fullpath:
-        for dataset in ALYX_PHOTOMETRY_DATASETS:
-            series[dataset] = dataset in datasets
-    else:
-        datasets_names = [dset.split('/')[-1] for dset in datasets]
-        for dataset_name in ALYX_PHOTOMETRY_DATASETS_NAMES:
-            series[dataset_name] = dataset_name in datasets_names
+    for dataset in ALYX_DATASETS:
+        series[dataset] = dataset in datasets
     return series
 
 

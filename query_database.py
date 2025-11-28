@@ -30,10 +30,10 @@ print("Adding subject info...")
 df_sessions = df_sessions.progress_apply(io.get_subject_info, axis='columns').copy()
 
 print("Checking datasets...")
-df_sessions = df_sessions.progress_apply(io.check_datasets, one=one, axis='columns').copy()
+df_sessions = df_sessions.progress_apply(io.check_datasets, axis='columns').copy()
 
-# ~print("Unpacking session dicts...")
-# ~df_sessions = df_sessions.progress_apply(io.unpack_session_dict, one=one, axis='columns').copy()
+print("Unpacking session dicts...")
+df_sessions = df_sessions.progress_apply(io.unpack_session_dict, axis='columns').copy()
 
 # Save as parquet with a timestamp
 save_timestamped_pqt(df_sessions, SESSIONS_FPATH)

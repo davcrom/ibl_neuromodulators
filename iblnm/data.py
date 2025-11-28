@@ -6,12 +6,15 @@ from datetime import datetime
 from one.api import ONE
 from brainbox.io.one import PhotometrySessionLoader
 
-from iblphotometry.analysis import psth_nap
+from iblnm.config import *
+from iblnm.analysis import get_responses, get_response_tpts
 
 class PhotometrySession(PhotometrySessionLoader):
     """
     Data class for an IBL photometry session.
     """
+
+    RESPONSE_WINDOW = RESPONSE_WINDOW
 
     def __init__(self, session_series: pd.Series, *args, load_data=True, **kwargs):
         """
@@ -30,6 +33,7 @@ class PhotometrySession(PhotometrySessionLoader):
         else:
             self.start_time = start_time
 
+        # TODO: add session type
         self.number = int(session_series['number'])
         self.lab = session_series['lab']
         self.projects = session_series['projects']
@@ -96,14 +100,17 @@ class PhotometrySession(PhotometrySessionLoader):
         self.responses[event] = {}
         for target in (targets or self.targets[channel]):
             self.responses[event][target] = {}
-            signal_ = getattr(self, channel)
-            signal = nap.Tsd(
-                t=signal_.index.to_numpy(), d=signal_[target].values
+            responses = get_responses(
+                getattr(self, channel)[target],
+                self.trials[event + '_times'].values,
+                window=self.RESPONSE_WINDOW
                 )
-            responses = psth_nap(
-                signal, self.trials, align_on='_'.join([event, 'times']), **kwargs
-                )
-            if event == 'feedback':
-                responses['correct'] = responses.pop(1.0)
-                responses['incorrect'] = responses.pop(-1.0)
             self.responses[event][target][channel] = responses
+
+
+    def get_response_tpts(self, channel):
+        tpts = get_response_tpts(
+            getattr(self, channel),
+            window=self.RESPONSE_WINDOW
+        )
+        return tpts

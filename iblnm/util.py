@@ -30,9 +30,13 @@ def protocol2type(protocol):
 
 
 def save_timestamped_pqt(df, fpath):
+    # Map all columns with non-uniform data types to strings
+    df = df.apply(
+        lambda col: col if col.map(type).nunique() == 1 else col.astype(str)
+        )
     timestamp = datetime.now().strftime("%Y-%m-%d-%Hh%M")
     timestamped_fpath = fpath.with_stem(f"{fpath.stem}_{timestamp}.pqt")
-    df.to_parquet(timestamped_fpath)
+    df.to_parquet(timestamped_fpath, index=False)
 
 
 def get_session_length(session):

@@ -14,9 +14,8 @@ from iblnm.config import *
 from iblnm.data import PhotometrySession
 
 
-SESSIONS_FNAME = 'sessions_2025-11-07-12h07.pqt'
-
 # TODO: make session file name an arg
+SESSIONS_FNAME = 'sessions_2025-11-24-13h41.pqt'
 df_sessions = pd.read_parquet(f'metadata/{SESSIONS_FNAME}')
 
 # Apply some filtering to sessions
@@ -47,25 +46,27 @@ sliding_metrics = [
 metrics_kwargs = {'percentile_asymmetry': {'pc_comp': 75}}
 
 sliding_kwargs = {
-    'n_windows': 10,
+    # ~'n_windows': 10,
     'w_len': 120,
+    'step_len': 60,
     'detrend': True
 }
 
 one = ONE()
-# ~df_sessions = df_sessions.query('NM == "ACh"')
+df_sessions = df_sessions.query('NM == "ACh"')
 eids = df_sessions['eid']
 print(len(eids))
 
-bad_eids = []
-for eid in tqdm(eids):
-    try:
-        psl = PhotometrySessionLoader(eid=eid, one=one)
-        psl.load_photometry()
-    except:
-        bad_eids.append(eid)
-eids = set(eids) - set(bad_eids)
-print(len(eids))
+## TODO: replace with df_sessions query
+# ~bad_eids = []
+# ~for eid in tqdm(eids):
+    # ~try:
+        # ~psl = PhotometrySessionLoader(eid=eid, one=one)
+        # ~psl.load_photometry()
+    # ~except:
+        # ~bad_eids.append(eid)
+# ~eids = set(eids) - set(bad_eids)
+# ~print(len(eids))
 
 qc_raw = run_qc(
     eids,
@@ -94,64 +95,131 @@ qc_sliding = run_qc(
     n_jobs=-2,
 )
 
-"""
-df_coords = pd.read_csv('metadata/NBM_coordinates.csv')
+# Save as parquet with a timestamp
+df_qc = pd.concat([qc_raw, qc_sliding])
+save_timestamped_pqt(df_qc, QCPHOTOMETRY_FPATH)
+
+# Load a qc dataframe
+df_qc = pd.read_parquet('results/qc_photometry_ach_2025-11-24-18h24.pqt')
+
+df_qc = df_qc.dropna(subset='metric')
 
 # Get photometry location data
-df_coords = df_coords.set_index(['subject', 'brain_region'])
-photometry_sessions = []
-no_photometry_sessions = []
-for _, session in tqdm(df_sessions.iterrows(), total=len(df_sessions)):
+df_insertions = pd.read_csv('metadata/insertions.csv')
+df_insertions['targeted_region'] = df_insertions['targeted_region'] + df_insertions['X-ml_um'].apply(lambda x: '-l' if x > 0 else '-r')
+df_insertions = df_insertions.set_index(['subject', 'targeted_region'])
+
+# Get unique eid, brain_region combinations
+unique_sessions = df_qc[['eid', 'brain_region']].drop_duplicates()
+
+# Loop over unique session, region combinations and get anatomical coordinate
+one = ONE()
+sessions_data = []
+unresolvable = []
+for _, row in tqdm(unique_sessions.iterrows(), total=len(unique_sessions)):
+    eid = row['eid']
+    brain_region = row['brain_region']
+
     try:
-        # Get fiber locations and ROIs
-        df_locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt')
+        session_details = one.get_details(eid)
+        subject = session_details['subject']
+        df_locations = one.load_dataset(id=eid, dataset='photometryROI.locations.pqt')
     except ALFObjectNotFound:
-        no_photometry_sessions.append(session)
         continue
-    for roi, location in df_locations.iterrows():
-        photometry_session = pd.concat([session, df_coords.loc[session['subject'], location['brain_region']]])
-        photometry_session['roi'] = roi
-        photometry_sessions.append(photometry_session)
 
-import statsmodels.api as sm
-import statsmodels.formula.api as smf
-from statsmodels.stats.anova import AnovaRM
+    # Check if this brain_region is in the locations
+    if brain_region not in df_locations['brain_region'].values:
+        unresolvable.append({'eid': eid, 'brain_region': brain_region})
+        continue
 
-qc_cols = [col for col in df_qc.columns if 'qc' in col]
-xpos = {'original': 0, 'new_1': 1, 'new_2': 2}
-colors = {'CQ014': 'C0', 'CQ015': 'C1', 'CQ016': 'C2'}
-fig, axs = plt.subplots(1, len(qc_cols), figsize=(len(qc_cols) * 8, 8))
-fig.suptitle('NBM Raw Signal Quality Metrics')
-for ax, col in zip(axs, qc_cols):
-    print('\n', f'========== {col} ==========')
+    try:
+        subject_insertions = df_insertions.loc[subject]
+    except KeyError:
+        unresolvable.append({'eid': eid, 'brain_region': brain_region})
+        continue
 
-    print('\n', 'ANOVA Results')
-    # print('=======================================================================')
-    # Simple ANOVA
-    model = smf.ols(f'{col} ~ C(label, Treatment("original"))', data=df_qc)
-    result = model.fit()
-    # Perform ANOVA
-    anova_table = sm.stats.anova_lm(result, typ=2)
-    print(anova_table)
+    in_insertions = [brain_region in region for region in subject_insertions.index]
 
-    # Linear Mixed-effects Model
-    model = smf.mixedlm(f'{col} ~ C(label, Treatment("original"))',  # main effects
-                        data=df_qc,
-                        groups=df_qc['subject'],  # group by mouse
-                        # groups=df_qc['eid'],  # group by session
-                        re_formula='~C(label, Treatment("original"))'  # random slopes
-                       )
-    result = model.fit()
-    print(result.summary())
+    if sum(in_insertions) != 1:
+        unresolvable.append({'eid': eid, 'brain_region': brain_region})
+        continue
 
-    for (coord, subject), data in df_qc.groupby(['label', 'subject']):
-        ax.scatter(xpos[coord] + np.random.uniform(-0.15, 0.15, len(data)), data[col], fc='none', ec=colors[subject], lw=2)
-    ax.set_xticks(list(xpos.values()))
-    ax.set_xticklabels(list(xpos.keys()))
-    ax.set_xlabel('Coordinate')
-    ax.ticklabel_format(axis='y', style='sci', scilimits=(-3, 3))
-    ax.set_ylabel(col)
-"""
+    # Get the matching insertion
+    insertion = subject_insertions[in_insertions].iloc[0]
+    sessions_data.append({
+        'subject': subject, 'eid': eid, 'brain_region': brain_region, **insertion.to_dict()
+        })
+
+# Convert to DataFrame and merge back to df_qc
+df_sessions = pd.DataFrame(sessions_data)
+df = df_qc.merge(df_sessions, on=['eid', 'brain_region'], how='inner')
+
+df = df.dropna(subset=['X-ml_um', 'Y-ap_um', 'Z-dv_um'])
+df = df[df['brain_region'].apply(lambda x: x not in ['PPT', 'SI'])]
+
+# Create a coordinate label
+df['coord'] = df.apply(
+    lambda x: f'({abs(x["X-ml_um"])}, {x["Y-ap_um"]}, {x["Z-dv_um"]})',
+    axis='columns'
+)
+df['hemisphere'] = df['X-ml_um'].apply(lambda x: 'l' if x > 0 else 'r')
+
+df.to_parquet('photometry_qc_nbm.pqt')
+
+metrics_to_plot = [
+    'median_absolute_deviance',
+    'percentile_distance',
+    'percentile_asymmetry',
+    'ar_score'
+    ]
+
+# Set font sizes (big for poster)
+fontsize = 16
+plt.rcParams.update({
+    'font.size': fontsize,
+    'axes.labelsize': fontsize,
+    'axes.titlesize': fontsize,
+    'xtick.labelsize': fontsize,
+    'ytick.labelsize': fontsize,
+    'legend.fontsize': fontsize
+})
+from pymer4.models import Lmer
+
+for metric in metrics_to_plot:
+    print(f'\n===== {metric} =====\n')
+    df_metric = df[df['metric'] == metric]
+    df_metric = df_metric.groupby(['subject', 'eid', 'coord']).apply(lambda x: np.nanmean(x['value']), include_groups=False).reset_index()
+    df_metric = df_metric.rename(columns={0: 'value'})
+    df_metric = df_metric[~df_metric['value'].isna() & ~np.isinf(df_metric['value'])]
+    df_metric = df_metric.merge(df[['coord', 'X-ml_um', 'Y-ap_um', 'Z-dv_um']].drop_duplicates(), on='coord')
+
+    fig, ax = plt.subplots()
+    ax.set_title(metric)
+    coords = df_metric.drop_duplicates('coord').sort_values(['Z-dv_um', 'Y-ap_um', 'X-ml_um'])['coord'].values
+    subjects = df_metric['subject'].unique()
+    colors = plt.cm.Set3(np.arange(len(subjects)))
+    for i, coord in enumerate(coords):
+        for j, subj in enumerate(subjects):
+            vals = df_metric[(df_metric['coord'] == coord) & (df_metric['subject'] == subj)]['value'].values
+            x = np.random.normal(i - 0.5 + j / len(subjects), 0.05, len(vals))
+            ax.scatter(x, vals, fc='none', ec=colors[j], label=subj if i == 0 else '')
+            if len(vals) > 0:
+                ax.plot(i - 0.5 + j / len(subjects), np.median(vals), marker='_', markersize=10, markeredgewidth=2, color=colors[j])
+    ax.set_xticks(np.arange(len(coords)))
+    ax.set_xticklabels(coords)
+    ax.tick_params(axis='x', rotation=90)
+    ax.legend(loc='upper left', bbox_to_anchor=(1, 1), frameon=False)
+    fig.savefig(f'figures/photometry_qc_nbm_{metric}.svg')
+
+    df_metric['coord'] = df_metric['coord'].astype('category')
+    df_metric['coord'] = df_metric['coord'].cat.reorder_categories(
+        ['(1750, -700, -4150.0)'] +
+        [c for c in df_metric['coord'].cat.categories if c != '(1750, -700, -4150.0)']
+        )
+    model = Lmer('value ~ coord + (1 | subject)', data=df_metric)
+    model.fit()
+    print(model.warnings)
+    print(model.summary())
 
 
 #### Saving the old way of sliding metric application #########################
@@ -272,99 +340,3 @@ def qc_series(
                 # f'{eid}, {brain_region}: metric {metric.__name__} failure: {type(e).__name__}:{e}'
             # )
     return qc_results
-
-
-qc = []
-for idx, session in tqdm(df_sessions.iterrows(), total=len(df_sessions)):
-
-    if not 'alf/photometry/photometry.signal.pqt' in one.list_datasets(session['eid']):
-        continue
-    try:
-        ps = PhotometrySession(session, one=one)
-    except ALFObjectNotFound:
-        continue
-
-    for target in ps.targets['gcamp']:
-        session_dict = session.to_dict()
-        session_dict['target'] = target
-
-        # Sampling regularity
-        # Need raw df to correct this, but metric will tell if error is present
-        session_dict['qc_n_early_samples'] = metrics.n_early_samples(ps.gcamp[target])
-        # Number of unique samples in the signal
-        session_dict['qc_n_unique_samples'] = metrics.n_unique_samples(ps.gcamp[target])
-        # Outliers
-        session_dict['qc_n_edges'] = metrics.n_edges(ps.gcamp[target])
-
-        # Sliding metrics
-        metrics_params = {metric:{} for metric in metrics_to_apply}
-        sliding_kwargs = {'w_len': 120}
-        session_dict.update(
-            metrics.qc_series(ps.gcamp[target], metrics_params, sliding_kwargs)
-        )
-        qc.append(session_dict)
-df_qc = pd.DataFrame(qc)
-
-metric_names = [metric.__name__ for metric in metrics_to_apply]
-for metric in metric_names:
-    df_qc[f'{metric}_mean'] = df_qc[metric].apply(
-        lambda x: np.nanmean(x['sliding_values'])
-        )
-
-
-
-df_coords = pd.read_csv('metadata/NBM_coordinates.csv').set_index(['subject', 'brain_region'])
-df_session_coords = df_qc.apply(
-    lambda x: df_coords.loc[x['subject'], x['target']],
-    axis='columns'
-)
-df_qc = pd.concat([df_qc, df_session_coords], axis=1)
-
-
-import statsmodels.api as sm
-import statsmodels.formula.api as smf
-from statsmodels.stats.anova import AnovaRM
-
-qc_cols = [
-    'median_absolute_deviance_mean',
-    'percentile_asymmetry_mean',
-    'ar_score_mean'
-    ]
-xpos = {'original': 0, 'new_1': 1, 'new_2': 2}
-colors = {'CQ014': 'C0', 'CQ015': 'C1', 'CQ016': 'C2'}
-fig, axs = plt.subplots(1, len(qc_cols), figsize=(len(qc_cols) * 8, 8))
-fig.suptitle('NBM Raw Signal Quality Metrics')
-for ax, col in zip(axs, qc_cols):
-    # ~print('\n', f'========== {col} ==========')
-
-    # ~print('\n', 'ANOVA Results')
-    # ~# print('=======================================================================')
-    # ~# Simple ANOVA
-    # ~model = smf.ols(f'{col} ~ C(label, Treatment("original"))', data=df_qc)
-    # ~result = model.fit()
-    # ~# Perform ANOVA
-    # ~anova_table = sm.stats.anova_lm(result, typ=2)
-    # ~print(anova_table)
-
-    for (coord, subject), data in df_qc.groupby(['label', 'subject']):
-        ax.scatter(xpos[coord] + np.random.uniform(-0.15, 0.15, len(data)), data[col], fc='none', ec=colors[subject], lw=2)
-    ax.set_xticks(list(xpos.values()))
-    ax.set_xticklabels(list(xpos.keys()))
-    ax.set_xlabel('Coordinate')
-    ax.ticklabel_format(axis='y', style='sci', scilimits=(-3, 3))
-    ax.set_ylabel(col)
-
-        ## TODO: response based qc
-        # rename trials kwargs in metrics module to events
-
-
-        # Signal amplitude
-        # qc[target]['qc_deviance'] = metrics.median_absolute_deviance(session.gcamp[target])  # median amplitude
-        # qc[target]['qc_percentile_distance'] = metrics.percentile_distance(
-            # session.gcamp[target],
-            # pc=(50, 95)
-            # )  # amplitude of positive transients
-        # qc[target]['qc_percentile_asymmetry'] = metrics.percentile_asymmetry(
-            # session.gcamp[target],
-            # pc_comp=95
-            # )  # amplitude of positive versus negative transients
