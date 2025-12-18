@@ -1,17 +1,11 @@
 import numpy as np
+import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib import colors
 
 from iblnm import config
+from iblnm.config import *
 from iblnm.config import QCVAL2NUM
-
-LABELFONTSIZE = 6
-plt.rcParams['figure.dpi'] = 180
-plt.rcParams['axes.labelsize'] = LABELFONTSIZE
-plt.rcParams['xtick.labelsize'] = LABELFONTSIZE 
-plt.rcParams['ytick.labelsize'] = LABELFONTSIZE 
-plt.rcParams['legend.fontsize'] = LABELFONTSIZE 
-plt.rcParams['axes.titlesize'] = LABELFONTSIZE 
 
 # Create colormap for QC grid plots
 QCCMAP = colors.LinearSegmentedColormap.from_list(
@@ -82,7 +76,7 @@ def set_plotsize(w, h=None, ax=None):
 
 def session_overview_matrix(df, columns='day_n', ax=None):
     df = df.copy()
-    df['session_type_float'] = df['session_type'].map(config.SESSIONTYPE2FLOAT)  # convert session type to numerical value
+    df['session_type_float'] = df['session_type'].map(SESSIONTYPE2FLOAT)  # convert session type to numerical value
 
     def _raise_error_on_duplicate(x):
         if len(x) > 1:
@@ -91,9 +85,9 @@ def session_overview_matrix(df, columns='day_n', ax=None):
 
     def _resolve_duplicates(x):
         return 1 if any(x == 'good') else 0
-    
+
     subject_matrix = df.pivot_table(
-        index='subject', 
+        index='subject',
         columns=columns,
         values='session_type_float',
         # aggfunc=_resolve_duplicates,  # produces a completely blank plot
@@ -102,21 +96,24 @@ def session_overview_matrix(df, columns='day_n', ax=None):
     )
 
     overlay_matrix = df.pivot_table(
-        index='subject', 
+        index='subject',
         columns=columns,
         values='session_status',
         # aggfunc=_raise_error_on_duplicate,  # to be certain, if passing a df that should already have duplicates removed
         aggfunc=_resolve_duplicates,
         fill_value=0
     )
-    
-    # Create categorical colormap
-    color_list = ['white'] + list(config.SESSIONTYPE2COLOR.values())
+
+    # Get session types present in the data
+    present_session_types = [st for st in SESSIONTYPE2FLOAT.keys() if st in df['session_type'].values]
+
+    # Create categorical colormap with only present session types
+    color_list = ['white'] + [SESSIONTYPE2COLOR[st] for st in present_session_types]
     cmap = colors.ListedColormap(color_list)
     # Create boundaries for discrete categories
-    bounds = [0] + list(config.SESSIONTYPE2FLOAT.values()) + [1.01]
+    bounds = [0] + [SESSIONTYPE2FLOAT[st] for st in present_session_types] + [1.01]
     norm = colors.BoundaryNorm(bounds, cmap.N)
-    
+
     # Plot the matrix with the custom colormap (figsize is determined by dimensions)
     if ax is None:
         fig, ax = plt.subplots(figsize=(0.15 * len(subject_matrix.columns), 0.15 * len(subject_matrix)))
@@ -127,7 +124,7 @@ def session_overview_matrix(df, columns='day_n', ax=None):
     overlay_subject_matrix[~overlay_matrix.astype(bool)] = np.nan
     # Plot the overlay with full opacity
     im_overlay = ax.matshow(overlay_subject_matrix, cmap=cmap, norm=norm, alpha=1)
-    
+
     # Format axes
     ax.set_yticks(np.arange(len(subject_matrix)))
     ax.set_yticklabels(subject_matrix.index)
@@ -137,52 +134,178 @@ def session_overview_matrix(df, columns='day_n', ax=None):
     ax.tick_params(axis='x', rotation=90)
     ax.xaxis.set_label_position('top')
     ax.set_xlabel(columns)
-    
+
     # Add custom gridlines
     for xtick in ax.get_xticks():
         ax.axvline(xtick - 0.5, color='white')
     for ytick in ax.get_yticks():
         ax.axhline(ytick - 0.5, color='white')
-    
+
     # Calculate tick positions at the center of each color segment for the colorbar
     tick_positions = [(bounds[i] + bounds[i + 1]) / 2 for i in range(1, len(bounds) - 1)]  # skip the first entry for 0/absent
-    tick_labels = list(config.SESSIONTYPE2FLOAT.keys())  # these keys don't include 0/absent
-    
+    tick_labels = present_session_types  # only show session types present in the data
+
     # Plot the colorbar
     cbar = plt.colorbar(im, ax=ax, shrink=0.5, boundaries=bounds, ticks=tick_positions)
-    cbar.set_ticklabels(list(config.SESSIONTYPE2COLOR.keys()))
+    cbar.set_ticklabels(tick_labels)
     cbar.ax.set_ylim(bounds[1], bounds[-1])  # exclude 0/absent
 
     return ax
 
 
-def session_overview_scatter(df, x_col='day_n', ax=None):
-    if ax is None:
-        fig, ax = plt.subplots()
-    subject_y_pos = -1 * df.groupby('subject')['start_time'].min().argsort()
-    
-    for _, session in df.iterrows():
-        ax.scatter(
-            session[x_col], 
-            subject_y_pos.loc[session['subject']],
-            color=config.SESSIONTYPE2COLOR[session['session_type']],
-            alpha=1 if session['session_status'] == 'good' else 0.5,
+def target_overview_barplot(df_sessions, ax=None, barwidth=0.8):
+
+    # Create a target_NM x session_type matrix with session counts
+    df_n = df_sessions.pivot_table(
+        columns='session_type',
+        index='target_NM',
+        aggfunc='size',
+        fill_value=0
         )
 
-    # Dummy points for legend
-    for session_type, color in config.SESSIONTYPE2COLOR.items():
-        ax.scatter(-1, 1, color=color, label=session_type)
-    ax.legend(loc=2, bbox_to_anchor=(1, 1))
-    ax.set_xlim(left=0)
-    ax.set_ylim(top=0)
-    
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    xpos = [TARGETNM2POSITION[target_NM] for target_NM in df_n.index]
+    ypos = np.zeros(len(df_n))  # bar heights start at 0
+    barwidth = barwidth
+
+    # Loop over session types for a stacked bar plot
+    for session_type in ['training', 'biased', 'ephys']:
+        ns = df_n[session_type]
+        color = SESSIONTYPE2COLOR[session_type]
+        ax.bar(
+            xpos, ns, bottom=ypos, width=barwidth, color=color, label=session_type
+            )
+        for i, (x, n, y_bottom) in enumerate(zip(xpos, ns, ypos)):
+            if n == 0: continue  # only show text if there are sessions
+            ax.text(
+                x, y_bottom + n/2, str(n),
+                ha='center', va='center',
+                fontweight='bold', color='white'
+                )
+        ypos += ns
+
+    ax.set_xticks(list(xpos))
+    n_mice = df_sessions.groupby('target_NM').apply(
+        lambda x: len(x['subject'].unique()),
+        include_groups=False
+        )
+    ax.set_xticklabels(
+        ['%s\n(%d mice)' % (target_NM, n_mice.loc[target_NM]) for target_NM in df_n.index]
+    )
+    ax.set_xlim(right=max(xpos) + barwidth)
+    ax.tick_params(axis='x', rotation=90)
+    ax.set_yticks(np.arange(0, np.ceil(max(ypos) / 100) + 1) * 100)
+    ax.set_ylabel('N Sessions')
+    ax.legend()
+
+    n_recordings = len(df_sessions)
+    n_sessions = len(df_sessions.groupby('eid'))
+    n_mice = len(df_sessions.groupby('subject'))
+    ax.set_title(
+        f"{n_recordings} recordings, {n_sessions} sessions, {n_mice} mice"
+        )
+
+    return ax
+
+
+def mouse_overview_barplot(df_sessions, min_biased=5, min_ephys=3, ax=None, barwidth=0.25):
+    """
+    Create a barplot showing the number of mice with sufficient sessions for each target_NM.
+
+    Parameters
+    ----------
+    df_sessions : pd.DataFrame
+        DataFrame with columns 'subject', 'target_NM', 'session_type'
+    min_biased : int
+        Minimum number of biased sessions required (default: 5)
+    min_ephys : int
+        Minimum number of ephys sessions required (default: 3)
+    ax : matplotlib.axes, optional
+        Axes to plot on
+    barwidth : float
+        Width of bars (default: 0.25)
+
+    Returns
+    -------
+    ax : matplotlib.axes
+        The axes object
+    """
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    # Count sessions per subject per target_NM per session_type
+    session_counts = df_sessions.groupby(['target_NM', 'subject', 'session_type']).size().reset_index(name='n_sessions')
+
+    # Get all target_NMs
+    target_nms = sorted(df_sessions['target_NM'].unique(), key=lambda x: TARGETNM_POSITIONS.get(x, 999))
+
+    results = []
+    for target_nm in target_nms:
+        target_data = session_counts[session_counts['target_NM'] == target_nm]
+
+        # Mice with sufficient biased sessions
+        biased_mice = target_data[
+            (target_data['session_type'] == 'biased') &
+            (target_data['n_sessions'] >= min_biased)
+        ]['subject'].unique()
+
+        # Mice with sufficient ephys sessions
+        ephys_mice = target_data[
+            (target_data['session_type'] == 'ephys') &
+            (target_data['n_sessions'] >= min_ephys)
+        ]['subject'].unique()
+
+        # All mice for this target
+        all_mice = target_data['subject'].unique()
+
+        # Mice without sufficient biased sessions
+        insufficient_biased_mice = set(all_mice) - set(biased_mice)
+
+        results.append({
+            'target_NM': target_nm,
+            'n_biased': len(biased_mice),
+            'n_ephys': len(ephys_mice),
+            'n_insufficient': len(insufficient_biased_mice)
+        })
+
+    df_results = pd.DataFrame(results)
+
+    # Get x positions based on TARGETNM_POSITIONS
+    xpos = np.array([TARGETNM_POSITIONS[target_nm] for target_nm in df_results['target_NM']])
+
+    # Plot bars (insufficient first, then biased, then ephys)
+    ax.bar(xpos - barwidth, df_results['n_insufficient'].values, barwidth,
+           color='lightgray', label=f'< {min_biased} biased')
+    ax.bar(xpos, df_results['n_biased'].values, barwidth,
+           color=SESSIONTYPE2COLOR['biased'], label=f'biased (≥{min_biased})')
+    ax.bar(xpos + barwidth, df_results['n_ephys'].values, barwidth,
+           color=SESSIONTYPE2COLOR['ephys'], label=f'ephys (≥{min_ephys})')
+
+    # Add text labels on bars (white, centered in bar)
+    for x, n in zip(xpos - barwidth, df_results['n_insufficient'].values):
+        if n > 0:
+            ax.text(x, n/2, str(int(n)), ha='center', va='center',
+                   fontweight='bold', color='white')
+    for x, n in zip(xpos, df_results['n_biased'].values):
+        if n > 0:
+            ax.text(x, n/2, str(int(n)), ha='center', va='center',
+                   fontweight='bold', color='white')
+    for x, n in zip(xpos + barwidth, df_results['n_ephys'].values):
+        if n > 0:
+            ax.text(x, n/2, str(int(n)), ha='center', va='center',
+                   fontweight='bold', color='white')
+
     # Format axes
-    ax.set_yticks(subject_y_pos.values, labels=subject_y_pos.index)
-    ax.set_ylabel('Subject')
-    ax.set_xticks(np.linspace(df[x_col].min(), df[x_col].max(), 21).astype(int))
-    # ax.tick_params(axis='x', rotation=90)
-    ax.set_xlabel(x_col)
-    
+    ax.set_xticks(xpos)
+    ax.set_xticklabels(df_results['target_NM'].values)
+    ax.tick_params(axis='x', rotation=90)
+    ax.set_ylabel('N Mice')
+    ax.set_xlabel('Target-NM')
+    ax.legend()
+    ax.set_title(f'Mouse training progress by target')
+
     return ax
 
 
@@ -217,7 +340,7 @@ def qc_grid(df, qc_columns=None, qcval2num=None, ax=None, yticklabels=None,
         ax.set_ylim(top=-0.5)
         ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     return ax
-    
+
 
 def session_plot(series, pipeline=[], t0=60, t1=120):
     fig = plt.figure(figsize=(12, 6))
@@ -232,13 +355,13 @@ def session_plot(series, pipeline=[], t0=60, t1=120):
         fig.add_axes([0.03, 0.7, 0.96, 0.25]),
         fig.add_axes([0.03, 0.4, 0.86, 0.25])
     ]
-    
+
     tpts = series['GCaMP'].index.values
     signal_raw = series['GCaMP'][series['ROI']].values
     processed = pipe.run_pipeline(pipeline, series['GCaMP'])
     signal_processed = processed[series['ROI']].values
 
-    
+
     signal_axes[0].plot(tpts, proc.z(signal_raw), alpha=0.5, color='gray', label='Raw')
     signal_axes[0].plot(tpts, proc.z(signal_processed), alpha=0.5, color='black', label='Processed')
     signal_axes[0].set_xlim([tpts.min(), tpts.max()])
@@ -248,7 +371,7 @@ def session_plot(series, pipeline=[], t0=60, t1=120):
     signal_axes[0].set_ylim([y_min, y_max])
     signal_axes[0].set_ylabel('Signal (z-score)')
     signal_axes[0].legend(loc='upper left', bbox_to_anchor=[.9, -0.2])
-    
+
     i0, i1 = tpts.searchsorted([t0, t1])
     signal_axes[1].plot(tpts[i0:i1], proc.z(signal_processed)[i0:i1], color='black', label='Processed')
     signal_axes[1].set_xlim([t0, t1])
@@ -256,7 +379,7 @@ def session_plot(series, pipeline=[], t0=60, t1=120):
     y_min = proc.z(signal_processed)[i0:i1].min()
     y_max = proc.z(signal_processed)[i0:i1].max()
     signal_axes[1].set_ylim([y_min, y_max])
-    signal_axes[1].set_ylabel('Signal (z-score)')    
+    signal_axes[1].set_ylabel('Signal (z-score)')
 
     events_dict = {'cue': psth_axes[0], 'movement': psth_axes[1], 'reward': psth_axes[2], 'omission': psth_axes[2]}
     colors = ['blue', 'orange', 'green', 'red']
@@ -281,19 +404,19 @@ def session_plot(series, pipeline=[], t0=60, t1=120):
     psth_axes[0].set_yticks([-1 * max(y_max), 0, max(y_max)])
     psth_axes[0].ticklabel_format(axis='y', style='sci', scilimits=[-2, 2])
     psth_axes[0].set_ylabel('Response (a.u.)')
-    
+
     return fig
 
 
 def violinplot(
-    ax, data, positions=None, log_transform=False, remove_outliers=True, 
+    ax, data, positions=None, log_transform=False, remove_outliers=True,
     show_outliers=True, outlier_threshold=1.5, colors=None, **violin_kwargs
 ):
     """
     Draw violin plots on the given axes with options for log transformation and
-    outlier detection. Outliers are defined using the IQR method, and are 
+    outlier detection. Outliers are defined using the IQR method, and are
     plotted separately as scatter points.
-    
+
     Parameters
     ----------
     ax : matplotlib.axes.Axes
@@ -311,7 +434,7 @@ def violinplot(
         The multiplier for the IQR to set the outlier boundary.
     violin_kwargs : dict
         Other keyword arguments to pass to ax.violinplot().
-    
+
     Returns
     -------
     violins : matplotlib.collections.PolyCollection
@@ -322,7 +445,7 @@ def violinplot(
         data = [np.log(x[x > 0]) for x in data]
     else:
         data = [np.array(x) for x in data]
-    
+
     # If positions are not specified, use sequential positions.
     if positions is None:
         positions = np.arange(len(data))
@@ -334,7 +457,7 @@ def violinplot(
     scatter_data = [d for d in data if len(d) < 10]
     scatter_positions = [p for p, d in zip(positions, data) if len(d) < 10]
     if colors is not None:
-        scatter_colors = [c for c, d in zip(colors, data) if len(d) < 10] 
+        scatter_colors = [c for c, d in zip(colors, data) if len(d) < 10]
 
     if remove_outliers:
         central_data = []  # Data without outliers, to be plotted in the violins.
@@ -355,11 +478,11 @@ def violinplot(
     for p, c, sd in zip(scatter_positions, scatter_colors, scatter_data):
         if len(sd) > 0:
             ax.scatter(np.full(sd.shape, p), sd, s=5, fc='none', ec=c)
-    
+
     # Create the violin plot using only the non-outlier data.
     violins = ax.violinplot(
-        central_data, 
-        violin_positions, 
+        central_data,
+        violin_positions,
         showmedians=True, showextrema=False, **violin_kwargs
     )
     if colors is not None:
@@ -369,14 +492,14 @@ def violinplot(
             pc.set_linewidth(1)
             pc.set_alpha(1)
         violins['cmedians'].set_color(violin_colors)
-    
+
     # Optionally, scatter the outlier points.
     if show_outliers:
         ocolors = ['black' for _ in violin_data] if colors is None else violin_colors
         for xpos, color, outliers in zip(violin_positions, ocolors, outlier_data):
             if len(outliers) > 0:
                 ax.scatter(np.full(outliers.shape, xpos), outliers, s=10, fc='none', ec=color)
-    
+
     return violins
 
 
@@ -407,13 +530,13 @@ def plot_joint_distributions(df, metrics=None, transform=True, bins=30, figsize=
     corr = df[metrics].dropna().corr(method='spearman')
     if transform:
         X = quantile_transform(X, output_distribution='normal', n_quantiles=500)
-    
+
     fig, axs = plt.subplots(n_metrics, n_metrics, figsize=figsize)
-    
+
     for i in range(n_metrics):
         for j in range(n_metrics):
             ax = axs[i, j]
-            
+
             if i < j:  # Upper triangle: plot joint distributions
                 x = X[:, j]
                 y = X[:, i]

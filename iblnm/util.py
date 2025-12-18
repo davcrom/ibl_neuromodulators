@@ -1,20 +1,21 @@
 import numpy as np
 import pandas as pd
+from pathlib import Path
 import uuid
 from datetime import datetime
 from one.api import ONE
 from one.alf.exceptions import ALFObjectNotFound
 from brainbox.io.one import SessionLoader
 
-from iblnm import config
+from iblnm.config import *
 
 
 def protocol2type(protocol):
     ## FIXME: check that the biasCW_ephyssession protocol is handled properly (BCW but with a template session?)
     # Define recognized session types
-    session_types = np.array(config.SESSION_TYPES)
+    session_types = np.array(SESSION_TYPES)
     # Define red flags (if found in filename it indicates a non-standard protocol)
-    red_flags = config.PROTOCOL_RED_FLAGS
+    red_flags = PROTOCOL_RED_FLAGS
     # Determine which session types are found in the protocol name
     choiceworld_type_mask = [t + 'ChoiceWorld' in protocol for t in session_types[:-1]] + ['Histology' in protocol]
     type_mask = [t in protocol for t in session_types[:-1]] + ['Histology' in protocol]
@@ -29,14 +30,16 @@ def protocol2type(protocol):
         raise ValueError
 
 
-def save_timestamped_pqt(df, fpath):
+def df2pqt(df, fpath, timestamp=None):
+    fpath = Path(fpath)
     # Map all columns with non-uniform data types to strings
     df = df.apply(
         lambda col: col if col.map(type).nunique() == 1 else col.astype(str)
         )
-    timestamp = datetime.now().strftime("%Y-%m-%d-%Hh%M")
-    timestamped_fpath = fpath.with_stem(f"{fpath.stem}_{timestamp}.pqt")
-    df.to_parquet(timestamped_fpath, index=False)
+    if timestamp is not None:
+        timestamp = datetime.now().strftime("%Y-%m-%d-%Hh%M")
+        fpath = fpath.with_stem(f"{fpath.stem}_{timestamp}.pqt")
+    df.to_parquet(fpath, index=False)
 
 
 def get_session_length(session):
@@ -53,9 +56,35 @@ def get_session_length(session):
     return dt
 
 
-def _resolve_session_status(session_group):
+def check_extracted_data(session):
+    # Extraction path may change depending on iblrig version
+    trials = any([
+        session['alf/_ibl_trials.table.pqt'],
+        session['alf/task_00/_ibl_trials.table.pqt']
+    ])
+    # All photometry data extracted to these files
+    photometry = all([
+        session['alf/photometry/photometry.signal.pqt'],
+        session['alf/photometry/photometryROI.locations.pqt']
+    ])
+    return all([trials, photometry])
+
+
+def resolve_session_status(session_group, columns):
     """
-    Resolve duplicate sessions by flagging them as 'good', 'junk', 'conflict', or 'missing'
+    Resolve sessions by flagging them as 'good', 'junk', or 'conflict'.
+
+    Parameters
+    ----------
+    session_group : pd.DataFrame
+        Group of sessions to evaluate
+    columns : list of str
+        List of boolean column names that must all be True for a session to be considered good
+
+    Returns
+    -------
+    pd.Series
+        Session status for each session in the group ('good', 'junk', or 'conflict')
     """
     # Create a copy to avoid modifying original data
     group = session_group.copy()
@@ -63,29 +92,16 @@ def _resolve_session_status(session_group):
     # Initialize all sessions as 'junk'
     group['session_status'] = 'junk'
 
-    # Find sessions that have behavior data AND meet quality criteria (trials OR length)
-    good_sessions_mask = group['has_taskData'] & (group['has_trials'] | group['has_length'])
+    # Find sessions where ALL specified columns are True
+    good_sessions_mask = group[columns].all(axis=1)
     good_sessions = group[good_sessions_mask]
 
     if len(good_sessions) == 1:
-        # One session has behavior and quality - mark as 'good', others remain 'junk'
+        # One session has all requirements - mark as 'good', others remain 'junk'
         group.loc[good_sessions.index, 'session_status'] = 'good'
 
     elif len(good_sessions) > 1:
             group.loc[good_sessions.index, 'session_status'] = 'conflict'
-
-    # No sessions have behavior data
-    else:
-        # Check for rare cases where there is no raw task data in Alyx, but the session dictionary says there should be
-        missing_behavior_mask = group['raw_taskData_in_sessionDict'] & ~group['raw_taskData_exists'] & (group['n_trials_sessionDict'] > config.MIN_NTRIALS)
-        missing_sessions = group[missing_behavior_mask]
-
-        if len(missing_sessions) == 1:
-            # Single session with missing behavior - mark as 'missing'
-            group.loc[missing_sessions.index, 'session_status'] = 'missing'
-        elif len(missing_sessions) > 1:
-            # Multiple sessions with missing behavior - mark as 'missing_conflict'
-            group.loc[missing_sessions.index, 'session_status'] = 'missing_conflict'
 
     return group['session_status']
 

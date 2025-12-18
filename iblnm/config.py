@@ -6,7 +6,7 @@ from matplotlib import pyplot as plt
 # Paths
 PACKAGE_ROOT = Path(__file__).parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
-SESSIONS_FPATH = PROJECT_ROOT / 'metadata/sessions'
+SESSIONS_FPATH = PROJECT_ROOT / 'metadata/sessions.pqt'
 INSERTIONS_FPATH = PROJECT_ROOT / 'metadata/insertions.csv'  # file with subject to brain region mapping
 QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry'
 
@@ -115,6 +115,17 @@ EXCLUDE_SUBJECTS = [
     'photometry_test_subject_B',
 ]
 
+VALID_TARGETS = [
+    'VTA-DA',
+    'SNc-DA',
+    'DR-5HT',
+    'MR-5HT',
+    'LC-NE',
+    'NBM-ACh',
+    'SI-ACh',
+    'PPT-ACh'
+]
+
 QCVAL2NUM = {
     np.nan: 0.,
     'NOT SET': 0.01,
@@ -151,14 +162,14 @@ RESPONSE_WINDOWS = {
 
 
 # Plotting parameters
-# Set font sizes
+FONTSIZE = 8
 plt.rcParams.update({
-    'font.size': 18,
-    'axes.labelsize': 18,
-    'axes.titlesize': 18,
-    'xtick.labelsize': 18,
-    'ytick.labelsize': 18,
-    'legend.fontsize': 18
+    'font.size': FONTSIZE,
+    'axes.labelsize': FONTSIZE,
+    'axes.titlesize': FONTSIZE,
+    'xtick.labelsize': FONTSIZE,
+    'ytick.labelsize': FONTSIZE,
+    'legend.fontsize': FONTSIZE
 })
 
 SESSIONTYPE2FLOAT = {
@@ -211,4 +222,3 @@ TARGETNM2POSITION = {
     'SI-ACh': 6,
     'PPT-ACh': 7
 }
-

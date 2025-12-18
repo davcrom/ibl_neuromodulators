@@ -222,6 +222,116 @@ for metric in metrics_to_plot:
     print(model.summary())
 
 
+#### RESPONSE SIMILARITY MATRIX (from Calude) ##################################
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import pearsonr
+
+# Filter for biased and ephys sessions only
+df_filtered = df[df['session_type'].isin(['biased', 'ephys'])].copy()
+
+if len(df_filtered) == 0:
+    print("No biased or ephys sessions found")
+else:
+    # Take absolute value of ML for sorting
+    df_filtered['ML_abs'] = df_filtered['ML'].abs()
+
+    # Check DV values before sorting
+    print("Sample DV values:")
+    print(df_filtered[['subject', 'target', 'AP', 'ML_abs', 'DV']].head(20))
+    print(f"\nDV isna count: {df_filtered['DV'].isna().sum()}")
+
+    # Sort by coordinates first, then by subject within each coordinate group
+    df_filtered = df_filtered.sort_values(['AP', 'ML_abs', 'DV', 'subject']).reset_index(drop=True)
+
+    print(f"\nBiased & Ephys: Total rows = {len(df_filtered)}")
+    print(f"Unique subjects: {df_filtered['subject'].nunique()}")
+    print(f"Unique (AP, |ML|) combinations: {len(df_filtered[['AP', 'ML_abs']].drop_duplicates())}")
+    print(f"Unique (AP, |ML|, DV) combinations: {len(df_filtered[['AP', 'ML_abs', 'DV']].drop_duplicates())}")
+
+    if len(df_filtered) < 2:
+        print("Not enough sessions to create correlation matrix")
+    else:
+        n = len(df_filtered)
+
+        # Compute correlation matrix
+        corr_matrix = np.zeros((n, n))
+
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    corr_matrix[i, j] = 1.0
+                else:
+                    vec_i = df_filtered.iloc[i]['response_vector']
+                    vec_j = df_filtered.iloc[j]['response_vector']
+
+                    # Find indices where both vectors are not NaN
+                    valid_mask = ~(np.isnan(vec_i) | np.isnan(vec_j))
+
+                    if valid_mask.sum() < 2:
+                        # Not enough valid points for correlation
+                        corr_matrix[i, j] = np.nan
+                    else:
+                        # Compute correlation only on valid (non-NaN) points
+                        corr_matrix[i, j] = pearsonr(
+                            vec_i[valid_mask],
+                            vec_j[valid_mask]
+                        )[0]
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(16, 14))
+        im = ax.imshow(corr_matrix, cmap='RdBu_r', vmin=-1, vmax=1, aspect='auto')
+
+        # Add labels with subject and coordinates on one line
+        labels = [
+            f"{row['subject']} AP:{row['AP']:.0f} |ML|:{row['ML_abs']:.0f} DV:{row['DV']:.0f}"
+            for _, row in df_filtered.iterrows()
+        ]
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+        ax.set_xticklabels(labels, rotation=90, ha='right', fontsize=7)
+        ax.set_yticklabels(labels, fontsize=7)
+
+        # Add separator lines - ignore DV if it varies for each session
+        # Use only (AP, |ML|) for coordinate comparison
+        prev_coords = None
+        prev_subject = None
+        for i in range(n):
+            # Only use AP and ML_abs for coordinate comparison
+            curr_coords = (df_filtered.iloc[i]['AP'],
+                          df_filtered.iloc[i]['ML_abs'])
+            curr_subject = df_filtered.iloc[i]['subject']
+
+            if prev_coords is not None:
+                # Black lines when coordinates change
+                if curr_coords != prev_coords:
+                    ax.axhline(y=i-0.5, color='black', linestyle='--', linewidth=2)
+                    ax.axvline(x=i-0.5, color='black', linestyle='--', linewidth=2)
+                    print(f"Coordinate change at index {i}: {prev_coords} -> {curr_coords}")
+                # Gray lines when subject changes (but coordinates stay the same)
+                elif curr_subject != prev_subject:
+                    ax.axhline(y=i-0.5, color='gray', linestyle='--', linewidth=2)
+                    ax.axvline(x=i-0.5, color='gray', linestyle='--', linewidth=2)
+                    print(f"Subject change at index {i}: {prev_subject} -> {curr_subject}")
+
+            prev_coords = curr_coords
+            prev_subject = curr_subject
+
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax, label='Correlation')
+
+        # Title
+        plt.title(
+            f'Response Vector Correlation Matrix\n'
+            f'Biased & Ephys Sessions (n={n})'
+            fontsize=12
+        )
+
+        plt.tight_layout()
+        plt.show()
+
+
 #### Saving the old way of sliding metric application #########################
 
 def eval_metric(

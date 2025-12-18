@@ -1,6 +1,7 @@
 import os
 import gc
-from functools import lru_cache
+import traceback
+from functools import lru_cache, wraps
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -13,6 +14,34 @@ from iblnm.config import *
 from iblnm.util import protocol2type, fill_empty_lists_from_group
 
 import iblphotometry
+
+
+def exception_logger(func):
+    """
+    Decorator that allows session processing functions to log exceptions.
+    Use exlog parameter to capture errors instead of raising them.
+    """
+    @wraps(func)
+    def wrapper(series, *args, exlog=None, **kwargs):
+        try:
+            return func(series, *args, **kwargs)
+        except Exception as e:
+            if exlog is not None:
+                exception_info = {
+                    'eid': series.get('eid', 'unknown'),
+                    'subject': series.get('subject', 'unknown'),
+                    'function': func.__name__,
+                    'exception_type': type(e).__name__,
+                    'exception_message': str(e),
+                    'traceback': traceback.format_exc()
+                }
+                exlog.append(exception_info)
+                # Return series unchanged to continue processing
+                return series
+            else:
+                # Re-raise if no exlog provided
+                raise
+    return wrapper
 
 
 @lru_cache(maxsize=1)
@@ -79,6 +108,7 @@ def fetch_sessions(one, extended=True, save=True):
     return df_sessions
 
 
+@exception_logger
 def unpack_session_dict(series, one=None):
     """
     Unpack useful metadata and extended QC from the session dict for a given eid.
@@ -114,13 +144,16 @@ def unpack_session_dict(series, one=None):
             elif val is None:
                 series[key] = 'NOT_SET'
             else:
-                raise ValueError
+                raise ValueError(
+                    f"Unexpected QC value type for key '{key}': {type(val)} = {val}"
+                )
     # Add list of session datasets
     if 'data_dataset_session_related' in session_dict.keys():
         series['datasets'] = [d['name'] for d in session_dict['data_dataset_session_related']]
     return series
 
 
+@exception_logger
 def get_subject_info(session, one=None):
     """
     Get the mouse strain, line, and genotype for a given session. Try to infer
@@ -144,13 +177,20 @@ def get_subject_info(session, one=None):
     if one is None:
         one = _get_default_connection()
     subjects = one.alyx.rest('subjects', 'list', nickname=session['subject'])
-    assert len(subjects) == 1
+
+    if len(subjects) != 1:
+        raise ValueError(
+            f"Expected exactly 1 subject for '{session['subject']}', found {len(subjects)}"
+        )
+
     subject = subjects[0]
     for key in ['strain', 'line', 'genotype']:
         session[key] = subject[key]
+
     ## FIXME: this is horrendous...
-    sNM = STRAIN2NM[session['strain']]
-    lNM = LINE2NM[session['line']]
+    sNM = STRAIN2NM.get(session['strain'], 'none')
+    lNM = LINE2NM.get(session['line'], 'none')
+
     if (sNM != 'none') and (lNM != 'none'):
         if sNM == lNM:
             NM = sNM
@@ -163,11 +203,15 @@ def get_subject_info(session, one=None):
     elif (sNM == 'none') and (lNM == 'none'):
         NM = 'none'
     else:
-        raise ValueError
+        raise ValueError(
+            f"Unexpected NM combination: strain={sNM}, line={lNM}"
+        )
+
     session['NM'] = NM
     return session
 
 
+@exception_logger
 def check_datasets(series, one=None):
     """
     Create a boolean entry for each important dataset for the given eid.
@@ -181,30 +225,34 @@ def check_datasets(series, one=None):
     return series
 
 
-def _get_target_regions(session, one=None, df_recordings=None, df_insertions=None):
+@exception_logger
+def get_target_regions(session, one=None, df_recordings=None, df_insertions=None):
+    if one is None:
+        one = _get_default_connection()
+
     try:  # should work for all properly extracted data
-        assert one is not None
         locations = one.load_dataset(id=session['eid'], dataset='photometryROI.locations.pqt')
         session['roi'] = locations.index.to_list()
         session['target'] = locations['brain_region'].to_list()
-        session['remote_photometry'] = True
-    except ALFObjectNotFound:  # default to using lookup tables
-        assert df_recordings is not None
-        assert df_insertions is not None
-        eid = session['eid']
-        rois = df_recordings.query('eid == @eid')
-        session['roi'] = rois['region'].to_list()
-        target = []
-        for fiber in rois['fiber']:
-            insertion = df_insertions.query('probename == @fiber')
-            if len(insertion) < 1:
-                print(f"Missing insertion entry for: {session['eid']}, {fiber}")
-            else:
-                assert len(insertion) == 1
-                assert insertion['subject'].iloc[0] == session['subject']
-                target.extend(insertion['targeted_regions'].to_list())
-        session['target'] = target
-        session['remote_photometry'] = False
+    except ALFObjectNotFound:
+        if df_recordings is None or df_insertions is None:
+            session['roi'] = []
+            session['target'] = []
+        else:  # default to using lookup tables provided
+            eid = session['eid']
+            rois = df_recordings.query('eid == @eid')
+            session['roi'] = rois['region'].to_list()
+            target = []
+            for fiber in rois['fiber']:
+                insertion = df_insertions.query('probename == @fiber')
+                if len(insertion) < 1:
+                    print(f"Missing insertion entry for: {session['eid']}, {fiber}")
+                else:
+                    assert len(insertion) == 1
+                    assert insertion['subject'].iloc[0] == session['subject']
+                    target.extend(insertion['targeted_regions'].to_list())
+            session['target'] = target
+
     return session
 
 

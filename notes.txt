@@ -1,9 +1,11 @@
+
+
 2025-11-27
 ----------
-[CHECK] old and new recordings still have different raw data locations
-[CHECK] mouse strian/ line/ genotype information is complete and updated on server
-[CHECK] odd genotype mice are removed from project
-[QC] 250 < n_unique_samples < 500 don't seem digitized, but mostly noise, QC critical
-[FIXME] catch and fix biased block extraction bug
-[TODO] re-install IBL conda env with pymer4 (freeze all relevant packager versions)
-[TODO] add check in PhotometrySession for trials outside of photometry time-base
+[][CHECK] old and new recordings still have different raw data locations
+[][CHECK] mouse strian/ line/ genotype information is complete and updated on server
+[][CHECK] odd genotype mice are removed from project
+[][QC] 250 < n_unique_samples < 500 don't seem digitized, but mostly noise, QC critical
+[][FIXME] catch and fix biased block extraction bug
+[][TODO] re-install IBL conda env with pymer4 (freeze all relevant package versions)
+[][TODO] add check in PhotometrySession for trials outside of photometry time-base
