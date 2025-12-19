@@ -67,7 +67,7 @@ def check_extracted_data(session):
         session['alf/photometry/photometry.signal.pqt'],
         session['alf/photometry/photometryROI.locations.pqt']
     ])
-    return all([trials, photometry])
+    return trials & photometry
 
 
 def resolve_session_status(session_group, columns):

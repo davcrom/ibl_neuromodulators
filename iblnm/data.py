@@ -5,6 +5,8 @@ from datetime import datetime
 
 from one.api import ONE
 from brainbox.io.one import PhotometrySessionLoader
+from iblphotometry import metrics
+from iblphotometry.qc import qc_signals
 
 from iblnm.config import *
 from iblnm.analysis import get_responses, get_response_tpts
@@ -114,3 +116,73 @@ class PhotometrySession(PhotometrySessionLoader):
             window=self.RESPONSE_WINDOW
         )
         return tpts
+
+
+    def run_qc(self, signal_band='GCaMP', raw_metrics=None, sliding_metrics=None,
+               metrics_kwargs=None, sliding_kwargs=None, brain_region=None, pipeline=None):
+        """
+        Run quality control on the photometry session.
+
+        Parameters
+        ----------
+        signal_band : str
+            Signal band to run QC on (default: 'GCaMP')
+        raw_metrics : list of str, optional
+            List of raw metric names to compute. If None, uses default from config.
+        sliding_metrics : list of str, optional
+            List of sliding window metric names to compute. If None, uses default from config.
+        metrics_kwargs : dict, optional
+            Custom kwargs for specific metrics. If None, uses default from config.
+        sliding_kwargs : dict, optional
+            Sliding window parameters. If None, uses default from config.
+        brain_region : str or list of str, optional
+            Restrict QC to specific brain region(s)
+        pipeline : list of dict, optional
+            Processing pipeline to apply before QC
+
+        Returns
+        -------
+        pd.DataFrame
+            QC results dataframe
+        """
+        # Get metric names from config if not provided
+        if raw_metrics is None:
+            raw_metrics = QC_RAW_METRICS
+        if sliding_metrics is None:
+            sliding_metrics = QC_SLIDING_METRICS
+        if metrics_kwargs is None:
+            metrics_kwargs = QC_METRICS_KWARGS
+        if sliding_kwargs is None:
+            sliding_kwargs = QC_SLIDING_KWARGS
+
+        # Convert metric names to functions
+        raw_metric_funcs = [getattr(metrics, m) for m in raw_metrics]
+        sliding_metric_funcs = [getattr(metrics, m) for m in sliding_metrics]
+
+        # Run raw metrics QC
+        qc_raw = qc_signals(
+            self.photometry,
+            metrics=raw_metric_funcs,
+            metrics_kwargs=metrics_kwargs,
+            signal_band=signal_band,
+            brain_region=brain_region,
+            pipeline=pipeline,
+        )
+        qc_raw['eid'] = self.eid
+
+        # Run sliding metrics QC
+        qc_sliding = qc_signals(
+            self.photometry,
+            metrics=sliding_metric_funcs,
+            metrics_kwargs=metrics_kwargs,
+            signal_band=signal_band,
+            brain_region=brain_region,
+            pipeline=pipeline,
+            sliding_kwargs=sliding_kwargs,
+        )
+        qc_sliding['eid'] = self.eid
+
+        # Combine results
+        self.qc = pd.concat([qc_raw, qc_sliding], ignore_index=True)
+
+        return self.qc

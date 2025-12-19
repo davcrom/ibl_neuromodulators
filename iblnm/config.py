@@ -150,6 +150,31 @@ EIDS_TO_DROP = [
 # '99d32415-3e41-468c-a21e-17f30063eb31'  # massive transients (VTA)
 # '3cafedfc-b78b-48ba-9bce-0402b71bbe90'  # piece-wise signal (DR)
 
+# Photometry QC parameters
+QC_RAW_METRICS = [
+    'n_early_samples',
+    'n_edges'
+]
+
+QC_SLIDING_METRICS = [
+    'median_absolute_deviance',
+    'percentile_distance',
+    'percentile_asymmetry',
+    'n_outliers',
+    'n_expmax_violations',
+    'expmax_violation',
+    'ar_score'
+]
+
+QC_METRICS_KWARGS = {
+    'percentile_asymmetry': {'pc_comp': 75}
+}
+
+QC_SLIDING_KWARGS = {
+    'w_len': 120,
+    'step_len': 60,
+    'detrend': True
+}
 
 # Analysis parameters
 # Event-based analyses
