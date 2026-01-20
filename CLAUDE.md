@@ -1,152 +1,71 @@
 # CLAUDE.md
 
-## Project Overview
-
-Neuroscience research project analyzing fiber photometry recordings from neuromodulatory systems  in the International Brain Laboratory (IBL). Fetches data from IBL's Alyx database, performs quality control, and conducts event-based neural response analysis.
+IBL fiber photometry analysis: data from Alyx → QC → event-based neural responses.
 
 ## Workflow
 
-**Always follow this order:**
+1. **Clarify** → Ask questions before implementing new features
+2. **Review** → Understand existing code before changing it
+3. **Spec** → Write spec in `specs/` for non-trivial tasks
+4. **Test** → Write tests before or alongside code
+5. **Implement** → Minimal code that works
+6. **Validate** → Verify results make sense
 
-1. **Code Review** → Understand before changing
-2. **Spec** → Plan before implementing (for complex tasks)
-3. **Tests** → Write tests before or alongside code
-4. **Implement** → Minimal code that works
-5. **Validate** → Verify results make sense
+### Key Rules
 
-### Code Review (always required)
+- **Ask first**: What exactly is needed? Any ambiguities?
+- **Scope discipline**: Implement what's requested. Improve code quality, but don't add unrequested features.
+- **Review before editing**: Summarize functionality, robustness, potential improvements. Wait for confirmation.
+- **Spec when**: new feature/analysis, multi-file changes, ambiguous requirements
+- **Skip spec for**: clear bug fixes, simple refactors, adding tests
 
-Before modifying existing code, provide a review:
-1. **Functionality**: What does this code do? What is its purpose?
-2. **Robustness**: What works well? What could break?
-3. **Improvements**: What could be simpler or more efficient?
+### Spec Template
 
-Wait for user confirmation before proceeding.
-
-### Spec (required for complex tasks)
-
-For multi-file changes or significant refactoring, write a spec in `specs/` before implementation.
-
-**Spec template:**
 ```markdown
 # Spec: [Task Name]
-
-## Objective
-One sentence: what we're building and why.
-
-## Background
-- Current state: what exists, where is the code
-- Problems: what's broken or missing
-
-## Requirements
-- Functional: inputs, outputs, behavior
-- Non-functional: performance, robustness
-
-## Design
-- New functions/classes with signatures
-- Changes to existing code
-
+## Objective - what and why (one sentence)
+## Background - current state, problems
+## Requirements - inputs, outputs, behavior
+## Design - functions/classes, changes to existing code
 ## Files to Modify
-
-## Verification
-- How to test that it works
+## Verification - how to test
 ```
 
-**Spec workflow:**
-1. [Scientist] Write spec with ambiguities noted inline
-2. [IBL Dev] Check if similar code is already implemented and note in the Design section of spec
-3. [Data Scientist] Write implementation plan in the Design section of spec
-4. [Scientist] Ask user to clarify ambiguities and integrate responses into the relevant sections
-5. Get user approval before implementing
-6. [IBL Dev] Write tests
-7. [Data Scientist] Implement plan following the design principles
-8. [IBL Dev] Review implementation and run tests
-9. [Scientist] Run new code and validate output
-10. [Scientist] Provide user with a summary 
+## Roles
 
-**Write a spec when:**
-- Task touches multiple files
-- Task involves new data structures or API changes
-- You're unsure about requirements
+| Role | Focus | Checklist |
+|------|-------|-----------|
+| **Scientist** | Simplest analysis that answers the question | Scientific question? Simplest approach? Expected result? |
+| **IBL Dev** | Use existing code, ensure test coverage | Exists in brainbox/iblphotometry? Tests? Error handling? |
+| **Data Scientist** | Clean, minimal implementation | Valid inputs? Pythonic? Output correct? |
 
-### Tests (always required)
-
-- Write tests for new functionality before moving on
-- Before refactoring, ensure tests exist for affected code
-- Run `pytest` to verify no regressions
-
-### Design Principles
-- **Test-driven development** - Write tests before or alongside implementation
-- **Accurate implementation** - Correct results, proper error handling
-- **Minimal implementation** - Simplest code that solves the problem
-- **Minimal dependencies** - Use existing IBL packages; avoid adding new dependencies
-- **Pythonic code** - Clear, self-documenting, follows conventions
-
-## Roles & Checklists
-
-### Scientist
-Critical, skeptical. Prefers simplest analysis that answers the question.
-
-- [ ] What is the scientific question being addressed?
-- [ ] Is this the simplest approach that answers the question?
-- [ ] What result do we expect, and does the output match?
-
-### IBL Dev
-Knows IBL toolboxes. Prevents reinventing wheels. Ensures design principles are followed.
-
-- [ ] Does code with this functionality exist in `iblnm`, `brainbox`, or `iblphotometry`?
-- [ ] Is there full test coverage for affected code?
-- [ ] Are errors handled with useful log messages?
-
-### Data Scientist
-Implements analyses. Clean, minimal code.
-
-- [ ] Do inputs have the expected shape and range?
-- [ ] Is this the most efficient and Pythonic implementation?
-- [ ] Does the output match expectations?
-
----
-
-## Project Architecture
+## Project Structure
 
 ```
-iblnm/           # Core package (reusable code)
-  config.py      # Central configuration: paths, mappings, parameters
-  data.py        # Session data loading classes
-  io.py          # Database operations (Alyx queries)
-  analysis.py    # Signal processing and response extraction
-  util.py        # Helper functions
-  vis.py         # Visualization
-
-scripts/         # Analysis scripts (one-off or exploratory)
-tests/           # Unit tests (pytest)
-specs/           # Specification documents
-metadata/        # Cached session data and lookup tables
+iblnm/           # Core package
+  config.py      # Paths, mappings, parameters (check here first)
+  data.py        # PhotometrySession class
+  io.py          # Alyx queries
+  analysis.py    # Response extraction
+  util.py        # Helpers
+  vis.py         # Plotting
+scripts/         # Analysis scripts
+tests/           # pytest
+specs/           # Planning docs
+metadata/        # sessions.pqt, lookup tables
 ```
 
-## Key Concepts
+## Reference
 
-**Neuromodulatory systems**: DA (dopamine), 5HT (serotonin), NE (norepinephrine), ACh (acetylcholine)
+**Neuromodulators**: DA, 5HT, NE, ACh → brain targets defined in `config.py`
 
-**Brain targets**: Each neuromodulator has specific brain region targets (defined in config.py)
-
-**Mouse genetics**: Transgenic indicator mice with Cre-driver lines map to neuromodulators
-
-## Environment
-
+**Environment**: IBL unified (`one`, `brainbox`, `iblphotometry`)
 ```bash
-# IBL unified environment with: one, brainbox, iblphotometry
-pip install -e .    # Install this package
-pytest              # Run tests
-ruff check .        # Lint
+pip install -e .  # Install
+pytest            # Test
+ruff check .      # Lint
 ```
 
-**Documentation:**
-- IBL: https://docs.internationalbrainlab.org/
-- ONE API: https://int-brain-lab.github.io/ONE/
+**Docs**: [IBL](https://docs.internationalbrainlab.org/) · [ONE API](https://int-brain-lab.github.io/ONE/)
 
-## Key Files
-
-- `config.py` - Check here first for constants and parameters
-- `metadata/sessions.pqt` - Cached session metadata
-- `notes.txt` - Project TODOs and issue tracking
+**Key files**: `config.py` (constants), `metadata/sessions.pqt` (cached data), `notes.txt` (TODOs)
