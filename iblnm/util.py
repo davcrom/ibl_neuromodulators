@@ -178,7 +178,6 @@ def clean_sessions(df, exclude_subjects=None, exclude_session_types=None, verbos
 
 
 def protocol2type(protocol):
-    ## FIXME: check that the biasCW_ephyssession protocol is handled properly (BCW but with a template session?)
     # Define recognized session types
     session_types = np.array(SESSION_TYPES)
     # Define red flags (if found in filename it indicates a non-standard protocol)
@@ -355,3 +354,38 @@ def sample_recordings(df, metric, percentile_range):
 #         return row
 #     df = df.apply(_merge_metadata, df=df_insertions, axis='columns')
 #     return df
+
+
+def merge_session_metadata(
+    df: pd.DataFrame,
+    sessions_fpath: Path = None
+) -> pd.DataFrame:
+    """
+    Merge a dataframe with session metadata.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with 'eid' column to merge on.
+    sessions_fpath : Path, optional
+        Path to sessions parquet file. Defaults to SESSIONS_FPATH.
+
+    Returns
+    -------
+    pd.DataFrame
+        Merged dataframe with session metadata.
+    """
+    if sessions_fpath is None:
+        sessions_fpath = SESSIONS_FPATH
+
+    df_sessions = pd.read_parquet(sessions_fpath)
+
+    # Merge on eid
+    df_merged = df.merge(
+        df_sessions,
+        on='eid',
+        how='left',
+        suffixes=('', '_session')
+    )
+
+    return df_merged

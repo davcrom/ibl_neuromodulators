@@ -11,6 +11,8 @@ from iblphotometry.qc import qc_signals
 
 from iblnm.config import *
 from iblnm.analysis import get_responses, get_response_tpts
+from iblnm import task
+from iblnm.task import _get_signed_contrast
 
 class PhotometrySession(PhotometrySessionLoader):
     """
@@ -28,7 +30,7 @@ class PhotometrySession(PhotometrySessionLoader):
 
     RESPONSE_WINDOW = RESPONSE_WINDOW
 
-    def __init__(self, session_series: pd.Series, *args, load_data=True, **kwargs):
+    def __init__(self, session_series: pd.Series, *args, load_data=False, **kwargs):
         """
         Initialize a PhotometrySession from a pandas Series.
 
@@ -50,12 +52,9 @@ class PhotometrySession(PhotometrySessionLoader):
         self.lab = session_series['lab']
         self.projects = session_series['projects']
         self.url = session_series['url']
+        self.session_n = session_series['session_n']
         self.task_protocol = session_series['task_protocol']
-
-        # Data availability flags
-        self.has_trials = False
-        self.has_photometry = False
-        self.trials_in_photometry_time = False
+        self.session_type = session_series['session_type']
 
         super().__init__(*args, eid=self.eid, **kwargs)
         if load_data:
@@ -97,22 +96,21 @@ class PhotometrySession(PhotometrySessionLoader):
         return pd.Series(self.to_dict())
 
 
-    def load_session_data(self, **kwargs):
-        """
-        Load trials and photometry data with error handling.
-
-        Sets has_trials, has_photometry, and trials_in_photometry_time flags.
-        """
-        # Load trials
+    def load_trials(self):
         try:
-            self.load_trials()
+            super().load_trials()
             self.has_trials = True
         except Exception:
             self.has_trials = False
 
-        # Load photometry
+        if self.has_trials:
+            self.trials['signed_contrast'] = _get_signed_contrast(self.trials)
+            self.trials['contrast'] = np.abs(self.trials['signed_contrast'])
+
+
+    def load_photometry(self):
         try:
-            self.load_photometry(restrict_to_session=False)
+            super().load_photometry()
             self.has_photometry = True
         except Exception:
             self.has_photometry = False
@@ -128,6 +126,20 @@ class PhotometrySession(PhotometrySessionLoader):
 
         # Check if trials are within photometry time
         self.trials_in_photometry_time = self._check_trials_in_photometry_time()
+
+
+    def load_session_data(self):
+        """
+        Load trials and photometry data with error handling.
+
+        Sets has_trials, has_photometry, and trials_in_photometry_time flags.
+        """
+        # Load trials
+        self.load_trials()
+
+        # Load photometry
+        self.load_photometry()
+
 
     def _check_trials_in_photometry_time(self):
         """Check if all trial times fall within the photometry recording time."""
@@ -254,3 +266,51 @@ class PhotometrySession(PhotometrySessionLoader):
 
         self.qc_results = df_qc
         return df_qc
+
+    # =========================================================================
+    # Task Performance Methods
+    # =========================================================================
+
+    def task_performance(self):
+        result = {}
+
+        result['fraction_correct'] = self.fraction_correct()
+        result['fraction_correct_easy'] = self.fraction_correct_easy()
+        result['nogo_fraction'] = self.nogo_fraction()
+
+        block_info = task.validate_block_structure(self.trials)
+        result['block_structure_valid'] = block_info['valid']
+        result['min_block_length'] = block_info['min_block_length']
+        result['n_blocks'] = block_info['n_blocks']
+
+        if block_info['valid']:
+            fits = self.fit_psychometric_by_block()
+            for block_name, fit in fits.items():
+                for param, value in fit.items():
+                    result[f'psych_{block_name}_{param}'] = value
+
+            if '20' in fits and '80' in fits:
+                result['bias_shift'] = task.compute_bias_shift(fits['20'], fits['80'])
+
+        return result
+
+    def fraction_correct(self, exclude_nogo=True):
+        return task.compute_fraction_correct(self.trials, exclude_nogo=exclude_nogo)
+
+    def fraction_correct_by_contrast(self, exclude_nogo=True):
+        df = self.trials if not exclude_nogo else self.trials[self.trials['choice'] != 0]
+        return df.groupby('contrast')['feedbackType'].apply(lambda x: (x == 1).mean())
+
+    def fraction_correct_easy(self, exclude_nogo=True):
+        trials = self.trials[self.trials['contrast'] >= 0.5]
+        return task.compute_fraction_correct(trials, exclude_nogo=exclude_nogo)
+
+    def nogo_fraction(self):
+        return task.compute_nogo_fraction(self.trials)
+
+    def fit_psychometric(self, probability_left=None):
+        return task.fit_psychometric(self.trials, probability_left=probability_left)
+
+    def fit_psychometric_by_block(self):
+        return task.fit_psychometric_by_block(self.trials)
+

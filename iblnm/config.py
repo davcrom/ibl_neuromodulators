@@ -14,6 +14,7 @@ INSERTIONS_FPATH = PROJECT_ROOT / 'metadata/insertions.csv'  # file with subject
 FIBERS_FPATH = PROJECT_ROOT / 'metadata/fibers.csv'
 QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
 QCPHOTOMETRY_LOG_FPATH = PROJECT_ROOT / 'data/qc_photometry_log.pqt'
+PERFORMANCE_FPATH = PROJECT_ROOT / 'metadata/performance.pqt'
 
 
 # Values to extract from the session dict
@@ -89,6 +90,9 @@ SESSION_TYPES = [
 # QC parameters
 MIN_NTRIALS = 90
 MIN_SESSIONLENGTH = 20 * 60  # seconds
+
+# Task performance parameters
+MIN_BLOCK_LENGTH = 10  # minimum trials per bias block (flag sessions with shorter blocks)
 
 # Dataset categories for checking data presence
 # Each category is a list of datasets; if ANY is present, category is True

@@ -7,13 +7,16 @@ Runs quality control metrics on photometry sessions with:
 - Data availability flags (has_trials, has_photometry, trials_in_photometry_time)
 - Error logging
 - Results caching
+
+Output: data/qc_photometry.pqt
 """
 import traceback
 import pandas as pd
 from tqdm import tqdm
 
-from iblnm.config import SESSIONS_CLEAN_FPATH, QCPHOTOMETRY_FPATH, QCPHOTOMETRY_LOG_FPATH
+from iblnm.config import SESSIONS_FPATH, QCPHOTOMETRY_FPATH, QCPHOTOMETRY_LOG_FPATH
 from iblnm.io import _get_default_connection
+from iblnm.util import clean_sessions, drop_junk_duplicates
 from iblnm.data import PhotometrySession
 
 
@@ -58,6 +61,7 @@ def run_qc_pipeline(df_sessions, one=None, verbose=True):
 
         # Load session data (sets has_trials, has_photometry, trials_in_photometry_time)
         ps = PhotometrySession(session_series, one=one)
+        ps.load_session_data()
 
         # Update flags in df_sessions
         flags = ps.get_data_flags()
@@ -94,11 +98,12 @@ def run_qc_pipeline(df_sessions, one=None, verbose=True):
 
 
 if __name__ == '__main__':
-    # Load cleaned sessions (from dataset_overview.py)
-    df_sessions = pd.read_parquet(SESSIONS_CLEAN_FPATH)
-
-    # Filter to good sessions only (have both task and photometry data)
-    df_sessions = df_sessions.query('session_status == "good"').copy()
+    # Load sessions
+    print(f"Loading sessions from {SESSIONS_FPATH}")
+    df_sessions = pd.read_parquet(SESSIONS_FPATH)
+    df_sessions = clean_sessions(df_sessions)
+    df_sessions = drop_junk_duplicates(df_sessions, ['subject', 'day_n'])
+    print(f"Loaded {len(df_sessions)} sessions")
 
     # Run QC pipeline
     one = _get_default_connection()
@@ -108,4 +113,5 @@ if __name__ == '__main__':
     QCPHOTOMETRY_FPATH.parent.mkdir(parents=True, exist_ok=True)
     df_qc.to_parquet(QCPHOTOMETRY_FPATH)
     df_log.to_parquet(QCPHOTOMETRY_LOG_FPATH)
-    df_sessions.to_parquet(SESSIONS_CLEAN_FPATH)
+    print(f"\nSaved QC results to {QCPHOTOMETRY_FPATH}")
+    print(f"Saved error log to {QCPHOTOMETRY_LOG_FPATH}")
