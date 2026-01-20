@@ -10,6 +10,173 @@ from brainbox.io.one import SessionLoader
 from iblnm.config import *
 
 
+def has_dataset(session, dataset):
+    """Check if a dataset is available for a session."""
+    datasets = session.get('datasets', [])
+    if isinstance(datasets, (list, np.ndarray)):
+        return dataset in datasets
+    return False
+
+
+def has_dataset_category(session, category):
+    """Check if a session has any dataset from a category."""
+    category_datasets = DATASET_CATEGORIES.get(category, [])
+    return any(has_dataset(session, d) for d in category_datasets)
+
+
+def add_dataset_flags(df):
+    """Add boolean columns for each dataset category."""
+    df = df.copy()
+    for category in DATASET_CATEGORIES:
+        df[f'has_{category}'] = df.apply(
+            lambda row: has_dataset_category(row, category), axis=1
+        )
+    return df
+
+
+def add_hemisphere(df_sessions, df_fibers=None):
+    """
+    Add hemisphere column to sessions based on fiber coordinates.
+
+    Hemisphere determined from X-ml_um: x<0 is right, x>0 is left.
+    If multiple fibers per subject+region, hemisphere is left blank.
+
+    Parameters
+    ----------
+    df_sessions : pd.DataFrame
+        Sessions dataframe with 'subject' and 'target' columns.
+        Target values like "VTA", "NBM-l", "SNc-r" are matched by region.
+    df_fibers : pd.DataFrame, optional
+        Fibers dataframe with 'subject', 'targeted_region', 'X-ml_um'.
+        If None, loads from FIBERS_FPATH.
+    """
+    df = df_sessions.copy()
+
+    if df_fibers is None:
+        try:
+            df_fibers = pd.read_csv(FIBERS_FPATH)
+        except FileNotFoundError:
+            df['hemisphere'] = np.nan
+            return df
+
+    # Extract region from target (strip -l/-r suffixes: "NBM-l" -> "NBM")
+    df['_region'] = df['target'].str.split('-').str[0]
+
+    # Determine hemisphere from X coordinate
+    df_fibers = df_fibers.copy()
+    df_fibers['hemisphere'] = df_fibers['X-ml_um'].apply(
+        lambda x: 'L' if x > 0 else ('R' if x < 0 else 'M')
+    )
+
+    # For each subject+region, keep hemisphere only if there's exactly one fiber
+    def get_unique_hemisphere(group):
+        if len(group) == 1:
+            return group.iloc[0]['hemisphere']
+        return np.nan
+
+    fiber_lookup = (
+        df_fibers.groupby(['subject', 'targeted_region'])
+        .apply(get_unique_hemisphere, include_groups=False)
+        .reset_index(name='hemisphere')
+    )
+    fiber_lookup = fiber_lookup.rename(columns={'targeted_region': '_region'})
+
+    df = df.merge(fiber_lookup, on=['subject', '_region'], how='left')
+    df = df.drop(columns=['_region'])
+    return df
+
+
+def drop_junk_duplicates(df, group_cols, verbose=True):
+    """
+    Keep one session per cell, preferring good over junk. Drop conflicts.
+    """
+    n_initial = len(df)
+    n_conflicts = (df['session_status'] == 'conflict').sum()
+
+    # Drop conflicts
+    df = df[df['session_status'] != 'conflict'].copy()
+
+    # Count groups with multiple session types (before deduplication)
+    n_multi_type = 0
+    for _, group in df.groupby(group_cols):
+        if group['session_type'].nunique() > 1:
+            n_multi_type += len(group) - 1  # all but one will be dropped
+
+    # Keep one per group: prefer good over junk
+    status_order = {'good': 0, 'junk': 1}
+    df = (
+        df.assign(_sort_key=df['session_status'].map(status_order))
+        .sort_values('_sort_key')
+        .drop_duplicates(subset=group_cols, keep='first')
+        .drop(columns='_sort_key')
+    )
+    n_final = len(df)
+    n_dropped = n_initial - n_final
+
+    if verbose:
+        print(f"Dropped duplicates: {n_initial} → {n_final} ({n_dropped} removed)")
+        print(f"  Conflicts: {n_conflicts}")
+        if n_multi_type > 0:
+            print(f"  Different session types on same day: {n_multi_type}")
+        n_junk = n_dropped - n_conflicts - n_multi_type
+        if n_junk > 0:
+            print(f"  Junk duplicates: {n_junk}")
+
+    return df
+
+
+def clean_sessions(df, exclude_subjects=None, exclude_session_types=None, verbose=True):
+    """
+    Remove excluded subjects and session types from sessions dataframe.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Sessions dataframe
+    exclude_subjects : list, optional
+        Subjects to exclude. Defaults to EXCLUDE_SUBJECTS from config.
+    exclude_session_types : list, optional
+        Session types to exclude. Defaults to EXCLUDE_SESSION_TYPES from config.
+    verbose : bool
+        Print summary of removed data
+
+    Returns
+    -------
+    pd.DataFrame
+        Cleaned sessions dataframe
+    """
+    if exclude_subjects is None:
+        exclude_subjects = EXCLUDE_SUBJECTS
+    if exclude_session_types is None:
+        exclude_session_types = EXCLUDE_SESSION_TYPES
+
+    n_initial = len(df)
+    removed = {}
+
+    # Remove excluded subjects
+    mask_subjects = df['subject'].isin(exclude_subjects)
+    if mask_subjects.any():
+        removed['subjects'] = df.loc[mask_subjects, 'subject'].value_counts().to_dict()
+        df = df[~mask_subjects].copy()
+
+    # Remove excluded session types
+    mask_types = df['session_type'].isin(exclude_session_types)
+    if mask_types.any():
+        removed['session_types'] = df.loc[mask_types, 'session_type'].value_counts().to_dict()
+        df = df[~mask_types].copy()
+
+    n_final = len(df)
+
+    if verbose:
+        print(f"Cleaned sessions: {n_initial} → {n_final} ({n_initial - n_final} removed)")
+        if 'subjects' in removed:
+            print(f"  Excluded subjects: {removed['subjects']}")
+        if 'session_types' in removed:
+            print(f"  Excluded session types: {removed['session_types']}")
+
+    return df
+
+
 def protocol2type(protocol):
     ## FIXME: check that the biasCW_ephyssession protocol is handled properly (BCW but with a template session?)
     # Define recognized session types
@@ -55,19 +222,6 @@ def get_session_length(session):
         pass
     return dt
 
-
-def check_extracted_data(session):
-    # Extraction path may change depending on iblrig version
-    trials = any([
-        session['alf/_ibl_trials.table.pqt'],
-        session['alf/task_00/_ibl_trials.table.pqt']
-    ])
-    # All photometry data extracted to these files
-    photometry = all([
-        session['alf/photometry/photometry.signal.pqt'],
-        session['alf/photometry/photometryROI.locations.pqt']
-    ])
-    return trials & photometry
 
 
 def resolve_session_status(session_group, columns):

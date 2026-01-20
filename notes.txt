@@ -1,10 +1,20 @@
+2026-01-19
+---------
+[][TODO] Add isosbestic_correction_pipeline
+
+2026-01-18
+----------
+[][FIXME] Ai148-G6f-cdh x Chat-cre and Ai148ChAT still in lines
+[][CHECK] dataset names from rest query match with one.list_datasets
+[][FIXME] need to get access to whiterussian data from UCL
+[][FIXME] ibl-photometry needs clear way to check for NPM sampling/band inversion
 
 
 2025-11-27
 ----------
 [][CHECK] old and new recordings still have different raw data locations
-[][CHECK] mouse strian/ line/ genotype information is complete and updated on server
-[][CHECK] odd genotype mice are removed from project
+[][CHECK] mouse strain/ line/ genotype information is complete and updated on server
+[x][CHECK] odd genotype mice are removed from project
 [][QC] 250 < n_unique_samples < 500 don't seem digitized, but mostly noise, QC critical
 [][FIXME] catch and fix biased block extraction bug
 [][TODO] re-install IBL conda env with pymer4 (freeze all relevant package versions)

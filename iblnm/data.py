@@ -5,6 +5,7 @@ from datetime import datetime
 
 from one.api import ONE
 from brainbox.io.one import PhotometrySessionLoader
+from iblphotometry.fpio import from_neurophotometrics_df_to_photometry_df
 from iblphotometry import metrics
 from iblphotometry.qc import qc_signals
 
@@ -14,6 +15,15 @@ from iblnm.analysis import get_responses, get_response_tpts
 class PhotometrySession(PhotometrySessionLoader):
     """
     Data class for an IBL photometry session.
+
+    Attributes
+    ----------
+    has_trials : bool
+        Whether trials data loaded successfully
+    has_photometry : bool
+        Whether photometry data loaded successfully
+    trials_in_photometry_time : bool
+        Whether all trial times fall within photometry recording time
     """
 
     RESPONSE_WINDOW = RESPONSE_WINDOW
@@ -41,6 +51,11 @@ class PhotometrySession(PhotometrySessionLoader):
         self.projects = session_series['projects']
         self.url = session_series['url']
         self.task_protocol = session_series['task_protocol']
+
+        # Data availability flags
+        self.has_trials = False
+        self.has_photometry = False
+        self.trials_in_photometry_time = False
 
         super().__init__(*args, eid=self.eid, **kwargs)
         if load_data:
@@ -83,16 +98,69 @@ class PhotometrySession(PhotometrySessionLoader):
 
 
     def load_session_data(self, **kwargs):
-        super().load_session_data(**kwargs)
-        if isinstance(self.photometry, dict):
+        """
+        Load trials and photometry data with error handling.
+
+        Sets has_trials, has_photometry, and trials_in_photometry_time flags.
+        """
+        # Load trials
+        try:
+            self.load_trials()
+            self.has_trials = True
+        except Exception:
+            self.has_trials = False
+
+        # Load photometry
+        try:
+            self.load_photometry(restrict_to_session=False)
+            self.has_photometry = True
+        except Exception:
+            self.has_photometry = False
+
+        # Set up convenience attributes if photometry loaded
+        if self.has_photometry and isinstance(self.photometry, dict):
             for k, v in self.photometry.items():
                 setattr(self, k.lower(), v)
             self.channels = {k.lower() for k in self.photometry.keys()}
             self.targets = {
                 k.lower(): list(v.columns) for k, v in self.photometry.items()
-                }
-            ## TODO: if hasattr(self, 'genotype'): add cell type to targets
+            }
 
+        # Check if trials are within photometry time
+        self.trials_in_photometry_time = self._check_trials_in_photometry_time()
+
+    def _check_trials_in_photometry_time(self):
+        """Check if all trial times fall within the photometry recording time."""
+        if not self.has_trials or not self.has_photometry:
+            return False
+
+        # Get photometry time range from any band
+        phot_times = self.photometry['GCaMP'].index
+        t_start = phot_times.min()
+        t_stop = phot_times.max()
+
+        # Get trial time range
+        trial_start = self.trials['intervals_0'].min()
+        trial_stop = self.trials['intervals_1'].max()
+
+        return (trial_start >= t_start) and (trial_stop <= t_stop)
+
+    def get_data_flags(self):
+        """Return data availability flags as a dict for updating df_sessions."""
+        return {
+            'has_trials': self.has_trials,
+            'has_photometry': self.has_photometry,
+            'trials_in_photometry_time': self.trials_in_photometry_time,
+        }
+
+    def _load_raw_photometry(self):
+        raw_photometry = self.one.load_dataset(
+            self.eid,
+            'raw_photometry_data/_neurophotometrics_fpData.raw.pqt'
+            )
+        # ~ timestamp_col = 'SystemTimestamp' if 'Timestamp' not in raw_photometry.columns else 'Timestamp'
+        # ~ raw_photometry = raw_photometry.set_index(timestamp_col)
+        return from_neurophotometrics_df_to_photometry_df(raw_photometry).set_index('times')
 
     def get_responses(self, channel, event, targets=None, **kwargs):
         if event.endswith('_times'):
@@ -118,15 +186,15 @@ class PhotometrySession(PhotometrySessionLoader):
         return tpts
 
 
-    def run_qc(self, signal_band='GCaMP', raw_metrics=None, sliding_metrics=None,
+    def run_qc(self, signal_band=None, raw_metrics=None, sliding_metrics=None,
                metrics_kwargs=None, sliding_kwargs=None, brain_region=None, pipeline=None):
         """
         Run quality control on the photometry session.
 
         Parameters
         ----------
-        signal_band : str
-            Signal band to run QC on (default: 'GCaMP')
+        signal_band : str or list of str, optional
+            Signal band(s) to run QC on. If None, runs on all bands.
         raw_metrics : list of str, optional
             List of raw metric names to compute. If None, uses default from config.
         sliding_metrics : list of str, optional
@@ -143,7 +211,8 @@ class PhotometrySession(PhotometrySessionLoader):
         Returns
         -------
         pd.DataFrame
-            QC results dataframe
+            QC results with one row per (brain_region, band) combination.
+            Columns: eid, band, brain_region, + one column per metric.
         """
         # Get metric names from config if not provided
         if raw_metrics is None:
@@ -155,34 +224,33 @@ class PhotometrySession(PhotometrySessionLoader):
         if sliding_kwargs is None:
             sliding_kwargs = QC_SLIDING_KWARGS
 
-        # Convert metric names to functions
-        raw_metric_funcs = [getattr(metrics, m) for m in raw_metrics]
-        sliding_metric_funcs = [getattr(metrics, m) for m in sliding_metrics]
-
-        # Run raw metrics QC
-        qc_raw = qc_signals(
+        # Run sliding metrics QC - returns tidy data
+        qc_tidy = qc_signals(
             self.photometry,
-            metrics=raw_metric_funcs,
-            metrics_kwargs=metrics_kwargs,
-            signal_band=signal_band,
-            brain_region=brain_region,
-            pipeline=pipeline,
-        )
-        qc_raw['eid'] = self.eid
-
-        # Run sliding metrics QC
-        qc_sliding = qc_signals(
-            self.photometry,
-            metrics=sliding_metric_funcs,
+            metrics=[getattr(metrics, m) for m in sliding_metrics],
             metrics_kwargs=metrics_kwargs,
             signal_band=signal_band,
             brain_region=brain_region,
             pipeline=pipeline,
             sliding_kwargs=sliding_kwargs,
         )
-        qc_sliding['eid'] = self.eid
 
-        # Combine results
-        self.qc = pd.concat([qc_raw, qc_sliding], ignore_index=True)
+        # Average across windows if sliding was used, then pivot to wide format
+        # One row per (band, brain_region), one column per metric
+        if 'window' in qc_tidy.columns:
+            qc_tidy = qc_tidy.groupby(['band', 'brain_region', 'metric'], as_index=False)['value'].mean()
 
-        return self.qc
+        df_qc = qc_tidy.pivot(index=['band', 'brain_region'], columns='metric', values='value').reset_index()
+        df_qc.columns.name = None  # Remove the 'metric' name from columns
+
+        # Add raw metrics (computed on raw photometry, same value for all rows)
+        raw_photometry = self._load_raw_photometry()
+        for metric_name in raw_metrics:
+            metric_func = getattr(metrics, metric_name)
+            df_qc[metric_name] = metric_func(raw_photometry)
+
+        # Add session identifier
+        df_qc['eid'] = self.eid
+
+        self.qc_results = df_qc
+        return df_qc

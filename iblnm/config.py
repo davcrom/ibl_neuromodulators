@@ -7,23 +7,28 @@ from matplotlib import pyplot as plt
 PACKAGE_ROOT = Path(__file__).parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
 SESSIONS_FPATH = PROJECT_ROOT / 'metadata/sessions.pqt'
+SESSIONS_CLEAN_FPATH = PROJECT_ROOT / 'metadata/sessions_clean.pqt'
+SESSIONS_QC_FPATH = PROJECT_ROOT / 'metadata/sessions_qc.pqt'
+SESSIONS_LOG_FPATH = PROJECT_ROOT / 'metadata/sessions_log.pqt'
 INSERTIONS_FPATH = PROJECT_ROOT / 'metadata/insertions.csv'  # file with subject to brain region mapping
-QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry'
+FIBERS_FPATH = PROJECT_ROOT / 'metadata/fibers.csv'
+QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
+QCPHOTOMETRY_LOG_FPATH = PROJECT_ROOT / 'data/qc_photometry_log.pqt'
 
 
 # Values to extract from the session dict
 SESSIONDICT_KEYS = ['users', 'lab', 'end_time', 'n_trials']
 
-# Key datasets
+# Key datasets, note: need to check both old and new formats where applicable
 ALYX_DATASETS = [
     'raw_behavior_data/_iblrig_taskData.raw.jsonable',  # old data, before v8
     'raw_behavior_data/_iblrig_taskSettings.raw.json',
     'raw_task_data_00/_iblrig_taskData.raw.jsonable',  # new data, >v8
     'raw_task_data_00/_iblrig_taskSettings.raw.json',
     'raw_video_data/_iblrig_leftCamera.raw.mp4',
-    'alf/_ibl_trials.table.pqt',
+    'alf/_ibl_trials.table.pqt',  # old format
     'alf/_ibl_wheel.position.npy',
-    'alf/task_00/_ibl_trials.table.pqt',
+    'alf/task_00/_ibl_trials.table.pqt',  # new format
     'alf/task_00/_ibl_wheel.position.npy',
     'alf/photometry/photometry.signal.pqt',
     'alf/photometry/photometryROI.locations.pqt',
@@ -37,12 +42,12 @@ STRAIN2NM = {
     'Ai148xDATCre': 'DA',
     'Ai148xDbhCre': 'NE',
     'Ai148xTHCre': 'NE',  ## TODO: double-check all THCre mice targeted LC-NE
-    'B6.Cg': 'none',
+    # ~ 'B6.Cg': 'none',
     'Ai148xChATCre': 'ACh',
-    'Ai148xDbh-Cre': 'NE',
-    'B6.129S2': 'none',
+    # ~ 'Ai148xDbh-Cre': 'NE',
+    # ~ 'B6.129S2': 'none',
     'Ai95xSERTCre': '5HT',
-    'C57BL/6J': 'none',
+    # ~ 'C57BL/6J': 'none',
     None: 'none'
 }
 
@@ -50,12 +55,12 @@ LINE2NM = {
     'Ai148xSert': '5HT',
     'Ai148xDat': 'DA',
     'Ai148xDbh': 'NE',
-    'Ai148-G6f-cdh x Chat-cre': 'ACh',
+    # ~ 'Ai148-G6f-cdh x Chat-cre': 'ACh',
     'Ai148xTh': 'NE',
     'Ai148xChat': 'ACh',
-    'Ai148xChAT': 'ACh',
-    'C57BL/6J': 'none',
-    'TetOG6s-Cdh23 x Camk-Cdh23': 'none',
+    # ~ 'Ai148xChAT': 'ACh',
+    # ~ 'C57BL/6J': 'none',
+    # ~ 'TetOG6s-Cdh23 x Camk-Cdh23': 'none',
     None: 'none'
 }
 
@@ -84,6 +89,36 @@ SESSION_TYPES = [
 # QC parameters
 MIN_NTRIALS = 90
 MIN_SESSIONLENGTH = 20 * 60  # seconds
+
+# Dataset categories for checking data presence
+# Each category is a list of datasets; if ANY is present, category is True
+DATASET_CATEGORIES = {
+    'raw_task': [
+        'raw_behavior_data/_iblrig_taskData.raw.jsonable',
+        'raw_task_data_00/_iblrig_taskData.raw.jsonable',
+    ],
+    'raw_video': [
+        'raw_video_data/_iblrig_leftCamera.raw.mp4',
+    ],
+    'raw_photometry': [
+        'raw_photometry_data/_neurophotometrics_fpData.channels.csv',
+        'raw_photometry_data/_neurophotometrics_fpData.raw.pqt',
+    ],
+    'extracted_task': [
+        'alf/_ibl_trials.table.pqt',
+        'alf/task_00/_ibl_trials.table.pqt',
+    ],
+    'extracted_wheel': [
+        'alf/_ibl_wheel.position.npy',
+        'alf/task_00/_ibl_wheel.position.npy',
+    ],
+    'extracted_photometry_signal': [
+        'alf/photometry/photometry.signal.pqt',
+    ],
+    'extracted_photometry_locations': [
+        'alf/photometry/photometryROI.locations.pqt',
+    ],
+}
 
 PROTOCOL_RED_FLAGS = [
     'RPE',
@@ -153,10 +188,12 @@ EIDS_TO_DROP = [
 # Photometry QC parameters
 QC_RAW_METRICS = [
     'n_early_samples',
-    'n_edges'
+    'n_band_inversions',
 ]
 
 QC_SLIDING_METRICS = [
+    'n_unique_samples',
+    'n_edges',
     'median_absolute_deviance',
     'percentile_distance',
     'percentile_asymmetry',
@@ -164,6 +201,10 @@ QC_SLIDING_METRICS = [
     'n_expmax_violations',
     'expmax_violation',
     'ar_score'
+]
+
+QC_PREPROCESSING = [
+    'photobleaching_tau',
 ]
 
 QC_METRICS_KWARGS = {
@@ -176,6 +217,8 @@ QC_SLIDING_KWARGS = {
     'detrend': True
 }
 
+PREPROCESSING_PIPELINE = []
+
 # Analysis parameters
 # Event-based analyses
 RESPONSE_WINDOW = (-1, 1)
@@ -187,14 +230,15 @@ RESPONSE_WINDOWS = {
 
 
 # Plotting parameters
-FONTSIZE = 8
+TICKFONTSIZE = 8
+LABELFONTSIZE = 12 
 plt.rcParams.update({
-    'font.size': FONTSIZE,
-    'axes.labelsize': FONTSIZE,
-    'axes.titlesize': FONTSIZE,
-    'xtick.labelsize': FONTSIZE,
-    'ytick.labelsize': FONTSIZE,
-    'legend.fontsize': FONTSIZE
+    'font.size': TICKFONTSIZE,
+    'axes.labelsize': LABELFONTSIZE,
+    'axes.titlesize': LABELFONTSIZE,
+    'xtick.labelsize': TICKFONTSIZE,
+    'ytick.labelsize': TICKFONTSIZE,
+    'legend.fontsize': LABELFONTSIZE
 })
 
 SESSIONTYPE2FLOAT = {

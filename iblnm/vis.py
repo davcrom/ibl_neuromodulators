@@ -74,33 +74,70 @@ def set_plotsize(w, h=None, ax=None):
     ax.figure.set_size_inches(figw, figh)
 
 
-def session_overview_matrix(df, columns='day_n', ax=None):
+def session_overview_matrix(df, columns='day_n', highlight='good', ax=None):
+    """
+    Plot a matrix of sessions per subject, colored by session type.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Sessions dataframe with 'subject', 'session_type', and column specified by `columns`
+    columns : str
+        Column to use for x-axis (e.g., 'day_n', 'session_n')
+    highlight : str, callable, or None
+        Criteria for highlighting sessions at full opacity (others shown at 50%):
+        - 'good': highlight sessions where session_status == 'good'
+        - 'all': highlight all sessions
+        - 'none': no highlighting (all at 50%)
+        - callable: function(df) -> boolean mask
+    ax : matplotlib.axes.Axes, optional
+        Axes to plot on
+
+    Raises
+    ------
+    ValueError
+        If there is more than one session per subject/column cell
+    """
     df = df.copy()
-    df['session_type_float'] = df['session_type'].map(SESSIONTYPE2FLOAT)  # convert session type to numerical value
+    df['_session_type_float'] = df['session_type'].map(SESSIONTYPE2FLOAT)
 
-    def _raise_error_on_duplicate(x):
-        if len(x) > 1:
-            raise ValueError(f"Duplicate entries found: {list(x)}")
-        return x.iloc[0]
+    # Check for duplicates
+    duplicates = df.groupby(['subject', columns]).size()
+    if (duplicates > 1).any():
+        dup_cells = duplicates[duplicates > 1]
+        raise ValueError(
+            f"Multiple sessions per cell. Remove duplicates before plotting.\n"
+            f"Duplicates:\n{dup_cells}"
+        )
 
-    def _resolve_duplicates(x):
-        return 1 if any(x == 'good') else 0
+    # Build highlight mask
+    if highlight == 'good':
+        highlight_mask = df['session_status'] == 'good'
+    elif highlight == 'all':
+        highlight_mask = pd.Series(True, index=df.index)
+    elif highlight == 'none' or highlight is None:
+        highlight_mask = pd.Series(False, index=df.index)
+    elif callable(highlight):
+        highlight_mask = highlight(df)
+    else:
+        raise ValueError(f"Invalid highlight value: {highlight}")
 
+    df['_highlight'] = highlight_mask.astype(int)
+
+    # Create matrices (no duplicates, so 'first' is fine)
     subject_matrix = df.pivot_table(
         index='subject',
         columns=columns,
-        values='session_type_float',
-        # aggfunc=_resolve_duplicates,  # produces a completely blank plot
-        aggfunc='first',  # produces the plot I want
+        values='_session_type_float',
+        aggfunc='first',
         fill_value=0
     )
 
     overlay_matrix = df.pivot_table(
         index='subject',
         columns=columns,
-        values='session_status',
-        # aggfunc=_raise_error_on_duplicate,  # to be certain, if passing a df that should already have duplicates removed
-        aggfunc=_resolve_duplicates,
+        values='_highlight',
+        aggfunc='first',
         fill_value=0
     )
 
@@ -110,50 +147,51 @@ def session_overview_matrix(df, columns='day_n', ax=None):
     # Create categorical colormap with only present session types
     color_list = ['white'] + [SESSIONTYPE2COLOR[st] for st in present_session_types]
     cmap = colors.ListedColormap(color_list)
-    # Create boundaries for discrete categories
     bounds = [0] + [SESSIONTYPE2FLOAT[st] for st in present_session_types] + [1.01]
     norm = colors.BoundaryNorm(bounds, cmap.N)
 
-    # Plot the matrix with the custom colormap (figsize is determined by dimensions)
+    # Plot base matrix at 50% opacity
     if ax is None:
         fig, ax = plt.subplots(figsize=(0.15 * len(subject_matrix.columns), 0.15 * len(subject_matrix)))
-    im = ax.matshow(subject_matrix, cmap=cmap, norm=norm, alpha=0.5)
-    # Create a copy of subject_matrix for the overlay
+    ax.matshow(subject_matrix, cmap=cmap, norm=norm, alpha=0.5)
+
+    # Overlay highlighted sessions at full opacity
     overlay_subject_matrix = subject_matrix.copy()
-    # Set values to NaN where overlay_matrix is True (good sessions)
     overlay_subject_matrix[~overlay_matrix.astype(bool)] = np.nan
-    # Plot the overlay with full opacity
-    im_overlay = ax.matshow(overlay_subject_matrix, cmap=cmap, norm=norm, alpha=1)
+    ax.matshow(overlay_subject_matrix, cmap=cmap, norm=norm, alpha=1)
 
     # Format axes
     ax.set_yticks(np.arange(len(subject_matrix)))
     ax.set_yticklabels(subject_matrix.index)
     ax.set_ylabel('Subject')
     ax.xaxis.tick_top()
-    ax.set_xticks(np.arange(len(subject_matrix.columns)))
+    ax.set_xticks(np.arange(0, len(subject_matrix.columns) + 1, 10))
     ax.tick_params(axis='x', rotation=90)
     ax.xaxis.set_label_position('top')
     ax.set_xlabel(columns)
 
-    # Add custom gridlines
-    for xtick in ax.get_xticks():
+    # Add gridlines
+    for xtick in np.arange(len(subject_matrix.columns)):
         ax.axvline(xtick - 0.5, color='white')
-    for ytick in ax.get_yticks():
+    for ytick in np.arange(len(subject_matrix)):
         ax.axhline(ytick - 0.5, color='white')
 
-    # Calculate tick positions at the center of each color segment for the colorbar
-    tick_positions = [(bounds[i] + bounds[i + 1]) / 2 for i in range(1, len(bounds) - 1)]  # skip the first entry for 0/absent
-    tick_labels = present_session_types  # only show session types present in the data
-
-    # Plot the colorbar
-    cbar = plt.colorbar(im, ax=ax, shrink=0.5, boundaries=bounds, ticks=tick_positions)
-    cbar.set_ticklabels(tick_labels)
-    cbar.ax.set_ylim(bounds[1], bounds[-1])  # exclude 0/absent
+    # Colorbar
+    tick_positions = [(bounds[i] + bounds[i + 1]) / 2 for i in range(1, len(bounds) - 1)]
+    cbar = plt.colorbar(ax.images[0], ax=ax, shrink=0.5, boundaries=bounds, ticks=tick_positions)
+    cbar.set_ticklabels(present_session_types)
+    cbar.ax.set_ylim(bounds[1], bounds[-1])
 
     return ax
 
 
 def target_overview_barplot(df_sessions, ax=None, barwidth=0.8):
+    """Stacked bar plot of session counts per target region, by session type."""
+    if len(df_sessions) == 0:
+        if ax is None:
+            fig, ax = plt.subplots()
+        ax.set_title("No data to plot")
+        return ax
 
     # Create a target_NM x session_type matrix with session counts
     df_n = df_sessions.pivot_table(
@@ -161,79 +199,70 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8):
         index='target_NM',
         aggfunc='size',
         fill_value=0
-        )
+    )
 
     if ax is None:
         fig, ax = plt.subplots()
 
     xpos = [TARGETNM2POSITION[target_NM] for target_NM in df_n.index]
-    ypos = np.zeros(len(df_n))  # bar heights start at 0
-    barwidth = barwidth
+    ypos = np.zeros(len(df_n))
 
-    # Loop over session types for a stacked bar plot
-    for session_type in ['training', 'biased', 'ephys']:
+    # Loop over session types present in data
+    session_types = [st for st in ['training', 'biased', 'ephys'] if st in df_n.columns]
+    for session_type in session_types:
         ns = df_n[session_type]
         color = SESSIONTYPE2COLOR[session_type]
-        ax.bar(
-            xpos, ns, bottom=ypos, width=barwidth, color=color, label=session_type
-            )
-        for i, (x, n, y_bottom) in enumerate(zip(xpos, ns, ypos)):
-            if n == 0: continue  # only show text if there are sessions
-            ax.text(
-                x, y_bottom + n/2, str(n),
-                ha='center', va='center',
-                fontweight='bold', color='white'
-                )
+        ax.bar(xpos, ns, bottom=ypos, width=barwidth, color=color, label=session_type)
+        for x, n, y_bottom in zip(xpos, ns, ypos):
+            if n > 0:
+                ax.text(x, y_bottom + n/2, str(n), ha='center', va='center',
+                        fontweight='bold', color='white')
         ypos += ns
 
     ax.set_xticks(list(xpos))
     n_mice = df_sessions.groupby('target_NM').apply(
         lambda x: len(x['subject'].unique()),
         include_groups=False
-        )
+    )
     ax.set_xticklabels(
         ['%s\n(%d mice)' % (target_NM, n_mice.loc[target_NM]) for target_NM in df_n.index]
     )
     ax.set_xlim(right=max(xpos) + barwidth)
     ax.tick_params(axis='x', rotation=90)
-    ax.set_yticks(np.arange(0, np.ceil(max(ypos) / 100) + 1) * 100)
+    if max(ypos) > 0:
+        ax.set_yticks(np.arange(0, np.ceil(max(ypos) / 100) + 1) * 100)
     ax.set_ylabel('N Sessions')
     ax.legend()
 
     n_recordings = len(df_sessions)
-    n_sessions = len(df_sessions.groupby('eid'))
-    n_mice = len(df_sessions.groupby('subject'))
-    ax.set_title(
-        f"{n_recordings} recordings, {n_sessions} sessions, {n_mice} mice"
-        )
+    n_sessions = df_sessions['eid'].nunique()
+    n_mice = df_sessions['subject'].nunique()
+    ax.set_title(f"{n_recordings} recordings, {n_sessions} sessions, {n_mice} mice")
 
     return ax
 
 
+def _add_bar_labels(ax, xpos, values, color='white'):
+    """Add centered text labels to bars."""
+    for x, n in zip(xpos, values):
+        if n > 0:
+            ax.text(x, n/2, str(int(n)), ha='center', va='center',
+                    fontweight='bold', color=color)
+
+
 def mouse_overview_barplot(df_sessions, min_biased=5, min_ephys=3, ax=None, barwidth=0.25):
     """
-    Create a barplot showing the number of mice with sufficient sessions for each target_NM.
+    Barplot showing mouse training progress per target region.
 
-    Parameters
-    ----------
-    df_sessions : pd.DataFrame
-        DataFrame with columns 'subject', 'target_NM', 'session_type'
-    min_biased : int
-        Minimum number of biased sessions required (default: 5)
-    min_ephys : int
-        Minimum number of ephys sessions required (default: 3)
-    ax : matplotlib.axes, optional
-        Axes to plot on
-    barwidth : float
-        Width of bars (default: 0.25)
-
-    Returns
-    -------
-    ax : matplotlib.axes
-        The axes object
+    Three bars per target: training-only, biased-ready (≥min_biased), ephys-ready (≥min_ephys).
+    If 'hemisphere' column present, x-axis labels include hemisphere counts.
     """
     if ax is None:
         fig, ax = plt.subplots()
+
+    if len(df_sessions) == 0:
+        ax.set_title("No data to plot")
+        return ax
 
     # Count sessions per subject per target_NM per session_type
     session_counts = df_sessions.groupby(['target_NM', 'subject', 'session_type']).size().reset_index(name='n_sessions')
@@ -244,6 +273,11 @@ def mouse_overview_barplot(df_sessions, min_biased=5, min_ephys=3, ax=None, barw
     results = []
     for target_nm in target_nms:
         target_data = session_counts[session_counts['target_NM'] == target_nm]
+
+        # Mice with training sessions
+        training_mice = target_data[
+            target_data['session_type'] == 'training'
+        ]['subject'].unique()
 
         # Mice with sufficient biased sessions
         biased_mice = target_data[
@@ -257,17 +291,11 @@ def mouse_overview_barplot(df_sessions, min_biased=5, min_ephys=3, ax=None, barw
             (target_data['n_sessions'] >= min_ephys)
         ]['subject'].unique()
 
-        # All mice for this target
-        all_mice = target_data['subject'].unique()
-
-        # Mice without sufficient biased sessions
-        insufficient_biased_mice = set(all_mice) - set(biased_mice)
-
         results.append({
             'target_NM': target_nm,
+            'n_training': len(training_mice),
             'n_biased': len(biased_mice),
             'n_ephys': len(ephys_mice),
-            'n_insufficient': len(insufficient_biased_mice)
         })
 
     df_results = pd.DataFrame(results)
@@ -275,36 +303,36 @@ def mouse_overview_barplot(df_sessions, min_biased=5, min_ephys=3, ax=None, barw
     # Get x positions based on TARGETNM_POSITIONS
     xpos = np.array([TARGETNM_POSITIONS[target_nm] for target_nm in df_results['target_NM']])
 
-    # Plot bars (insufficient first, then biased, then ephys)
-    ax.bar(xpos - barwidth, df_results['n_insufficient'].values, barwidth,
-           color='lightgray', label=f'< {min_biased} biased')
+    # Plot bars
+    ax.bar(xpos - barwidth, df_results['n_training'].values, barwidth,
+           color=SESSIONTYPE2COLOR['training'], label='training')
     ax.bar(xpos, df_results['n_biased'].values, barwidth,
-           color=SESSIONTYPE2COLOR['biased'], label=f'biased (≥{min_biased})')
+           color=SESSIONTYPE2COLOR['biased'], label=f'≥{min_biased} biased sessions')
     ax.bar(xpos + barwidth, df_results['n_ephys'].values, barwidth,
-           color=SESSIONTYPE2COLOR['ephys'], label=f'ephys (≥{min_ephys})')
+           color=SESSIONTYPE2COLOR['ephys'], label=f'≥{min_ephys} ephys sessions')
 
-    # Add text labels on bars (white, centered in bar)
-    for x, n in zip(xpos - barwidth, df_results['n_insufficient'].values):
-        if n > 0:
-            ax.text(x, n/2, str(int(n)), ha='center', va='center',
-                   fontweight='bold', color='white')
-    for x, n in zip(xpos, df_results['n_biased'].values):
-        if n > 0:
-            ax.text(x, n/2, str(int(n)), ha='center', va='center',
-                   fontweight='bold', color='white')
-    for x, n in zip(xpos + barwidth, df_results['n_ephys'].values):
-        if n > 0:
-            ax.text(x, n/2, str(int(n)), ha='center', va='center',
-                   fontweight='bold', color='white')
+    # Add text labels
+    _add_bar_labels(ax, xpos - barwidth, df_results['n_training'].values)
+    _add_bar_labels(ax, xpos, df_results['n_biased'].values)
+    _add_bar_labels(ax, xpos + barwidth, df_results['n_ephys'].values)
 
-    # Format axes
+    # Format axes with hemisphere counts if available
     ax.set_xticks(xpos)
-    ax.set_xticklabels(df_results['target_NM'].values)
+    if 'hemisphere' in df_sessions.columns:
+        labels = []
+        for target_nm in df_results['target_NM']:
+            target_data = df_sessions[df_sessions['target_NM'] == target_nm]
+            n_left = target_data[target_data['hemisphere'] == 'L']['subject'].nunique()
+            n_right = target_data[target_data['hemisphere'] == 'R']['subject'].nunique()
+            labels.append(f'{target_nm}\n({n_left}L, {n_right}R)')
+        ax.set_xticklabels(labels)
+    else:
+        ax.set_xticklabels(df_results['target_NM'].values)
     ax.tick_params(axis='x', rotation=90)
     ax.set_ylabel('N Mice')
     ax.set_xlabel('Target-NM')
     ax.legend()
-    ax.set_title(f'Mouse training progress by target')
+    ax.set_title('Mouse training progress by target')
 
     return ax
 
