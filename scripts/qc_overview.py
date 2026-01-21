@@ -9,10 +9,12 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_CLEAN_FPATH, QCPHOTOMETRY_FPATH,
+    PROJECT_ROOT, SESSIONS_CLEAN_FPATH, QCPHOTOMETRY_FPATH, FIGURE_DPI,
     VALID_TARGETS,  # noqa: F401 (used in pandas query with @VALID_TARGETS)
 )
-from iblnm.vis import session_overview_matrix, target_overview_barplot, set_plotsize
+from iblnm.vis import (
+    session_overview_matrix, target_overview_barplot, mouse_overview_barplot, set_plotsize
+)
 
 plt.ion()
 
@@ -28,16 +30,17 @@ df_qc = pd.read_parquet(QCPHOTOMETRY_FPATH)
 columns = 'session_n'
 
 highlight_configs = [
-    ('has_trials', lambda df: df['has_trials']),
-    ('has_photometry', lambda df: df['has_photometry']),
-    ('trials_in_photometry_time', lambda df: df['trials_in_photometry_time']),
+    ('trials data', lambda df: df['has_trials']),
+    ('photometry data', lambda df: df['has_photometry']),
+    ('synchronized trials and photometry', lambda df: df['trials_in_photometry_time']),
 ]
 
 for name, highlight_func in highlight_configs:
     ax = session_overview_matrix(df_sessions, columns=columns, highlight=highlight_func)
     ax.set_title(f'Sessions with {name}')
     set_plotsize(w=48, h=32, ax=ax)
-    ax.get_figure().savefig(figures_dir / f'session_overview_{name}.svg', bbox_inches='tight')
+    fpath = figures_dir / f'session_overview_{name.replace(" ", "_")}.svg'
+    ax.get_figure().savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
 
 # --- Target Overview Barplots ---
 
@@ -55,8 +58,9 @@ df_targets = df_targets.query('target_NM in @VALID_TARGETS').copy()
 
 # Plot target overview for complete sessions
 ax = target_overview_barplot(df_targets)
-ax.set_title(f'Sessions with trials + photometry + aligned times\n{ax.get_title()}')
-# ~ set_plotsize(w=24, h=12, ax=ax)
+ax.set_title(f'Sessions with synchronized trials and photometry\n{ax.get_title()}')
+fpath = figures_dir / 'target_overview_complete.svg'
+ax.get_figure().savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
 
 # --- Target Overview with QC criteria ---
 
@@ -68,11 +72,19 @@ ax.set_title(f'Sessions with trials + photometry + aligned times\n{ax.get_title(
 qc_per_session = df_qc.groupby('eid').agg({
     'n_early_samples': 'max',  # if any recording has early samples, max > 0
     'n_band_inversions': 'max',
+    'n_unique_samples': 'min',  # if any recording has low unique samples, min < threshold
 }).reset_index()
 
 qc_per_session['passes_qc'] = (
     (qc_per_session['n_early_samples'] == 0) &
     (qc_per_session['n_band_inversions'] == 0)
+)
+
+# Baseline QC: no early samples, no band inversions, >10% unique samples
+qc_per_session['passes_baseline_qc'] = (
+    (qc_per_session['n_early_samples'] == 0) &
+    (qc_per_session['n_band_inversions'] == 0) &
+    (qc_per_session['n_unique_samples'] > 0.1)
 )
 
 # Merge with complete sessions
@@ -81,7 +93,7 @@ df_qc_good = df_complete.merge(
     on='eid',
     how='left'
 )
-df_qc_good = df_qc_good[df_qc_good['passes_qc']].copy()
+df_qc_good = df_qc_good[df_qc_good['passes_qc'].fillna(False)].copy()
 
 # Explode to targets
 df_targets_qc = df_qc_good.explode(column='target').dropna(subset='target')
@@ -91,7 +103,45 @@ df_targets_qc = df_targets_qc.query('target_NM in @VALID_TARGETS').copy()
 # Plot
 ax = target_overview_barplot(df_targets_qc)
 ax.set_title(f'Sessions with no early samples & no band inversions\n{ax.get_title()}')
-# ~ set_plotsize(w=24, h=12, ax=ax)
+fpath = figures_dir / 'target_overview_qc.svg'
+ax.get_figure().savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
+
+# --- Baseline QC: no early samples, no band inversions, >10% unique samples ---
+
+# Merge baseline QC with complete sessions
+df_baseline = df_complete.merge(
+    qc_per_session[['eid', 'passes_baseline_qc']],
+    on='eid',
+    how='left'
+)
+df_baseline = df_baseline[df_baseline['passes_baseline_qc'].fillna(False)].copy()
+
+# Session overview matrix for baseline QC
+ax = session_overview_matrix(
+    df_sessions, columns=columns,
+    highlight=lambda df: df['eid'].isin(df_baseline['eid'])
+)
+ax.set_title('Sessions passing baseline QC')
+set_plotsize(w=48, h=32, ax=ax)
+fpath = figures_dir / 'session_overview_baseline_qc.svg'
+ax.get_figure().savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
+
+# Explode to targets for barplots
+df_targets_baseline = df_baseline.explode(column='target').dropna(subset='target')
+df_targets_baseline['target_NM'] = df_targets_baseline['target'].str.split('-').str[0] + '-' + df_targets_baseline['NM']
+df_targets_baseline = df_targets_baseline.query('target_NM in @VALID_TARGETS').copy()
+
+# Target overview barplot
+ax = target_overview_barplot(df_targets_baseline)
+ax.set_title(f'Sessions passing baseline QC\n{ax.get_title()}')
+fpath = figures_dir / 'target_overview_baseline_qc.svg'
+ax.get_figure().savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
+
+# Mouse overview barplot
+ax = mouse_overview_barplot(df_targets_baseline)
+ax.set_title(f'Mice passing baseline QC\n{ax.get_title()}')
+fpath = figures_dir / 'mouse_overview_baseline_qc.svg'
+ax.get_figure().savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
 
 # Summary
 print("\n=== Summary ===")
@@ -101,3 +151,4 @@ print(f"  has_photometry: {df_sessions['has_photometry'].sum()}")
 print(f"  trials_in_photometry_time: {df_sessions['trials_in_photometry_time'].sum()}")
 print(f"  all complete: {len(df_complete)}")
 print(f"  passes QC: {len(df_qc_good)}")
+print(f"  passes baseline QC: {len(df_baseline)}")

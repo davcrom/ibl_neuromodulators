@@ -234,8 +234,9 @@ RESPONSE_WINDOWS = {
 
 
 # Plotting parameters
+FIGURE_DPI = 150
 TICKFONTSIZE = 8
-LABELFONTSIZE = 12 
+LABELFONTSIZE = 12
 plt.rcParams.update({
     'font.size': TICKFONTSIZE,
     'axes.labelsize': LABELFONTSIZE,
