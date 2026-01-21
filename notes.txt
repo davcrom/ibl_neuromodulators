@@ -1,3 +1,11 @@
+2026-01-20
+----------
+[][CHECK] is biasCW_ephyssession protocol is handled properly by protocol2type? (BCW but with a template session, may be excluded)
+[][CHECK] one instance of two session types on same day
+[][TODO] Decide on conflicts instead of dropping
+[][TODO] NM/target_NM should come from df_sessions merge in dervied tables
+[][TODO] Check if data flags from metadata match actual data availability
+
 2026-01-19
 ---------
 [][TODO] Add isosbestic_correction_pipeline

@@ -39,6 +39,30 @@ IBL fiber photometry analysis: data from Alyx → QC → event-based neural resp
 | **IBL Dev** | Use existing code, ensure test coverage | Exists in brainbox/iblphotometry? Tests? Error handling? |
 | **Data Scientist** | Clean, minimal implementation | Valid inputs? Pythonic? Output correct? |
 
+## Code Design Principles
+
+### Module vs Script
+- **Modules (`iblnm/`)**: Generic, reusable functions. No analysis-specific parameters.
+- **Scripts (`scripts/`)**: Analysis-specific logic, filtering, figure layouts.
+
+### Data Classes
+- Lazy loading by default
+- Access data directly, don't wrap in getter methods
+- Convenience methods on the class for common operations
+
+### Functions
+- One job per function
+- Use pandas built-ins for filtering/grouping
+- Compute first, merge metadata after
+- Simple names: `fraction_correct()` not `compute_fraction_correct()`
+
+### Docstrings
+- Only for complex functions with many parameters
+- Let code be self-documenting otherwise
+
+### Script Separation
+- Separate computation from plotting into different scripts
+
 ## Project Structure
 
 ```
@@ -46,9 +70,10 @@ iblnm/           # Core package
   config.py      # Paths, mappings, parameters (check here first)
   data.py        # PhotometrySession class
   io.py          # Alyx queries
+  task.py        # Task performance computation
   analysis.py    # Response extraction
-  util.py        # Helpers
-  vis.py         # Plotting
+  util.py        # Helpers, metadata merging
+  vis.py         # Plotting (generic functions)
 scripts/         # Analysis scripts
 tests/           # pytest
 specs/           # Planning docs

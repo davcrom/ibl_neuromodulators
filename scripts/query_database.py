@@ -121,6 +121,40 @@ print(
     f"\n  {n_exceptions} sessions with exceptions"
 )
 
+
+# Add convenience columns
+df_sessions['date'] = pd.to_datetime(df_sessions['start_time'], format='ISO8601').dt.date
+df_sessions['day_n'] = df_sessions.groupby('subject')['date'].transform(
+    lambda x: [(date - x.min()).days for date in x]
+)
+df_sessions['session_n'] = df_sessions.groupby('subject')['date'].rank(method='dense')
+
+# Get session length
+df_sessions['session_length'] = df_sessions.apply(get_session_length, axis='columns')
+
+# Add dataset flags
+df_sessions = add_dataset_flags(df_sessions)
+
+# Add convenience flags
+# ~df_sessions['has_extracted_behavior'] = df_sessions['has_extracted_task'] & df_sessions['has_extracted_wheel']
+df_sessions['has_extracted_photometry'] = df_sessions['has_extracted_photometry_signal'] & df_sessions['has_extracted_photometry_locations']
+
+# Define completion criteria (requires both task & photometry)
+df_sessions['data_complete'] = (
+    df_sessions['has_extracted_task'] &
+    df_sessions['has_extracted_photometry']
+)
+df_sessions['trials_complete'] = df_sessions['n_trials'] > MIN_NTRIALS
+
+# Resolve session status (good/junk/conflict)
+session_groups = df_sessions.groupby(['subject', 'date', 'session_type'], group_keys=False)
+df_sessions['session_status'] = session_groups.apply(
+    resolve_session_status,
+    columns=['data_complete', 'trials_complete'],
+    include_groups=False
+)
+
+
 # Save sessions
 df2pqt(df_sessions, SESSIONS_FPATH)
 

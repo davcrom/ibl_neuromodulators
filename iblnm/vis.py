@@ -589,3 +589,543 @@ def plot_joint_distributions(df, metrics=None, transform=True, bins=30, figsize=
             else:  # Lower triangle: turn off axes
                 ax.axis("off")
     return fig, X
+
+
+# =============================================================================
+# Task Performance Visualization Functions
+# =============================================================================
+
+def plot_stage_barplot(
+    df_stage_counts: pd.DataFrame,
+    ax: plt.Axes = None
+) -> plt.Axes:
+    """
+    Barplot of mice that reached each stage.
+
+    Parameters
+    ----------
+    df_stage_counts : pd.DataFrame
+        DataFrame from count_sessions_to_stage with columns:
+        subject, target_NM, n_training, n_biased, n_ephys
+    target_nm : str, optional
+        Filter to specific target-NM. If None, use all.
+    ax : plt.Axes, optional
+        Axes to plot on.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(4, 3))
+
+    df = df_stage_counts.copy()
+
+    # Count mice at each stage
+    n_training = (df['n_training'] > 0).sum()
+    n_biased = (df['n_biased'] > 0).sum()
+    n_ephys = (df['n_ephys'] > 0).sum()
+
+    stages = ['Training', 'Biased', 'Ephys']
+    counts = [n_training, n_biased, n_ephys]
+    colors = [SESSIONTYPE2COLOR.get('training', 'cornflowerblue'),
+              SESSIONTYPE2COLOR.get('biased', 'mediumpurple'),
+              SESSIONTYPE2COLOR.get('ephys', 'hotpink')]
+
+    bars = ax.bar(stages, counts, color=colors)
+
+    # Add count labels on bars
+    for bar, count in zip(bars, counts):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                str(count), ha='center', va='bottom', fontweight='bold')
+
+    ax.set_ylabel('N mice')
+
+    return ax
+
+
+def plot_sessions_to_stage_cdf(
+    df_stage_counts: pd.DataFrame,
+    stage: str,
+    target_nm: str = None,
+    ax: plt.Axes = None,
+    color: str = None
+) -> plt.Axes:
+    """
+    CDF of sessions to reach stage.
+
+    Parameters
+    ----------
+    df_stage_counts : pd.DataFrame
+        DataFrame from count_sessions_to_stage.
+    stage : str
+        Either 'biased' or 'ephys'.
+    target_nm : str, optional
+        Filter to specific target-NM.
+    ax : plt.Axes, optional
+        Axes to plot on.
+    color : str, optional
+        Line color.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(4, 3))
+
+    df = df_stage_counts.copy()
+    if target_nm is not None:
+        df = df[df['target_NM'] == target_nm]
+
+    if stage == 'biased':
+        col = 'sessions_to_biased'
+        xlabel = 'Training sessions to biased'
+    elif stage == 'ephys':
+        col = 'biased_sessions_to_ephys'
+        xlabel = 'Biased sessions to ephys'
+    else:
+        raise ValueError(f"stage must be 'biased' or 'ephys', got {stage}")
+
+    # Get values (excluding NaN = mice that didn't reach stage)
+    values = df[col].dropna().values
+
+    if len(values) == 0:
+        ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+        return ax
+
+    # Sort for CDF
+    sorted_vals = np.sort(values)
+    cdf = np.arange(1, len(sorted_vals) + 1) / len(sorted_vals)
+
+    # Plot
+    if color is None:
+        color = TARGETNM_COLORS.get(target_nm, 'gray') if target_nm else 'gray'
+
+    ax.step(sorted_vals, cdf, where='post', color=color, linewidth=2)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel('Cumulative proportion')
+    ax.set_ylim(0, 1.05)
+    ax.set_title(f'{target_nm}' if target_nm else 'All targets')
+
+    return ax
+
+
+def plot_psychometric_parameter_trajectory(
+    df_fits: pd.DataFrame,
+    parameter: str,
+    target_nm: str = None,
+    has_photometry_col: str = 'has_extracted_photometry_signal',
+    ax: plt.Axes = None
+) -> plt.Axes:
+    """
+    Plot trajectory of psychometric parameter across training sessions.
+
+    One line per mouse (no grand mean). Thick lines for mice with photometry,
+    thin lines for mice without.
+
+    Parameters
+    ----------
+    df_fits : pd.DataFrame
+        Dataframe with columns: subject, session_n, target_NM, {parameter},
+        and optionally has_photometry_col.
+    parameter : str
+        Which parameter to plot ('bias', 'threshold', 'lapse_left', 'lapse_right').
+    target_nm : str, optional
+        Filter to specific target-NM.
+    has_photometry_col : str
+        Column name indicating if session has extracted photometry.
+    ax : plt.Axes, optional
+        Axes to plot on.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+    df = df_fits.copy()
+    if target_nm is not None and 'target_NM' in df.columns:
+        df = df[df['target_NM'] == target_nm]
+
+    if parameter not in df.columns:
+        ax.text(0.5, 0.5, f'No {parameter} data', ha='center', va='center',
+                transform=ax.transAxes)
+        return ax
+
+    # Get base color
+    base_color = TARGETNM_COLORS.get(target_nm, 'gray') if target_nm else 'gray'
+
+    # Check if photometry column exists
+    has_phot_col = has_photometry_col in df.columns
+
+    # Plot each subject
+    for subject, sub_df in df.groupby('subject'):
+        sub_df = sub_df.sort_values('session_n')
+
+        # Determine line thickness based on photometry
+        if has_phot_col:
+            # If any session has photometry, use thick line
+            has_phot = sub_df[has_photometry_col].any()
+        else:
+            has_phot = False
+
+        linewidth = 2 if has_phot else 0.8
+        alpha = 0.9 if has_phot else 0.5
+
+        ax.plot(sub_df['session_n'], sub_df[parameter],
+                color=base_color, linewidth=linewidth, alpha=alpha)
+
+    ax.set_xlabel('Session number')
+    ax.set_ylabel(parameter.replace('_', ' ').title())
+    ax.set_title(f'{target_nm}' if target_nm else 'All targets')
+
+    return ax
+
+
+def plot_psychometric_curves_50(
+    df_fits: pd.DataFrame,
+    target_nm: str = None,
+    ax: plt.Axes = None,
+    contrast_range: tuple = (-100, 100)
+) -> plt.Axes:
+    """
+    Plot psychometric curves for 50-50 block.
+
+    Shows thin line per session + thick grand mean.
+
+    Parameters
+    ----------
+    df_fits : pd.DataFrame
+        Dataframe with psychometric parameters (psych_50_bias, psych_50_threshold, etc.)
+    target_nm : str, optional
+        Filter to specific target-NM.
+    ax : plt.Axes, optional
+        Axes to plot on.
+    contrast_range : tuple
+        Range of contrasts to plot.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    import psychofit as psy
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+    df = df_fits.copy()
+    if target_nm is not None and 'target_NM' in df.columns:
+        df = df[df['target_NM'] == target_nm]
+
+    # Check for required columns
+    required_cols = ['psych_50_bias', 'psych_50_threshold', 'psych_50_lapse_left', 'psych_50_lapse_right']
+    if not all(col in df.columns for col in required_cols):
+        ax.text(0.5, 0.5, 'No psychometric data', ha='center', va='center',
+                transform=ax.transAxes)
+        return ax
+
+    # Filter rows with valid fits
+    df = df.dropna(subset=required_cols)
+
+    if len(df) == 0:
+        ax.text(0.5, 0.5, 'No valid fits', ha='center', va='center',
+                transform=ax.transAxes)
+        return ax
+
+    # Contrast values for plotting
+    contrasts = np.linspace(contrast_range[0], contrast_range[1], 200)
+
+    # Get color
+    color = TARGETNM_COLORS.get(target_nm, 'gray') if target_nm else 'gray'
+
+    # Plot individual sessions (thin lines)
+    all_curves = []
+    for _, row in df.iterrows():
+        params = [row['psych_50_bias'], row['psych_50_threshold'],
+                  row['psych_50_lapse_right'], row['psych_50_lapse_left']]  # Note: lapse order
+        curve = psy.erf_psycho_2gammas(params, contrasts)
+        all_curves.append(curve)
+        ax.plot(contrasts, curve, color=color, alpha=0.2, linewidth=0.5)
+
+    # Plot grand mean (thick line)
+    mean_curve = np.mean(all_curves, axis=0)
+    ax.plot(contrasts, mean_curve, color=color, linewidth=2.5, label='Mean')
+
+    ax.axhline(0.5, color='gray', linestyle='--', alpha=0.5)
+    ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Signed contrast (%)')
+    ax.set_ylabel('P(choose right)')
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_title(f'{target_nm} (50-50 block)' if target_nm else '50-50 block')
+
+    return ax
+
+
+def plot_psychometric_curves_by_block(
+    df_fits: pd.DataFrame,
+    target_nm: str = None,
+    ax: plt.Axes = None,
+    contrast_range: tuple = (-100, 100)
+) -> plt.Axes:
+    """
+    Plot psychometric grand mean curves by block type.
+
+    Shows one curve per block type (20/50/80) - grand mean only.
+
+    Parameters
+    ----------
+    df_fits : pd.DataFrame
+        Dataframe with psychometric parameters for each block.
+    target_nm : str, optional
+        Filter to specific target-NM.
+    ax : plt.Axes, optional
+        Axes to plot on.
+    contrast_range : tuple
+        Range of contrasts to plot.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    import psychofit as psy
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+    df = df_fits.copy()
+    if target_nm is not None and 'target_NM' in df.columns:
+        df = df[df['target_NM'] == target_nm]
+
+    contrasts = np.linspace(contrast_range[0], contrast_range[1], 200)
+
+    # Block colors
+    block_colors = {'20': '#e74c3c', '50': '#2c3e50', '80': '#3498db'}
+    block_labels = {'20': 'p(left)=0.2', '50': 'p(left)=0.5', '80': 'p(left)=0.8'}
+
+    for block in ['20', '50', '80']:
+        cols = [f'psych_{block}_bias', f'psych_{block}_threshold',
+                f'psych_{block}_lapse_left', f'psych_{block}_lapse_right']
+
+        if not all(col in df.columns for col in cols):
+            continue
+
+        block_df = df.dropna(subset=cols)
+        if len(block_df) == 0:
+            continue
+
+        # Compute curves for all sessions
+        all_curves = []
+        for _, row in block_df.iterrows():
+            params = [row[cols[0]], row[cols[1]], row[cols[3]], row[cols[2]]]  # bias, thresh, lapse_high, lapse_low
+            curve = psy.erf_psycho_2gammas(params, contrasts)
+            all_curves.append(curve)
+
+        # Plot grand mean
+        mean_curve = np.mean(all_curves, axis=0)
+        ax.plot(contrasts, mean_curve, color=block_colors[block],
+                linewidth=2, label=block_labels[block])
+
+    ax.axhline(0.5, color='gray', linestyle='--', alpha=0.5)
+    ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Signed contrast (%)')
+    ax.set_ylabel('P(choose right)')
+    ax.set_ylim(-0.05, 1.05)
+    ax.legend(loc='lower right')
+    ax.set_title(f'{target_nm}' if target_nm else 'All targets')
+
+    return ax
+
+
+def plot_psychometric_parameters_boxplot(
+    df_fits: pd.DataFrame,
+    parameter: str,
+    target_nm: str = None,
+    ax: plt.Axes = None
+) -> plt.Axes:
+    """
+    Boxplot of psychometric parameter by block type.
+
+    Parameters
+    ----------
+    df_fits : pd.DataFrame
+        Dataframe with psychometric parameters.
+    parameter : str
+        Which parameter to plot ('bias', 'threshold', 'lapse_left', 'lapse_right').
+    target_nm : str, optional
+        Filter to specific target-NM.
+    ax : plt.Axes, optional
+        Axes to plot on.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(4, 3))
+
+    df = df_fits.copy()
+    if target_nm is not None and 'target_NM' in df.columns:
+        df = df[df['target_NM'] == target_nm]
+
+    # Block colors
+    block_colors = {'20': '#e74c3c', '50': '#2c3e50', '80': '#3498db'}
+
+    data = []
+    positions = []
+    colors = []
+
+    for i, block in enumerate(['20', '50', '80']):
+        col = f'psych_{block}_{parameter}'
+        if col not in df.columns:
+            continue
+        values = df[col].dropna().values
+        if len(values) > 0:
+            data.append(values)
+            positions.append(i)
+            colors.append(block_colors[block])
+
+    if len(data) == 0:
+        ax.text(0.5, 0.5, f'No {parameter} data', ha='center', va='center',
+                transform=ax.transAxes)
+        return ax
+
+    bp = ax.boxplot(data, positions=positions, patch_artist=True, widths=0.6)
+
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.6)
+
+    ax.set_xticks(range(3))
+    ax.set_xticklabels(['p(L)=0.2', 'p(L)=0.5', 'p(L)=0.8'])
+    ax.set_ylabel(parameter.replace('_', ' ').title())
+    ax.set_title(f'{target_nm}' if target_nm else 'All targets')
+
+    return ax
+
+
+def plot_bias_shift_trajectory(
+    df_fits: pd.DataFrame,
+    target_nm: str = None,
+    ax: plt.Axes = None
+) -> plt.Axes:
+    """
+    Plot bias shift trajectories across biased sessions per mouse.
+
+    Parameters
+    ----------
+    df_fits : pd.DataFrame
+        Dataframe with bias_shift column and session info.
+    target_nm : str, optional
+        Filter to specific target-NM.
+    ax : plt.Axes, optional
+        Axes to plot on.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+    df = df_fits.copy()
+    if target_nm is not None and 'target_NM' in df.columns:
+        df = df[df['target_NM'] == target_nm]
+
+    if 'bias_shift' not in df.columns:
+        ax.text(0.5, 0.5, 'No bias shift data', ha='center', va='center',
+                transform=ax.transAxes)
+        return ax
+
+    # Filter to biased sessions with valid bias shift
+    df = df[df['bias_shift'].notna()]
+
+    if len(df) == 0:
+        ax.text(0.5, 0.5, 'No valid bias shifts', ha='center', va='center',
+                transform=ax.transAxes)
+        return ax
+
+    # Get color
+    color = TARGETNM_COLORS.get(target_nm, 'gray') if target_nm else 'gray'
+
+    # Plot each subject
+    for subject, sub_df in df.groupby('subject'):
+        sub_df = sub_df.sort_values('session_n')
+
+        # Create biased session index (1, 2, 3, ...)
+        sub_df = sub_df.reset_index(drop=True)
+        sub_df['biased_session_idx'] = sub_df.index + 1
+
+        ax.plot(sub_df['biased_session_idx'], sub_df['bias_shift'],
+                color=color, alpha=0.7, linewidth=1, marker='o', markersize=3)
+
+    ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Biased session number')
+    ax.set_ylabel('Bias shift (80-20)')
+    ax.set_title(f'{target_nm}' if target_nm else 'All targets')
+
+    return ax
+
+
+def create_psychometric_figure(
+    df_sessions: pd.DataFrame,
+    df_fits: pd.DataFrame,
+    target_nms: list = None
+) -> plt.Figure:
+    """
+    Create complete psychometric analysis figure.
+
+    Layout: target-NM as columns, rows:
+    1. Psychometric curves for 50-50 block (thin per session + mean)
+    2. Psychometric curves by block (grand mean only)
+    3. Boxplots of bias by block
+    4. Boxplots of threshold by block
+    5. Boxplots of lapse_left by block
+    6. Boxplots of lapse_right by block
+    7. Bias shift trajectory
+
+    Parameters
+    ----------
+    df_sessions : pd.DataFrame
+        Sessions dataframe.
+    df_fits : pd.DataFrame
+        Psychometric fits for biased/ephys sessions.
+    target_nms : list, optional
+        List of target-NMs to include.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    from iblnm.config import VALID_TARGETS
+
+    if target_nms is None:
+        target_nms = [t for t in VALID_TARGETS if 'target_NM' in df_fits.columns and t in df_fits['target_NM'].values]
+
+    if len(target_nms) == 0:
+        target_nms = [None]  # Plot all data together
+
+    n_cols = len(target_nms)
+    n_rows = 7
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.5 * n_cols, 2.5 * n_rows))
+    if n_cols == 1:
+        axes = axes.reshape(-1, 1)
+
+    for col, target_nm in enumerate(target_nms):
+        # Row 0: Psychometric curves 50-50
+        plot_psychometric_curves_50(df_fits, target_nm=target_nm, ax=axes[0, col])
+
+        # Row 1: Psychometric curves by block
+        plot_psychometric_curves_by_block(df_fits, target_nm=target_nm, ax=axes[1, col])
+
+        # Rows 2-5: Parameter boxplots
+        for row, param in enumerate(['bias', 'threshold', 'lapse_left', 'lapse_right'], start=2):
+            plot_psychometric_parameters_boxplot(df_fits, param, target_nm=target_nm, ax=axes[row, col])
+
+        # Row 6: Bias shift trajectory
+        plot_bias_shift_trajectory(df_fits, target_nm=target_nm, ax=axes[6, col])
+
+    plt.tight_layout()
+    return fig
