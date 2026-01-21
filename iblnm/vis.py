@@ -74,7 +74,7 @@ def set_plotsize(w, h=None, ax=None):
     ax.figure.set_size_inches(figw, figh)
 
 
-def session_overview_matrix(df, columns='day_n', highlight='good', ax=None):
+def session_overview_matrix(df, columns='session_n', highlight='good', ax=None):
     """
     Plot a matrix of sessions per subject, colored by session type.
 
@@ -232,6 +232,7 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8):
     if max(ypos) > 0:
         ax.set_yticks(np.arange(0, np.ceil(max(ypos) / 100) + 1) * 100)
     ax.set_ylabel('N Sessions')
+    ax.set_xlabel('Target-NM')
     ax.legend()
 
     n_recordings = len(df_sessions)
@@ -647,9 +648,8 @@ def plot_stage_barplot(
 def plot_sessions_to_stage_cdf(
     df_stage_counts: pd.DataFrame,
     stage: str,
-    target_nm: str = None,
     ax: plt.Axes = None,
-    color: str = None
+    color=None
 ) -> plt.Axes:
     """
     CDF of sessions to reach stage.
@@ -660,23 +660,13 @@ def plot_sessions_to_stage_cdf(
         DataFrame from count_sessions_to_stage.
     stage : str
         Either 'biased' or 'ephys'.
-    target_nm : str, optional
-        Filter to specific target-NM.
     ax : plt.Axes, optional
         Axes to plot on.
-    color : str, optional
+    color : optional
         Line color.
-
-    Returns
-    -------
-    plt.Axes
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=(4, 3))
-
-    df = df_stage_counts.copy()
-    if target_nm is not None:
-        df = df[df['target_NM'] == target_nm]
 
     if stage == 'biased':
         col = 'sessions_to_biased'
@@ -688,7 +678,7 @@ def plot_sessions_to_stage_cdf(
         raise ValueError(f"stage must be 'biased' or 'ephys', got {stage}")
 
     # Get values (excluding NaN = mice that didn't reach stage)
-    values = df[col].dropna().values
+    values = df_stage_counts[col].dropna().values
 
     if len(values) == 0:
         ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
@@ -700,13 +690,12 @@ def plot_sessions_to_stage_cdf(
 
     # Plot
     if color is None:
-        color = TARGETNM_COLORS.get(target_nm, 'gray') if target_nm else 'gray'
+        color = 'gray'
 
     ax.step(sorted_vals, cdf, where='post', color=color, linewidth=2)
     ax.set_xlabel(xlabel)
     ax.set_ylabel('Cumulative proportion')
     ax.set_ylim(0, 1.05)
-    ax.set_title(f'{target_nm}' if target_nm else 'All targets')
 
     return ax
 
@@ -714,40 +703,21 @@ def plot_sessions_to_stage_cdf(
 def plot_psychometric_parameter_trajectory(
     df_fits: pd.DataFrame,
     parameter: str,
-    target_nm: str = None,
     has_photometry_col: str = 'has_extracted_photometry_signal',
-    ax: plt.Axes = None
+    ax: plt.Axes = None,
+    color=None,
+    show_mean: bool = True
 ) -> plt.Axes:
     """
     Plot trajectory of psychometric parameter across training sessions.
 
-    One line per mouse (no grand mean). Thick lines for mice with photometry,
-    thin lines for mice without.
-
-    Parameters
-    ----------
-    df_fits : pd.DataFrame
-        Dataframe with columns: subject, session_n, target_NM, {parameter},
-        and optionally has_photometry_col.
-    parameter : str
-        Which parameter to plot ('bias', 'threshold', 'lapse_left', 'lapse_right').
-    target_nm : str, optional
-        Filter to specific target-NM.
-    has_photometry_col : str
-        Column name indicating if session has extracted photometry.
-    ax : plt.Axes, optional
-        Axes to plot on.
-
-    Returns
-    -------
-    plt.Axes
+    One line per mouse. Thick lines for mice with photometry,
+    thin lines for mice without. Optional mean across mice in black.
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=(5, 4))
 
     df = df_fits.copy()
-    if target_nm is not None and 'target_NM' in df.columns:
-        df = df[df['target_NM'] == target_nm]
 
     if parameter not in df.columns:
         ax.text(0.5, 0.5, f'No {parameter} data', ha='center', va='center',
@@ -755,7 +725,7 @@ def plot_psychometric_parameter_trajectory(
         return ax
 
     # Get base color
-    base_color = TARGETNM_COLORS.get(target_nm, 'gray') if target_nm else 'gray'
+    base_color = color if color is not None else 'gray'
 
     # Check if photometry column exists
     has_phot_col = has_photometry_col in df.columns
@@ -771,15 +741,79 @@ def plot_psychometric_parameter_trajectory(
         else:
             has_phot = False
 
-        linewidth = 2 if has_phot else 0.8
-        alpha = 0.9 if has_phot else 0.5
+        linewidth = 1.5 if has_phot else 0.5
+        alpha = 0.7 if has_phot else 0.3
 
         ax.plot(sub_df['session_n'], sub_df[parameter],
                 color=base_color, linewidth=linewidth, alpha=alpha)
 
+    # Plot mean across mice
+    if show_mean:
+        mean_df = df.groupby('session_n')[parameter].mean().reset_index()
+        ax.plot(mean_df['session_n'], mean_df[parameter],
+                color='black', linewidth=2, alpha=1.0, zorder=10)
+
     ax.set_xlabel('Session number')
     ax.set_ylabel(parameter.replace('_', ' ').title())
-    ax.set_title(f'{target_nm}' if target_nm else 'All targets')
+
+    return ax
+
+
+def plot_performance_trajectory(
+    df: pd.DataFrame,
+    metric: str = 'fraction_correct',
+    has_photometry_col: str = 'has_extracted_photometry_signal',
+    ax: plt.Axes = None,
+    color=None,
+    show_mean: bool = True
+) -> plt.Axes:
+    """
+    Plot trajectory of performance metric across sessions.
+
+    One line per mouse. Thick lines for mice with photometry,
+    thin lines for mice without. Optional mean across mice in black.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+    df = df.copy()
+
+    if metric not in df.columns:
+        ax.text(0.5, 0.5, f'No {metric} data', ha='center', va='center',
+                transform=ax.transAxes)
+        return ax
+
+    # Get base color
+    base_color = color if color is not None else 'gray'
+
+    # Check if photometry column exists
+    has_phot_col = has_photometry_col in df.columns
+
+    # Plot each subject
+    for subject, sub_df in df.groupby('subject'):
+        sub_df = sub_df.sort_values('session_n')
+
+        # Determine line thickness based on photometry
+        if has_phot_col:
+            has_phot = sub_df[has_photometry_col].any()
+        else:
+            has_phot = False
+
+        linewidth = 1.5 if has_phot else 0.5
+        alpha = 0.7 if has_phot else 0.3
+
+        ax.plot(sub_df['session_n'], sub_df[metric],
+                color=base_color, linewidth=linewidth, alpha=alpha)
+
+    # Plot mean across mice
+    if show_mean:
+        mean_df = df.groupby('session_n')[metric].mean().reset_index()
+        ax.plot(mean_df['session_n'], mean_df[metric],
+                color='black', linewidth=2, alpha=1.0, zorder=10)
+
+    ax.set_xlabel('Session number')
+    ax.set_ylabel(metric.replace('_', ' ').title())
+    ax.axhline(0.5, color='gray', linestyle='--', alpha=0.5, linewidth=1)
 
     return ax
 
@@ -1069,7 +1103,6 @@ def plot_bias_shift_trajectory(
 
 
 def create_psychometric_figure(
-    df_sessions: pd.DataFrame,
     df_fits: pd.DataFrame,
     target_nms: list = None
 ) -> plt.Figure:
@@ -1087,10 +1120,8 @@ def create_psychometric_figure(
 
     Parameters
     ----------
-    df_sessions : pd.DataFrame
-        Sessions dataframe.
     df_fits : pd.DataFrame
-        Psychometric fits for biased/ephys sessions.
+        Psychometric fits for biased/ephys sessions with target_NM column.
     target_nms : list, optional
         List of target-NMs to include.
 

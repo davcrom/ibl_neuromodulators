@@ -283,7 +283,14 @@ class PhotometrySession(PhotometrySessionLoader):
         result['min_block_length'] = block_info['min_block_length']
         result['n_blocks'] = block_info['n_blocks']
 
-        if block_info['valid']:
+        # Training sessions: fit 50-50 only (no bias blocks)
+        if self.session_type == 'training':
+            fit_50 = self.fit_psychometric(probability_left=0.5)
+            for param, value in fit_50.items():
+                result[f'psych_50_{param}'] = value
+
+        # Biased/ephys: fit by block if structure is valid
+        elif block_info['valid'] and self.session_type in ['biased', 'ephys']:
             fits = self.fit_psychometric_by_block()
             for block_name, fit in fits.items():
                 for param, value in fit.items():

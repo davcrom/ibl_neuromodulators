@@ -34,6 +34,14 @@ def add_dataset_flags(df):
     return df
 
 
+def add_target_nm(df):
+    """Explode sessions by target and add target_NM column."""
+    df = df.explode('target')
+    df['target_NM'] = df['target'].str.split('-').str[0] + '-' + df['NM']
+    df = df.query('target_NM in @VALID_TARGETS').copy()
+    return df
+
+
 def add_hemisphere(df_sessions, df_fibers=None):
     """
     Add hemisphere column to sessions based on fiber coordinates.

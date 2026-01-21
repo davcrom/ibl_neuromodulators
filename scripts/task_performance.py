@@ -10,47 +10,77 @@ Computes for each session:
 - Block structure validation (flag sessions with rapidly flipping blocks)
 - Bias shift (difference between 80% and 20% blocks)
 
-Output: metadata/performance.pqt
+Output: data/performance.pqt, data/performance_log.pqt
 """
+import traceback
 from pathlib import Path
 
 import pandas as pd
 from tqdm import tqdm
 
-from iblnm.config import SESSIONS_FPATH, PERFORMANCE_FPATH
+from iblnm.config import SESSIONS_FPATH, PERFORMANCE_FPATH, PERFORMANCE_LOG_FPATH
 from iblnm.io import _get_default_connection
 from iblnm.util import clean_sessions, drop_junk_duplicates, merge_session_metadata
 from iblnm.data import PhotometrySession
 
 
 def compute_all_session_performance(df_sessions, one=None, verbose=True):
+    """
+    Compute task performance metrics for all sessions.
+
+    Returns
+    -------
+    df_performance : pd.DataFrame
+        Performance metrics per session
+    df_log : pd.DataFrame
+        Error log for failed sessions
+    """
     if one is None:
         one = _get_default_connection()
 
     results = []
+    error_log = []
 
     for _, session_series in tqdm(df_sessions.iterrows(), total=len(df_sessions),
                                    desc="Computing task performance", disable=not verbose):
         eid = session_series['eid']
+        subject = session_series.get('subject', 'unknown')
         result = {'eid': eid}
 
-        ps = PhotometrySession(session_series, one=one)
-        ps.load_trials()
-
-        if not ps.has_trials:
-            results.append(result)
-            continue
-
         try:
+            ps = PhotometrySession(session_series, one=one)
+            ps.load_trials()
+
+            if not ps.has_trials:
+                error_log.append({
+                    'eid': eid,
+                    'subject': subject,
+                    'error_type': 'NoTrials',
+                    'error_message': 'No trials data available'
+                })
+                results.append(result)
+                continue
+
             perf = ps.task_performance()
             result.update(perf)
+
         except Exception as e:
-            if verbose:
-                print(f"Error computing performance for {eid}: {e}")
+            error_log.append({
+                'eid': eid,
+                'subject': subject,
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'traceback': traceback.format_exc()
+            })
 
         results.append(result)
 
-    return pd.DataFrame(results)
+    df_performance = pd.DataFrame(results)
+    df_log = pd.DataFrame(error_log) if error_log else pd.DataFrame(
+        columns=['eid', 'subject', 'error_type', 'error_message', 'traceback']
+    )
+
+    return df_performance, df_log
 
 
 if __name__ == '__main__':
@@ -66,7 +96,7 @@ if __name__ == '__main__':
 
     # Compute performance metrics
     print("\nComputing performance metrics for each session...")
-    df_performance = compute_all_session_performance(df_sessions, one=one)
+    df_performance, df_log = compute_all_session_performance(df_sessions, one=one)
 
     # Merge session metadata
     df_performance = merge_session_metadata(df_performance)
@@ -76,3 +106,10 @@ if __name__ == '__main__':
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df_performance.to_parquet(PERFORMANCE_FPATH)
     print(f"\nSaved performance data to {PERFORMANCE_FPATH}")
+
+    # Save error log
+    df_log.to_parquet(PERFORMANCE_LOG_FPATH)
+    print(f"Saved error log to {PERFORMANCE_LOG_FPATH}")
+    if len(df_log) > 0:
+        print(f"  {len(df_log)} sessions with errors/warnings")
+        print(f"  Error types: {df_log['error_type'].value_counts().to_dict()}")

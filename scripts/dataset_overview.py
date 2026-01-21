@@ -41,7 +41,7 @@ highlight_configs = [
 ]
 
 for name, highlight_func in highlight_configs:
-    ax = session_overview_matrix(df_plot, columns=columns, highlight=highlight_func)
+    ax = session_overview_matrix(df_plot, highlight=highlight_func)
     ax.set_title(f'Sessions with {name}')
     set_plotsize(w=48, h=32, ax=ax)
     ax.get_figure().savefig(figures_dir / f'session_overview_{name}.svg', bbox_inches='tight')

@@ -14,7 +14,8 @@ INSERTIONS_FPATH = PROJECT_ROOT / 'metadata/insertions.csv'  # file with subject
 FIBERS_FPATH = PROJECT_ROOT / 'metadata/fibers.csv'
 QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
 QCPHOTOMETRY_LOG_FPATH = PROJECT_ROOT / 'data/qc_photometry_log.pqt'
-PERFORMANCE_FPATH = PROJECT_ROOT / 'metadata/performance.pqt'
+PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
+PERFORMANCE_LOG_FPATH = PROJECT_ROOT / 'data/performance_log.pqt'
 
 
 # Values to extract from the session dict
