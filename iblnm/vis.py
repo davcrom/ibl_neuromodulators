@@ -250,11 +250,15 @@ def _add_bar_labels(ax, xpos, values, color='white'):
                     fontweight='bold', color=color)
 
 
-def mouse_overview_barplot(df_sessions, min_biased=5, min_ephys=3, ax=None, barwidth=0.25):
+def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None, barwidth=0.25):
     """
     Barplot showing mouse training progress per target region.
 
-    Three bars per target: training-only, biased-ready (≥min_biased), ephys-ready (≥min_ephys).
+    Three bars per target:
+    - training: mice with any training sessions
+    - biased/ephys: mice with ≥min_biased_ephys combined biased+ephys sessions
+    - ephys: mice with ≥min_ephys ephys sessions
+
     If 'hemisphere' column present, x-axis labels include hemisphere counts.
     """
     if ax is None:
@@ -279,11 +283,11 @@ def mouse_overview_barplot(df_sessions, min_biased=5, min_ephys=3, ax=None, barw
             target_data['session_type'] == 'training'
         ]['subject'].unique()
 
-        # Mice with sufficient biased sessions
-        biased_mice = target_data[
-            (target_data['session_type'] == 'biased') &
-            (target_data['n_sessions'] >= min_biased)
-        ]['subject'].unique()
+        # Mice with sufficient biased + ephys sessions combined
+        biased_ephys_counts = target_data[
+            target_data['session_type'].isin(['biased', 'ephys'])
+        ].groupby('subject')['n_sessions'].sum()
+        biased_ephys_mice = biased_ephys_counts[biased_ephys_counts >= min_biased_ephys].index
 
         # Mice with sufficient ephys sessions
         ephys_mice = target_data[
@@ -294,7 +298,7 @@ def mouse_overview_barplot(df_sessions, min_biased=5, min_ephys=3, ax=None, barw
         results.append({
             'target_NM': target_nm,
             'n_training': len(training_mice),
-            'n_biased': len(biased_mice),
+            'n_biased_ephys': len(biased_ephys_mice),
             'n_ephys': len(ephys_mice),
         })
 
@@ -306,14 +310,14 @@ def mouse_overview_barplot(df_sessions, min_biased=5, min_ephys=3, ax=None, barw
     # Plot bars
     ax.bar(xpos - barwidth, df_results['n_training'].values, barwidth,
            color=SESSIONTYPE2COLOR['training'], label='training')
-    ax.bar(xpos, df_results['n_biased'].values, barwidth,
-           color=SESSIONTYPE2COLOR['biased'], label=f'≥{min_biased} biased sessions')
+    ax.bar(xpos, df_results['n_biased_ephys'].values, barwidth,
+           color=SESSIONTYPE2COLOR['biased'], label=f'≥{min_biased_ephys} biased/ephys')
     ax.bar(xpos + barwidth, df_results['n_ephys'].values, barwidth,
-           color=SESSIONTYPE2COLOR['ephys'], label=f'≥{min_ephys} ephys sessions')
+           color=SESSIONTYPE2COLOR['ephys'], label=f'≥{min_ephys} ephys')
 
     # Add text labels
     _add_bar_labels(ax, xpos - barwidth, df_results['n_training'].values)
-    _add_bar_labels(ax, xpos, df_results['n_biased'].values)
+    _add_bar_labels(ax, xpos, df_results['n_biased_ephys'].values)
     _add_bar_labels(ax, xpos + barwidth, df_results['n_ephys'].values)
 
     # Format axes with hemisphere counts if available

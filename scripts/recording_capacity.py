@@ -141,6 +141,21 @@ if __name__ == '__main__':
     df_sessions = pd.read_parquet(SESSIONS_CLEAN_FPATH)
     df_qc = pd.read_parquet(QCPHOTOMETRY_FPATH)
 
+    # =========================================================================
+    # FILTER: Only include mice from mainenlab
+    # =========================================================================
+    df_sessions = df_sessions[df_sessions['lab'] == 'mainenlab']
+
+    # =========================================================================
+    # FILTER: Only include mice that started training in 2024 or later
+    # =========================================================================
+    df_sessions['start_time'] = pd.to_datetime(df_sessions['start_time'], format='ISO8601')
+    first_session = df_sessions.groupby('subject')['start_time'].min()
+    subjects_2024 = first_session[first_session >= '2024-01-01'].index
+    df_sessions = df_sessions[df_sessions['subject'].isin(subjects_2024)]
+
+    print(f"Filtered to {df_sessions['subject'].nunique()} mainenlab subjects started 2024+")
+
     # Add QC flags
     qc_per_session = get_qc_per_session(df_qc)
     df_sessions = df_sessions.merge(qc_per_session[['eid', 'passes_baseline_qc']], on='eid', how='left')
@@ -189,14 +204,43 @@ if __name__ == '__main__':
 
     # Overall stats for projection
     subjects_with_5_good = df_stage[df_stage['has_5_good_biased']]
-    mean_sessions = subjects_with_5_good['sessions_to_5_good_biased'].mean()
+    n_successful = len(subjects_with_5_good)
+    n_total = len(df_stage)
+
+    # Mean sessions for successful mice only (naive estimate)
+    mean_sessions_naive = subjects_with_5_good['sessions_to_5_good_biased'].mean()
+
+    # Total sessions consumed by ALL mice (including dropouts)
+    # For successful mice: sessions up to reaching 5 good biased
+    # For dropout mice: all their sessions (they consumed capacity but didn't reach target)
+    sessions_per_subject = df_sessions.groupby('subject').size()
+    df_stage['total_sessions'] = df_stage['subject'].map(sessions_per_subject)
+
+    # For successful mice, cap at sessions_to_5_good_biased (don't count sessions after reaching target)
+    df_stage['sessions_consumed'] = df_stage.apply(
+        lambda r: r['sessions_to_5_good_biased'] if r['has_5_good_biased'] else r['total_sessions'],
+        axis=1
+    )
+
+    total_sessions_consumed = df_stage['sessions_consumed'].sum()
+
+    # Effective sessions per successful mouse = total consumed / successful mice
+    if n_successful > 0:
+        effective_sessions = total_sessions_consumed / n_successful
+    else:
+        effective_sessions = float('inf')
+
+    success_rate = n_successful / n_total if n_total > 0 else 0
 
     print(f"\n=== Recording Capacity Projection ===")
     print(f"Target date: {target_date}")
     print(f"Mice per day: {mice_per_day}")
-    print(f"Mean sessions to 5 good biased: {mean_sessions:.1f}")
+    print(f"\nSuccess rate: {n_successful}/{n_total} ({100*success_rate:.0f}%)")
+    print(f"Mean sessions (successful mice only): {mean_sessions_naive:.1f}")
+    print(f"Total sessions consumed (all mice): {total_sessions_consumed:.0f}")
+    print(f"Effective sessions per successful mouse: {effective_sessions:.1f}")
 
-    n_mice, weekdays, slots = estimate_mice_by_date(target_date, mice_per_day, mean_sessions)
-    print(f"Weekdays until target: {weekdays}")
+    n_mice, weekdays, slots = estimate_mice_by_date(target_date, mice_per_day, effective_sessions)
+    print(f"\nWeekdays until target: {weekdays}")
     print(f"Total training slots: {slots}")
-    print(f"Estimated mice to 5 good biased: {n_mice}")
+    print(f"Estimated successful mice: {n_mice}")
