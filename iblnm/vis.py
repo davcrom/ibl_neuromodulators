@@ -342,36 +342,69 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None
     return ax
 
 
-def qc_grid(df, qc_columns=None, qcval2num=None, ax=None, yticklabels=None,
-           legend=True):
+def qc_grid(df, qc_columns=None, qcval2num=None, ax=None, yticklabels='eid',
+            legend=True):
+    # Get fresh QCVAL2NUM from config to avoid stale imports
     if qcval2num is None:
+        from iblnm.config import QCVAL2NUM
         qcval2num = QCVAL2NUM
+
+    # Ensure qc_columns is a list
     if qc_columns is None:
-        qc_columns = df.columns
-    df_qc = df[qc_columns].replace(qcval2num)
+        qc_columns = list(df.columns)
+    else:
+        qc_columns = list(qc_columns)
+
+    # Extract and convert QC values to numeric
+    df_qc = df[qc_columns].copy()
+    for col in qc_columns:
+        df_qc[col] = df_qc[col].map(lambda x: qcval2num.get(x, x))
+    df_qc = df_qc.astype(float)
+
+    # Create figure if needed
+    n_rows, n_cols = len(df_qc), len(qc_columns)
     if ax is None:
-        fig, ax = plt.subplots()
-    qcmat = df_qc.values.astype(float)
+        fig, ax = plt.subplots(figsize=(max(6, n_cols * 0.5), max(4, n_rows * 0.15)))
+
+    # Plot the matrix
+    qcmat = df_qc.values
     ax.matshow(qcmat, cmap=QCCMAP, vmin=0, vmax=1, aspect='auto')
-    ax.set_yticks(np.arange(len(df_qc)))
-    if type(yticklabels) == str:
-        ax.set_xticklabels(df[yticklabels])
-    elif type(yticklabels) == list:
-        yticklabels = df.apply(lambda x: '_'.join(x[yticklabels].astype(str)), axis='columns')
-        ax.set_yticklabels(yticklabels)
-    ax.set_xticks(np.arange(len(df_qc.columns)))
+
+    # Set ticks and labels
+    ax.set_yticks(np.arange(n_rows))
+    ax.set_xticks(np.arange(n_cols))
     ax.set_xticklabels(qc_columns)
-    ax.tick_params(axis='x', rotation=90)
-    for xtick in ax.get_xticks():
-        ax.axvline(xtick - 0.5, color='white')
-    for ytick in ax.get_yticks():
-        ax.axhline(ytick - 0.5, color='white')
+    ax.tick_params(axis='x', rotation=90, labelsize=8)
+    ax.tick_params(axis='y', labelsize=7)
+
+    # Row labels: default to truncated eid
+    if yticklabels == 'eid' and 'eid' in df.columns:
+        ax.set_yticklabels(df['eid'].str[:6])
+    elif isinstance(yticklabels, str) and yticklabels in df.columns:
+        ax.set_yticklabels(df[yticklabels])
+    elif isinstance(yticklabels, list):
+        labels = df.apply(lambda x: '_'.join(x[yticklabels].astype(str)), axis='columns')
+        ax.set_yticklabels(labels)
+
+    # Draw gridlines at cell boundaries
+    for i in range(n_cols + 1):
+        ax.axvline(i - 0.5, color='white', linewidth=0.5)
+    for i in range(n_rows + 1):
+        ax.axhline(i - 0.5, color='white', linewidth=0.5)
+
+    # Set axis limits
+    ax.set_xlim(-0.5, n_cols - 0.5)
+    ax.set_ylim(n_rows - 0.5, -0.5)
+
+    # Add legend
     if legend:
         for key, val in qcval2num.items():
-            ax.scatter(-1, -1, color=QCCMAP(val), label=key)
-        ax.set_xlim(left=-0.5)
-        ax.set_ylim(top=-0.5)
+            ax.scatter([], [], color=QCCMAP(val), label=key)
         ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+
+    # Adjust layout to make room for rotated column labels at top
+    ax.figure.subplots_adjust(top=0.7, right=0.85)
+
     return ax
 
 

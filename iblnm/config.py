@@ -168,6 +168,7 @@ VALID_TARGETS = [
 
 QCVAL2NUM = {
     np.nan: 0.,
+    'nan': 0.,  # string 'nan' from parquet files
     'NOT SET': 0.01,
     'NOT_SET': 0.01,
     'PASS': 1.,
