@@ -34,63 +34,173 @@ def add_dataset_flags(df):
     return df
 
 
-def add_target_nm(df):
-    """Explode sessions by target and add target_NM column."""
-    df = df.explode('target')
-    df['target_NM'] = df['target'].str.split('-').str[0] + '-' + df['NM']
-    df = df.query('target_NM in @VALID_TARGETS').copy()
-    return df
+def _strip_hemisphere_suffix(region):
+    """Extract base region name without hemisphere suffix (e.g., 'LC-r' -> 'LC')."""
+    if pd.isna(region):
+        return None
+    parts = str(region).split('-')
+    if len(parts) > 1 and parts[-1].lower() in ('l', 'r'):
+        return parts[0]
+    return region
 
 
-def add_hemisphere(df_sessions, df_fibers=None):
-    """
-    Add hemisphere column to sessions based on fiber coordinates.
+def _extract_hemisphere_from_name(region):
+    """Extract hemisphere from region name suffix (e.g., 'LC-r' -> 'R')."""
+    if pd.isna(region):
+        return None
+    parts = str(region).split('-')
+    if len(parts) > 1 and parts[-1].lower() in ('l', 'r'):
+        return parts[-1].upper()
+    return None
 
-    Hemisphere determined from X-ml_um: x<0 is right, x>0 is left.
-    If multiple fibers per subject+region, hemisphere is left blank.
 
-    Parameters
-    ----------
-    df_sessions : pd.DataFrame
-        Sessions dataframe with 'subject' and 'target' columns.
-        Target values like "VTA", "NBM-l", "SNc-r" are matched by region.
-    df_fibers : pd.DataFrame, optional
-        Fibers dataframe with 'subject', 'targeted_region', 'X-ml_um'.
-        If None, loads from FIBERS_FPATH.
-    """
-    df = df_sessions.copy()
-
+def _get_fiber_hemisphere_lookup(df_fibers=None):
+    """Build subject+region -> hemisphere lookup from fiber coordinates."""
     if df_fibers is None:
         try:
             df_fibers = pd.read_csv(FIBERS_FPATH)
         except FileNotFoundError:
-            df['hemisphere'] = np.nan
-            return df
+            return {}
 
-    # Extract region from target (strip -l/-r suffixes: "NBM-l" -> "NBM")
-    df['_region'] = df['target'].str.split('-').str[0]
-
-    # Determine hemisphere from X coordinate
     df_fibers = df_fibers.copy()
-    df_fibers['hemisphere'] = df_fibers['X-ml_um'].apply(
-        lambda x: 'L' if x > 0 else ('R' if x < 0 else 'M')
+    df_fibers['hemi'] = df_fibers['X-ml_um'].apply(
+        lambda x: 'L' if x > 0 else ('R' if x < 0 else None)
     )
+    return df_fibers.groupby(['subject', 'targeted_region'])['hemi'].first().to_dict()
 
-    # For each subject+region, keep hemisphere only if there's exactly one fiber
-    def get_unique_hemisphere(group):
-        if len(group) == 1:
-            return group.iloc[0]['hemisphere']
-        return np.nan
 
-    fiber_lookup = (
-        df_fibers.groupby(['subject', 'targeted_region'])
-        .apply(get_unique_hemisphere, include_groups=False)
-        .reset_index(name='hemisphere')
-    )
-    fiber_lookup = fiber_lookup.rename(columns={'targeted_region': '_region'})
+def process_regions(df, region_col='brain_region', df_fibers=None, add_hemisphere=True,
+                    infer_nm=True, filter_valid=True):
+    """
+    Process brain region column: normalize names, add hemisphere, infer NM, create target_NM.
 
-    df = df.merge(fiber_lookup, on=['subject', '_region'], how='left')
-    df = df.drop(columns=['_region'])
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with region column (e.g., 'brain_region' or 'target').
+    region_col : str
+        Column containing region names (e.g., 'LC-r', 'VTA', 'DRN').
+    df_fibers : pd.DataFrame, optional
+        Fibers dataframe for hemisphere lookup. If None, loads from FIBERS_FPATH.
+    add_hemisphere : bool
+        Whether to add 'hemisphere' column.
+    infer_nm : bool
+        Whether to infer NM from region when NM='none'.
+    filter_valid : bool
+        Whether to filter to VALID_TARGETS.
+
+    Returns
+    -------
+    pd.DataFrame
+        Processed DataFrame with columns: region_base, target_NM, and optionally hemisphere.
+    """
+    df = df.copy()
+
+    # Strip hemisphere suffix and normalize region names
+    df['region_base'] = df[region_col].apply(_strip_hemisphere_suffix)
+    df['region_base'] = df['region_base'].replace(REGION_NORMALIZE)
+
+    # Add hemisphere column
+    if add_hemisphere:
+        df['hemisphere'] = df[region_col].apply(_extract_hemisphere_from_name)
+
+        # Fill from fiber coordinates if subject column exists
+        if 'subject' in df.columns:
+            fiber_lookup = _get_fiber_hemisphere_lookup(df_fibers)
+            if fiber_lookup:
+                def get_fiber_hemi(row):
+                    return fiber_lookup.get((row['subject'], row['region_base']))
+
+                df['_hemi_fiber'] = df.apply(get_fiber_hemi, axis=1)
+
+                # Warn on mismatches
+                has_both = df['hemisphere'].notna() & df['_hemi_fiber'].notna()
+                mismatches = df[has_both & (df['hemisphere'] != df['_hemi_fiber'])]
+                if len(mismatches) > 0:
+                    print(f"Warning: {len(mismatches)} hemisphere mismatches (name vs fiber)")
+
+                # Fill missing from fiber
+                df['hemisphere'] = df['hemisphere'].combine_first(df['_hemi_fiber'])
+                df = df.drop(columns=['_hemi_fiber'])
+
+    # Infer NM from region when missing
+    if infer_nm and 'NM' in df.columns:
+        df['NM'] = df['NM'].where(df['NM'] != 'none', df['region_base'].map(TARGET2NM))
+
+    # Create target_NM column
+    if 'NM' in df.columns:
+        df['target_NM'] = df['region_base'] + '-' + df['NM']
+    else:
+        df['target_NM'] = df['region_base'].map(lambda r: f"{r}-{TARGET2NM.get(r, 'unknown')}")
+
+    # Filter to valid targets
+    if filter_valid:
+        df = df[df['target_NM'].isin(VALID_TARGETS)].copy()
+
+    return df
+
+
+def add_target_nm(df):
+    """Explode sessions by target and add target_NM column.
+
+    DEPRECATED: Use process_regions() for new code.
+    """
+    df = df.explode('target').dropna(subset='target')
+    return process_regions(df, region_col='target', add_hemisphere=False)
+
+
+def add_hemisphere(df, region_col='brain_region', df_fibers=None, priority='name'):
+    """
+    Add hemisphere column from region name suffix or fiber coordinates.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with region column containing names like "LC-r", "VTA", "SNc-l".
+    region_col : str
+        Column containing region names with optional hemisphere suffix.
+    df_fibers : pd.DataFrame, optional
+        Fibers dataframe with 'subject', 'targeted_region', 'X-ml_um'.
+        If None and FIBERS_FPATH exists, loads from file.
+    priority : str, default 'name'
+        Which source takes priority: 'name' (from suffix) or 'fiber' (from coords).
+    """
+    df = df.copy()
+
+    # Extract hemisphere from region name suffix
+    df['_hemi_name'] = df[region_col].apply(_extract_hemisphere_from_name)
+
+    # Extract base region (strip -l/-r suffix)
+    df['_region'] = df[region_col].apply(_strip_hemisphere_suffix)
+
+    # Get hemisphere from fiber coordinates
+    df['_hemi_fiber'] = None
+
+    if 'subject' in df.columns:
+        fiber_lookup = _get_fiber_hemisphere_lookup(df_fibers)
+        if fiber_lookup:
+            df['_hemi_fiber'] = df.apply(
+                lambda row: fiber_lookup.get((row['subject'], row['_region'])), axis=1
+            )
+
+    # Check for mismatches and warn
+    has_both = df['_hemi_name'].notna() & df['_hemi_fiber'].notna()
+    mismatches = df[has_both & (df['_hemi_name'] != df['_hemi_fiber'])]
+    if len(mismatches) > 0:
+        print(f"Warning: {len(mismatches)} hemisphere mismatches (name vs fiber):")
+        for _, row in mismatches.head(5).iterrows():
+            subj = row.get('subject', '?')
+            print(f"  {subj}/{row[region_col]}: name={row['_hemi_name']}, fiber={row['_hemi_fiber']}")
+        if len(mismatches) > 5:
+            print(f"  ... and {len(mismatches) - 5} more")
+
+    # Fill hemisphere based on priority
+    if priority == 'name':
+        df['hemisphere'] = df['_hemi_name'].combine_first(df['_hemi_fiber'])
+    else:
+        df['hemisphere'] = df['_hemi_fiber'].combine_first(df['_hemi_name'])
+
+    df = df.drop(columns=['_hemi_name', '_hemi_fiber', '_region'])
     return df
 
 
@@ -204,16 +314,80 @@ def protocol2type(protocol):
         raise ValueError
 
 
+def _is_heterogeneous(col):
+    """Check if column has mixed types (excluding None/NaN)."""
+    # Get types of non-null values
+    non_null = col.dropna()
+    if len(non_null) == 0:
+        return False
+    types = non_null.apply(type).unique()
+    # Allow int/float mixing (pandas handles this)
+    numeric_types = {int, float, np.int64, np.int32, np.float64, np.float32}
+    if all(t in numeric_types for t in types):
+        return False
+    return len(types) > 1
+
+
+def _sanitize_for_parquet(df):
+    """Convert heterogeneous columns to strings for Parquet compatibility."""
+    df = df.copy()
+    for col in df.columns:
+        if _is_heterogeneous(df[col]):
+            df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) else x)
+    return df
+
+
+def _recover_column_dtype(col):
+    """Try to recover original dtype from string column."""
+    from one.alf.spec import QC
+
+    # Skip non-string columns
+    if col.dtype != 'object':
+        return col
+
+    # Skip columns that are actually lists/dicts
+    non_null = col.dropna()
+    if len(non_null) == 0:
+        return col
+    if isinstance(non_null.iloc[0], (list, dict)):
+        return col
+
+    # Try numeric conversion first
+    try:
+        numeric = pd.to_numeric(col, errors='raise')
+        # Check if all values are whole numbers -> convert to Int64
+        if numeric.dropna().apply(lambda x: x == int(x)).all():
+            return numeric.astype('Int64')
+        return numeric
+    except (ValueError, TypeError):
+        pass
+
+    # Try QC enum conversion
+    qc_names = {e.name for e in QC}
+    non_null_str = non_null.astype(str)
+    if non_null_str.isin(qc_names).all():
+        return col.apply(lambda x: QC[x] if pd.notna(x) and x in qc_names else x)
+
+    # Keep as string
+    return col
+
+
 def df2pqt(df, fpath, timestamp=None):
+    """Save DataFrame to Parquet, converting heterogeneous columns to strings."""
     fpath = Path(fpath)
-    # Map all columns with non-uniform data types to strings
-    df = df.apply(
-        lambda col: col if col.map(type).nunique() == 1 else col.astype(str)
-        )
+    df = _sanitize_for_parquet(df)
     if timestamp is not None:
         timestamp = datetime.now().strftime("%Y-%m-%d-%Hh%M")
         fpath = fpath.with_stem(f"{fpath.stem}_{timestamp}.pqt")
     df.to_parquet(fpath, index=False)
+
+
+def pqt2df(fpath):
+    """Load DataFrame from Parquet and recover original dtypes."""
+    df = pd.read_parquet(fpath)
+    for col in df.columns:
+        df[col] = _recover_column_dtype(df[col])
+    return df
 
 
 def get_session_length(session):
@@ -397,3 +571,124 @@ def merge_session_metadata(
     )
 
     return df_merged
+
+
+def aggregate_qc_per_session(df_qc: pd.DataFrame, require_all: bool = True) -> pd.DataFrame:
+    """
+    Aggregate QC metrics per session and compute passes_basic_qc flag.
+
+    Parameters
+    ----------
+    df_qc : pd.DataFrame
+        QC results with columns: eid, n_unique_samples, n_band_inversions
+    require_all : bool
+        If True, all signals must pass for session to pass.
+        If False, any signal passing is sufficient.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: eid, passes_basic_qc
+    """
+    if len(df_qc) == 0:
+        return pd.DataFrame(columns=['eid', 'passes_basic_qc'])
+
+    if require_all:
+        # All signals must pass: min unique > 0.1, max inversions == 0
+        agg = df_qc.groupby('eid').agg({
+            'n_unique_samples': 'min',
+            'n_band_inversions': 'max',
+        }).reset_index()
+        agg['passes_basic_qc'] = (
+            (agg['n_unique_samples'] > 0.1) &
+            (agg['n_band_inversions'] == 0)
+        )
+    else:
+        # Any signal passing is sufficient: max unique > 0.1, min inversions == 0
+        agg = df_qc.groupby('eid').agg({
+            'n_unique_samples': 'max',
+            'n_band_inversions': 'min',
+        }).reset_index()
+        agg['passes_basic_qc'] = (
+            (agg['n_unique_samples'] > 0.1) &
+            (agg['n_band_inversions'] == 0)
+        )
+
+    return agg[['eid', 'passes_basic_qc']]
+
+
+def build_filter_status(df_sessions: pd.DataFrame, qc_agg: pd.DataFrame = None) -> pd.DataFrame:
+    """
+    Build DataFrame with filter status for each session.
+
+    Parameters
+    ----------
+    df_sessions : pd.DataFrame
+        Sessions with columns: eid, subject, has_raw_task, has_raw_photometry,
+        has_trials, has_photometry, trials_in_photometry_time
+    qc_agg : pd.DataFrame, optional
+        Output from aggregate_qc_per_session with columns: eid, passes_basic_qc
+
+    Returns
+    -------
+    pd.DataFrame
+        Filter status for each session with all boolean columns
+    """
+    cols = ['eid', 'subject', 'has_raw_task', 'has_raw_photometry',
+            'has_trials', 'has_photometry', 'trials_in_photometry_time']
+    result = df_sessions[cols].copy()
+
+    if qc_agg is not None and len(qc_agg) > 0:
+        result = result.merge(qc_agg[['eid', 'passes_basic_qc']], on='eid', how='left')
+        result['passes_basic_qc'] = result['passes_basic_qc'].astype('boolean').fillna(False).astype(bool)
+    else:
+        result['passes_basic_qc'] = False
+
+    return result
+
+
+def merge_failure_logs(
+    df_failures: pd.DataFrame,
+    logs: list[tuple[str, pd.DataFrame]]
+) -> pd.DataFrame:
+    """
+    Merge failure DataFrame with error logs from multiple sources.
+
+    Parameters
+    ----------
+    df_failures : pd.DataFrame
+        Sessions that failed some criterion, with at least 'eid' column
+    logs : list of (source_name, df_log) tuples
+        Each df_log should have columns: eid, exception_type, exception_message
+
+    Returns
+    -------
+    pd.DataFrame
+        Failures with error info columns added
+    """
+    result = df_failures.copy()
+
+    # Initialize error columns
+    result['exception_type'] = None
+    result['exception_message'] = None
+    result['source'] = None
+
+    for source_name, df_log in logs:
+        if df_log is None or len(df_log) == 0:
+            continue
+
+        # Get error info for sessions in this log
+        log_cols = ['eid', 'exception_type', 'exception_message']
+        available_cols = [c for c in log_cols if c in df_log.columns]
+        log_subset = df_log[available_cols].copy()
+        log_subset['source'] = source_name
+
+        # Update rows that match
+        for _, row in log_subset.iterrows():
+            mask = result['eid'] == row['eid']
+            if mask.any():
+                result.loc[mask, 'exception_type'] = row.get('exception_type')
+                result.loc[mask, 'exception_message'] = row.get('exception_message')
+                result.loc[mask, 'source'] = row.get('source')
+
+    return result

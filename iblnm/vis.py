@@ -2,40 +2,12 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib import colors
+from sklearn.preprocessing import quantile_transform
 
 from iblnm import config
 from iblnm.config import *
 from iblnm.config import QCVAL2NUM
 
-# Create colormap for QC grid plots
-QCCMAP = colors.LinearSegmentedColormap.from_list(
-    'qc_cmap',
-    [(0., 'white'), (0.01, 'gray'), (0.1, 'palevioletred'), (0.33, 'violet'), (0.66, 'orange'), (1., 'limegreen')],
-    N=256
-)
-
-# Target-NM colors
-TARGETNM_COLORS = {
-    'MR-5HT': '#df67faff',
-    'DR-5HT': '#b867faff',
-    'VTA-DA': '#ff413dff',
-    'SNc-DA': '#ff653dff',
-    'LC-NE': '#3f88faff',
-    'NBM-ACh': '#40afa1ff',
-    'SI-ACh': '#40afa1ff',
-    'PPT-ACh': '#00974eff',
-}
-
-TARGETNM_POSITIONS = {
-    'MR-5HT': 0,
-    'DR-5HT': 1,
-    'VTA-DA': 2,
-    'SNc-DA': 3,
-    'LC-NE': 4,
-    'NBM-ACh': 5,
-    'SI-ACh': 6,
-    'PPT-ACh': 7,
-}
 
 def set_plotsize(w, h=None, ax=None):
     """
@@ -204,7 +176,10 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8):
     if ax is None:
         fig, ax = plt.subplots()
 
-    xpos = [TARGETNM2POSITION[target_NM] for target_NM in df_n.index]
+    # Use contiguous positions for targets present in data (sorted by canonical order)
+    sorted_targets = sorted(df_n.index, key=lambda x: TARGETNM2POSITION.get(x, 999))
+    df_n = df_n.reindex(sorted_targets)
+    xpos = list(range(len(df_n)))
     ypos = np.zeros(len(df_n))
 
     # Loop over session types present in data
@@ -592,8 +567,10 @@ def plot_joint_distributions(df, metrics=None, transform=True, bins=30, figsize=
         metrics = df.columns
     n_metrics = len(metrics)
 
-    X = df[metrics].dropna().values
-    corr = df[metrics].dropna().corr(method='spearman')
+    # Replace inf with NaN (can occur in ratio metrics like percentile_asymmetry when denominator is 0)
+    df_clean = df[metrics].replace([np.inf, -np.inf], np.nan).dropna()
+    X = df_clean.values
+    corr = df_clean.corr(method='spearman')
     if transform:
         X = quantile_transform(X, output_distribution='normal', n_quantiles=500)
 
