@@ -2,6 +2,7 @@
 *.pdf
 *.png
 *.pqt
+specs/
 
 
 # Byte-compiled / optimized / DLL files
