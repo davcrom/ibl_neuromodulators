@@ -1,3 +1,9 @@
+2026-01-21
+----------
+[][TODO] Refactor to make sure no analysis-specific parameters are passed to module functions (e.g. target_nm in vis)
+[][TODO] Psychometric fitting without bunches?
+[][CHECK] Multiple collections when loading trials data
+
 2026-01-20
 ----------
 [][CHECK] is biasCW_ephyssession protocol is handled properly by protocol2type? (BCW but with a template session, may be excluded)

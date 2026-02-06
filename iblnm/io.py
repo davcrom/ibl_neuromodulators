@@ -100,7 +100,7 @@ def get_extended_qc(series, one=None):
         elif isinstance(val, (float, str)):
             series[key] = val
         elif val is None:
-            series[key] = 'NOT_SET'
+            series[key] = None  # Let pandas handle as NaN
         else:
             raise ValueError(f"Unexpected QC value type for '{key}': {type(val)}")
 

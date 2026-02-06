@@ -5,6 +5,8 @@ Runs quality control metrics on photometry sessions with:
 - Session filtering (excluded subjects/types)
 - Validate-as-you-go data loading via PhotometrySession
 - Data availability flags (has_trials, has_photometry, trials_in_photometry_time)
+- Raw signal QC (sliding window metrics)
+- Preprocessing QC (bleaching_tau, iso_correlation)
 - Error logging
 - Results caching
 
@@ -73,7 +75,14 @@ def run_qc_pipeline(df_sessions, one=None, verbose=True):
             continue
 
         try:
-            qc_results.append(ps.run_qc())
+            # Run raw signal QC (populates ps.qc with sliding window metrics)
+            ps.run_qc()
+
+            # Run preprocessing (adds bleaching_tau and iso_correlation to ps.qc)
+            ps.preprocess()
+
+            # Get all QC results as DataFrame
+            qc_results.append(ps.qc_to_dataframe())
         except Exception as e:
             exlog.append({
                 'eid': eid,
@@ -100,18 +109,31 @@ def run_qc_pipeline(df_sessions, one=None, verbose=True):
 if __name__ == '__main__':
     # Load sessions
     print(f"Loading sessions from {SESSIONS_FPATH}")
-    df_sessions = pd.read_parquet(SESSIONS_FPATH)
-    df_sessions = clean_sessions(df_sessions)
+    df_sessions_full = pd.read_parquet(SESSIONS_FPATH)
+    df_sessions = clean_sessions(df_sessions_full.copy())
     df_sessions = drop_junk_duplicates(df_sessions, ['subject', 'day_n'])
-    print(f"Loaded {len(df_sessions)} sessions")
+    print(f"Processing {len(df_sessions)} sessions (of {len(df_sessions_full)} total)")
 
     # Run QC pipeline
     one = _get_default_connection()
     df_sessions, df_qc, df_log = run_qc_pipeline(df_sessions, one=one)
 
+    # Merge QC flags into full sessions
+    qc_flag_cols = ['eid', 'has_trials', 'has_photometry', 'trials_in_photometry_time']
+    df_sessions_full = df_sessions_full.merge(
+        df_sessions[qc_flag_cols],
+        on='eid',
+        how='left'
+    )
+    # Fill missing flags with False (sessions that weren't processed)
+    for col in qc_flag_cols[1:]:
+        df_sessions_full[col] = df_sessions_full[col].fillna(False)
+
     # Save results
     QCPHOTOMETRY_FPATH.parent.mkdir(parents=True, exist_ok=True)
     df_qc.to_parquet(QCPHOTOMETRY_FPATH)
     df_log.to_parquet(QCPHOTOMETRY_LOG_FPATH)
+    df_sessions_full.to_parquet(SESSIONS_FPATH)
     print(f"\nSaved QC results to {QCPHOTOMETRY_FPATH}")
     print(f"Saved error log to {QCPHOTOMETRY_LOG_FPATH}")
+    print(f"Updated QC flags in {SESSIONS_FPATH}")

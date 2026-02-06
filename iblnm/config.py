@@ -2,12 +2,12 @@ import sys
 from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
+from matplotlib import colors
 
 # Paths
 PACKAGE_ROOT = Path(__file__).parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
 SESSIONS_FPATH = PROJECT_ROOT / 'metadata/sessions.pqt'
-SESSIONS_CLEAN_FPATH = PROJECT_ROOT / 'metadata/sessions_clean.pqt'
 SESSIONS_QC_FPATH = PROJECT_ROOT / 'metadata/sessions_qc.pqt'
 SESSIONS_LOG_FPATH = PROJECT_ROOT / 'metadata/sessions_log.pqt'
 INSERTIONS_FPATH = PROJECT_ROOT / 'metadata/insertions.csv'  # file with subject to brain region mapping
@@ -43,13 +43,14 @@ STRAIN2NM = {
     'Ai148xSERTCre': '5HT',
     'Ai148xDATCre': 'DA',
     'Ai148xDbhCre': 'NE',
+    'Ai148xDbh-Cre': 'NE',  # non-standard format, should be Ai148xDbhCre
     'Ai148xTHCre': 'NE',  ## TODO: double-check all THCre mice targeted LC-NE
-    # ~ 'B6.Cg': 'none',
     'Ai148xChATCre': 'ACh',
-    # ~ 'Ai148xDbh-Cre': 'NE',
-    # ~ 'B6.129S2': 'none',
     'Ai95xSERTCre': '5HT',
-    # ~ 'C57BL/6J': 'none',
+    # Wild-type strains (no NM) - rescued by line if available:
+    # 'B6.Cg': 'none',
+    # 'B6.129S2': 'none',
+    # 'C57BL/6J': 'none',
     None: 'none'
 }
 
@@ -57,14 +58,15 @@ LINE2NM = {
     'Ai148xSert': '5HT',
     'Ai148xDat': 'DA',
     'Ai148xDbh': 'NE',
-    # ~ 'Ai148-G6f-cdh x Chat-cre': 'ACh',
     'Ai148xTh': 'NE',
     'Ai148xChat': 'ACh',
-    # ~ 'Ai148xChAT': 'ACh',
-    # ~ 'C57BL/6J': 'none',
-    # ~ 'TetOG6s-Cdh23 x Camk-Cdh23': 'none',
+    'Ai148-G6f-cdh x Chat-cre': 'ACh',  # non-standard format, should be Ai148xChat
     None: 'none'
 }
+
+# Standard line/strain names (others are flagged for correction)
+STANDARD_LINES = {'Ai148xSert', 'Ai148xDat', 'Ai148xDbh', 'Ai148xTh', 'Ai148xChat'}
+STANDARD_STRAINS = {'Ai148xSERTCre', 'Ai148xDATCre', 'Ai148xDbhCre', 'Ai148xTHCre', 'Ai148xChATCre', 'Ai95xSERTCre'}
 
 TARGET2NM = {
     'VTA': 'DA',
@@ -76,6 +78,9 @@ TARGET2NM = {
     'SI': 'ACh',
     'PPT': 'ACh'
 }
+
+# Normalize non-standard brain region names
+REGION_NORMALIZE = {'DRN': 'DR', 'SNC': 'SNc'}
 
 SESSION_TYPES = [
     'habituation',
@@ -159,7 +164,7 @@ VALID_TARGETS = [
     'VTA-DA',
     'SNc-DA',
     'DR-5HT',
-    'MR-5HT',
+    # ~'MR-5HT',
     'LC-NE',
     'NBM-ACh',
     'SI-ACh',
@@ -199,18 +204,19 @@ QC_RAW_METRICS = [
 
 QC_SLIDING_METRICS = [
     'n_unique_samples',
-    'n_edges',
+    # 'n_edges',
     'median_absolute_deviance',
     'percentile_distance',
     'percentile_asymmetry',
-    'n_outliers',
-    'n_expmax_violations',
-    'expmax_violation',
+    # 'n_outliers',
+    # 'n_expmax_violations',
+    # 'expmax_violation',
     'ar_score'
 ]
 
 QC_PREPROCESSING = [
-    'photobleaching_tau',
+    'bleaching_tau',
+    'iso_correlation',
 ]
 
 QC_METRICS_KWARGS = {
@@ -247,6 +253,13 @@ plt.rcParams.update({
     'ytick.labelsize': TICKFONTSIZE,
     'legend.fontsize': LABELFONTSIZE
 })
+
+# Create colormap for QC grid plots
+QCCMAP = colors.LinearSegmentedColormap.from_list(
+    'qc_cmap',
+    [(0., 'white'), (0.01, 'gray'), (0.1, 'palevioletred'), (0.33, 'violet'), (0.66, 'orange'), (1., 'limegreen')],
+    N=256
+)
 
 SESSIONTYPE2FLOAT = {
     'habituation': 0.01,
@@ -288,6 +301,18 @@ NM_CMAPS = {
 }
 NM_COLORS = {nm: cmap(0.8) for nm, cmap in NM_CMAPS.items()}
 
+# Target-NM colors
+TARGETNM_COLORS = {
+    'MR-5HT': '#df67faff',
+    'DR-5HT': '#b867faff',
+    'VTA-DA': '#ff413dff',
+    'SNc-DA': '#ff653dff',
+    'LC-NE': '#3f88faff',
+    'NBM-ACh': '#40afa1ff',
+    'SI-ACh': '#40afa1ff',
+    'PPT-ACh': '#00974eff',
+}
+
 TARGETNM2POSITION = {
     'VTA-DA': 0,
     'SNc-DA': 1,
@@ -298,3 +323,18 @@ TARGETNM2POSITION = {
     'SI-ACh': 6,
     'PPT-ACh': 7
 }
+
+TARGETNM_POSITIONS = {
+    'MR-5HT': 0,
+    'DR-5HT': 1,
+    'VTA-DA': 2,
+    'SNc-DA': 3,
+    'LC-NE': 4,
+    'NBM-ACh': 5,
+    'SI-ACh': 6,
+    'PPT-ACh': 7,
+}
+
+
+
+

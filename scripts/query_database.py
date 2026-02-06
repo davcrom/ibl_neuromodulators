@@ -8,9 +8,12 @@ from one.api import ONE
 from iblnm.config import (
     EXCLUDE_SUBJECTS, SESSIONS_FPATH, SESSIONS_QC_FPATH, SESSIONS_LOG_FPATH, MIN_NTRIALS
 )
-from iblnm.io import get_subject_info, get_datasets, unpack_session_dict, get_target_regions, get_extended_qc
+from iblnm.io import (
+    get_subject_info, get_datasets, unpack_session_dict, get_target_regions,
+    get_extended_qc
+)
 from iblnm.util import (
-    protocol2type, df2pqt, clean_sessions, add_dataset_flags,
+    protocol2type, df2pqt, clean_sessions, add_dataset_flags, get_session_length,
     resolve_session_status, drop_junk_duplicates
 )
 
@@ -134,7 +137,6 @@ df_sessions['session_length'] = df_sessions.apply(get_session_length, axis='colu
 
 # Add dataset flags
 df_sessions = add_dataset_flags(df_sessions)
-
 # Add convenience flags
 # ~df_sessions['has_extracted_behavior'] = df_sessions['has_extracted_task'] & df_sessions['has_extracted_wheel']
 df_sessions['has_extracted_photometry'] = df_sessions['has_extracted_photometry_signal'] & df_sessions['has_extracted_photometry_locations']

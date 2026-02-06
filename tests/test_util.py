@@ -188,7 +188,7 @@ class TestAddHemisphere:
             'neuromodulator': ['DA'],
             'X-ml_um': [500],  # positive = left
         })
-        result = add_hemisphere(df_sessions, df_fibers=df_fibers)
+        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
         assert result.iloc[0]['hemisphere'] == 'L'
 
     def test_single_fiber_right(self):
@@ -203,7 +203,7 @@ class TestAddHemisphere:
             'neuromodulator': ['DA'],
             'X-ml_um': [-500],  # negative = right
         })
-        result = add_hemisphere(df_sessions, df_fibers=df_fibers)
+        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
         assert result.iloc[0]['hemisphere'] == 'R'
 
     def test_multiple_fibers_same_target_blank(self):
@@ -218,7 +218,7 @@ class TestAddHemisphere:
             'neuromodulator': ['DA', 'DA'],
             'X-ml_um': [500, -500],  # bilateral
         })
-        result = add_hemisphere(df_sessions, df_fibers=df_fibers)
+        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
         assert pd.isna(result.iloc[0]['hemisphere'])
 
     def test_multiple_targets_different_hemispheres(self):
@@ -233,7 +233,7 @@ class TestAddHemisphere:
             'neuromodulator': ['DA', 'DA'],
             'X-ml_um': [500, -500],
         })
-        result = add_hemisphere(df_sessions, df_fibers=df_fibers)
+        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
         assert result.iloc[0]['hemisphere'] == 'L'  # VTA-DA
         assert result.iloc[1]['hemisphere'] == 'R'  # SNc-DA
 
@@ -249,5 +249,5 @@ class TestAddHemisphere:
             'neuromodulator': ['DA'],
             'X-ml_um': [500],
         })
-        result = add_hemisphere(df_sessions, df_fibers=df_fibers)
+        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
         assert pd.isna(result.iloc[0]['hemisphere'])

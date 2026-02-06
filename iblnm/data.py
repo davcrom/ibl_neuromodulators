@@ -57,6 +57,7 @@ class PhotometrySession(PhotometrySessionLoader):
         self.session_type = session_series['session_type']
 
         super().__init__(*args, eid=self.eid, **kwargs)
+        self.qc = {}
         if load_data:
             self.load_session_data()
 
@@ -198,6 +199,26 @@ class PhotometrySession(PhotometrySessionLoader):
         return tpts
 
 
+    def _update_qc(self, brain_region: str, band: str, metrics: dict) -> None:
+        """Update QC metrics in nested dict structure."""
+        if brain_region not in self.qc:
+            self.qc[brain_region] = {}
+        if band not in self.qc[brain_region]:
+            self.qc[brain_region][band] = {}
+        self.qc[brain_region][band].update(metrics)
+
+    def qc_to_dataframe(self) -> pd.DataFrame:
+        """Convert nested QC dict to DataFrame for aggregation."""
+        rows = []
+        for brain_region, bands in self.qc.items():
+            for band, metrics in bands.items():
+                row = {'brain_region': brain_region, 'band': band, **metrics}
+                rows.append(row)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df['eid'] = self.eid
+        return df
+
     def run_qc(self, signal_band=None, raw_metrics=None, sliding_metrics=None,
                metrics_kwargs=None, sliding_kwargs=None, brain_region=None, pipeline=None):
         """
@@ -257,15 +278,19 @@ class PhotometrySession(PhotometrySessionLoader):
 
         # Add raw metrics (computed on raw photometry, same value for all rows)
         raw_photometry = self._load_raw_photometry()
+        raw_metric_values = {}
         for metric_name in raw_metrics:
             metric_func = getattr(metrics, metric_name)
-            df_qc[metric_name] = metric_func(raw_photometry)
+            raw_metric_values[metric_name] = metric_func(raw_photometry)
 
-        # Add session identifier
-        df_qc['eid'] = self.eid
+        # Store in nested dict structure
+        metric_cols = [c for c in df_qc.columns if c not in ['band', 'brain_region']]
+        for _, row in df_qc.iterrows():
+            qc_metrics = {col: row[col] for col in metric_cols}
+            qc_metrics.update(raw_metric_values)
+            self._update_qc(row['brain_region'], row['band'], qc_metrics)
 
-        self.qc_results = df_qc
-        return df_qc
+        return self.qc_to_dataframe()
 
     # =========================================================================
     # Task Performance Methods
@@ -320,4 +345,80 @@ class PhotometrySession(PhotometrySessionLoader):
 
     def fit_psychometric_by_block(self):
         return task.fit_psychometric_by_block(self.trials)
+
+    # =========================================================================
+    # Preprocessing Methods
+    # =========================================================================
+
+    def preprocess(
+        self,
+        pipeline=None,
+        signal_band='GCaMP',
+        reference_band='Isosbestic',
+        targets=None,
+        output_band='GCaMP_preprocessed',
+    ):
+        """Run preprocessing pipeline and store result as new band."""
+        from iblphotometry.pipelines import run_pipeline, isosbestic_correction_pipeline
+        from iblphotometry.processing import Regression, LinearModel, ExponDecay
+
+        if not self.has_photometry:
+            raise ValueError("Photometry data not loaded")
+
+        if pipeline is None:
+            pipeline = isosbestic_correction_pipeline
+
+        if targets is None:
+            targets = list(self.photometry[signal_band].columns)
+
+        # Check if pipeline needs reference
+        needs_reference = any('reference' in step.get('inputs', ()) for step in pipeline)
+
+        if needs_reference and reference_band is None:
+            raise ValueError("Pipeline requires reference_band")
+
+        # Extract regression method from pipeline for iso_correlation
+        regression_method = 'mse'
+        for step in pipeline:
+            if 'regression_method' in step.get('parameters', {}):
+                regression_method = step['parameters']['regression_method']
+                break
+
+        preprocessed = {}
+
+        for brain_region in targets:
+            signal = self.photometry[signal_band][brain_region]
+
+            # Compute bleaching_tau using correct argument order
+            # Note: iblphotometry.metrics.bleaching_tau has a bug (calls fit(y, t) instead of fit(t, y))
+            reg = Regression(model=ExponDecay())
+            reg.fit(signal.index.values, signal.values)  # fit(t, y)
+            qc_metrics = {'bleaching_tau': reg.popt[1]}
+
+            if needs_reference:
+                reference = self.photometry[reference_band][brain_region]
+
+                # Run pipeline with full_output to get intermediate results
+                res = run_pipeline(pipeline, signal=signal, reference=reference, full_output=True)
+                result = res['result']
+
+                # Compute iso_correlation on bleach-corrected signals (from pipeline)
+                signal_bc = res.get('signal_bleach_corrected', signal)
+                reference_bc = res.get('reference_bleach_corrected', reference)
+
+                reg = Regression(model=LinearModel(), method=regression_method)
+                reg.fit(reference_bc.values, signal_bc.values)
+                # Use model equation directly (predict() sorts x, breaking alignment)
+                predicted = reg.model.eq(reference_bc.values, *reg.popt)
+                ss_res = np.sum((signal_bc.values - predicted) ** 2)
+                ss_tot = np.sum((signal_bc.values - np.mean(signal_bc.values)) ** 2)
+                qc_metrics['iso_correlation'] = 1 - (ss_res / ss_tot)
+            else:
+                result = run_pipeline(pipeline, signal=signal)
+
+            preprocessed[brain_region] = result
+            self._update_qc(brain_region, signal_band, qc_metrics)
+
+        self.photometry[output_band] = pd.DataFrame(preprocessed)
+        return self.photometry[output_band]
 
