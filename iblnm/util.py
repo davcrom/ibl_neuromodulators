@@ -60,11 +60,11 @@ def get_sessions(
 
     # Extraction filters
     if require_extracted_task:
-        df = df[df['has_extracted_task'] == True].copy()
+        df = df[df['has_extracted_task']].copy()
     n_task = len(df)
 
     if require_extracted_photometry:
-        df = df[df['has_extracted_photometry'] == True].copy()
+        df = df[df['has_extracted_photometry']].copy()
     n_phot = len(df)
 
     # QC filter

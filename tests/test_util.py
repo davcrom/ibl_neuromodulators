@@ -311,3 +311,54 @@ class TestGetSessions:
             )
         assert len(df) == 0
         assert any('qc_photometry.pqt not found' in str(warning.message) for warning in w)
+
+    def test_filters_tipt(self, mock_sessions_pqt, tmp_path):
+        """Sessions with TrialsNotInPhotometryTime error are excluded."""
+        df_log = pd.DataFrame({
+            'eid': ['eid-0', 'eid-3'],
+            'subject': ['mouseA', 'mouseB'],
+            'error_type': ['TrialsNotInPhotometryTime', 'SomeOtherError'],
+            'error_message': ['trials outside window', 'something else'],
+        })
+        log_path = tmp_path / 'responses_log.pqt'
+        df_log.to_parquet(log_path)
+
+        df = get_sessions(
+            sessions_path=mock_sessions_pqt,
+            responses_log_path=log_path,
+            require_extracted_task=False,
+            require_extracted_photometry=False,
+            require_qc=False,
+            require_tipt=True,
+            verbose=False,
+        )
+        # eid-0 had TrialsNotInPhotometryTime → excluded
+        assert 'eid-0' not in df['eid'].values
+        # eid-3 had a different error → should remain
+        assert 'eid-3' in df['eid'].values
+
+    def test_tipt_missing_warns_and_skips(self, mock_sessions_pqt, tmp_path):
+        """Missing responses_log.pqt skips tipt filter with warning."""
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            df = get_sessions(
+                sessions_path=mock_sessions_pqt,
+                responses_log_path=tmp_path / 'nonexistent.pqt',
+                require_extracted_task=False,
+                require_extracted_photometry=False,
+                require_qc=False,
+                require_tipt=True,
+                verbose=False,
+            )
+        # Should still return sessions (filter skipped)
+        assert len(df) > 0
+        assert any('responses_log.pqt not found' in str(warning.message) for warning in w)
+
+    def test_sessions_missing_raises(self, tmp_path):
+        """Missing sessions.pqt raises FileNotFoundError."""
+        with pytest.raises(Exception):
+            get_sessions(
+                sessions_path=tmp_path / 'nonexistent.pqt',
+                verbose=False,
+            )
