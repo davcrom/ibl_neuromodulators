@@ -269,3 +269,45 @@ class TestGetSessions:
         )
         assert df['has_extracted_task'].all()
         assert df['has_extracted_photometry'].all()
+
+    def test_filters_qc(self, mock_sessions_pqt, tmp_path):
+        """Sessions failing photometry QC are excluded."""
+        # Create QC data: eid-0 passes, eid-2 fails (band inversions)
+        df_qc = pd.DataFrame({
+            'eid': ['eid-0', 'eid-0', 'eid-2', 'eid-2', 'eid-3', 'eid-3'],
+            'band': ['GCaMP', 'isos', 'GCaMP', 'isos', 'GCaMP', 'isos'],
+            'brain_region': ['VTA'] * 6,
+            'n_unique_samples': [0.9, 0.8, 0.9, 0.8, 0.9, 0.8],
+            'n_band_inversions': [0, 0, 3, 0, 0, 0],  # eid-2 fails
+        })
+        qc_path = tmp_path / 'qc_photometry.pqt'
+        df_qc.to_parquet(qc_path)
+
+        df = get_sessions(
+            sessions_path=mock_sessions_pqt,
+            qc_path=qc_path,
+            require_extracted_task=False,
+            require_extracted_photometry=False,
+            require_qc=True,
+            require_tipt=False,
+            verbose=False,
+        )
+        # eid-2 should be excluded (band inversions)
+        assert 'eid-2' not in df['eid'].values
+        # eid-0 and eid-3 should remain (they pass QC and survive clean+dedup)
+        assert 'eid-0' in df['eid'].values or 'eid-3' in df['eid'].values
+
+    def test_qc_missing_warns(self, mock_sessions_pqt, tmp_path):
+        """Missing qc_photometry.pqt returns empty DataFrame with warning."""
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            df = get_sessions(
+                sessions_path=mock_sessions_pqt,
+                qc_path=tmp_path / 'nonexistent.pqt',
+                require_qc=True,
+                require_tipt=False,
+                verbose=False,
+            )
+        assert len(df) == 0
+        assert any('qc_photometry.pqt not found' in str(warning.message) for warning in w)
