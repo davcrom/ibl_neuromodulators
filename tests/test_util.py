@@ -256,3 +256,16 @@ class TestGetSessions:
         assert 'habituation' not in df['session_type'].values
         # mouseA day_n=1 should have only one entry (deduped)
         assert len(df[(df['subject'] == 'mouseA') & (df['day_n'] == 1)]) == 1
+
+    def test_filters_extracted(self, mock_sessions_pqt):
+        """Sessions missing extracted data are excluded."""
+        df = get_sessions(
+            sessions_path=mock_sessions_pqt,
+            require_extracted_task=True,
+            require_extracted_photometry=True,
+            require_qc=False,
+            require_tipt=False,
+            verbose=False,
+        )
+        assert df['has_extracted_task'].all()
+        assert df['has_extracted_photometry'].all()
