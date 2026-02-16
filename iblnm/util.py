@@ -10,6 +10,95 @@ from brainbox.io.one import SessionLoader
 from iblnm.config import *
 
 
+def get_sessions(
+    sessions_path: Path | None = None,
+    qc_path: Path | None = None,
+    responses_log_path: Path | None = None,
+    require_extracted_task: bool = True,
+    require_extracted_photometry: bool = True,
+    require_qc: bool = True,
+    require_tipt: bool = True,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """Load sessions and filter to analysis-ready quality.
+
+    Parameters
+    ----------
+    sessions_path : Path, optional
+        Path to sessions.pqt. Defaults to SESSIONS_FPATH.
+    qc_path : Path, optional
+        Path to qc_photometry.pqt. Defaults to QCPHOTOMETRY_FPATH.
+    responses_log_path : Path, optional
+        Path to responses_log.pqt. Defaults to RESPONSES_LOG_FPATH.
+    require_extracted_task : bool
+        Filter to sessions with extracted trials.
+    require_extracted_photometry : bool
+        Filter to sessions with extracted photometry.
+    require_qc : bool
+        Filter to sessions passing basic photometry QC.
+    require_tipt : bool
+        Filter to sessions where trials fall within photometry time.
+    verbose : bool
+        Print filtering summary.
+    """
+    import warnings
+
+    if sessions_path is None:
+        sessions_path = SESSIONS_FPATH
+    if qc_path is None:
+        qc_path = QCPHOTOMETRY_FPATH
+    if responses_log_path is None:
+        responses_log_path = RESPONSES_LOG_FPATH
+
+    # Load, clean, dedup
+    df = pd.read_parquet(sessions_path)
+    n_total = len(df)
+    df = clean_sessions(df, verbose=False)
+    n_clean = len(df)
+    df = drop_junk_duplicates(df, ['subject', 'day_n'], verbose=False)
+    n_dedup = len(df)
+
+    # Extraction filters
+    if require_extracted_task:
+        df = df[df['has_extracted_task'] == True].copy()
+    n_task = len(df)
+
+    if require_extracted_photometry:
+        df = df[df['has_extracted_photometry'] == True].copy()
+    n_phot = len(df)
+
+    # QC filter
+    if require_qc:
+        if not Path(qc_path).exists():
+            warnings.warn(f"qc_photometry.pqt not found at {qc_path}, returning empty DataFrame")
+            return df.iloc[0:0]
+        df_qc = pd.read_parquet(qc_path)
+        qc_agg = aggregate_qc_per_session(df_qc, require_all=True)
+        passing_eids = set(qc_agg[qc_agg['passes_basic_qc']]['eid'])
+        df = df[df['eid'].isin(passing_eids)].copy()
+    n_qc = len(df)
+
+    # Trials-in-photometry-time filter
+    if require_tipt:
+        if not Path(responses_log_path).exists():
+            warnings.warn(
+                f"responses_log.pqt not found at {responses_log_path}, skipping tipt filter"
+            )
+        else:
+            df_log = pd.read_parquet(responses_log_path)
+            eids_tipt_failed = set(
+                df_log[df_log['error_type'] == 'TrialsNotInPhotometryTime']['eid']
+            )
+            df = df[~df['eid'].isin(eids_tipt_failed)].copy()
+    n_tipt = len(df)
+
+    if verbose:
+        print(f"Sessions: {n_total} total → {n_clean} clean → {n_dedup} dedup"
+              f" → {n_task} task → {n_phot} phot → {n_qc} qc → {n_tipt} tipt")
+
+    return df
+
+
 def has_dataset(session, dataset):
     """Check if a dataset is available for a session."""
     datasets = session.get('datasets', [])
@@ -34,13 +123,20 @@ def add_dataset_flags(df):
     return df
 
 
+_NM_SUFFIXES = set(TARGET2NM.values())  # {'DA', '5HT', 'NE', 'ACh'}
+
+
 def _strip_hemisphere_suffix(region):
-    """Extract base region name without hemisphere suffix (e.g., 'LC-r' -> 'LC')."""
+    """Extract base region name without hemisphere or NM suffix.
+
+    Handles both brain_region format ('LC-r' -> 'LC') and
+    target format ('VTA-DA' -> 'VTA').
+    """
     if pd.isna(region):
         return None
     parts = str(region).split('-')
-    if len(parts) > 1 and parts[-1].lower() in ('l', 'r'):
-        return parts[0]
+    if len(parts) > 1 and (parts[-1].lower() in ('l', 'r') or parts[-1] in _NM_SUFFIXES):
+        return '-'.join(parts[:-1])
     return region
 
 
@@ -55,7 +151,10 @@ def _extract_hemisphere_from_name(region):
 
 
 def _get_fiber_hemisphere_lookup(df_fibers=None):
-    """Build subject+region -> hemisphere lookup from fiber coordinates."""
+    """Build subject+region -> hemisphere lookup from fiber coordinates.
+
+    Returns None for a (subject, region) pair when fibers span both hemispheres.
+    """
     if df_fibers is None:
         try:
             df_fibers = pd.read_csv(FIBERS_FPATH)
@@ -66,20 +165,20 @@ def _get_fiber_hemisphere_lookup(df_fibers=None):
     df_fibers['hemi'] = df_fibers['X-ml_um'].apply(
         lambda x: 'L' if x > 0 else ('R' if x < 0 else None)
     )
-    return df_fibers.groupby(['subject', 'targeted_region'])['hemi'].first().to_dict()
+    grouped = df_fibers.groupby(['subject', 'targeted_region'])['hemi']
+    return {key: vals.iloc[0] if vals.nunique() == 1 else None
+            for key, vals in grouped}
 
 
-def process_regions(df, region_col='brain_region', df_fibers=None, add_hemisphere=True,
+def process_regions(df, df_fibers=None, add_hemisphere=True,
                     infer_nm=True, filter_valid=True):
     """
-    Process brain region column: normalize names, add hemisphere, infer NM, create target_NM.
+    Process brain_region column: normalize names, add hemisphere, infer NM, create target_NM.
 
     Parameters
     ----------
     df : pd.DataFrame
-        DataFrame with region column (e.g., 'brain_region' or 'target').
-    region_col : str
-        Column containing region names (e.g., 'LC-r', 'VTA', 'DRN').
+        DataFrame with 'brain_region' column.
     df_fibers : pd.DataFrame, optional
         Fibers dataframe for hemisphere lookup. If None, loads from FIBERS_FPATH.
     add_hemisphere : bool
@@ -97,12 +196,12 @@ def process_regions(df, region_col='brain_region', df_fibers=None, add_hemispher
     df = df.copy()
 
     # Strip hemisphere suffix and normalize region names
-    df['region_base'] = df[region_col].apply(_strip_hemisphere_suffix)
+    df['region_base'] = df['brain_region'].apply(_strip_hemisphere_suffix)
     df['region_base'] = df['region_base'].replace(REGION_NORMALIZE)
 
     # Add hemisphere column
     if add_hemisphere:
-        df['hemisphere'] = df[region_col].apply(_extract_hemisphere_from_name)
+        df['hemisphere'] = df['brain_region'].apply(_extract_hemisphere_from_name)
 
         # Fill from fiber coordinates if subject column exists
         if 'subject' in df.columns:
@@ -125,7 +224,7 @@ def process_regions(df, region_col='brain_region', df_fibers=None, add_hemispher
 
     # Infer NM from region when missing
     if infer_nm and 'NM' in df.columns:
-        df['NM'] = df['NM'].where(df['NM'] != 'none', df['region_base'].map(TARGET2NM))
+        df['NM'] = df['NM'].where(df['NM'].notna(), df['region_base'].map(TARGET2NM))
 
     # Create target_NM column
     if 'NM' in df.columns:
@@ -141,12 +240,12 @@ def process_regions(df, region_col='brain_region', df_fibers=None, add_hemispher
 
 
 def add_target_nm(df):
-    """Explode sessions by target and add target_NM column.
+    """Explode sessions by brain_region and add target_NM column.
 
     DEPRECATED: Use process_regions() for new code.
     """
-    df = df.explode('target').dropna(subset='target')
-    return process_regions(df, region_col='target', add_hemisphere=False)
+    df = df.explode('brain_region').dropna(subset='brain_region')
+    return process_regions(df, add_hemisphere=False)
 
 
 def add_hemisphere(df, region_col='brain_region', df_fibers=None, priority='name'):
@@ -204,42 +303,18 @@ def add_hemisphere(df, region_col='brain_region', df_fibers=None, priority='name
     return df
 
 
-def drop_junk_duplicates(df, group_cols, verbose=True):
-    """
-    Keep one session per cell, preferring good over junk. Drop conflicts.
-    """
+def drop_junk_duplicates(df, group_cols, completeness_cols=None, verbose=True):
+    """Keep one session per group, preferring sessions with more complete data."""
+    if completeness_cols is None:
+        completeness_cols = [c for c in df.columns if c.startswith('has_raw_')]
     n_initial = len(df)
-    n_conflicts = (df['session_status'] == 'conflict').sum()
-
-    # Drop conflicts
-    df = df[df['session_status'] != 'conflict'].copy()
-
-    # Count groups with multiple session types (before deduplication)
-    n_multi_type = 0
-    for _, group in df.groupby(group_cols):
-        if group['session_type'].nunique() > 1:
-            n_multi_type += len(group) - 1  # all but one will be dropped
-
-    # Keep one per group: prefer good over junk
-    status_order = {'good': 0, 'junk': 1}
-    df = (
-        df.assign(_sort_key=df['session_status'].map(status_order))
-        .sort_values('_sort_key')
-        .drop_duplicates(subset=group_cols, keep='first')
-        .drop(columns='_sort_key')
-    )
-    n_final = len(df)
-    n_dropped = n_initial - n_final
-
+    df = df.copy()
+    df['_score'] = df[completeness_cols].fillna(False).sum(axis=1)
+    df = (df.sort_values('_score', ascending=False)
+          .drop_duplicates(subset=group_cols, keep='first')
+          .drop(columns='_score'))
     if verbose:
-        print(f"Dropped duplicates: {n_initial} → {n_final} ({n_dropped} removed)")
-        print(f"  Conflicts: {n_conflicts}")
-        if n_multi_type > 0:
-            print(f"  Different session types on same day: {n_multi_type}")
-        n_junk = n_dropped - n_conflicts - n_multi_type
-        if n_junk > 0:
-            print(f"  Junk duplicates: {n_junk}")
-
+        print(f"Dropped duplicates: {n_initial} → {len(df)} ({n_initial - len(df)} removed)")
     return df
 
 
@@ -405,42 +480,6 @@ def get_session_length(session):
 
 
 
-def resolve_session_status(session_group, columns):
-    """
-    Resolve sessions by flagging them as 'good', 'junk', or 'conflict'.
-
-    Parameters
-    ----------
-    session_group : pd.DataFrame
-        Group of sessions to evaluate
-    columns : list of str
-        List of boolean column names that must all be True for a session to be considered good
-
-    Returns
-    -------
-    pd.Series
-        Session status for each session in the group ('good', 'junk', or 'conflict')
-    """
-    # Create a copy to avoid modifying original data
-    group = session_group.copy()
-
-    # Initialize all sessions as 'junk'
-    group['session_status'] = 'junk'
-
-    # Find sessions where ALL specified columns are True
-    good_sessions_mask = group[columns].all(axis=1)
-    good_sessions = group[good_sessions_mask]
-
-    if len(good_sessions) == 1:
-        # One session has all requirements - mark as 'good', others remain 'junk'
-        group.loc[good_sessions.index, 'session_status'] = 'good'
-
-    elif len(good_sessions) > 1:
-            group.loc[good_sessions.index, 'session_status'] = 'conflict'
-
-    return group['session_status']
-
-
 def fill_empty_lists_from_group(df, col, group_col='subject'):
     df = df.copy()
 
@@ -523,56 +562,6 @@ def sample_recordings(df, metric, percentile_range):
     return sample
 
 
-# def load_kb_recinfo():
-#     df = pd.read_csv('metadata/website.csv')
-#     # Convert acronym strings into lists of strings
-#     df['region'] = df['_acronyms'].apply(eval)
-#     # Add additional metadata
-#     df_insertions = pd.read_csv('metadata/insertions.csv')
-#     def _merge_metadata(row, df=df_insertions):
-#         subj = df_insertions[df_insertions['subject'] ==  row['subject']]
-#         for col in [v for v in subj.columns if v != 'subject']:
-#             row[col] = subj[col].values
-#         return row
-#     df = df.apply(_merge_metadata, df=df_insertions, axis='columns')
-#     return df
-
-
-def merge_session_metadata(
-    df: pd.DataFrame,
-    sessions_fpath: Path = None
-) -> pd.DataFrame:
-    """
-    Merge a dataframe with session metadata.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame with 'eid' column to merge on.
-    sessions_fpath : Path, optional
-        Path to sessions parquet file. Defaults to SESSIONS_FPATH.
-
-    Returns
-    -------
-    pd.DataFrame
-        Merged dataframe with session metadata.
-    """
-    if sessions_fpath is None:
-        sessions_fpath = SESSIONS_FPATH
-
-    df_sessions = pd.read_parquet(sessions_fpath)
-
-    # Merge on eid
-    df_merged = df.merge(
-        df_sessions,
-        on='eid',
-        how='left',
-        suffixes=('', '_session')
-    )
-
-    return df_merged
-
-
 def aggregate_qc_per_session(df_qc: pd.DataFrame, require_all: bool = True) -> pd.DataFrame:
     """
     Aggregate QC metrics per session and compute passes_basic_qc flag.
@@ -617,36 +606,6 @@ def aggregate_qc_per_session(df_qc: pd.DataFrame, require_all: bool = True) -> p
     return agg[['eid', 'passes_basic_qc']]
 
 
-def build_filter_status(df_sessions: pd.DataFrame, qc_agg: pd.DataFrame = None) -> pd.DataFrame:
-    """
-    Build DataFrame with filter status for each session.
-
-    Parameters
-    ----------
-    df_sessions : pd.DataFrame
-        Sessions with columns: eid, subject, has_raw_task, has_raw_photometry,
-        has_trials, has_photometry, trials_in_photometry_time
-    qc_agg : pd.DataFrame, optional
-        Output from aggregate_qc_per_session with columns: eid, passes_basic_qc
-
-    Returns
-    -------
-    pd.DataFrame
-        Filter status for each session with all boolean columns
-    """
-    cols = ['eid', 'subject', 'has_raw_task', 'has_raw_photometry',
-            'has_trials', 'has_photometry', 'trials_in_photometry_time']
-    result = df_sessions[cols].copy()
-
-    if qc_agg is not None and len(qc_agg) > 0:
-        result = result.merge(qc_agg[['eid', 'passes_basic_qc']], on='eid', how='left')
-        result['passes_basic_qc'] = result['passes_basic_qc'].astype('boolean').fillna(False).astype(bool)
-    else:
-        result['passes_basic_qc'] = False
-
-    return result
-
-
 def merge_failure_logs(
     df_failures: pd.DataFrame,
     logs: list[tuple[str, pd.DataFrame]]
@@ -659,7 +618,7 @@ def merge_failure_logs(
     df_failures : pd.DataFrame
         Sessions that failed some criterion, with at least 'eid' column
     logs : list of (source_name, df_log) tuples
-        Each df_log should have columns: eid, exception_type, exception_message
+        Each df_log should have columns: eid, error_type, error_message
 
     Returns
     -------
@@ -669,8 +628,8 @@ def merge_failure_logs(
     result = df_failures.copy()
 
     # Initialize error columns
-    result['exception_type'] = None
-    result['exception_message'] = None
+    result['error_type'] = None
+    result['error_message'] = None
     result['source'] = None
 
     for source_name, df_log in logs:
@@ -678,7 +637,7 @@ def merge_failure_logs(
             continue
 
         # Get error info for sessions in this log
-        log_cols = ['eid', 'exception_type', 'exception_message']
+        log_cols = ['eid', 'error_type', 'error_message']
         available_cols = [c for c in log_cols if c in df_log.columns]
         log_subset = df_log[available_cols].copy()
         log_subset['source'] = source_name
@@ -687,8 +646,8 @@ def merge_failure_logs(
         for _, row in log_subset.iterrows():
             mask = result['eid'] == row['eid']
             if mask.any():
-                result.loc[mask, 'exception_type'] = row.get('exception_type')
-                result.loc[mask, 'exception_message'] = row.get('exception_message')
+                result.loc[mask, 'error_type'] = row.get('error_type')
+                result.loc[mask, 'error_message'] = row.get('error_message')
                 result.loc[mask, 'source'] = row.get('source')
 
     return result
