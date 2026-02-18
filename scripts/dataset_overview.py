@@ -4,23 +4,29 @@ Dataset Overview
 Produces session overview matrices at each stage of data processing:
 1. All registered sessions
 2. Sessions with raw data (task | photometry)
-3. Sessions with extracted data (task | photometry) - verified accessible via QC flags
-4. Sessions passing basic QC (n_unique_samples, n_band_inversions | trials_in_photometry_time)
+3. Sessions with extracted data (task | photometry)
+4. Sessions passing QC (basic photometry QC | trials in photometry time)
 
-Also tracks sessions failing each criterion and merges with error logs.
+Barplots evaluate each brain region independently against QC criteria,
+while session-level checks (extracted task, trials_in_photometry_time) are applied uniformly.
+
+Joins sessions.pqt + qc_photometry.pqt + performance.pqt + photometry_log.pqt at read time.
+No write-back to any upstream file.
 """
 import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_LOG_FPATH,
-    QCPHOTOMETRY_FPATH, QCPHOTOMETRY_LOG_FPATH, FIBERS_FPATH,
-    VALID_TARGETS, FIGURE_DPI, TARGET2NM, REGION_NORMALIZE,
-    STANDARD_LINES, STANDARD_STRAINS, STRAIN2NM, LINE2NM, MIN_NTRIALS,
+    PROJECT_ROOT, SESSIONS_FPATH,
+    QCPHOTOMETRY_FPATH,
+    PERFORMANCE_FPATH,
+    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH,
+    TASK_LOG_FPATH,
+    ERRORS_FPATH, FIGURE_DPI, VALID_TARGETS,
 )
 from iblnm.util import (
-    clean_sessions, drop_junk_duplicates, process_regions,
-    aggregate_qc_per_session, build_filter_status, merge_failure_logs,
+    clean_sessions, drop_junk_duplicates,
+    aggregate_qc_per_session, concat_logs, make_log_entry, LOG_COLUMNS,
 )
 from iblnm.vis import (
     session_overview_matrix, target_overview_barplot, mouse_overview_barplot, set_plotsize
@@ -45,16 +51,6 @@ n_total = len(df_sessions)
 df_sessions = clean_sessions(df_sessions)
 n_after_clean = len(df_sessions)
 
-# Re-infer NM from strain/line using current mappings
-def infer_nm(row):
-    s_nm = STRAIN2NM.get(row['strain'], 'none')
-    l_nm = LINE2NM.get(row['line'], 'none')
-    if s_nm != 'none':
-        return s_nm
-    return l_nm
-
-df_sessions['NM'] = df_sessions.apply(infer_nm, axis=1)
-
 # Recompute session_n so all animals start at session 1 after filtering
 df_sessions['session_n'] = df_sessions.groupby('subject')['date'].rank(method='dense')
 
@@ -67,7 +63,7 @@ print(f"  Registered: {n_total}")
 print(f"  After cleaning: {n_after_clean} (-{n_total - n_after_clean})")
 print(f"  After deduplication: {n_after_dedup} (-{n_after_clean - n_after_dedup})")
 
-# Load QC results if available
+# Load QC results
 df_qc = None
 qc_agg = None
 if QCPHOTOMETRY_FPATH.exists():
@@ -75,75 +71,56 @@ if QCPHOTOMETRY_FPATH.exists():
     df_qc = pd.read_parquet(QCPHOTOMETRY_FPATH)
     qc_agg = aggregate_qc_per_session(df_qc, require_all=True)
 
-# Check if QC flags exist in sessions
-has_qc_flags = all(col in df_sessions.columns for col in ['has_trials', 'has_photometry', 'trials_in_photometry_time'])
-if not has_qc_flags:
-    print("\nWarning: QC flags not found in sessions. Using extracted data flags instead.")
-    df_sessions['has_trials'] = df_sessions.get('has_extracted_task', False)
-    df_sessions['has_photometry'] = df_sessions.get('has_extracted_photometry', False)
-    df_sessions['trials_in_photometry_time'] = False
+# Load performance data
+df_perf = None
+if PERFORMANCE_FPATH.exists():
+    print(f"Loading performance from {PERFORMANCE_FPATH}")
+    perf_cols = ['eid', 'n_trials', 'has_block_bug',
+                 'has_goCue_times', 'has_firstMovement_times', 'has_feedback_times']
+    df_perf_full = pd.read_parquet(PERFORMANCE_FPATH)
+    available_perf_cols = [c for c in perf_cols if c in df_perf_full.columns]
+    df_perf = df_perf_full[available_perf_cols]
 
-# Build filter status
-df_filters = build_filter_status(df_sessions, qc_agg)
-df_filters['has_valid_nm'] = (df_sessions['NM'] != 'none').values
-
-# Check target-NM combo validity (e.g., LC-DA is invalid)
-def valid_combo(row):
-    targets, nm = row['target'], row['NM']
-    if nm == 'none' or len(targets) == 0:
-        return True
-    return any(TARGET2NM.get(REGION_NORMALIZE.get(t.split('-')[0], t.split('-')[0])) == nm for t in targets)
-
-df_filters['has_valid_target_nm'] = df_sessions.apply(valid_combo, axis=1).values
-
-# Check for non-standard target names (e.g., DRN instead of DR)
-def has_nonstandard_target(targets):
-    if len(targets) == 0:
-        return False
-    return any(t.split('-')[0] in REGION_NORMALIZE for t in targets)
-
-df_filters['has_nonstandard_target'] = df_sessions['target'].apply(has_nonstandard_target).values
-
-# Check for non-standard line/strain names (NM inferred but naming needs fixing)
-df_filters['has_nonstandard_line'] = ~df_sessions['line'].isin(STANDARD_LINES | {None}).values
-df_filters['has_nonstandard_strain'] = ~df_sessions['strain'].isin(STANDARD_STRAINS | {None}).values
-
-# Check session status (junk sessions have too few trials, etc.)
-df_filters['is_good_session'] = (df_sessions['session_status'] == 'good').values
-
-# Check hemisphere mismatches using fiber coordinates
-df_fibers = pd.read_csv(FIBERS_FPATH) if FIBERS_FPATH.exists() else None
-if df_fibers is not None:
-    df_fibers['hemi'] = (df_fibers['X-ml_um'] > 0).map({True: 'L', False: 'R'})
-    fiber_hemi = df_fibers.groupby(['subject', 'targeted_region'])['hemi'].first().to_dict()
-
-    def has_mismatch(row):
-        targets, subject = row['target'], row['subject']
-        if len(targets) == 0:
-            return False
-        for t in targets:
-            parts = t.split('-')
-            if len(parts) > 1 and parts[-1].lower() in ('l', 'r'):
-                hemi_fiber = fiber_hemi.get((subject, parts[0]))
-                if hemi_fiber and parts[-1].upper() != hemi_fiber:
-                    return True
-        return False
-
-    df_filters['has_hemisphere_mismatch'] = df_sessions.apply(has_mismatch, axis=1).values
+# Determine trials_in_photometry_time from photometry log
+# Sessions with QC results that don't have a TrialsNotInPhotometryTime error pass
+eids_with_photometry = set(df_qc['eid'].unique()) if df_qc is not None else set()
+if PHOTOMETRY_LOG_FPATH.exists():
+    df_photometry_log = pd.read_parquet(PHOTOMETRY_LOG_FPATH)
+    eids_tipt_failed = set(
+        df_photometry_log[df_photometry_log['error_type'] == 'TrialsNotInPhotometryTime']['eid']
+    )
 else:
-    df_filters['has_hemisphere_mismatch'] = False
+    df_photometry_log = None
+    eids_tipt_failed = set()
+eids_tipt_ok = eids_with_photometry - eids_tipt_failed
 
-# Load error logs
-error_logs = []
-if SESSIONS_LOG_FPATH.exists():
-    df_log_sessions = pd.read_parquet(SESSIONS_LOG_FPATH)
-    error_logs.append(('query_database', df_log_sessions))
-    print(f"Loaded {len(df_log_sessions)} errors from query_database")
+# Build session-level filter DataFrame
+df_filters = df_sessions[['eid', 'subject', 'has_raw_task', 'has_raw_photometry',
+                           'has_extracted_task', 'has_extracted_photometry']].copy()
 
-if QCPHOTOMETRY_LOG_FPATH.exists():
-    df_log_qc = pd.read_parquet(QCPHOTOMETRY_LOG_FPATH)
-    error_logs.append(('photometry_qc', df_log_qc))
-    print(f"Loaded {len(df_log_qc)} errors from photometry_qc")
+# Basic photometry QC (session-level, aggregated)
+if qc_agg is not None and len(qc_agg) > 0:
+    df_filters = df_filters.merge(qc_agg[['eid', 'passes_basic_qc']], on='eid', how='left')
+    df_filters['passes_basic_qc'] = df_filters['passes_basic_qc'].fillna(False)
+else:
+    df_filters['passes_basic_qc'] = False
+
+# Trials in photometry time
+df_filters['trials_in_photometry_time'] = df_filters['eid'].isin(eids_tipt_ok)
+
+if df_perf is not None:
+    df_filters = df_filters.merge(df_perf, on='eid', how='left')
+
+
+# Load upstream error logs
+upstream_logs = []
+for name, path in [('query_database', QUERY_DATABASE_LOG_FPATH),
+                    ('photometry', PHOTOMETRY_LOG_FPATH),
+                    ('task', TASK_LOG_FPATH)]:
+    if path.exists():
+        df_log = pd.read_parquet(path)
+        upstream_logs.append(df_log)
+        print(f"Loaded {len(df_log)} errors from {name}")
 
 
 # =============================================================================
@@ -184,69 +161,85 @@ plot_paired_matrices(
     filename='2_raw_data.svg'
 )
 
-# 3. Extracted data: task | photometry (verified accessible)
-n_trials = df_filters['has_trials'].sum()
-n_phot = df_filters['has_photometry'].sum()
+# 3. Extracted data: task | photometry
+n_task = df_filters['has_extracted_task'].sum()
+n_phot = df_filters['has_extracted_photometry'].sum()
 plot_paired_matrices(
     df_sessions,
-    left_highlight=lambda df: df['eid'].isin(df_filters[df_filters['has_trials']]['eid']),
-    right_highlight=lambda df: df['eid'].isin(df_filters[df_filters['has_photometry']]['eid']),
-    left_title=f'Accessible trials data (n={n_trials})',
-    right_title=f'Accessible photometry data (n={n_phot})',
+    left_highlight=lambda df: df['eid'].isin(df_filters[df_filters['has_extracted_task']]['eid']),
+    right_highlight=lambda df: df['eid'].isin(df_filters[df_filters['has_extracted_photometry']]['eid']),
+    left_title=f'Extracted task data (n={n_task})',
+    right_title=f'Extracted photometry data (n={n_phot})',
     filename='3_extracted_data.svg'
 )
 
 # 4. QC criteria: basic photometry QC | trials_in_photometry_time
-# NOTE: is_good_session check commented out pending investigation of CQ mice (n_trials=0 since Aug 2025)
-# passes_qc_and_trials = df_filters['passes_basic_qc'] & df_filters['is_good_session']
 n_qc = df_filters['passes_basic_qc'].sum()
-n_sync = df_filters['trials_in_photometry_time'].sum()
+n_tipt = df_filters['trials_in_photometry_time'].sum()
 plot_paired_matrices(
     df_sessions,
     left_highlight=lambda df: df['eid'].isin(df_filters[df_filters['passes_basic_qc']]['eid']),
     right_highlight=lambda df: df['eid'].isin(df_filters[df_filters['trials_in_photometry_time']]['eid']),
     left_title=f'Passes basic QC (n={n_qc})',
-    right_title=f'Trials in photometry time (n={n_sync})',
+    right_title=f'Trials in photometry time (n={n_tipt})',
     filename='4_qc_criteria.svg'
 )
 
 
 # =============================================================================
-# Track Failures
+# Generate Error Log Entries from Flags and QC
 # =============================================================================
 
-# Sessions that fail any criterion
-df_failures = df_filters[
-    ~df_filters['has_raw_task'] |
-    ~df_filters['has_raw_photometry'] |
-    ~df_filters['has_trials'] |
-    ~df_filters['has_photometry'] |
-    ~df_filters['passes_basic_qc'] |
-    ~df_filters['trials_in_photometry_time'] |
-    ~df_filters['has_valid_nm'] |
-    ~df_filters['has_valid_target_nm'] |
-    df_filters['has_nonstandard_target'] |
-    df_filters['has_nonstandard_line'] |
-    df_filters['has_nonstandard_strain'] |
-    df_filters['has_hemisphere_mismatch']
-].copy()
+flag_errors = []
 
-# Merge with error logs
-df_failures = merge_failure_logs(df_failures, error_logs)
+# Missing data flags → log entries
+flag_map = {
+    'has_raw_task': 'MissingRawTask',
+    'has_raw_photometry': 'MissingRawPhotometry',
+    'has_extracted_task': 'MissingExtractedTask',
+    'has_extracted_photometry': 'MissingExtractedPhotometry',
+}
+for col, error_type in flag_map.items():
+    missing_eids = df_filters.loc[~df_filters[col], 'eid']
+    for eid in missing_eids:
+        flag_errors.append(make_log_entry(eid, error_type=error_type, error_message=f'{col}=False'))
+
+# QC metric flags → log entries (per session, not per region)
+if df_qc is not None and len(df_qc) > 0:
+    # BandInversion: any region with n_band_inversions > 0
+    inversions = df_qc[df_qc['n_band_inversions'] > 0].groupby('eid').first()
+    for eid in inversions.index:
+        flag_errors.append(make_log_entry(
+            eid, error_type='BandInversion',
+            error_message="n_band_inversions > 0"
+        ))
+    # EarlySamples: any region with n_early_samples > 0
+    if 'n_early_samples' in df_qc.columns:
+        early = df_qc[df_qc['n_early_samples'] > 0].groupby('eid').first()
+        for eid in early.index:
+            flag_errors.append(make_log_entry(
+                eid, error_type='EarlySamples',
+                error_message="n_early_samples > 0"
+            ))
+
+df_flag_errors = pd.DataFrame(flag_errors) if flag_errors else pd.DataFrame(columns=LOG_COLUMNS)
+
+# Concatenate all logs → unified errors.pqt
+df_errors = concat_logs(upstream_logs + [df_flag_errors])
 
 
 # =============================================================================
 # Final Dataset Summary
 # =============================================================================
 
-# Sessions passing all criteria (NM='none' sessions included with inferred values)
+# Sessions passing all criteria (session-level)
 complete_mask = (
-    df_filters['has_trials'] &
-    df_filters['has_photometry'] &
+    df_filters['has_extracted_task'] &
+    df_filters['has_extracted_photometry'] &
     df_filters['passes_basic_qc'] &
     df_filters['trials_in_photometry_time']
 )
-df_complete = df_sessions[df_sessions['eid'].isin(df_filters[complete_mask]['eid'])].copy()
+n_complete_sessions = complete_mask.sum()
 
 print(f"\n{'='*50}")
 print("Dataset Summary")
@@ -254,39 +247,75 @@ print(f"{'='*50}")
 print(f"Total sessions: {len(df_sessions)}")
 print(f"  Raw task: {n_raw_task}")
 print(f"  Raw photometry: {n_raw_phot}")
-print(f"  Accessible trials: {n_trials}")
-print(f"  Accessible photometry: {n_phot}")
+print(f"  Extracted task: {n_task}")
+print(f"  Extracted photometry: {n_phot}")
 print(f"  Passes basic QC: {n_qc}")
-print(f"  Trials in photometry time: {n_sync}")
-print(f"  Complete (all criteria): {len(df_complete)}")
+print(f"  Trials in photometry time: {n_tipt}")
+print(f"  Complete (all criteria): {n_complete_sessions}")
 
 
 # =============================================================================
-# Target and Mouse Overview (for complete sessions)
+# Target and Mouse Overview (per brain region, independent QC evaluation)
 # =============================================================================
 
-if len(df_complete) > 0:
-    # Explode to one row per target and process regions
-    df_targets = df_complete.explode(column='target').dropna(subset='target')
-    df_targets = process_regions(df_targets, region_col='target')
+if df_qc is not None and len(df_qc) > 0:
+    # Per-brain-region QC: use GCaMP band only
+    df_qc_gcamp = df_qc[df_qc['band'] == 'GCaMP'].copy()
+    df_qc_gcamp['passes_basic_qc'] = (
+        (df_qc_gcamp['n_unique_samples'] > 0.1) &
+        (df_qc_gcamp['n_band_inversions'] == 0)
+    )
 
-    if len(df_targets) > 0:
-        # Target overview
-        ax = target_overview_barplot(df_targets)
-        ax.set_title(f'Complete sessions by target (n={len(df_complete)} sessions)')
-        set_plotsize(w=24, h=12, ax=ax)
-        ax.get_figure().savefig(figures_dir / '5_target_overview.svg', dpi=FIGURE_DPI, bbox_inches='tight')
+    # Join with session-level flags
+    session_flags = df_filters[['eid', 'has_extracted_task', 'trials_in_photometry_time']].copy()
+    df_recordings = df_qc_gcamp[['eid', 'brain_region', 'passes_basic_qc']].merge(
+        session_flags, on='eid', how='left'
+    )
 
-        # Mouse overview with hemisphere
-        ax = mouse_overview_barplot(df_targets)
-        ax.set_title(f'Mice by target (n={len(df_complete)} sessions)')
-        set_plotsize(w=24, h=12, ax=ax)
-        ax.get_figure().savefig(figures_dir / '6_mouse_overview.svg', dpi=FIGURE_DPI, bbox_inches='tight')
+    # A recording is complete if it passes all criteria
+    df_recordings['is_complete'] = (
+        df_recordings['passes_basic_qc'] &
+        df_recordings['has_extracted_task'].fillna(False) &
+        df_recordings['trials_in_photometry_time'].fillna(False)
+    )
 
-# Save failures
-failures_fpath = PROJECT_ROOT / 'data/dataset_failures.pqt'
-failures_fpath.parent.mkdir(parents=True, exist_ok=True)
-df_failures.to_parquet(failures_fpath)
-print(f"\nSaved {len(df_failures)} session failures to {failures_fpath}")
+    # Merge session metadata for plotting (subject, session_type, NM)
+    session_meta = df_sessions[['eid', 'subject', 'session_type', 'NM']].copy()
+    df_recordings = df_recordings.merge(session_meta, on='eid', how='left')
+
+    # Filter to complete recordings with valid target_NM
+    df_complete_recordings = df_recordings[df_recordings['is_complete']].copy()
+    if len(df_complete_recordings) > 0:
+        df_complete_recordings['target_NM'] = (
+            df_complete_recordings['brain_region'].str.split('-').str[0] + '-' + df_complete_recordings['NM']
+        )
+        df_complete_recordings = df_complete_recordings[
+            df_complete_recordings['target_NM'].isin(VALID_TARGETS)
+        ].copy()
+
+        if len(df_complete_recordings) > 0:
+            n_complete_recordings = len(df_complete_recordings)
+            n_complete_sessions_bar = df_complete_recordings['eid'].nunique()
+
+            # Target overview
+            ax = target_overview_barplot(df_complete_recordings)
+            ax.set_title(f'Complete recordings by target ({n_complete_recordings} recordings, '
+                         f'{n_complete_sessions_bar} sessions)')
+            set_plotsize(w=24, h=12, ax=ax)
+            ax.get_figure().savefig(figures_dir / '5_target_overview.svg',
+                                     dpi=FIGURE_DPI, bbox_inches='tight')
+
+            # Mouse overview
+            ax = mouse_overview_barplot(df_complete_recordings)
+            ax.set_title(f'Mice by target ({n_complete_recordings} recordings, '
+                         f'{n_complete_sessions_bar} sessions)')
+            set_plotsize(w=24, h=12, ax=ax)
+            ax.get_figure().savefig(figures_dir / '6_mouse_overview.svg',
+                                     dpi=FIGURE_DPI, bbox_inches='tight')
+
+# Save unified error log
+ERRORS_FPATH.parent.mkdir(parents=True, exist_ok=True)
+df_errors.to_parquet(ERRORS_FPATH)
+print(f"\nSaved {len(df_errors)} error entries to {ERRORS_FPATH}")
 
 print(f"\nFigures saved to {figures_dir}")

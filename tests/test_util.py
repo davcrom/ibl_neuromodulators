@@ -8,29 +8,15 @@ from iblnm.util import (
     has_dataset_category,
     add_dataset_flags,
     drop_junk_duplicates,
-    add_hemisphere,
-    get_sessions,
+    make_log_entry,
+    concat_logs,
+    enforce_schema,
+    get_session_type,
+    get_targetNM,
+    InvalidSessionType,
+    InvalidTargetNM,
+    LOG_COLUMNS,
 )
-
-
-@pytest.fixture
-def mock_sessions_pqt(tmp_path):
-    """Create a mock sessions.pqt with a mix of subjects and session types."""
-    df = pd.DataFrame({
-        'eid': [f'eid-{i}' for i in range(8)],
-        'subject': ['mouseA', 'mouseA', 'mouseA', 'mouseB', 'mouseB',
-                     'SP076', 'mouseC', 'mouseC'],  # SP076 is excluded
-        'session_type': ['biased', 'biased', 'training', 'biased', 'biased',
-                         'biased', 'habituation', 'biased'],  # habituation excluded
-        'day_n': [1, 1, 2, 1, 2, 1, 1, 2],
-        'has_raw_task': [True, False, True, True, True, True, True, True],
-        'has_raw_photometry': [True, True, True, True, True, True, True, True],
-        'has_extracted_task': [True, True, True, True, False, True, True, True],
-        'has_extracted_photometry': [True, True, False, True, True, True, True, True],
-    })
-    path = tmp_path / 'sessions.pqt'
-    df.to_parquet(path)
-    return path
 
 
 class TestHasDataset:
@@ -148,217 +134,375 @@ class TestAddDatasetFlags:
         result = add_dataset_flags(df)
         assert 'has_extracted_task' in result.columns
         assert 'has_extracted_photometry_signal' in result.columns
-        assert 'has_raw_photometry' in result.columns
+        assert 'has_raw_photometry_signals' in result.columns
         assert result.iloc[0]['has_extracted_task'] == True
         assert result.iloc[0]['has_extracted_photometry_signal'] == True
-        assert result.iloc[0]['has_raw_photometry'] == False
+        assert result.iloc[0]['has_raw_photometry_signals'] == False
         assert result.iloc[1]['has_extracted_task'] == False
-        assert result.iloc[1]['has_raw_photometry'] == True
+        assert result.iloc[1]['has_raw_photometry_signals'] == True
 
 
-class TestAddHemisphere:
-    def test_single_fiber_left(self):
-        """Single fiber with positive X should be left hemisphere."""
-        df_sessions = pd.DataFrame({
-            'subject': ['mouse1'],
-            'target': ['VTA-DA'],
+# TODO: add tests for validate_hemisphere once it's fixed
+
+
+class TestMakeLogEntry:
+    """Tests for make_log_entry function."""
+
+    def test_from_exception(self):
+        """Extracts type, message, traceback from an exception."""
+        try:
+            raise ValueError("bad data")
+        except ValueError as e:
+            entry = make_log_entry('eid-1', error=e)
+
+        assert entry['eid'] == 'eid-1'
+        assert entry['error_type'] == 'ValueError'
+        assert entry['error_message'] == 'bad data'
+        assert 'Traceback' in entry['traceback']
+        assert set(entry.keys()) == set(LOG_COLUMNS)
+
+    def test_from_explicit_strings(self):
+        """Creates entry from explicit error_type and error_message."""
+        entry = make_log_entry('eid-2', error_type='UnknownNM', error_message='no NM found')
+
+        assert entry['eid'] == 'eid-2'
+        assert entry['error_type'] == 'UnknownNM'
+        assert entry['error_message'] == 'no NM found'
+        assert entry['traceback'] is None
+        assert set(entry.keys()) == set(LOG_COLUMNS)
+
+    def test_exception_overrides_explicit(self):
+        """When both error and error_type given, exception wins."""
+        try:
+            raise KeyError("missing")
+        except KeyError as e:
+            entry = make_log_entry('eid-3', error=e, error_type='ShouldBeIgnored')
+
+        assert entry['error_type'] == 'KeyError'
+
+    def test_no_error_info_raises(self):
+        """Must provide either error or error_type."""
+        with pytest.raises(ValueError):
+            make_log_entry('eid-4')
+
+
+class TestConcatLogs:
+    """Tests for concat_logs function."""
+
+    def test_concatenates_multiple_logs(self):
+        """Multiple logs are stacked, not merged."""
+        log1 = pd.DataFrame({
+            'eid': ['a'], 'error_type': ['ValueError'],
+            'error_message': ['bad'], 'traceback': [None],
         })
-        df_fibers = pd.DataFrame({
-            'subject': ['mouse1'],
-            'targeted_region': ['VTA'],
-            'neuromodulator': ['DA'],
-            'X-ml_um': [500],  # positive = left
+        log2 = pd.DataFrame({
+            'eid': ['b'], 'error_type': ['KeyError'],
+            'error_message': ['missing'], 'traceback': [None],
         })
-        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
-        assert result.iloc[0]['hemisphere'] == 'L'
+        result = concat_logs([log1, log2])
 
-    def test_single_fiber_right(self):
-        """Single fiber with negative X should be right hemisphere."""
-        df_sessions = pd.DataFrame({
-            'subject': ['mouse1'],
-            'target': ['VTA-DA'],
+        assert len(result) == 2
+        assert list(result.columns) == LOG_COLUMNS
+        assert set(result['eid']) == {'a', 'b'}
+
+    def test_skips_none_entries(self):
+        """None entries in the list are skipped."""
+        log1 = pd.DataFrame({
+            'eid': ['a'], 'error_type': ['ValueError'],
+            'error_message': ['bad'], 'traceback': [None],
         })
-        df_fibers = pd.DataFrame({
-            'subject': ['mouse1'],
-            'targeted_region': ['VTA'],
-            'neuromodulator': ['DA'],
-            'X-ml_um': [-500],  # negative = right
+        result = concat_logs([None, log1, None])
+
+        assert len(result) == 1
+
+    def test_drops_extra_columns(self):
+        """Extra columns beyond LOG_COLUMNS are dropped."""
+        log = pd.DataFrame({
+            'eid': ['a'], 'error_type': ['ValueError'],
+            'error_message': ['bad'], 'traceback': [None],
+            'subject': ['mouse1'], 'function': ['foo'],
         })
-        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
-        assert result.iloc[0]['hemisphere'] == 'R'
+        result = concat_logs([log])
 
-    def test_multiple_fibers_same_target_blank(self):
-        """Multiple fibers per subject+target should leave hemisphere blank."""
-        df_sessions = pd.DataFrame({
-            'subject': ['mouse1'],
-            'target': ['VTA-DA'],
+        assert list(result.columns) == LOG_COLUMNS
+        assert 'subject' not in result.columns
+
+    def test_empty_list_returns_empty_df(self):
+        """Empty list returns DataFrame with LOG_COLUMNS."""
+        result = concat_logs([])
+
+        assert len(result) == 0
+        assert list(result.columns) == LOG_COLUMNS
+
+    def test_all_none_returns_empty_df(self):
+        """All-None list returns empty DataFrame."""
+        result = concat_logs([None, None])
+
+        assert len(result) == 0
+        assert list(result.columns) == LOG_COLUMNS
+
+    def test_preserves_duplicate_eids(self):
+        """Same eid from different sources produces multiple rows."""
+        log1 = pd.DataFrame({
+            'eid': ['a'], 'error_type': ['ValueError'],
+            'error_message': ['bad data'], 'traceback': [None],
         })
-        df_fibers = pd.DataFrame({
-            'subject': ['mouse1', 'mouse1'],
-            'targeted_region': ['VTA', 'VTA'],
-            'neuromodulator': ['DA', 'DA'],
-            'X-ml_um': [500, -500],  # bilateral
+        log2 = pd.DataFrame({
+            'eid': ['a'], 'error_type': ['KeyError'],
+            'error_message': ['missing key'], 'traceback': [None],
         })
-        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
-        assert pd.isna(result.iloc[0]['hemisphere'])
+        result = concat_logs([log1, log2])
 
-    def test_multiple_targets_different_hemispheres(self):
-        """Multiple targets in different hemispheres should work correctly."""
-        df_sessions = pd.DataFrame({
-            'subject': ['mouse1', 'mouse1'],
-            'target': ['VTA-DA', 'SNc-DA'],
+        assert len(result) == 2
+        assert (result['eid'] == 'a').all()
+
+
+class TestEnforceSchema:
+    """Tests for enforce_schema function."""
+
+    def test_fills_missing_list_columns(self):
+        """Missing list columns are added with empty list default."""
+        schema = {'tags': (list, [])}
+        df = pd.DataFrame({'eid': ['a', 'b']})
+        result = enforce_schema(df, schema)
+
+        assert 'tags' in result.columns
+        assert result.loc[0, 'tags'] == []
+        assert result.loc[1, 'tags'] == []
+
+    def test_fills_missing_scalar_columns(self):
+        """Missing scalar columns are added with None default."""
+        schema = {'NM': (str, None)}
+        df = pd.DataFrame({'eid': ['a']})
+        result = enforce_schema(df, schema)
+
+        assert 'NM' in result.columns
+        assert result.loc[0, 'NM'] is None
+
+    def test_coerces_nan_to_list_default(self):
+        """NaN values in list columns are replaced with empty list."""
+        schema = {'brain_region': (list, [])}
+        df = pd.DataFrame({'brain_region': [['VTA'], float('nan'), ['LC']]})
+        result = enforce_schema(df, schema)
+
+        assert result.loc[0, 'brain_region'] == ['VTA']
+        assert result.loc[1, 'brain_region'] == []
+        assert result.loc[2, 'brain_region'] == ['LC']
+
+    def test_preserves_existing_values(self):
+        """Existing valid values are not overwritten."""
+        schema = {'NM': (str, None), 'brain_region': (list, [])}
+        df = pd.DataFrame({
+            'NM': ['DA', None, '5HT'],
+            'brain_region': [['VTA'], ['LC'], float('nan')],
         })
-        df_fibers = pd.DataFrame({
-            'subject': ['mouse1', 'mouse1'],
-            'targeted_region': ['VTA', 'SNc'],
-            'neuromodulator': ['DA', 'DA'],
-            'X-ml_um': [500, -500],
+        result = enforce_schema(df, schema)
+
+        assert result.loc[0, 'NM'] == 'DA'
+        assert result.loc[0, 'brain_region'] == ['VTA']
+        assert result.loc[1, 'NM'] is None
+        assert result.loc[1, 'brain_region'] == ['LC']
+        assert result.loc[2, 'NM'] == '5HT'
+        assert result.loc[2, 'brain_region'] == []
+
+    def test_does_not_share_list_references(self):
+        """Each row gets its own list instance, not a shared reference."""
+        schema = {'tags': (list, [])}
+        df = pd.DataFrame({'eid': ['a', 'b']})
+        result = enforce_schema(df, schema)
+
+        result.loc[0, 'tags'].append('x')
+        assert result.loc[1, 'tags'] == []
+
+    def test_converts_numpy_arrays_to_lists(self):
+        """Numpy arrays (from parquet round-trip) are converted to lists."""
+        schema = {'brain_region': (list, [])}
+        df = pd.DataFrame({'brain_region': [np.array(['VTA', 'LC']), np.array([]), None]})
+        result = enforce_schema(df, schema)
+
+        assert result.loc[0, 'brain_region'] == ['VTA', 'LC']
+        assert isinstance(result.loc[0, 'brain_region'], list)
+        assert result.loc[1, 'brain_region'] == []
+        assert result.loc[2, 'brain_region'] == []
+
+    def test_ignores_columns_not_in_schema(self):
+        """Columns not in the schema are left untouched."""
+        schema = {'NM': (str, None)}
+        df = pd.DataFrame({'eid': ['a'], 'subject': ['mouse1']})
+        result = enforce_schema(df, schema)
+
+        assert 'subject' in result.columns
+        assert result.loc[0, 'subject'] == 'mouse1'
+
+
+class TestGetSessionType:
+    """Tests for get_session_type function."""
+
+    def test_biased_choiceworld(self):
+        """Standard biasedChoiceWorld protocol maps to 'biased'."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': '_iblrig_tasks_biasedChoiceWorld6.4.2',
         })
-        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
-        assert result.iloc[0]['hemisphere'] == 'L'  # VTA-DA
-        assert result.iloc[1]['hemisphere'] == 'R'  # SNc-DA
+        result = get_session_type(session)
+        assert result['session_type'] == 'biased'
 
-    def test_no_matching_fiber(self):
-        """Session with no matching fiber should have NaN hemisphere."""
-        df_sessions = pd.DataFrame({
-            'subject': ['mouse1'],
-            'target': ['VTA-DA'],
+    def test_training_choiceworld(self):
+        """Standard trainingChoiceWorld protocol maps to 'training'."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': '_iblrig_tasks_trainingChoiceWorld6.4.2',
         })
-        df_fibers = pd.DataFrame({
-            'subject': ['mouse2'],
-            'targeted_region': ['VTA'],
-            'neuromodulator': ['DA'],
-            'X-ml_um': [500],
+        result = get_session_type(session)
+        assert result['session_type'] == 'training'
+
+    def test_ephys_choiceworld(self):
+        """Standard ephysChoiceWorld maps to 'ephys'."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': '_iblrig_tasks_ephysChoiceWorld6.4.2',
         })
-        result = add_hemisphere(df_sessions, region_col='target', df_fibers=df_fibers)
-        assert pd.isna(result.iloc[0]['hemisphere'])
+        result = get_session_type(session)
+        assert result['session_type'] == 'ephys'
 
-
-class TestGetSessions:
-    def test_loads_and_cleans(self, mock_sessions_pqt):
-        """get_sessions with all flags False returns cleaned, deduped sessions."""
-        df = get_sessions(
-            sessions_path=mock_sessions_pqt,
-            require_extracted_task=False,
-            require_extracted_photometry=False,
-            require_qc=False,
-            require_tipt=False,
-            verbose=False,
-        )
-        assert isinstance(df, pd.DataFrame)
-        raw = pd.read_parquet(mock_sessions_pqt)
-        # Should have removed SP076 (excluded subject), habituation (excluded type),
-        # and one duplicate (mouseA day_n=1 has two entries)
-        assert len(df) < len(raw)
-        # SP076 should be gone
-        assert 'SP076' not in df['subject'].values
-        # habituation should be gone
-        assert 'habituation' not in df['session_type'].values
-        # mouseA day_n=1 should have only one entry (deduped)
-        assert len(df[(df['subject'] == 'mouseA') & (df['day_n'] == 1)]) == 1
-
-    def test_filters_extracted(self, mock_sessions_pqt):
-        """Sessions missing extracted data are excluded."""
-        df = get_sessions(
-            sessions_path=mock_sessions_pqt,
-            require_extracted_task=True,
-            require_extracted_photometry=True,
-            require_qc=False,
-            require_tipt=False,
-            verbose=False,
-        )
-        assert df['has_extracted_task'].all()
-        assert df['has_extracted_photometry'].all()
-
-    def test_filters_qc(self, mock_sessions_pqt, tmp_path):
-        """Sessions failing photometry QC are excluded."""
-        # Create QC data: eid-0 passes, eid-2 fails (band inversions)
-        df_qc = pd.DataFrame({
-            'eid': ['eid-0', 'eid-0', 'eid-2', 'eid-2', 'eid-3', 'eid-3'],
-            'band': ['GCaMP', 'isos', 'GCaMP', 'isos', 'GCaMP', 'isos'],
-            'brain_region': ['VTA'] * 6,
-            'n_unique_samples': [0.9, 0.8, 0.9, 0.8, 0.9, 0.8],
-            'n_band_inversions': [0, 0, 3, 0, 0, 0],  # eid-2 fails
+    def test_habituation(self):
+        """Habituation protocol maps to 'habituation'."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': '_iblrig_tasks_habituationChoiceWorld6.4.2',
         })
-        qc_path = tmp_path / 'qc_photometry.pqt'
-        df_qc.to_parquet(qc_path)
+        result = get_session_type(session)
+        assert result['session_type'] == 'habituation'
 
-        df = get_sessions(
-            sessions_path=mock_sessions_pqt,
-            qc_path=qc_path,
-            require_extracted_task=False,
-            require_extracted_photometry=False,
-            require_qc=True,
-            require_tipt=False,
-            verbose=False,
-        )
-        # eid-2 should be excluded (band inversions)
-        assert 'eid-2' not in df['eid'].values
-        # eid-0 and eid-3 should remain (they pass QC and survive clean+dedup)
-        assert 'eid-0' in df['eid'].values or 'eid-3' in df['eid'].values
-
-    def test_qc_missing_warns(self, mock_sessions_pqt, tmp_path):
-        """Missing qc_photometry.pqt returns empty DataFrame with warning."""
-        import warnings
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            df = get_sessions(
-                sessions_path=mock_sessions_pqt,
-                qc_path=tmp_path / 'nonexistent.pqt',
-                require_qc=True,
-                require_tipt=False,
-                verbose=False,
-            )
-        assert len(df) == 0
-        assert any('qc_photometry.pqt not found' in str(warning.message) for warning in w)
-
-    def test_filters_tipt(self, mock_sessions_pqt, tmp_path):
-        """Sessions with TrialsNotInPhotometryTime error are excluded."""
-        df_log = pd.DataFrame({
-            'eid': ['eid-0', 'eid-3'],
-            'subject': ['mouseA', 'mouseB'],
-            'error_type': ['TrialsNotInPhotometryTime', 'SomeOtherError'],
-            'error_message': ['trials outside window', 'something else'],
+    def test_red_flag_raises(self):
+        """Protocol with red flag raises InvalidSessionType."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': '_iblrig_tasks_biasedChoiceWorld_RPE',
         })
-        log_path = tmp_path / 'responses_log.pqt'
-        df_log.to_parquet(log_path)
+        with pytest.raises(InvalidSessionType, match='red flags'):
+            get_session_type(session)
 
-        df = get_sessions(
-            sessions_path=mock_sessions_pqt,
-            responses_log_path=log_path,
-            require_extracted_task=False,
-            require_extracted_photometry=False,
-            require_qc=False,
-            require_tipt=True,
-            verbose=False,
-        )
-        # eid-0 had TrialsNotInPhotometryTime → excluded
-        assert 'eid-0' not in df['eid'].values
-        # eid-3 had a different error → should remain
-        assert 'eid-3' in df['eid'].values
+    def test_delay_red_flag_raises(self):
+        """Delay variant is flagged."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': '_iblrig_tasks_biasedChoiceWorld_DELAY',
+        })
+        with pytest.raises(InvalidSessionType, match='red flags'):
+            get_session_type(session)
 
-    def test_tipt_missing_warns_and_skips(self, mock_sessions_pqt, tmp_path):
-        """Missing responses_log.pqt skips tipt filter with warning."""
-        import warnings
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            df = get_sessions(
-                sessions_path=mock_sessions_pqt,
-                responses_log_path=tmp_path / 'nonexistent.pqt',
-                require_extracted_task=False,
-                require_extracted_photometry=False,
-                require_qc=False,
-                require_tipt=True,
-                verbose=False,
-            )
-        # Should still return sessions (filter skipped)
-        assert len(df) > 0
-        assert any('responses_log.pqt not found' in str(warning.message) for warning in w)
+    def test_no_match_raises(self):
+        """Protocol with no recognized type raises InvalidSessionType."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': '_iblrig_tasks_unknownProtocol',
+        })
+        with pytest.raises(InvalidSessionType):
+            get_session_type(session)
 
-    def test_sessions_missing_raises(self, tmp_path):
-        """Missing sessions.pqt raises FileNotFoundError."""
-        with pytest.raises(Exception):
-            get_sessions(
-                sessions_path=tmp_path / 'nonexistent.pqt',
-                verbose=False,
-            )
+    def test_histology_session(self):
+        """Protocol containing 'Histology' maps to 'histology'."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': 'Histology',
+        })
+        result = get_session_type(session)
+        assert result['session_type'] == 'histology'
+
+    def test_ephyssessions_maps_to_biased(self):
+        """biasedChoiceWorld_ephyssessions resolves to biased (strict CW match)."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': '_iblrig_tasks_biasedChoiceWorld_ephyssessions7.0.4',
+        })
+        result = get_session_type(session)
+        assert result['session_type'] == 'biased'
+
+    def test_training_phase_choiceworld_raises(self):
+        """trainingPhaseChoiceWorld is not matched by strict CW mask."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': '_iblrig_tasks_trainingPhaseChoiceWorld8.29.0',
+        })
+        with pytest.raises(InvalidSessionType, match='does not match'):
+            get_session_type(session)
+
+    def test_exception_logged_when_exlog_provided(self):
+        """Invalid protocol logs to exlog instead of raising."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'task_protocol': 'nonsense_protocol',
+        })
+        exlog = []
+        result = get_session_type(session, exlog=exlog)
+        assert len(exlog) == 1
+        assert exlog[0]['error_type'] == 'InvalidSessionType'
+
+
+class TestGetTargetNM:
+    """Tests for get_targetNM function."""
+
+    def test_single_region(self):
+        """Single brain region + NM produces valid target_NM."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'NM': 'DA',
+            'brain_region': ['VTA'],
+        })
+        result = get_targetNM(session)
+        assert result['target_NM'] == ['VTA-DA']
+
+    def test_multiple_regions(self):
+        """Multiple brain regions produce multiple target_NMs."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'NM': 'DA',
+            'brain_region': ['VTA', 'SNc'],
+        })
+        result = get_targetNM(session)
+        assert result['target_NM'] == ['VTA-DA', 'SNc-DA']
+
+    def test_strips_hemisphere_suffix(self):
+        """Hemisphere suffix (e.g., 'VTA-l') is stripped before combining."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'NM': 'DA',
+            'brain_region': ['VTA-l', 'SNc-r'],
+        })
+        result = get_targetNM(session)
+        assert result['target_NM'] == ['VTA-DA', 'SNc-DA']
+
+    def test_invalid_target_raises(self):
+        """Unknown region-NM combo raises InvalidTargetNM."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'NM': 'DA',
+            'brain_region': ['XYZ'],
+        })
+        with pytest.raises(InvalidTargetNM, match='XYZ-DA'):
+            get_targetNM(session)
+
+    def test_exception_logged_when_exlog_provided(self):
+        """Invalid target logs to exlog instead of raising."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'NM': 'DA',
+            'brain_region': ['XYZ'],
+        })
+        exlog = []
+        result = get_targetNM(session, exlog=exlog)
+        assert len(exlog) == 1
+        assert exlog[0]['error_type'] == 'InvalidTargetNM'
+        # target_NM should not be set (original series returned)
+        assert 'target_NM' not in result or result.get('target_NM') is None
+
+    def test_empty_brain_region(self):
+        """Empty brain_region list produces empty target_NM."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'NM': 'DA',
+            'brain_region': [],
+        })
+        result = get_targetNM(session)
+        assert result['target_NM'] == []

@@ -14,7 +14,6 @@ from iblnm.task import (
     fit_psychometric_by_block,
     compute_bias_shift,
 )
-from iblnm.util import merge_session_metadata
 
 
 # =============================================================================
@@ -361,20 +360,3 @@ class TestBiasShift:
 # I/O Tests
 # =============================================================================
 
-class TestMergeSessionMetadata:
-    def test_merge(self, mock_sessions, tmp_path):
-        """Test merging performance data with session metadata."""
-        # Save mock sessions to temp file
-        sessions_path = tmp_path / 'sessions.pqt'
-        mock_sessions.to_parquet(sessions_path)
-
-        # Create mock performance data
-        df_performance = pd.DataFrame({
-            'eid': ['eid1', 'eid2'],
-            'fraction_correct': [0.8, 0.75],
-        })
-
-        # Would need actual implementation to test fully
-        # For now, just check function exists and is callable
-        # result = merge_session_metadata(df_performance, sessions_fpath=sessions_path)
-        pass

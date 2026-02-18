@@ -26,9 +26,9 @@ from iblnm.util import clean_sessions, drop_junk_duplicates, process_regions, ag
 
 def get_subject_target_mapping(df_sessions):
     """Map subjects to their target_NM."""
-    df_targets = df_sessions[['subject', 'target', 'NM']].copy()
-    df_targets = df_targets.explode('target').dropna(subset='target')
-    df_targets = process_regions(df_targets, region_col='target', add_hemisphere=False)
+    df_targets = df_sessions[['subject', 'brain_region', 'NM']].copy()
+    df_targets = df_targets.explode('brain_region').dropna(subset='brain_region')
+    df_targets = process_regions(df_targets, add_hemisphere=False)
     return df_targets.groupby('subject')['target_NM'].first().to_dict()
 
 

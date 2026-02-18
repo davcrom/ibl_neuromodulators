@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import pynapple as nap
 from datetime import datetime
 
 from one.api import ONE
@@ -9,24 +8,52 @@ from iblphotometry.fpio import from_neurophotometrics_df_to_photometry_df
 from iblphotometry import metrics
 from iblphotometry.qc import qc_signals
 
+from one.alf.exceptions import ALFObjectNotFound
+
 from iblnm.config import *
-from iblnm.analysis import get_responses, get_response_tpts
+from iblnm.analysis import get_responses
 from iblnm import task
 from iblnm.task import _get_signed_contrast
+from iblnm.util import make_log_entry
+
+
+class MissingExtractedData(Exception):
+    """Extracted dataset not found on Alyx (raw data exists)."""
+
+
+class MissingRawData(Exception):
+    """Raw dataset not found on Alyx."""
+
+
+class InsufficientTrials(Exception):
+    """Session has too few trials for analysis."""
+
+
+class BlockStructureBug(Exception):
+    """Biased/ephys session has rapidly flipping blocks."""
+
+
+class IncompleteEventTimes(Exception):
+    """Event times below completeness threshold."""
+    def __init__(self, missing_events):
+        self.missing_events = missing_events
+        super().__init__(f"Incomplete events: {', '.join(missing_events)}")
+
+
+class TrialsNotInPhotometryTime(Exception):
+    """Trial times fall outside photometry recording window."""
+
+
+class BandInversion(Exception):
+    """Photometry signal has band inversions."""
+
+
+class EarlySamples(Exception):
+    """Photometry signal has early samples."""
+
 
 class PhotometrySession(PhotometrySessionLoader):
-    """
-    Data class for an IBL photometry session.
-
-    Attributes
-    ----------
-    has_trials : bool
-        Whether trials data loaded successfully
-    has_photometry : bool
-        Whether photometry data loaded successfully
-    trials_in_photometry_time : bool
-        Whether all trial times fall within photometry recording time
-    """
+    """Data class for an IBL photometry session."""
 
     RESPONSE_WINDOW = RESPONSE_WINDOW
 
@@ -47,7 +74,6 @@ class PhotometrySession(PhotometrySessionLoader):
         else:
             self.start_time = start_time
 
-        # TODO: add session type
         self.number = int(session_series['number'])
         self.lab = session_series['lab']
         self.projects = session_series['projects']
@@ -55,11 +81,16 @@ class PhotometrySession(PhotometrySessionLoader):
         self.session_n = session_series['session_n']
         self.task_protocol = session_series['task_protocol']
         self.session_type = session_series['session_type']
+        self.NM = session_series.get('NM')
+        self.datasets = session_series.get('datasets', [])
 
         super().__init__(*args, eid=self.eid, **kwargs)
-        self.qc = {}
+        if not isinstance(self.photometry, dict):
+            self.photometry = {}
+        self.qc = pd.DataFrame()
         if load_data:
-            self.load_session_data()
+            self.load_trials()
+            self.load_photometry()
 
 
     def __str__(self) -> str:
@@ -100,71 +131,109 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_trials(self):
         try:
             super().load_trials()
-            self.has_trials = True
-        except Exception:
-            self.has_trials = False
+        except ALFObjectNotFound:
+            has_raw = any(d in self.datasets for d in [
+                'raw_behavior_data/_iblrig_taskData.raw.jsonable',
+                'raw_task_data_00/_iblrig_taskData.raw.jsonable',
+            ])
+            if has_raw:
+                raise MissingExtractedData("Trials could not be downloaded")
+            raise MissingRawData("No raw task data")
+        self.trials['signed_contrast'] = _get_signed_contrast(self.trials)
+        self.trials['contrast'] = np.abs(self.trials['signed_contrast'])
 
-        if self.has_trials:
-            self.trials['signed_contrast'] = _get_signed_contrast(self.trials)
-            self.trials['contrast'] = np.abs(self.trials['signed_contrast'])
-
-
-    def load_photometry(self):
+    def load_photometry(
+        self,
+        pre: int = -5,
+        post: int = 5,
+        ):
         try:
-            super().load_photometry()
-            self.has_photometry = True
-        except Exception:
-            self.has_photometry = False
-
-        # Set up convenience attributes if photometry loaded
-        if self.has_photometry and isinstance(self.photometry, dict):
-            for k, v in self.photometry.items():
-                setattr(self, k.lower(), v)
-            self.channels = {k.lower() for k in self.photometry.keys()}
-            self.targets = {
-                k.lower(): list(v.columns) for k, v in self.photometry.items()
-            }
-
-        # Check if trials are within photometry time
-        self.trials_in_photometry_time = self._check_trials_in_photometry_time()
+            super().load_photometry(
+                restrict_to_session=True,
+                pre=pre,
+                post=post
+            )
+        except ALFObjectNotFound:
+            if 'raw_photometry_data/_neurophotometrics_fpData.raw.pqt' in self.datasets:
+                raise MissingExtractedData("Photometry could not be downloaded")
+            raise MissingRawData("No raw photometry signal found")
 
 
-    def load_session_data(self):
-        """
-        Load trials and photometry data with error handling.
+    def validate_n_trials(self):
+        """Returns log entry if n_trials < MIN_NTRIALS, else empty list."""
+        if len(self.trials) < MIN_NTRIALS:
+            return [make_log_entry(
+                self.eid,
+                error_type='InsufficientTrials',
+                error_message=f"n_trials={len(self.trials)} < MIN_NTRIALS={MIN_NTRIALS}",
+            )]
+        return []
 
-        Sets has_trials, has_photometry, and trials_in_photometry_time flags.
-        """
-        # Load trials
-        self.load_trials()
+    def validate_block_structure(self):
+        """Returns log entry if biased/ephys session has rapidly flipping blocks, else empty list."""
+        if self.session_type not in ('biased', 'ephys'):
+            return []
+        block_info = task.validate_block_structure(self.trials)
+        if block_info['flagged']:
+            return [make_log_entry(
+                self.eid,
+                error_type='BlockStructureBug',
+                error_message=f"Min block length: {block_info['min_block_length']}, "
+                              f"n_blocks: {block_info['n_blocks']}",
+            )]
+        return []
 
-        # Load photometry
-        self.load_photometry()
+    def validate_event_completeness(self):
+        """Returns log entry if stimOn_times or feedback_times has <90% present, else empty list."""
+        required_events = ['stimOn_times', 'feedback_times']
+        missing = []
+        for event in required_events:
+            if event not in self.trials.columns:
+                missing.append(event)
+            elif self.trials[event].notna().mean() < EVENT_COMPLETENESS_THRESHOLD:
+                missing.append(event)
+        if missing:
+            return [make_log_entry(
+                self.eid,
+                error_type='IncompleteEventTimes',
+                error_message=f"Incomplete events: {', '.join(missing)}",
+            )]
+        return []
 
+    def validate_trials_in_photometry_time(self, band=None):
+        """Returns log entry if trial times fall outside photometry window, else empty list."""
+        if band is None:
+            band = 'GCaMP_preprocessed' if 'GCaMP_preprocessed' in self.photometry else 'GCaMP'
+        phot_times = self.photometry[band].index
+        trial_start = self.trials['stimOn_times'].min()
+        trial_stop = self.trials['feedback_times'].max()
+        if not (trial_start >= phot_times.min() and trial_stop <= phot_times.max()):
+            return [make_log_entry(
+                self.eid,
+                error_type='TrialsNotInPhotometryTime',
+                error_message=f"Trials [{trial_start:.1f}, {trial_stop:.1f}] outside "
+                              f"photometry [{phot_times.min():.1f}, {phot_times.max():.1f}]",
+            )]
+        return []
 
-    def _check_trials_in_photometry_time(self):
-        """Check if all trial times fall within the photometry recording time."""
-        if not self.has_trials or not self.has_photometry:
-            return False
-
-        # Get photometry time range from any band
-        phot_times = self.photometry['GCaMP'].index
-        t_start = phot_times.min()
-        t_stop = phot_times.max()
-
-        # Get trial time range
-        trial_start = self.trials['intervals_0'].min()
-        trial_stop = self.trials['intervals_1'].max()
-
-        return (trial_start >= t_start) and (trial_stop <= t_stop)
-
-    def get_data_flags(self):
-        """Return data availability flags as a dict for updating df_sessions."""
-        return {
-            'has_trials': self.has_trials,
-            'has_photometry': self.has_photometry,
-            'trials_in_photometry_time': self.trials_in_photometry_time,
-        }
+    def validate_qc(self):
+        """Returns log entries for QC failures (band inversions, early samples), else empty list."""
+        errors = []
+        if self.qc.empty:
+            return errors
+        if 'n_band_inversions' in self.qc.columns and (self.qc['n_band_inversions'] > 0).any():
+            errors.append(make_log_entry(
+                self.eid,
+                error_type='BandInversion',
+                error_message="Band inversions detected",
+            ))
+        if 'n_early_samples' in self.qc.columns and (self.qc['n_early_samples'] > 0).any():
+            errors.append(make_log_entry(
+                self.eid,
+                error_type='EarlySamples',
+                error_message="Early samples detected",
+            ))
+        return errors
 
     def _load_raw_photometry(self):
         raw_photometry = self.one.load_dataset(
@@ -175,49 +244,157 @@ class PhotometrySession(PhotometrySessionLoader):
         # ~ raw_photometry = raw_photometry.set_index(timestamp_col)
         return from_neurophotometrics_df_to_photometry_df(raw_photometry).set_index('times')
 
-    def get_responses(self, channel, event, targets=None, **kwargs):
-        if event.endswith('_times'):
-            event = event.rstrip('_times')
-        if not hasattr(self, 'responses'):
-            self.responses = {}
-        self.responses[event] = {}
-        for target in (targets or self.targets[channel]):
-            self.responses[event][target] = {}
-            responses = get_responses(
-                getattr(self, channel)[target],
-                self.trials[event + '_times'].values,
-                window=self.RESPONSE_WINDOW
-                )
-            self.responses[event][target][channel] = responses
+    def extract_responses(self, events=None, band='GCaMP_preprocessed',
+                          window=None):
+        """Extract peri-event response matrices as xarray DataArray.
 
+        Returns
+        -------
+        xr.DataArray
+            dims: (region, event, trial, time)
+        """
+        import xarray as xr
 
-    def get_response_tpts(self, channel):
-        tpts = get_response_tpts(
-            getattr(self, channel),
-            window=self.RESPONSE_WINDOW
+        if events is None:
+            events = RESPONSE_EVENTS
+        if window is None:
+            window = self.RESPONSE_WINDOW
+        regions = list(self.photometry[band].columns)
+        n_trials = len(self.trials)
+
+        # Collect response matrices and determine tpts from first call
+        data = []
+        tpts = None
+        for region in regions:
+            signal = self.photometry[band][region]
+            region_data = []
+            for event in events:
+                event_times = self.trials[event].values
+                resp, t = get_responses(signal, event_times,
+                                        t0=window[0], t1=window[1])
+                if tpts is None:
+                    tpts = t
+                region_data.append(resp)
+            data.append(region_data)
+
+        # data shape: (n_regions, n_events, n_trials, n_times)
+        self.responses = xr.DataArray(
+            np.array(data),
+            dims=['region', 'event', 'trial', 'time'],
+            coords={
+                'region': regions,
+                'event': events,
+                'trial': np.arange(n_trials),
+                'time': tpts,
+            },
         )
-        return tpts
+        return self.responses
 
+    def save_h5(self, fpath=None, band='GCaMP_preprocessed', mode='w'):
+        """Save session data to HDF5.
 
-    def _update_qc(self, brain_region: str, band: str, metrics: dict) -> None:
-        """Update QC metrics in nested dict structure."""
-        if brain_region not in self.qc:
-            self.qc[brain_region] = {}
-        if band not in self.qc[brain_region]:
-            self.qc[brain_region][band] = {}
-        self.qc[brain_region][band].update(metrics)
+        mode='w': Create file with preprocessed signal + session attrs.
+        mode='a': Append trials + responses to existing file.
+        """
+        import h5py
+        from pathlib import Path
+        if fpath is None:
+            fpath = SESSIONS_H5_DIR / f'{self.eid}.h5'
+        fpath = Path(fpath)
+        fpath.parent.mkdir(parents=True, exist_ok=True)
 
-    def qc_to_dataframe(self) -> pd.DataFrame:
-        """Convert nested QC dict to DataFrame for aggregation."""
-        rows = []
-        for brain_region, bands in self.qc.items():
-            for band, metrics in bands.items():
-                row = {'brain_region': brain_region, 'band': band, **metrics}
-                rows.append(row)
-        df = pd.DataFrame(rows)
-        if not df.empty:
-            df['eid'] = self.eid
-        return df
+        with h5py.File(fpath, mode) as f:
+            if mode == 'w':
+                f.attrs['eid'] = self.eid
+                f.attrs['subject'] = self.subject
+                f.attrs['session_type'] = self.session_type
+                f.attrs['date'] = self.date
+                f.attrs['fs'] = TARGET_FS
+                f.attrs['response_window'] = self.RESPONSE_WINDOW
+
+                preprocessed = self.photometry[band]
+                f.create_dataset('times', data=preprocessed.index.values)
+                grp = f.create_group('preprocessed')
+                for col in preprocessed.columns:
+                    grp.create_dataset(col, data=preprocessed[col].values,
+                                       compression='gzip', compression_opts=4)
+
+            elif mode == 'a':
+                if hasattr(self, 'trials') and self.trials is not None:
+                    if 'trials' in f:
+                        del f['trials']
+                    cols = TRIAL_COLUMNS + ['signed_contrast', 'contrast']
+                    available = [c for c in cols if c in self.trials.columns]
+                    grp = f.create_group('trials')
+                    for col in available:
+                        grp.create_dataset(col, data=self.trials[col].values)
+
+                if hasattr(self, 'responses') and self.responses is not None:
+                    if 'responses' in f:
+                        del f['responses']
+                    grp = f.create_group('responses')
+                    tpts = self.responses.coords['time'].values
+                    grp.create_dataset('time', data=tpts)
+                    for region in self.responses.coords['region'].values:
+                        region_grp = grp.create_group(region)
+                        for event in self.responses.coords['event'].values:
+                            resp = self.responses.sel(region=region, event=event).values
+                            ds = region_grp.create_dataset(
+                                event, data=resp.astype(np.float64),
+                                compression='gzip', compression_opts=4
+                            )
+                            ds.attrs['window_t0'] = tpts[0]
+                            ds.attrs['window_t1'] = tpts[-1]
+
+    def load_h5(self, fpath):
+        """Load preprocessed signal and responses from HDF5 file."""
+        import h5py
+        import xarray as xr
+
+        with h5py.File(fpath, 'r') as f:
+            times = f['times'][:]
+            preprocessed = {}
+            for name in f['preprocessed']:
+                preprocessed[name] = pd.Series(
+                    f[f'preprocessed/{name}'][:].astype(np.float64),
+                    index=times
+                )
+            self.photometry['GCaMP_preprocessed'] = pd.DataFrame(preprocessed)
+
+            if 'responses' in f:
+                resp_grp = f['responses']
+                tpts = resp_grp['time'][:]
+                regions = [k for k in resp_grp.keys() if k != 'time']
+                events = list(resp_grp[regions[0]].keys())
+                n_trials = resp_grp[regions[0]][events[0]].shape[0]
+
+                data = np.empty((len(regions), len(events), n_trials, len(tpts)),
+                                dtype=np.float64)
+                for i, region in enumerate(regions):
+                    for j, event in enumerate(events):
+                        data[i, j] = resp_grp[region][event][:].astype(np.float64)
+
+                self.responses = xr.DataArray(
+                    data,
+                    dims=['region', 'event', 'trial', 'time'],
+                    coords={
+                        'region': regions,
+                        'event': events,
+                        'trial': np.arange(n_trials),
+                        'time': tpts,
+                    },
+                )
+
+    def _append_qc(self, brain_region: str, band: str, metrics: dict) -> None:
+        """Append or update a QC row in the DataFrame."""
+        mask = (self.qc['brain_region'] == brain_region) & (self.qc['band'] == band) if not self.qc.empty else pd.Series(dtype=bool)
+        if mask.any():
+            idx = mask.idxmax()
+            for k, v in metrics.items():
+                self.qc.loc[idx, k] = v
+        else:
+            row = {'brain_region': brain_region, 'band': band, 'eid': self.eid, **metrics}
+            self.qc = pd.concat([self.qc, pd.DataFrame([row])], ignore_index=True)
 
     def run_qc(self, signal_band=None, raw_metrics=None, sliding_metrics=None,
                metrics_kwargs=None, sliding_kwargs=None, brain_region=None, pipeline=None):
@@ -283,39 +460,46 @@ class PhotometrySession(PhotometrySessionLoader):
             metric_func = getattr(metrics, metric_name)
             raw_metric_values[metric_name] = metric_func(raw_photometry)
 
-        # Store in nested dict structure
-        metric_cols = [c for c in df_qc.columns if c not in ['band', 'brain_region']]
-        for _, row in df_qc.iterrows():
-            qc_metrics = {col: row[col] for col in metric_cols}
-            qc_metrics.update(raw_metric_values)
-            self._update_qc(row['brain_region'], row['band'], qc_metrics)
+        # Add raw metrics and eid to the DataFrame
+        for metric_name, value in raw_metric_values.items():
+            df_qc[metric_name] = value
+        df_qc['eid'] = self.eid
 
-        return self.qc_to_dataframe()
+        # Merge with existing QC (from preprocess)
+        if self.qc.empty:
+            self.qc = df_qc
+        else:
+            self.qc = self.qc.merge(
+                df_qc, on=['brain_region', 'band'], how='outer', suffixes=('', '_new')
+            )
+            # Update with new values where they exist
+            for col in df_qc.columns:
+                if col + '_new' in self.qc.columns:
+                    self.qc[col] = self.qc[col + '_new'].combine_first(self.qc[col])
+                    self.qc.drop(columns=[col + '_new'], inplace=True)
+            if 'eid' not in self.qc.columns:
+                self.qc['eid'] = self.eid
+
+        return self.qc
 
     # =========================================================================
     # Task Performance Methods
     # =========================================================================
 
-    def task_performance(self):
+    def task_performance(self, block_bug=False):
         result = {}
 
         result['fraction_correct'] = self.fraction_correct()
         result['fraction_correct_easy'] = self.fraction_correct_easy()
         result['nogo_fraction'] = self.nogo_fraction()
 
-        block_info = task.validate_block_structure(self.trials)
-        result['block_structure_valid'] = block_info['valid']
-        result['min_block_length'] = block_info['min_block_length']
-        result['n_blocks'] = block_info['n_blocks']
+        # Always fit 50-50 psychometric
+        fit_50 = self.fit_psychometric(probability_left=0.5)
+        for param, value in fit_50.items():
+            result[f'psych_50_{param}'] = value
 
-        # Training sessions: fit 50-50 only (no bias blocks)
-        if self.session_type == 'training':
-            fit_50 = self.fit_psychometric(probability_left=0.5)
-            for param, value in fit_50.items():
-                result[f'psych_50_{param}'] = value
-
-        # Biased/ephys: fit by block if structure is valid
-        elif block_info['valid'] and self.session_type in ['biased', 'ephys']:
+        # Biased/ephys: fit by block unless block structure is broken
+        if not block_bug and self.session_type in ('biased', 'ephys'):
             fits = self.fit_psychometric_by_block()
             for block_name, fit in fits.items():
                 for param, value in fit.items():
@@ -359,14 +543,11 @@ class PhotometrySession(PhotometrySessionLoader):
         output_band='GCaMP_preprocessed',
     ):
         """Run preprocessing pipeline and store result as new band."""
-        from iblphotometry.pipelines import run_pipeline, isosbestic_correction_pipeline
+        from iblphotometry.pipelines import run_pipeline
         from iblphotometry.processing import Regression, LinearModel, ExponDecay
 
-        if not self.has_photometry:
-            raise ValueError("Photometry data not loaded")
-
         if pipeline is None:
-            pipeline = isosbestic_correction_pipeline
+            pipeline = PREPROCESSING_PIPELINES['isosbestic_correction']
 
         if targets is None:
             targets = list(self.photometry[signal_band].columns)
@@ -416,8 +597,13 @@ class PhotometrySession(PhotometrySessionLoader):
             else:
                 result = run_pipeline(pipeline, signal=signal)
 
+            # Resample to uniform grid and z-score
+            from iblnm.analysis import resample_signal
+            result = resample_signal(result, target_fs=TARGET_FS)
+            result = (result - result.mean()) / result.std()
+
             preprocessed[brain_region] = result
-            self._update_qc(brain_region, signal_band, qc_metrics)
+            self._append_qc(brain_region, signal_band, qc_metrics)
 
         self.photometry[output_band] = pd.DataFrame(preprocessed)
         return self.photometry[output_band]

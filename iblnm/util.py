@@ -1,104 +1,222 @@
+import traceback as tb_module
+from functools import wraps, lru_cache
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
-import uuid
 from datetime import datetime
 from one.api import ONE
-from one.alf.exceptions import ALFObjectNotFound
 from brainbox.io.one import SessionLoader
 
-from iblnm.config import *
+from iblnm.config import (
+    VALID_STRAINS, VALID_LINES, VALID_NEUROMODULATORS, VALID_TARGETS,
+    VALID_TARGETNMS, DATASET_CATEGORIES, EXCLUDE_SESSION_TYPES,
+    SUBJECTS_TO_EXCLUDE, FIBERS_FPATH, PROTOCOL_RED_FLAGS, SESSION_TYPES
+)
 
 
-def get_sessions(
-    sessions_path: Path | None = None,
-    qc_path: Path | None = None,
-    responses_log_path: Path | None = None,
-    require_extracted_task: bool = True,
-    require_extracted_photometry: bool = True,
-    require_qc: bool = True,
-    require_tipt: bool = True,
-    verbose: bool = True,
-) -> pd.DataFrame:
-    """Load sessions and filter to analysis-ready quality.
+LOG_COLUMNS = ['eid', 'error_type', 'error_message', 'traceback']
+
+
+class InvalidSubject(Exception):
+    """Mouse does not belong to this project."""
+
+class InvalidStrain(Exception):
+    """Mouse strain is not recognized."""
+
+class InvalidLine(Exception):
+    """Mouse line is not recognized."""
+
+class InvalidNeuromodulator(Exception):
+    """Neuromodulator could not be determined."""
+
+class InvalidTarget(Exception):
+    """Target brain region not recognized."""
+
+class HemisphereMismatch(Exception):
+    """Region name and fiber coordinates disagree on hemisphere."""
+
+class MissingInsertion(Exception):
+    """Fiber coordinates for subject not found in lookup table."""
+
+class MissingHemiSuffix(Exception):
+    """Brain region did not include a hemisphere suffix."""
+
+class DataNotListed(Exception):
+    """Dataset not found in one.list_datasets."""
+
+class InvalidSessionType(Exception):
+    """Session type not suitable for analysis."""
+
+class InvalidTargetNM(Exception):
+    """Brain region does not map to a valid target-NM combination."""
+
+class InvalidSessionLength(Exception):
+    """Session start and end times are on different days"""
+
+
+def exception_logger(func):
+    """
+    Decorator that allows session processing functions to log exceptions.
+    Use exlog parameter to capture errors instead of raising them.
+    """
+    @wraps(func)
+    def wrapper(series, *args, exlog=None, **kwargs):
+        try:
+            return func(series, *args, **kwargs)
+        except Exception as e:
+            if exlog is not None:
+                exlog.append(make_log_entry(
+                    series.get('eid', 'unknown'), error=e
+                ))
+                return series
+            else:
+                raise
+    return wrapper
+
+
+def make_log_entry(eid, error=None, error_type=None, error_message=None):
+    """Create a standardized log entry.
+
+    Provide either an exception via `error`, or explicit `error_type`/`error_message`.
+    When `error` is given, type/message/traceback are extracted from it.
+    """
+    if error is not None:
+        return {
+            'eid': eid,
+            'error_type': type(error).__name__,
+            'error_message': str(error),
+            'traceback': tb_module.format_exc(),
+        }
+    if error_type is not None:
+        return {
+            'eid': eid,
+            'error_type': error_type,
+            'error_message': error_message,
+            'traceback': None,
+        }
+    raise ValueError("Provide either error or error_type")
+
+
+def concat_logs(logs):
+    """Concatenate log DataFrames, keeping only LOG_COLUMNS. No information loss."""
+    dfs = [df for df in logs if df is not None and len(df) > 0]
+    if not dfs:
+        return pd.DataFrame(columns=LOG_COLUMNS)
+    combined = pd.concat(dfs, ignore_index=True)
+    return combined[[c for c in LOG_COLUMNS if c in combined.columns]].reindex(
+        columns=LOG_COLUMNS
+    )
+
+
+def enforce_schema(df, schema):
+    """Ensure DataFrame columns match a schema with correct types and defaults.
 
     Parameters
     ----------
-    sessions_path : Path, optional
-        Path to sessions.pqt. Defaults to SESSIONS_FPATH.
-    qc_path : Path, optional
-        Path to qc_photometry.pqt. Defaults to QCPHOTOMETRY_FPATH.
-    responses_log_path : Path, optional
-        Path to responses_log.pqt. Defaults to RESPONSES_LOG_FPATH.
-    require_extracted_task : bool
-        Filter to sessions with extracted trials.
-    require_extracted_photometry : bool
-        Filter to sessions with extracted photometry.
-    require_qc : bool
-        Filter to sessions passing basic photometry QC.
-    require_tipt : bool
-        Filter to sessions where trials fall within photometry time.
-    verbose : bool
-        Print filtering summary.
+    df : pd.DataFrame
+    schema : dict
+        Mapping of column_name -> (type, default_value).
+        For list columns, NaN values are replaced with a copy of the default list.
+        Missing columns are added with the default value.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of df with schema enforced.
     """
-    import warnings
-
-    if sessions_path is None:
-        sessions_path = SESSIONS_FPATH
-    if qc_path is None:
-        qc_path = QCPHOTOMETRY_FPATH
-    if responses_log_path is None:
-        responses_log_path = RESPONSES_LOG_FPATH
-
-    # Load, clean, dedup
-    df = pd.read_parquet(sessions_path)
-    n_total = len(df)
-    df = clean_sessions(df, verbose=False)
-    n_clean = len(df)
-    df = drop_junk_duplicates(df, ['subject', 'day_n'], verbose=False)
-    n_dedup = len(df)
-
-    # Extraction filters
-    if require_extracted_task:
-        df = df[df['has_extracted_task']].copy()
-    n_task = len(df)
-
-    if require_extracted_photometry:
-        df = df[df['has_extracted_photometry']].copy()
-    n_phot = len(df)
-
-    # QC filter
-    if require_qc:
-        if not Path(qc_path).exists():
-            warnings.warn(f"qc_photometry.pqt not found at {qc_path}, returning empty DataFrame")
-            return df.iloc[0:0]
-        df_qc = pd.read_parquet(qc_path)
-        qc_agg = aggregate_qc_per_session(df_qc, require_all=True)
-        passing_eids = set(qc_agg[qc_agg['passes_basic_qc']]['eid'])
-        df = df[df['eid'].isin(passing_eids)].copy()
-    n_qc = len(df)
-
-    # Trials-in-photometry-time filter
-    if require_tipt:
-        if not Path(responses_log_path).exists():
-            warnings.warn(
-                f"responses_log.pqt not found at {responses_log_path}, skipping tipt filter"
+    df = df.copy()
+    for col, (dtype, default) in schema.items():
+        if col not in df.columns:
+            if isinstance(default, list):
+                df[col] = [list(default) for _ in range(len(df))]
+            else:
+                df[col] = default
+        elif isinstance(default, list):
+            df[col] = df[col].apply(
+                lambda x, d=default: list(x) if isinstance(x, (list, np.ndarray)) else list(d)
             )
-        else:
-            df_log = pd.read_parquet(responses_log_path)
-            eids_tipt_failed = set(
-                df_log[df_log['error_type'] == 'TrialsNotInPhotometryTime']['eid']
-            )
-            df = df[~df['eid'].isin(eids_tipt_failed)].copy()
-    n_tipt = len(df)
-
-    if verbose:
-        print(f"Sessions: {n_total} total → {n_clean} clean → {n_dedup} dedup"
-              f" → {n_task} task → {n_phot} phot → {n_qc} qc → {n_tipt} tipt")
-
     return df
 
 
+@exception_logger
+def validate_subject(session):
+    subject = session['subject']
+    if subject in SUBJECTS_TO_EXCLUDE:
+        raise InvalidSubject(f"Subject {subject} in {SUBJECTS_TO_EXCLUDE}")
+    return None
+
+
+@exception_logger
+def validate_strain(session):
+    strain = session['strain']
+    if strain not in VALID_STRAINS:
+        raise InvalidStrain(f"Strain {strain} not in {VALID_STRAINS}")
+    return None
+
+
+@exception_logger
+def validate_line(session):
+    line = session['line']
+    if line not in VALID_LINES:
+        raise InvalidLine(f"Line {line} not in {VALID_LINES}")
+    return None
+
+
+@exception_logger
+def validate_neuromodulator(session):
+    nm = session['NM']
+    if nm not in VALID_NEUROMODULATORS:
+        raise InvalidNeuromodulator(f"NM {nm} not in {VALID_NEUROMODULATORS}")
+    return None
+
+
+@exception_logger
+def validate_target(session):
+    for target in session['brain_region']:
+        if target not in VALID_TARGETS:
+            raise InvalidTarget(f"Target {target} not in {VALID_TARGETS}")
+    return None
+
+@lru_cache(maxsize=1)
+def _get_fiber_hemisphere_lookup():
+    """Build subject+region -> hemisphere lookup from fiber coordinates.
+
+    Returns None for a (subject, region) pair when fibers span both hemispheres.
+    """
+    df_fibers = pd.read_csv(FIBERS_FPATH)
+    df_fibers = df_fibers.copy()
+    df_fibers['hemi'] = df_fibers['X-ml_um'].apply(
+        lambda x: 'L' if x > 0 else ('R' if x < 0 else None)
+    )
+    grouped = df_fibers.groupby(['subject', 'targeted_region'])['hemi']
+    return {key: vals.iloc[0] if vals.nunique() == 1 else None
+            for key, vals in grouped}
+
+
+@exception_logger
+def validate_hemisphere(session, fiber_lookup=None):
+    if fiber_lookup is None:
+        fiber_lookup = _get_fiber_hemisphere_lookup()
+    subject = session['subject']
+    for region, hemi_name in zip(session['brain_region'], session['hemisphere']):
+        hemi_fiber = fiber_lookup.get((subject, region))
+        if hemi_name is not None and hemi_fiber is not None and hemi_name != hemi_fiber:
+            raise HemisphereMismatch(
+                f"{subject} {region}: name={hemi_name}, coordinate={hemi_fiber}"
+            )
+        elif hemi_fiber is None:
+            raise MissingInsertion(
+                f"{subject} {region} missing fiber insertion entry"
+            )
+        elif hemi_name is None:
+            raise MissingHemiSuffix(
+                f"{subject} {region} missing hemisphere suffix"
+            )
+    return None
+
+
+# FIXME: try to remove, can be done inline
 def has_dataset(session, dataset):
     """Check if a dataset is available for a session."""
     datasets = session.get('datasets', [])
@@ -113,6 +231,15 @@ def has_dataset_category(session, category):
     return any(has_dataset(session, d) for d in category_datasets)
 
 
+@exception_logger
+def validate_datasets(session):
+    missing = [cat for cat in DATASET_CATEGORIES if not has_dataset_category(session, cat)]
+    if missing:
+        raise DataNotListed(f"Missing dataset categories: {', '.join(missing)}")
+    return None
+
+
+## FIXME: try to remove, these checks can be done inline/ with has_dataset_category
 def add_dataset_flags(df):
     """Add boolean columns for each dataset category."""
     df = df.copy()
@@ -123,186 +250,72 @@ def add_dataset_flags(df):
     return df
 
 
-_NM_SUFFIXES = set(TARGET2NM.values())  # {'DA', '5HT', 'NE', 'ACh'}
+@exception_logger
+def get_session_type(session):
+    """Maps protocol names onto session types for convenience."""
 
+    protocol = session['task_protocol']
 
-def _strip_hemisphere_suffix(region):
-    """Extract base region name without hemisphere or NM suffix.
+    session_types = np.array(SESSION_TYPES)
+    red_flags = np.array(PROTOCOL_RED_FLAGS)
 
-    Handles both brain_region format ('LC-r' -> 'LC') and
-    target format ('VTA-DA' -> 'VTA').
-    """
-    if pd.isna(region):
-        return None
-    parts = str(region).split('-')
-    if len(parts) > 1 and (parts[-1].lower() in ('l', 'r') or parts[-1] in _NM_SUFFIXES):
-        return '-'.join(parts[:-1])
-    return region
-
-
-def _extract_hemisphere_from_name(region):
-    """Extract hemisphere from region name suffix (e.g., 'LC-r' -> 'R')."""
-    if pd.isna(region):
-        return None
-    parts = str(region).split('-')
-    if len(parts) > 1 and parts[-1].lower() in ('l', 'r'):
-        return parts[-1].upper()
-    return None
-
-
-def _get_fiber_hemisphere_lookup(df_fibers=None):
-    """Build subject+region -> hemisphere lookup from fiber coordinates.
-
-    Returns None for a (subject, region) pair when fibers span both hemispheres.
-    """
-    if df_fibers is None:
-        try:
-            df_fibers = pd.read_csv(FIBERS_FPATH)
-        except FileNotFoundError:
-            return {}
-
-    df_fibers = df_fibers.copy()
-    df_fibers['hemi'] = df_fibers['X-ml_um'].apply(
-        lambda x: 'L' if x > 0 else ('R' if x < 0 else None)
+    # Match against typeChoiceWorld pattern (strict)
+    type_mask = np.array(
+        [t + 'ChoiceWorld' in protocol for t in session_types[:-1]] + ['Histology' in protocol]
     )
-    grouped = df_fibers.groupby(['subject', 'targeted_region'])['hemi']
-    return {key: vals.iloc[0] if vals.nunique() == 1 else None
-            for key, vals in grouped}
 
+    # FIXME: biasedChoiceWorld_ephyssessions currently pass as biased
+    # verify these can be treated as normal biased sessions!!
 
-def process_regions(df, df_fibers=None, add_hemisphere=True,
-                    infer_nm=True, filter_valid=True):
-    """
-    Process brain_region column: normalize names, add hemisphere, infer NM, create target_NM.
+    # FIXME: trainingPhaseChoiceWorld and passiveMockChoiceWorld are not
+    # matched — check whether these are normal training/passive sessions
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame with 'brain_region' column.
-    df_fibers : pd.DataFrame, optional
-        Fibers dataframe for hemisphere lookup. If None, loads from FIBERS_FPATH.
-    add_hemisphere : bool
-        Whether to add 'hemisphere' column.
-    infer_nm : bool
-        Whether to infer NM from region when NM='none'.
-    filter_valid : bool
-        Whether to filter to VALID_TARGETS.
+    # Check for red flags in protocol name
+    red_flag_mask = np.array([rf in protocol for rf in red_flags])
 
-    Returns
-    -------
-    pd.DataFrame
-        Processed DataFrame with columns: region_base, target_NM, and optionally hemisphere.
-    """
-    df = df.copy()
-
-    # Strip hemisphere suffix and normalize region names
-    df['region_base'] = df['brain_region'].apply(_strip_hemisphere_suffix)
-    df['region_base'] = df['region_base'].replace(REGION_NORMALIZE)
-
-    # Add hemisphere column
-    if add_hemisphere:
-        df['hemisphere'] = df['brain_region'].apply(_extract_hemisphere_from_name)
-
-        # Fill from fiber coordinates if subject column exists
-        if 'subject' in df.columns:
-            fiber_lookup = _get_fiber_hemisphere_lookup(df_fibers)
-            if fiber_lookup:
-                def get_fiber_hemi(row):
-                    return fiber_lookup.get((row['subject'], row['region_base']))
-
-                df['_hemi_fiber'] = df.apply(get_fiber_hemi, axis=1)
-
-                # Warn on mismatches
-                has_both = df['hemisphere'].notna() & df['_hemi_fiber'].notna()
-                mismatches = df[has_both & (df['hemisphere'] != df['_hemi_fiber'])]
-                if len(mismatches) > 0:
-                    print(f"Warning: {len(mismatches)} hemisphere mismatches (name vs fiber)")
-
-                # Fill missing from fiber
-                df['hemisphere'] = df['hemisphere'].combine_first(df['_hemi_fiber'])
-                df = df.drop(columns=['_hemi_fiber'])
-
-    # Infer NM from region when missing
-    if infer_nm and 'NM' in df.columns:
-        df['NM'] = df['NM'].where(df['NM'].notna(), df['region_base'].map(TARGET2NM))
-
-    # Create target_NM column
-    if 'NM' in df.columns:
-        df['target_NM'] = df['region_base'] + '-' + df['NM']
+    if (sum(type_mask) == 1) and not any(red_flag_mask):
+        session['session_type'] = str(session_types[type_mask][0])
+    elif sum(type_mask) == 0:
+        raise InvalidSessionType(
+            f"Protocol name {protocol} does not match any recognized session type."
+        )
+    elif any(red_flag_mask):
+        raise InvalidSessionType(
+            f"Protocol name {protocol} contains red flags {red_flags[red_flag_mask]}."
+        )
     else:
-        df['target_NM'] = df['region_base'].map(lambda r: f"{r}-{TARGET2NM.get(r, 'unknown')}")
+        raise InvalidSessionType(
+            f"Protocol name {protocol} matches multiple session types: "
+            f"{session_types[type_mask]}."
+        )
 
-    # Filter to valid targets
-    if filter_valid:
-        df = df[df['target_NM'].isin(VALID_TARGETS)].copy()
-
-    return df
-
-
-def add_target_nm(df):
-    """Explode sessions by brain_region and add target_NM column.
-
-    DEPRECATED: Use process_regions() for new code.
-    """
-    df = df.explode('brain_region').dropna(subset='brain_region')
-    return process_regions(df, add_hemisphere=False)
+    return session
 
 
-def add_hemisphere(df, region_col='brain_region', df_fibers=None, priority='name'):
-    """
-    Add hemisphere column from region name suffix or fiber coordinates.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame with region column containing names like "LC-r", "VTA", "SNc-l".
-    region_col : str
-        Column containing region names with optional hemisphere suffix.
-    df_fibers : pd.DataFrame, optional
-        Fibers dataframe with 'subject', 'targeted_region', 'X-ml_um'.
-        If None and FIBERS_FPATH exists, loads from file.
-    priority : str, default 'name'
-        Which source takes priority: 'name' (from suffix) or 'fiber' (from coords).
-    """
-    df = df.copy()
-
-    # Extract hemisphere from region name suffix
-    df['_hemi_name'] = df[region_col].apply(_extract_hemisphere_from_name)
-
-    # Extract base region (strip -l/-r suffix)
-    df['_region'] = df[region_col].apply(_strip_hemisphere_suffix)
-
-    # Get hemisphere from fiber coordinates
-    df['_hemi_fiber'] = None
-
-    if 'subject' in df.columns:
-        fiber_lookup = _get_fiber_hemisphere_lookup(df_fibers)
-        if fiber_lookup:
-            df['_hemi_fiber'] = df.apply(
-                lambda row: fiber_lookup.get((row['subject'], row['_region'])), axis=1
-            )
-
-    # Check for mismatches and warn
-    has_both = df['_hemi_name'].notna() & df['_hemi_fiber'].notna()
-    mismatches = df[has_both & (df['_hemi_name'] != df['_hemi_fiber'])]
-    if len(mismatches) > 0:
-        print(f"Warning: {len(mismatches)} hemisphere mismatches (name vs fiber):")
-        for _, row in mismatches.head(5).iterrows():
-            subj = row.get('subject', '?')
-            print(f"  {subj}/{row[region_col]}: name={row['_hemi_name']}, fiber={row['_hemi_fiber']}")
-        if len(mismatches) > 5:
-            print(f"  ... and {len(mismatches) - 5} more")
-
-    # Fill hemisphere based on priority
-    if priority == 'name':
-        df['hemisphere'] = df['_hemi_name'].combine_first(df['_hemi_fiber'])
-    else:
-        df['hemisphere'] = df['_hemi_fiber'].combine_first(df['_hemi_name'])
-
-    df = df.drop(columns=['_hemi_name', '_hemi_fiber', '_region'])
-    return df
+@exception_logger
+def get_targetNM(session):
+    NM = session['NM']
+    target_NMs = [
+        f"{region.split('-')[0]}-{NM}" for region in session['brain_region']
+    ]
+    for target_NM in target_NMs:
+        if target_NM not in VALID_TARGETNMS:
+            raise InvalidTargetNM(f"Target-NM {target_NM} is not recognized.")
+    session['target_NM'] = target_NMs
+    return session
 
 
+@exception_logger
+def get_session_length(session):
+    t0 = datetime.fromisoformat(session['start_time'])
+    t1 = datetime.fromisoformat(session['end_time'])
+    if t0.date()!= t1.date():
+        raise InvalidSessionLength(f"Session start and end time on different days")
+    session['session_length'] = (t1 - t0).total_seconds()
+    return session
+
+
+# FIXME: needs to explicitly flag unresolvable duplicates (!)
 def drop_junk_duplicates(df, group_cols, completeness_cols=None, verbose=True):
     """Keep one session per group, preferring sessions with more complete data."""
     if completeness_cols is None:
@@ -368,25 +381,6 @@ def clean_sessions(df, exclude_subjects=None, exclude_session_types=None, verbos
             print(f"  Excluded session types: {removed['session_types']}")
 
     return df
-
-
-def protocol2type(protocol):
-    # Define recognized session types
-    session_types = np.array(SESSION_TYPES)
-    # Define red flags (if found in filename it indicates a non-standard protocol)
-    red_flags = PROTOCOL_RED_FLAGS
-    # Determine which session types are found in the protocol name
-    choiceworld_type_mask = [t + 'ChoiceWorld' in protocol for t in session_types[:-1]] + ['Histology' in protocol]
-    type_mask = [t in protocol for t in session_types[:-1]] + ['Histology' in protocol]
-    # Determine if any red flags are present in the protocol name
-    red_flag_mask = [rf in protocol for rf in red_flags]
-    # Decide what session type to return
-    if (sum(choiceworld_type_mask or type_mask) == 1) and not any(red_flag_mask):  # only one session type and no red flags
-        return str(session_types[type_mask][0])
-    elif (sum(choiceworld_type_mask) == 0) or any(red_flag_mask):  # no/multiple session types or red flags
-        return 'misc'
-    else:
-        raise ValueError
 
 
 def _is_heterogeneous(col):
@@ -465,21 +459,6 @@ def pqt2df(fpath):
     return df
 
 
-def get_session_length(session):
-    dt = np.nan
-    try:
-        t0 = datetime.fromisoformat(session['start_time'])
-        t1 = datetime.fromisoformat(session['end_time'])
-        if t0.date() == t1.date():
-            dt = (t1 - t0).total_seconds()
-        else:
-            print(f"WARNING: {session['eid']} session start and end time on different days!")
-    except:
-        pass
-    return dt
-
-
-
 def fill_empty_lists_from_group(df, col, group_col='subject'):
     df = df.copy()
 
@@ -493,7 +472,7 @@ def fill_empty_lists_from_group(df, col, group_col='subject'):
         # Check consistency
         first_list = non_empty[col].iloc[0]
         assert all(x == first_list for x in non_empty[col]), \
-            f"Inconsistent lists in group"
+            "Inconsistent lists in group"
 
         # Fill empty lists
         group[col] = group[col].apply(
@@ -502,21 +481,6 @@ def fill_empty_lists_from_group(df, col, group_col='subject'):
         return group
 
     return df.groupby(group_col, group_keys=False).apply(fill_group)
-
-
-def restrict_photometry_to_task(eid, photometry, one=None, buffer=2):
-    assert eid is not None
-    if one is None:
-        one = ONE()
-    loader = SessionLoader(one, eid=eid)
-    ## FIXME: appropriately handle cases with multiple task collections
-    loader.load_trials(collection='alf/task_00')
-    timings = [col for col in loader.trials.columns if col.endswith('_times')]
-    t0 = loader.trials[timings].min().min()
-    t1 = loader.trials[timings].max().max()
-    i0 = photometry.index.searchsorted(t0 - buffer)
-    i1 = photometry.index.searchsorted(t1 + buffer)
-    return photometry.iloc[i0:i1].copy()
 
 
 def _agg_sliding_metric(series, metric=None, agg_func=np.mean, window=300):
@@ -606,48 +570,3 @@ def aggregate_qc_per_session(df_qc: pd.DataFrame, require_all: bool = True) -> p
     return agg[['eid', 'passes_basic_qc']]
 
 
-def merge_failure_logs(
-    df_failures: pd.DataFrame,
-    logs: list[tuple[str, pd.DataFrame]]
-) -> pd.DataFrame:
-    """
-    Merge failure DataFrame with error logs from multiple sources.
-
-    Parameters
-    ----------
-    df_failures : pd.DataFrame
-        Sessions that failed some criterion, with at least 'eid' column
-    logs : list of (source_name, df_log) tuples
-        Each df_log should have columns: eid, error_type, error_message
-
-    Returns
-    -------
-    pd.DataFrame
-        Failures with error info columns added
-    """
-    result = df_failures.copy()
-
-    # Initialize error columns
-    result['error_type'] = None
-    result['error_message'] = None
-    result['source'] = None
-
-    for source_name, df_log in logs:
-        if df_log is None or len(df_log) == 0:
-            continue
-
-        # Get error info for sessions in this log
-        log_cols = ['eid', 'error_type', 'error_message']
-        available_cols = [c for c in log_cols if c in df_log.columns]
-        log_subset = df_log[available_cols].copy()
-        log_subset['source'] = source_name
-
-        # Update rows that match
-        for _, row in log_subset.iterrows():
-            mask = result['eid'] == row['eid']
-            if mask.any():
-                result.loc[mask, 'error_type'] = row.get('error_type')
-                result.loc[mask, 'error_message'] = row.get('error_message')
-                result.loc[mask, 'source'] = row.get('source')
-
-    return result

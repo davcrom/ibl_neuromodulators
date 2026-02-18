@@ -58,7 +58,7 @@ df_sessions['date'] = pd.to_datetime(df_sessions['start_time'], format='ISO8601'
 df_qc = df_qc.merge(df_sessions[['eid', 'subject', 'NM', 'session_type', 'date']], on='eid', how='left')
 
 # Process brain regions: normalize names, add hemisphere, infer NM, create target_NM
-df_qc = process_regions(df_qc, region_col='brain_region')
+df_qc = process_regions(df_qc)
 print(f"Valid targets: {len(df_qc)} signals from {df_qc['eid'].nunique()} sessions")
 
 # Clean metric values and report

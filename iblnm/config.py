@@ -3,25 +3,165 @@ from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib import colors
+from iblphotometry import processing
 
 # Paths
 PACKAGE_ROOT = Path(__file__).parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
 SESSIONS_FPATH = PROJECT_ROOT / 'metadata/sessions.pqt'
 SESSIONS_QC_FPATH = PROJECT_ROOT / 'metadata/sessions_qc.pqt'
-SESSIONS_LOG_FPATH = PROJECT_ROOT / 'metadata/sessions_log.pqt'
 INSERTIONS_FPATH = PROJECT_ROOT / 'metadata/insertions.csv'  # file with subject to brain region mapping
 FIBERS_FPATH = PROJECT_ROOT / 'metadata/fibers.csv'
 QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
-QCPHOTOMETRY_LOG_FPATH = PROJECT_ROOT / 'data/qc_photometry_log.pqt'
 PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
-PERFORMANCE_LOG_FPATH = PROJECT_ROOT / 'data/performance_log.pqt'
+SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
+
+# Per-script error logs (unified schema: eid, error_type, error_message, traceback)
+QUERY_DATABASE_LOG_FPATH = PROJECT_ROOT / 'metadata/query_database_log.pqt'
+PHOTOMETRY_LOG_FPATH = PROJECT_ROOT / 'metadata/photometry_log.pqt'
+TASK_LOG_FPATH = PROJECT_ROOT / 'metadata/task_log.pqt'
+ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
 
 
-# Values to extract from the session dict
-SESSIONDICT_KEYS = ['users', 'lab', 'end_time', 'n_trials']
+# Schema for sessions DataFrame: column -> (type, default)
+# Used by enforce_schema() to fill missing columns and coerce NaN in list columns
+SESSION_SCHEMA = {
+    # From Alyx REST API
+    'eid': (str, None),
+    'subject': (str, None),
+    'start_time': (str, None),
+    'task_protocol': (str, None),
+    'number': (int, None),
+    'projects': (list, []),
+    # From get_subject_info
+    'strain': (str, None),
+    'line': (str, None),
+    'genotype': (str, None),
+    'NM': (str, None),
+    # From get_experiment_description
+    'brain_region': (list, []),
+    # From hemisphere extraction
+    'hemisphere': (list, []),
+    # From get_session_info
+    'users': (list, []),
+    'lab': (str, None),
+    'end_time': (str, None),
+    '_datasets_from_session_dict': (list, []),
+    # From get_datasets
+    'datasets': (list, []),
+    # Convenience columns
+    'session_type': (str, None),
+    'target_NM': (list, []),
+}
 
-# Key datasets, note: need to check both old and new formats where applicable
+
+# FIXME: To be removed from the project
+SUBJECTS_TO_EXCLUDE = [
+    'SP076',
+    'SP075',
+    'SP074',
+    'SP073',
+    'SP072',
+    'SP066',
+    'VIV-47627',
+    'VIV-47615',
+    'VIV-45598',
+    'VIV-45585',
+    'photometry_test_subject_A',
+    'photometry_test_subject_B',
+]
+
+
+# TODO: Check these names, try to homogenize
+VALID_STRAINS = [
+    'B6.Cg',
+    'B6.129S2',
+    'B6J.Cg-Gt',
+    'B6.Cg-Igs7',
+    'C57BL/6J',
+    'B6.129(Cg)-Slc6a4',
+    'B6.SJL-Slc6a3t',
+    'B6;129S6-Chat',
+    'B6.Cg-Dbh',
+]
+
+## FIXME: Old mappings, still useful until we can get NM from line/genotype
+STRAIN2NM = {
+    'Ai148xSERTCre': '5HT',
+    'Ai148xDATCre': 'DA',
+    'Ai148xDbhCre': 'NE',
+    'Ai148xDbh-Cre': 'NE',  # non-standard format, should be Ai148xDbhCre
+    'Ai148xTHCre': 'NE',  ## TODO: double-check all THCre mice targeted LC-NE
+    'Ai148xChATCre': 'ACh',
+    'Ai95xSERTCre': '5HT',
+    # Wild-type strains (no NM) - rescued by line if available:
+    # 'B6.Cg': None,
+    # 'B6.129S2': None,
+    # 'C57BL/6J': None,
+}
+
+VALID_LINES = [
+    'Ai148xSert',
+    'Ai148xDat',
+    'Ai148xDbh',
+    'Ai148xTh',
+    'Ai148xChat',
+    'Ai148cdhxChat',  # check this is correct
+]
+
+LINE2NM = {
+    'Ai148xSert': '5HT',
+    'Ai148xDat': 'DA',
+    'Ai148xDbh': 'NE',
+    'Ai148xTh': 'NE',
+    'Ai148xChat': 'ACh',
+    'Ai148-G6f-cdh x Chat-cre': 'ACh',  # non-standard format, should be Ai148xChat
+}
+
+VALID_NEUROMODULATORS = [
+    'DA',
+    '5HT',
+    'NE',
+    'ACh'
+]
+
+
+VALID_TARGETS = [
+    'VTA',
+    'SNc',
+    'DR',
+    'MR',
+    'LC',
+    'NBM',
+    'SI',
+    'PPT'
+]
+
+VALID_TARGETNMS = [
+    'VTA-DA',
+    'SNc-DA',
+    'DR-5HT',
+    'MR-5HT',
+    'LC-NE',
+    'NBM-ACh',
+    'SI-ACh',
+    'PPT-ACh'
+]
+
+# TEMPFIX: can be used to infer NM in case missing
+TARGET2NM = {
+    'VTA': 'DA',
+    'SNc': 'DA',
+    'DR': '5HT',
+    'MR': '5HT',
+    'LC': 'NE',
+    'NBM': 'ACh',
+    'SI': 'ACh',
+    'PPT': 'ACh'
+}
+
+
+# TEMPFIX: check if still needed
 ALYX_DATASETS = [
     'raw_behavior_data/_iblrig_taskData.raw.jsonable',  # old data, before v8
     'raw_behavior_data/_iblrig_taskSettings.raw.json',
@@ -38,70 +178,7 @@ ALYX_DATASETS = [
     'raw_photometry_data/_neurophotometrics_fpData.raw.pqt',
 ]
 
-
-STRAIN2NM = {
-    'Ai148xSERTCre': '5HT',
-    'Ai148xDATCre': 'DA',
-    'Ai148xDbhCre': 'NE',
-    'Ai148xDbh-Cre': 'NE',  # non-standard format, should be Ai148xDbhCre
-    'Ai148xTHCre': 'NE',  ## TODO: double-check all THCre mice targeted LC-NE
-    'Ai148xChATCre': 'ACh',
-    'Ai95xSERTCre': '5HT',
-    # Wild-type strains (no NM) - rescued by line if available:
-    # 'B6.Cg': 'none',
-    # 'B6.129S2': 'none',
-    # 'C57BL/6J': 'none',
-    None: 'none'
-}
-
-LINE2NM = {
-    'Ai148xSert': '5HT',
-    'Ai148xDat': 'DA',
-    'Ai148xDbh': 'NE',
-    'Ai148xTh': 'NE',
-    'Ai148xChat': 'ACh',
-    'Ai148-G6f-cdh x Chat-cre': 'ACh',  # non-standard format, should be Ai148xChat
-    None: 'none'
-}
-
-# Standard line/strain names (others are flagged for correction)
-STANDARD_LINES = {'Ai148xSert', 'Ai148xDat', 'Ai148xDbh', 'Ai148xTh', 'Ai148xChat'}
-STANDARD_STRAINS = {'Ai148xSERTCre', 'Ai148xDATCre', 'Ai148xDbhCre', 'Ai148xTHCre', 'Ai148xChATCre', 'Ai95xSERTCre'}
-
-TARGET2NM = {
-    'VTA': 'DA',
-    'SNc': 'DA',
-    'DR': '5HT',
-    'MR': '5HT',
-    'LC': 'NE',
-    'NBM': 'ACh',
-    'SI': 'ACh',
-    'PPT': 'ACh'
-}
-
-# Normalize non-standard brain region names
-REGION_NORMALIZE = {'DRN': 'DR', 'SNC': 'SNc'}
-
-SESSION_TYPES = [
-    'habituation',
-    'training',
-    'advanced',
-    'neuromodulator',
-    'biased',
-    'ephys',
-    'passive',
-    'histology'
-]
-
-# QC parameters
-MIN_NTRIALS = 90
-MIN_SESSIONLENGTH = 20 * 60  # seconds
-
-# Task performance parameters
-MIN_BLOCK_LENGTH = 10  # minimum trials per bias block (flag sessions with shorter blocks)
-
 # Dataset categories for checking data presence
-# Each category is a list of datasets; if ANY is present, category is True
 DATASET_CATEGORIES = {
     'raw_task': [
         'raw_behavior_data/_iblrig_taskData.raw.jsonable',
@@ -110,8 +187,10 @@ DATASET_CATEGORIES = {
     'raw_video': [
         'raw_video_data/_iblrig_leftCamera.raw.mp4',
     ],
-    'raw_photometry': [
+    'raw_photometry_channels': [
         'raw_photometry_data/_neurophotometrics_fpData.channels.csv',
+    ],
+    'raw_photometry_signals': [
         'raw_photometry_data/_neurophotometrics_fpData.raw.pqt',
     ],
     'extracted_task': [
@@ -130,6 +209,44 @@ DATASET_CATEGORIES = {
     ],
 }
 
+
+# Recognized session types
+SESSION_TYPES = [
+    'habituation',
+    'training',
+    'advanced',
+    'neuromodulator',
+    'biased',
+    'ephys',
+    'passive',
+    'histology'
+]
+
+SESSION_TYPES_TO_ANALYZE = ('training', 'biased', 'ephys')
+SESSION_TYPES_TO_EXCLUDE = ('advanced', 'neuromodulator', 'misc')
+
+# Resampling
+TARGET_FS = 30  # Hz, target sampling rate for resampled signals
+
+# Trial columns to store in HDF5 (beyond computed signed_contrast, contrast)
+TRIAL_COLUMNS = [
+    'stimOn_times', 'response_times',
+    'firstMovement_times', 'feedback_times',
+    'choice', 'feedbackType', 'probabilityLeft',
+]
+
+# Events for response extraction (NOT goCue — too close to stimOn, variable latency)
+RESPONSE_EVENTS = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+
+# QC parameters
+MIN_NTRIALS = 90
+MIN_SESSIONLENGTH = 20 * 60  # seconds
+
+# Task performance parameters
+MIN_BLOCK_LENGTH = 10  # minimum trials per bias block (flag sessions with shorter blocks)
+EVENT_TIMES = ['goCue_times', 'firstMovement_times', 'feedback_times']
+EVENT_COMPLETENESS_THRESHOLD = 0.9
+
 PROTOCOL_RED_FLAGS = [
     'RPE',
     'DELAY',
@@ -145,31 +262,6 @@ EXCLUDE_SESSION_TYPES = [
     'histology'
 ]
 
-EXCLUDE_SUBJECTS = [
-    'SP076',
-    'SP075',
-    'SP074',
-    'SP073',
-    'SP072',
-    'SP066',
-    'VIV-47627',
-    'VIV-47615',
-    'VIV-45598',
-    'VIV-45585',
-    'photometry_test_subject_A',
-    'photometry_test_subject_B',
-]
-
-VALID_TARGETS = [
-    'VTA-DA',
-    'SNc-DA',
-    'DR-5HT',
-    # ~'MR-5HT',
-    'LC-NE',
-    'NBM-ACh',
-    'SI-ACh',
-    'PPT-ACh'
-]
 
 QCVAL2NUM = {
     np.nan: 0.,
@@ -229,7 +321,39 @@ QC_SLIDING_KWARGS = {
     'detrend': True
 }
 
-PREPROCESSING_PIPELINE = []
+PREPROCESSING_PIPELINES = {
+    'isosbestic_correction': [
+        dict(
+            function=processing.lowpass_bleachcorrect,
+            parameters=dict(
+                correction_method='subtract-divide',
+                N=3,
+                Wn=0.01,
+            ),
+            inputs=('signal',),
+            output='signal_bleach_corrected',
+        ),
+        dict(
+            function=processing.lowpass_bleachcorrect,
+            parameters=dict(
+                correction_method='subtract-divide',
+                N=3,
+                Wn=0.01,
+            ),
+            inputs=('reference',),
+            output='reference_bleach_corrected',
+        ),
+        dict(
+            function=processing.isosbestic_correct,
+            parameters=dict(
+                regression_method='mse',
+                correction_method='subtract',
+            ),
+            inputs=('signal_bleach_corrected', 'reference_bleach_corrected'),
+            output='result',
+        ),
+    ]
+}
 
 # Analysis parameters
 # Event-based analyses

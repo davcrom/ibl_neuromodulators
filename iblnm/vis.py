@@ -58,7 +58,6 @@ def session_overview_matrix(df, columns='session_n', highlight='good', ax=None):
         Column to use for x-axis (e.g., 'day_n', 'session_n')
     highlight : str, callable, or None
         Criteria for highlighting sessions at full opacity (others shown at 50%):
-        - 'good': highlight sessions where session_status == 'good'
         - 'all': highlight all sessions
         - 'none': no highlighting (all at 50%)
         - callable: function(df) -> boolean mask
@@ -83,9 +82,7 @@ def session_overview_matrix(df, columns='session_n', highlight='good', ax=None):
         )
 
     # Build highlight mask
-    if highlight == 'good':
-        highlight_mask = df['session_status'] == 'good'
-    elif highlight == 'all':
+    if highlight == 'all':
         highlight_mask = pd.Series(True, index=df.index)
     elif highlight == 'none' or highlight is None:
         highlight_mask = pd.Series(False, index=df.index)
@@ -218,12 +215,17 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8):
     return ax
 
 
-def _add_bar_labels(ax, xpos, values, color='white'):
-    """Add centered text labels to bars."""
-    for x, n in zip(xpos, values):
+def _add_bar_labels(ax, xpos, values, hemisphere_counts=None, color='white'):
+    """Add vertically-oriented text labels to bars with optional L/R breakdown."""
+    for i, (x, n) in enumerate(zip(xpos, values)):
         if n > 0:
-            ax.text(x, n/2, str(int(n)), ha='center', va='center',
-                    fontweight='bold', color=color)
+            if hemisphere_counts is not None:
+                n_left, n_right = hemisphere_counts[i]
+                label = f'{int(n)}\n{n_left}L/{n_right}R'
+            else:
+                label = str(int(n))
+            ax.text(x, n / 2, label, ha='center', va='center',
+                    fontweight='bold', color=color, rotation=90)
 
 
 def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None, barwidth=0.25):
@@ -235,7 +237,7 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None
     - biased/ephys: mice with ≥min_biased_ephys combined biased+ephys sessions
     - ephys: mice with ≥min_ephys ephys sessions
 
-    If 'hemisphere' column present, x-axis labels include hemisphere counts.
+    If 'hemisphere' column present, bar labels include L/R breakdown.
     """
     if ax is None:
         fig, ax = plt.subplots()
@@ -250,9 +252,12 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None
     # Get all target_NMs
     target_nms = sorted(df_sessions['target_NM'].unique(), key=lambda x: TARGETNM_POSITIONS.get(x, 999))
 
+    has_hemisphere = 'hemisphere' in df_sessions.columns
+
     results = []
     for target_nm in target_nms:
         target_data = session_counts[session_counts['target_NM'] == target_nm]
+        target_sessions = df_sessions[df_sessions['target_NM'] == target_nm]
 
         # Mice with training sessions
         training_mice = target_data[
@@ -271,12 +276,23 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None
             (target_data['n_sessions'] >= min_ephys)
         ]['subject'].unique()
 
-        results.append({
+        result = {
             'target_NM': target_nm,
             'n_training': len(training_mice),
             'n_biased_ephys': len(biased_ephys_mice),
             'n_ephys': len(ephys_mice),
-        })
+        }
+
+        # Compute per-session-type hemisphere counts
+        if has_hemisphere:
+            for key, mice in [('training', training_mice),
+                              ('biased_ephys', biased_ephys_mice),
+                              ('ephys', ephys_mice)]:
+                hemi_data = target_sessions[target_sessions['subject'].isin(mice)]
+                result[f'n_{key}_L'] = hemi_data[hemi_data['hemisphere'] == 'L']['subject'].nunique()
+                result[f'n_{key}_R'] = hemi_data[hemi_data['hemisphere'] == 'R']['subject'].nunique()
+
+        results.append(result)
 
     df_results = pd.DataFrame(results)
 
@@ -291,23 +307,19 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None
     ax.bar(xpos + barwidth, df_results['n_ephys'].values, barwidth,
            color=SESSIONTYPE2COLOR['ephys'], label=f'≥{min_ephys} ephys')
 
-    # Add text labels
-    _add_bar_labels(ax, xpos - barwidth, df_results['n_training'].values)
-    _add_bar_labels(ax, xpos, df_results['n_biased_ephys'].values)
-    _add_bar_labels(ax, xpos + barwidth, df_results['n_ephys'].values)
-
-    # Format axes with hemisphere counts if available
-    ax.set_xticks(xpos)
-    if 'hemisphere' in df_sessions.columns:
-        labels = []
-        for target_nm in df_results['target_NM']:
-            target_data = df_sessions[df_sessions['target_NM'] == target_nm]
-            n_left = target_data[target_data['hemisphere'] == 'L']['subject'].nunique()
-            n_right = target_data[target_data['hemisphere'] == 'R']['subject'].nunique()
-            labels.append(f'{target_nm}\n({n_left}L, {n_right}R)')
-        ax.set_xticklabels(labels)
+    # Add text labels with optional hemisphere breakdown
+    if has_hemisphere:
+        hemi_training = list(zip(df_results['n_training_L'], df_results['n_training_R']))
+        hemi_biased_ephys = list(zip(df_results['n_biased_ephys_L'], df_results['n_biased_ephys_R']))
+        hemi_ephys = list(zip(df_results['n_ephys_L'], df_results['n_ephys_R']))
     else:
-        ax.set_xticklabels(df_results['target_NM'].values)
+        hemi_training = hemi_biased_ephys = hemi_ephys = None
+    _add_bar_labels(ax, xpos - barwidth, df_results['n_training'].values, hemi_training)
+    _add_bar_labels(ax, xpos, df_results['n_biased_ephys'].values, hemi_biased_ephys)
+    _add_bar_labels(ax, xpos + barwidth, df_results['n_ephys'].values, hemi_ephys)
+
+    ax.set_xticks(xpos)
+    ax.set_xticklabels(df_results['target_NM'].values)
     ax.tick_params(axis='x', rotation=90)
     ax.set_ylabel('N Mice')
     ax.set_xlabel('Target-NM')

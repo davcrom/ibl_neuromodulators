@@ -5,5 +5,8 @@ setup(
     name="iblnm",
     version="0.1",
     # packages=find_packages(),
-    packages=["iblnm"]
+    packages=["iblnm"],
+    install_requires=[
+        "xarray",
+    ],
 )
