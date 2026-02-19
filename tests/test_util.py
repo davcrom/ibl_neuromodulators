@@ -13,6 +13,7 @@ from iblnm.util import (
     enforce_schema,
     get_session_type,
     get_targetNM,
+    collect_session_errors,
     InvalidSessionType,
     InvalidTargetNM,
     LOG_COLUMNS,
@@ -506,3 +507,56 @@ class TestGetTargetNM:
         })
         result = get_targetNM(session)
         assert result['target_NM'] == []
+
+
+class TestCollectSessionErrors:
+    @pytest.fixture
+    def df_sessions(self):
+        return pd.DataFrame({'eid': ['eid-1', 'eid-2', 'eid-3']})
+
+    def test_adds_logged_errors_column(self, df_sessions, tmp_path):
+        log = pd.DataFrame([
+            {'eid': 'eid-1', 'error_type': 'InvalidNM', 'error_message': 'x', 'traceback': None},
+        ])
+        fpath = tmp_path / 'log.pqt'
+        log.to_parquet(fpath)
+        result = collect_session_errors(df_sessions, [fpath])
+        assert 'logged_errors' in result.columns
+
+    def test_errors_attached_to_correct_eid(self, df_sessions, tmp_path):
+        log = pd.DataFrame([
+            {'eid': 'eid-1', 'error_type': 'InvalidNM', 'error_message': 'x', 'traceback': None},
+            {'eid': 'eid-1', 'error_type': 'InvalidStrain', 'error_message': 'y', 'traceback': None},
+        ])
+        fpath = tmp_path / 'log.pqt'
+        log.to_parquet(fpath)
+        result = collect_session_errors(df_sessions, [fpath])
+        row = result[result['eid'] == 'eid-1'].iloc[0]
+        assert set(row['logged_errors']) == {'InvalidNM', 'InvalidStrain'}
+
+    def test_no_errors_gives_empty_list(self, df_sessions, tmp_path):
+        log = pd.DataFrame(columns=['eid', 'error_type', 'error_message', 'traceback'])
+        fpath = tmp_path / 'log.pqt'
+        log.to_parquet(fpath)
+        result = collect_session_errors(df_sessions, [fpath])
+        assert result['logged_errors'].apply(lambda x: x == []).all()
+
+    def test_missing_log_file_ignored(self, df_sessions, tmp_path):
+        missing = tmp_path / 'nonexistent.pqt'
+        result = collect_session_errors(df_sessions, [missing])
+        assert 'logged_errors' in result.columns
+        assert result['logged_errors'].apply(lambda x: x == []).all()
+
+    def test_merges_multiple_log_files(self, df_sessions, tmp_path):
+        log1 = pd.DataFrame([
+            {'eid': 'eid-1', 'error_type': 'TypeA', 'error_message': '', 'traceback': None},
+        ])
+        log2 = pd.DataFrame([
+            {'eid': 'eid-2', 'error_type': 'TypeB', 'error_message': '', 'traceback': None},
+        ])
+        p1, p2 = tmp_path / 'a.pqt', tmp_path / 'b.pqt'
+        log1.to_parquet(p1); log2.to_parquet(p2)
+        result = collect_session_errors(df_sessions, [p1, p2])
+        assert 'TypeA' in result[result['eid'] == 'eid-1'].iloc[0]['logged_errors']
+        assert 'TypeB' in result[result['eid'] == 'eid-2'].iloc[0]['logged_errors']
+        assert result[result['eid'] == 'eid-3'].iloc[0]['logged_errors'] == []

@@ -75,10 +75,10 @@ class PhotometrySession(PhotometrySessionLoader):
             self.start_time = start_time
 
         self.number = int(session_series['number'])
-        self.lab = session_series['lab']
-        self.projects = session_series['projects']
-        self.url = session_series['url']
-        self.session_n = session_series['session_n']
+        self.lab = session_series.get('lab')
+        self.projects = session_series.get('projects', [])
+        self.url = session_series.get('url')
+        self.session_n = session_series.get('session_n')
         self.task_protocol = session_series['task_protocol']
         self.session_type = session_series['session_type']
         self.NM = session_series.get('NM')
@@ -184,21 +184,32 @@ class PhotometrySession(PhotometrySessionLoader):
         return []
 
     def validate_event_completeness(self):
-        """Returns log entry if stimOn_times or feedback_times has <90% present, else empty list."""
-        required_events = ['stimOn_times', 'feedback_times']
-        missing = []
-        for event in required_events:
-            if event not in self.trials.columns:
-                missing.append(event)
-            elif self.trials[event].notna().mean() < EVENT_COMPLETENESS_THRESHOLD:
-                missing.append(event)
-        if missing:
-            return [make_log_entry(
+        """Returns one log entry per incomplete event in RESPONSE_EVENTS, else empty list."""
+        errors = []
+        for event in RESPONSE_EVENTS:
+            if (event not in self.trials.columns
+                    or self.trials[event].notna().mean() < EVENT_COMPLETENESS_THRESHOLD):
+                errors.append(make_log_entry(
+                    self.eid,
+                    error_type='IncompleteEventTimes',
+                    error_message=f"Incomplete event: {event}",
+                ))
+        return errors
+
+    def validate_few_unique_samples(self):
+        """Returns log entry per channel with n_unique_samples below threshold, else empty list."""
+        if self.qc.empty or 'n_unique_samples' not in self.qc.columns:
+            return []
+        flagged = self.qc[self.qc['n_unique_samples'] < N_UNIQUE_SAMPLES_THRESHOLD]
+        return [
+            make_log_entry(
                 self.eid,
-                error_type='IncompleteEventTimes',
-                error_message=f"Incomplete events: {', '.join(missing)}",
-            )]
-        return []
+                error_type='FewUniqueSamples',
+                error_message=f"{row['brain_region']}/{row['band']}: "
+                              f"n_unique_samples={row['n_unique_samples']:.3f}",
+            )
+            for _, row in flagged.iterrows()
+        ]
 
     def validate_trials_in_photometry_time(self, band=None):
         """Returns log entry if trial times fall outside photometry window, else empty list."""
@@ -486,28 +497,30 @@ class PhotometrySession(PhotometrySessionLoader):
     # Task Performance Methods
     # =========================================================================
 
-    def task_performance(self, block_bug=False):
+    def basic_performance(self) -> dict:
+        """Compute session-level performance metrics (all session types)."""
         result = {}
-
-        result['fraction_correct'] = self.fraction_correct()
-        result['fraction_correct_easy'] = self.fraction_correct_easy()
-        result['nogo_fraction'] = self.nogo_fraction()
-
-        # Always fit 50-50 psychometric
-        fit_50 = self.fit_psychometric(probability_left=0.5)
+        result['fraction_correct'] = task.compute_fraction_correct(self.trials)
+        result['fraction_correct_easy'] = task.compute_fraction_correct(
+            self.trials[self.trials['contrast'] >= 0.5]
+        )
+        result['nogo_fraction'] = task.compute_nogo_fraction(self.trials)
+        fit_50 = task.fit_psychometric(self.trials, probability_left=0.5)
         for param, value in fit_50.items():
             result[f'psych_50_{param}'] = value
+        return result
 
-        # Biased/ephys: fit by block unless block structure is broken
-        if not block_bug and self.session_type in ('biased', 'ephys'):
-            fits = self.fit_psychometric_by_block()
-            for block_name, fit in fits.items():
-                for param, value in fit.items():
-                    result[f'psych_{block_name}_{param}'] = value
-
-            if '20' in fits and '80' in fits:
-                result['bias_shift'] = task.compute_bias_shift(fits['20'], fits['80'])
-
+    def block_performance(self) -> dict:
+        """Compute per-block psychometrics and bias shift (biased/ephys only)."""
+        if self.session_type not in ('biased', 'ephys'):
+            return {}
+        result = {}
+        fits = task.fit_psychometric_by_block(self.trials)
+        for block_name, fit in fits.items():
+            for param, value in fit.items():
+                result[f'psych_{block_name}_{param}'] = value
+        if '20' in fits and '80' in fits:
+            result['bias_shift'] = task.compute_bias_shift(fits['20'], fits['80'])
         return result
 
     def fraction_correct(self, exclude_nogo=True):
@@ -541,10 +554,16 @@ class PhotometrySession(PhotometrySessionLoader):
         reference_band='Isosbestic',
         targets=None,
         output_band='GCaMP_preprocessed',
+        regression_method: str = 'mse',
     ):
-        """Run preprocessing pipeline and store result as new band."""
+        """Run preprocessing pipeline and store result as new band.
+
+        Pipeline steps (bleach correct → isosbestic correct → zscore) are defined
+        in config.PREPROCESSING_PIPELINES. Resampling to TARGET_FS is applied after
+        the pipeline as a separate step.
+        """
         from iblphotometry.pipelines import run_pipeline
-        from iblphotometry.processing import Regression, LinearModel, ExponDecay
+        from iblnm.analysis import compute_bleaching_tau, compute_iso_correlation, resample_signal
 
         if pipeline is None:
             pipeline = PREPROCESSING_PIPELINES['isosbestic_correction']
@@ -552,56 +571,31 @@ class PhotometrySession(PhotometrySessionLoader):
         if targets is None:
             targets = list(self.photometry[signal_band].columns)
 
-        # Check if pipeline needs reference
         needs_reference = any('reference' in step.get('inputs', ()) for step in pipeline)
 
         if needs_reference and reference_band is None:
             raise ValueError("Pipeline requires reference_band")
 
-        # Extract regression method from pipeline for iso_correlation
-        regression_method = 'mse'
-        for step in pipeline:
-            if 'regression_method' in step.get('parameters', {}):
-                regression_method = step['parameters']['regression_method']
-                break
-
         preprocessed = {}
 
         for brain_region in targets:
             signal = self.photometry[signal_band][brain_region]
-
-            # Compute bleaching_tau using correct argument order
-            # Note: iblphotometry.metrics.bleaching_tau has a bug (calls fit(y, t) instead of fit(t, y))
-            reg = Regression(model=ExponDecay())
-            reg.fit(signal.index.values, signal.values)  # fit(t, y)
-            qc_metrics = {'bleaching_tau': reg.popt[1]}
+            qc_metrics = {'bleaching_tau': compute_bleaching_tau(signal)}
 
             if needs_reference:
                 reference = self.photometry[reference_band][brain_region]
-
-                # Run pipeline with full_output to get intermediate results
                 res = run_pipeline(pipeline, signal=signal, reference=reference, full_output=True)
                 result = res['result']
-
-                # Compute iso_correlation on bleach-corrected signals (from pipeline)
+                # iso_correlation computed on bleach-corrected signals before isosbestic step
                 signal_bc = res.get('signal_bleach_corrected', signal)
                 reference_bc = res.get('reference_bleach_corrected', reference)
-
-                reg = Regression(model=LinearModel(), method=regression_method)
-                reg.fit(reference_bc.values, signal_bc.values)
-                # Use model equation directly (predict() sorts x, breaking alignment)
-                predicted = reg.model.eq(reference_bc.values, *reg.popt)
-                ss_res = np.sum((signal_bc.values - predicted) ** 2)
-                ss_tot = np.sum((signal_bc.values - np.mean(signal_bc.values)) ** 2)
-                qc_metrics['iso_correlation'] = 1 - (ss_res / ss_tot)
+                qc_metrics['iso_correlation'] = compute_iso_correlation(
+                    signal_bc, reference_bc, regression_method=regression_method
+                )
             else:
                 result = run_pipeline(pipeline, signal=signal)
 
-            # Resample to uniform grid and z-score
-            from iblnm.analysis import resample_signal
             result = resample_signal(result, target_fs=TARGET_FS)
-            result = (result - result.mean()) / result.std()
-
             preprocessed[brain_region] = result
             self._append_qc(brain_region, signal_band, qc_metrics)
 

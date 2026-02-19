@@ -63,6 +63,40 @@ def get_responses(photometry, events, t0=-1.0, t1=1.0):
     return responses, tpts
 
 
+def compute_bleaching_tau(signal: pd.Series) -> float:
+    """Fit exponential decay to a photometry signal and return the time constant τ.
+
+    Note: iblphotometry.metrics.bleaching_tau has a bug (swapped argument order
+    in the fit call). This function calls Regression.fit(t, y) correctly.
+    """
+    from iblphotometry.processing import Regression, ExponDecay
+    reg = Regression(model=ExponDecay())
+    reg.fit(signal.index.values, signal.values)
+    return float(reg.popt[1])
+
+
+def compute_iso_correlation(signal: pd.Series, reference: pd.Series,
+                             regression_method: str = 'mse') -> float:
+    """Compute R² of linear regression of reference onto signal.
+
+    Parameters
+    ----------
+    signal : pd.Series
+        Bleach-corrected GCaMP signal.
+    reference : pd.Series
+        Bleach-corrected isosbestic reference.
+    regression_method : str
+        Passed to iblphotometry Regression (default 'mse').
+    """
+    from iblphotometry.processing import Regression, LinearModel
+    reg = Regression(model=LinearModel(), method=regression_method)
+    reg.fit(reference.values, signal.values)
+    predicted = reg.model.eq(reference.values, *reg.popt)
+    ss_res = np.sum((signal.values - predicted) ** 2)
+    ss_tot = np.sum((signal.values - np.mean(signal.values)) ** 2)
+    return float(1 - ss_res / ss_tot)
+
+
 def resample_signal(signal, target_fs=TARGET_FS):
     """Resample a photometry signal to a uniform grid using PCHIP interpolation."""
     from scipy.interpolate import PchipInterpolator

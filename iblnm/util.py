@@ -109,6 +109,47 @@ def concat_logs(logs):
     )
 
 
+def collect_session_errors(df_sessions: pd.DataFrame, log_fpaths) -> pd.DataFrame:
+    """Merge error logs onto df_sessions, adding a 'logged_errors' column.
+
+    Parameters
+    ----------
+    df_sessions : pd.DataFrame
+        Must contain an 'eid' column.
+    log_fpaths : list of Path or str
+        Paths to parquet error logs (schema: eid, error_type, ...).
+        Missing files are silently ignored.
+
+    Returns
+    -------
+    pd.DataFrame
+        df_sessions with a new 'logged_errors' column: list of error_type strings
+        per session (empty list if no errors logged).
+    """
+    dfs = []
+    for p in log_fpaths:
+        if Path(p).exists():
+            dfs.append(pd.read_parquet(p))
+
+    if dfs:
+        all_errors = pd.concat(dfs, ignore_index=True)
+        errors_by_eid = (
+            all_errors.groupby('eid')['error_type']
+            .apply(list)
+            .reset_index()
+            .rename(columns={'error_type': 'logged_errors'})
+        )
+        df_sessions = df_sessions.merge(errors_by_eid, on='eid', how='left')
+        df_sessions['logged_errors'] = df_sessions['logged_errors'].apply(
+            lambda x: x if isinstance(x, list) else []
+        )
+    else:
+        df_sessions = df_sessions.copy()
+        df_sessions['logged_errors'] = [[] for _ in range(len(df_sessions))]
+
+    return df_sessions
+
+
 def enforce_schema(df, schema):
     """Ensure DataFrame columns match a schema with correct types and defaults.
 

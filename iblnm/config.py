@@ -352,8 +352,17 @@ PREPROCESSING_PIPELINES = {
             inputs=('signal_bleach_corrected', 'reference_bleach_corrected'),
             output='result',
         ),
+        dict(
+            function=processing.zscore,
+            parameters=dict(mode='classic'),
+            inputs=('result',),
+            output='result',
+        ),
     ]
 }
+
+# Fraction of unique samples per window below which a channel is flagged as suspect
+N_UNIQUE_SAMPLES_THRESHOLD = 0.05
 
 # Analysis parameters
 # Event-based analyses

@@ -357,6 +357,119 @@ class TestBiasShift:
 
 
 # =============================================================================
+# Pipeline Tests
+# =============================================================================
+
+class TestComputeAllSessionPerformance:
+    """Tests for compute_all_session_performance() fatality tiers."""
+
+    def _session_series(self, eid='abc', session_type='biased'):
+        return pd.Series({
+            'eid': eid, 'subject': 'mouse1', 'start_time': '2024-01-01T10:00:00',
+            'number': 1, 'task_protocol': 'biased', 'session_type': session_type,
+            'datasets': [], 'NM': 'DA',
+        })
+
+    def _make_mock_ps(self, MockPS, *, load_error=None, n_trial_errors=None,
+                     event_errors=None, block_errors=None, basic_return=None,
+                     block_return=None, n_trials=100):
+        ps = MockPS.return_value
+        if load_error:
+            ps.load_trials.side_effect = load_error
+        else:
+            ps.load_trials.return_value = None
+        ps.validate_n_trials.return_value = n_trial_errors or []
+        ps.validate_event_completeness.return_value = event_errors or []
+        ps.validate_block_structure.return_value = block_errors or []
+        ps.basic_performance.return_value = basic_return or {'fraction_correct': 0.8}
+        ps.block_performance.return_value = block_return or {}
+        ps.trials = pd.DataFrame({'choice': [1] * n_trials})
+        return ps
+
+    def test_load_error_is_fatal(self):
+        from scripts.task import compute_all_session_performance
+        from unittest.mock import patch, MagicMock
+        df = pd.DataFrame([self._session_series()])
+        with patch('scripts.task.PhotometrySession') as MockPS:
+            self._make_mock_ps(MockPS, load_error=Exception("load failed"))
+            df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
+        assert len(df_perf) == 0
+        assert len(df_log) == 1
+
+    def test_insufficient_trials_is_fatal(self):
+        from scripts.task import compute_all_session_performance
+        from unittest.mock import patch, MagicMock
+        df = pd.DataFrame([self._session_series()])
+        with patch('scripts.task.PhotometrySession') as MockPS:
+            self._make_mock_ps(MockPS, n_trial_errors=[
+                {'eid': 'abc', 'error_type': 'InsufficientTrials',
+                 'error_message': 'n=10', 'traceback': None}
+            ])
+            df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
+        assert len(df_perf) == 0
+        assert df_log.iloc[0]['error_type'] == 'InsufficientTrials'
+
+    def test_event_completeness_is_non_blocking(self):
+        from scripts.task import compute_all_session_performance
+        from unittest.mock import patch, MagicMock
+        df = pd.DataFrame([self._session_series()])
+        with patch('scripts.task.PhotometrySession') as MockPS:
+            self._make_mock_ps(MockPS, event_errors=[
+                {'eid': 'abc', 'error_type': 'IncompleteEventTimes',
+                 'error_message': 'Incomplete event: stimOn_times', 'traceback': None}
+            ])
+            df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
+        assert len(df_perf) == 1   # session NOT skipped
+        assert df_log.iloc[0]['error_type'] == 'IncompleteEventTimes'
+
+    def test_block_errors_skip_block_performance(self):
+        from scripts.task import compute_all_session_performance
+        from unittest.mock import patch, MagicMock
+        df = pd.DataFrame([self._session_series()])
+        with patch('scripts.task.PhotometrySession') as MockPS:
+            ps = self._make_mock_ps(MockPS, block_errors=[
+                {'eid': 'abc', 'error_type': 'BlockStructureBug',
+                 'error_message': 'min_block=2', 'traceback': None}
+            ])
+            df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
+        assert len(df_perf) == 1
+        ps.block_performance.assert_not_called()
+        assert df_log.iloc[0]['error_type'] == 'BlockStructureBug'
+
+    def test_block_performance_called_when_no_block_errors(self):
+        from scripts.task import compute_all_session_performance
+        from unittest.mock import patch, MagicMock
+        df = pd.DataFrame([self._session_series()])
+        with patch('scripts.task.PhotometrySession') as MockPS:
+            ps = self._make_mock_ps(MockPS, block_return={'bias_shift': 5.0})
+            df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
+        assert len(df_perf) == 1
+        ps.block_performance.assert_called_once()
+        assert df_perf.iloc[0]['bias_shift'] == 5.0
+
+    def test_basic_performance_error_is_fatal(self):
+        from scripts.task import compute_all_session_performance
+        from unittest.mock import patch, MagicMock
+        df = pd.DataFrame([self._session_series()])
+        with patch('scripts.task.PhotometrySession') as MockPS:
+            ps = self._make_mock_ps(MockPS)
+            ps.basic_performance.side_effect = RuntimeError("fit failed")
+            df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
+        assert len(df_perf) == 0
+        assert df_log.iloc[0]['error_type'] == 'RuntimeError'
+
+    def test_successful_session_has_n_trials(self):
+        from scripts.task import compute_all_session_performance
+        from unittest.mock import patch, MagicMock
+        df = pd.DataFrame([self._session_series()])
+        with patch('scripts.task.PhotometrySession') as MockPS:
+            self._make_mock_ps(MockPS, n_trials=150)
+            df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
+        assert df_perf.iloc[0]['n_trials'] == 150
+        assert len(df_log) == 0
+
+
+# =============================================================================
 # I/O Tests
 # =============================================================================
 

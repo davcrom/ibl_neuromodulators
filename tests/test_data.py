@@ -220,30 +220,40 @@ class TestValidateBlockStructure:
 class TestValidateEventCompleteness:
     """Tests for PhotometrySession.validate_event_completeness."""
 
-    def test_returns_error_with_missing_events(self, mock_session_series):
+    def test_returns_one_error_per_incomplete_event(self, mock_session_series):
         from iblnm.data import PhotometrySession
+        from iblnm.config import RESPONSE_EVENTS
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         n = 100
-        stim_on = np.random.rand(n)
-        stim_on[:85] = np.nan  # 15% present, below threshold
-        session.trials = pd.DataFrame({
-            'stimOn_times': stim_on,
-            'feedback_times': np.random.rand(n),
-        })
+        data = {e: np.random.rand(n) for e in RESPONSE_EVENTS}
+        # Make first two events mostly NaN (15% present, below threshold)
+        data[RESPONSE_EVENTS[0]][:85] = np.nan
+        data[RESPONSE_EVENTS[1]][:85] = np.nan
+        session.trials = pd.DataFrame(data)
         errors = session.validate_event_completeness()
-        assert len(errors) == 1
-        assert errors[0]['error_type'] == 'IncompleteEventTimes'
-        assert 'stimOn_times' in errors[0]['error_message']
+        assert len(errors) == 2
+        assert all(e['error_type'] == 'IncompleteEventTimes' for e in errors)
+        msg_events = {e['error_message'].split(': ')[-1] for e in errors}
+        assert msg_events == {RESPONSE_EVENTS[0], RESPONSE_EVENTS[1]}
 
     def test_returns_empty_when_all_complete(self, mock_session_series):
         from iblnm.data import PhotometrySession
+        from iblnm.config import RESPONSE_EVENTS
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        n = 100
-        session.trials = pd.DataFrame({
-            'stimOn_times': np.random.rand(n),
-            'feedback_times': np.random.rand(n),
-        })
+        session.trials = pd.DataFrame({e: np.random.rand(100) for e in RESPONSE_EVENTS})
         assert session.validate_event_completeness() == []
+
+    def test_missing_column_counts_as_incomplete(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        from iblnm.config import RESPONSE_EVENTS
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        # Provide only some events
+        session.trials = pd.DataFrame({'stimOn_times': np.random.rand(100)})
+        errors = session.validate_event_completeness()
+        missing_in_errors = {e['error_message'].split(': ')[-1] for e in errors}
+        for event in RESPONSE_EVENTS:
+            if event != 'stimOn_times':
+                assert event in missing_in_errors
 
 
 class TestValidateTrialsInPhotometryTime:
@@ -287,6 +297,40 @@ class TestValidateTrialsInPhotometryTime:
             'feedback_times': [100.0, 500.0],
         })
         assert session.validate_trials_in_photometry_time() == []
+
+
+class TestValidateFewUniqueSamples:
+    def test_returns_error_below_threshold(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.qc = pd.DataFrame({
+            'brain_region': ['VTA'], 'band': ['GCaMP'],
+            'n_unique_samples': [0.01],  # below 0.05 threshold
+        })
+        errors = session.validate_few_unique_samples()
+        assert len(errors) == 1
+        assert errors[0]['error_type'] == 'FewUniqueSamples'
+        assert errors[0]['eid'] == 'test-eid-123'
+
+    def test_returns_empty_above_threshold(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.qc = pd.DataFrame({
+            'brain_region': ['VTA'], 'band': ['GCaMP'],
+            'n_unique_samples': [0.5],
+        })
+        assert session.validate_few_unique_samples() == []
+
+    def test_returns_empty_when_qc_empty(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        assert session.validate_few_unique_samples() == []
+
+    def test_returns_empty_when_column_missing(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.qc = pd.DataFrame({'brain_region': ['VTA'], 'band': ['GCaMP']})
+        assert session.validate_few_unique_samples() == []
 
 
 class TestValidateQc:
@@ -452,6 +496,11 @@ class TestPreprocess:
         signal = session.photometry['GCaMP_preprocessed']['VTA'].values
         np.testing.assert_allclose(np.mean(signal), 0, atol=0.01)
         np.testing.assert_allclose(np.std(signal), 1, atol=0.01)
+
+    def test_preprocess_accepts_regression_method(self, mock_photometry_session):
+        """preprocess() should accept regression_method kwarg without error."""
+        mock_photometry_session.preprocess(regression_method='mse')
+        assert 'GCaMP_preprocessed' in mock_photometry_session.photometry
 
     def test_qc_is_dataframe_after_preprocess(self, mock_photometry_session):
         """self.qc should be a DataFrame after preprocess."""
@@ -657,3 +706,124 @@ class TestSaveLoadH5:
         np.testing.assert_allclose(reloaded, original, rtol=1e-10)
 
 
+# =============================================================================
+# Task Performance Method Tests
+# =============================================================================
+
+def _make_training_trials(n=200, seed=42):
+    """Mock training trials (single 0.5 block)."""
+    np.random.seed(seed)
+    contrasts = np.random.choice([0, 0.0625, 0.125, 0.25, 0.5, 1.0], size=n)
+    sides = np.random.choice([-1, 1], size=n)
+    contrast_left = np.where(sides == -1, contrasts, 0).astype(float)
+    contrast_right = np.where(sides == 1, contrasts, 0).astype(float)
+    choice = sides.copy()
+    nogo_idx = np.random.choice(n, size=10, replace=False)
+    choice[nogo_idx] = 0
+    feedback_type = np.where(choice == sides, 1, -1)
+    feedback_type[choice == 0] = -1
+    return pd.DataFrame({
+        'contrastLeft': contrast_left,
+        'contrastRight': contrast_right,
+        'contrast': contrasts,
+        'choice': choice,
+        'feedbackType': feedback_type,
+        'probabilityLeft': np.full(n, 0.5),
+    })
+
+
+def _make_biased_trials(seed=42):
+    """Mock biased trials with 20/50/80 blocks."""
+    np.random.seed(seed)
+    probability_left = np.concatenate([
+        np.full(50, 0.5), np.full(50, 0.2), np.full(50, 0.8), np.full(50, 0.5),
+    ])
+    n = len(probability_left)
+    contrasts = np.random.choice([0, 0.0625, 0.125, 0.25, 0.5, 1.0], size=n)
+    sides = np.random.choice([-1, 1], size=n)
+    contrast_left = np.where(sides == -1, contrasts, 0).astype(float)
+    contrast_right = np.where(sides == 1, contrasts, 0).astype(float)
+    choice = sides.copy()
+    nogo_idx = np.random.choice(n, size=10, replace=False)
+    choice[nogo_idx] = 0
+    feedback_type = np.where(choice == sides, 1, -1)
+    feedback_type[choice == 0] = -1
+    return pd.DataFrame({
+        'contrastLeft': contrast_left,
+        'contrastRight': contrast_right,
+        'contrast': contrasts,
+        'choice': choice,
+        'feedbackType': feedback_type,
+        'probabilityLeft': probability_left,
+    })
+
+
+class TestBasicPerformance:
+    """Tests for PhotometrySession.basic_performance()."""
+
+    def test_returns_expected_keys(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = _make_training_trials()
+        result = session.basic_performance()
+        for key in ['fraction_correct', 'fraction_correct_easy', 'nogo_fraction',
+                    'psych_50_bias', 'psych_50_threshold', 'psych_50_r_squared',
+                    'psych_50_n_trials']:
+            assert key in result, f"Missing key: {key}"
+
+    def test_no_block_keys(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = _make_training_trials()
+        result = session.basic_performance()
+        assert not any(k.startswith('psych_20') or k.startswith('psych_80')
+                       or k == 'bias_shift' for k in result)
+
+    def test_fraction_correct_reasonable(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = _make_training_trials()
+        result = session.basic_performance()
+        assert 0 < result['fraction_correct'] <= 1
+        assert 0 <= result['nogo_fraction'] < 1
+
+
+class TestBlockPerformance:
+    """Tests for PhotometrySession.block_performance()."""
+
+    def test_returns_empty_for_training(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        series['session_type'] = 'training'
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = _make_training_trials()
+        assert session.block_performance() == {}
+
+    def test_returns_block_keys_for_biased(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        series['session_type'] = 'biased'
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = _make_biased_trials()
+        result = session.block_performance()
+        assert any(k.startswith('psych_20') for k in result)
+        assert any(k.startswith('psych_80') for k in result)
+
+    def test_bias_shift_present_for_biased(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        series['session_type'] = 'biased'
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = _make_biased_trials()
+        result = session.block_performance()
+        assert 'bias_shift' in result
+
+    def test_returns_empty_for_ephys_only_with_50_block(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        series['session_type'] = 'ephys'
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        # Only 0.5 block — fit_psychometric_by_block returns only '50', no bias_shift
+        session.trials = _make_training_trials()
+        result = session.block_performance()
+        assert 'bias_shift' not in result  # no 20/80 blocks present
