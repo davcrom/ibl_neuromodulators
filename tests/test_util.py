@@ -10,6 +10,7 @@ from iblnm.util import (
     drop_junk_duplicates,
     make_log_entry,
     concat_logs,
+    deduplicate_log,
     enforce_schema,
     get_session_type,
     get_targetNM,
@@ -560,3 +561,64 @@ class TestCollectSessionErrors:
         assert 'TypeA' in result[result['eid'] == 'eid-1'].iloc[0]['logged_errors']
         assert 'TypeB' in result[result['eid'] == 'eid-2'].iloc[0]['logged_errors']
         assert result[result['eid'] == 'eid-3'].iloc[0]['logged_errors'] == []
+
+    def test_accepts_dataframe_sources(self, df_sessions):
+        log = pd.DataFrame([
+            {'eid': 'eid-1', 'error_type': 'TypeError', 'error_message': 'msg', 'traceback': None},
+        ])
+        result = collect_session_errors(df_sessions, [log])
+        assert 'TypeError' in result[result['eid'] == 'eid-1'].iloc[0]['logged_errors']
+        assert result[result['eid'] == 'eid-2'].iloc[0]['logged_errors'] == []
+
+    def test_deduplicates_across_sources(self, df_sessions):
+        """Same (eid, error_type, error_message) from two sources → counted once."""
+        log1 = pd.DataFrame([
+            {'eid': 'eid-1', 'error_type': 'TypeError', 'error_message': 'msg', 'traceback': None},
+        ])
+        log2 = pd.DataFrame([
+            {'eid': 'eid-1', 'error_type': 'TypeError', 'error_message': 'msg', 'traceback': None},
+        ])
+        result = collect_session_errors(df_sessions, [log1, log2])
+        assert result[result['eid'] == 'eid-1'].iloc[0]['logged_errors'].count('TypeError') == 1
+
+
+class TestDeduplicateLog:
+    def test_drops_duplicate_entries(self):
+        df = pd.DataFrame({
+            'eid': ['a', 'a', 'b'],
+            'error_type': ['TypeError', 'TypeError', 'KeyError'],
+            'error_message': ['msg', 'msg', 'other'],
+            'traceback': [None, None, None],
+        })
+        result = deduplicate_log(df)
+        assert len(result) == 2
+
+    def test_keeps_different_messages_same_type(self):
+        """Same eid+type but different message → both kept."""
+        df = pd.DataFrame({
+            'eid': ['a', 'a'],
+            'error_type': ['TypeError', 'TypeError'],
+            'error_message': ['msg1', 'msg2'],
+            'traceback': [None, None],
+        })
+        result = deduplicate_log(df)
+        assert len(result) == 2
+
+    def test_keeps_same_message_different_eid(self):
+        """Same type+message but different eid → both kept."""
+        df = pd.DataFrame({
+            'eid': ['a', 'b'],
+            'error_type': ['TypeError', 'TypeError'],
+            'error_message': ['msg', 'msg'],
+            'traceback': [None, None],
+        })
+        result = deduplicate_log(df)
+        assert len(result) == 2
+
+    def test_empty_df_returns_empty(self):
+        df = pd.DataFrame(columns=LOG_COLUMNS)
+        result = deduplicate_log(df)
+        assert len(result) == 0
+
+    def test_none_returns_none(self):
+        assert deduplicate_log(None) is None

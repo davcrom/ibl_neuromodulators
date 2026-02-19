@@ -30,9 +30,6 @@ from iblnm.data import PhotometrySession
 def run_photometry_pipeline(df_sessions, one=None, verbose=True):
     """Run QC, preprocessing, and response extraction on all sessions.
 
-    Expects a pre-filtered df_sessions (session_type, NM, brain_region, target_NM
-    already validated). Use collect_session_errors() + manual filter before calling.
-
     Returns
     -------
     df_qc : pd.DataFrame
@@ -66,16 +63,23 @@ def run_photometry_pipeline(df_sessions, one=None, verbose=True):
             error_log.append(make_log_entry(eid, error=e))
             continue
 
-        # Block 2: QC (run_qc non-fatal; band inversions + early samples fatal)
+        # Block 2: Raw QC (fatal — band inversions / early samples)
         try:
-            ps.run_qc()
-            qc_results.append(ps.qc)
+            ps.run_raw_qc()
         except Exception as e:
             error_log.append(make_log_entry(eid, error=e))
             continue
 
         try:
             ps.validate_qc()
+        except Exception as e:
+            error_log.append(make_log_entry(eid, error=e))
+            continue
+
+        # Sliding QC (fatal)
+        try:
+            ps.run_sliding_qc()
+            qc_results.append(ps.qc)
         except Exception as e:
             error_log.append(make_log_entry(eid, error=e))
             continue

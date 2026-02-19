@@ -31,9 +31,6 @@ def compute_all_session_performance(df_sessions, one=None, verbose=True):
     """
     Compute task performance metrics for all sessions.
 
-    Expects a pre-filtered df_sessions (session_type and upstream errors already
-    screened). Use collect_session_errors() + filters before calling.
-
     Returns
     -------
     df_performance : pd.DataFrame

@@ -30,7 +30,7 @@ args = parser.parse_args()
 one = ONE()
 
 # Initialize exceptions log
-exlog = []
+error_log = []
 
 # Get list of session dicts
 print("Querying database...")
@@ -69,33 +69,33 @@ else:
 
 print("Adding subject info...")
 df_sessions = df_sessions.progress_apply(
-    get_subject_info, axis='columns', exlog=exlog
+    get_subject_info, axis='columns', exlog=error_log
 ).copy()
-df_sessions.apply(validate_subject, axis='columns', exlog=exlog)
-df_sessions.apply(validate_strain, axis='columns', exlog=exlog)
-df_sessions.apply(validate_line, axis='columns', exlog=exlog)
-df_sessions.apply(validate_neuromodulator, axis='columns', exlog=exlog)
+df_sessions.apply(validate_subject, axis='columns', exlog=error_log)
+df_sessions.apply(validate_strain, axis='columns', exlog=error_log)
+df_sessions.apply(validate_line, axis='columns', exlog=error_log)
+df_sessions.apply(validate_neuromodulator, axis='columns', exlog=error_log)
 
 
 print("Getting experiment descriptions...")
 df_sessions = df_sessions.progress_apply(
-    get_session_info, axis='columns', exlog=exlog
+    get_session_info, axis='columns', exlog=error_log
 ).copy()
-df_sessions.apply(validate_target, axis='columns', exlog=exlog)
-df_sessions.apply(validate_hemisphere, axis='columns', exlog=exlog)
+df_sessions.apply(validate_target, axis='columns', exlog=error_log)
+df_sessions.apply(validate_hemisphere, axis='columns', exlog=error_log)
 
 
 print("Getting datasets...")
 df_sessions = df_sessions.progress_apply(
-    get_datasets, axis='columns', exlog=exlog
+    get_datasets, axis='columns', exlog=error_log
 ).copy()
-df_sessions.apply(validate_datasets, axis='columns', exlog=exlog)
+df_sessions.apply(validate_datasets, axis='columns', exlog=error_log)
 
 
 # Add convenience columns
-df_sessions = df_sessions.apply(get_session_type, axis='columns', exlog=exlog)
-df_sessions = df_sessions.apply(get_targetNM, axis='columns', exlog=exlog)
-df_sessions = df_sessions.apply(get_session_length, axis='columns', exlog=exlog)
+df_sessions = df_sessions.apply(get_session_type, axis='columns', exlog=error_log)
+df_sessions = df_sessions.apply(get_targetNM, axis='columns', exlog=error_log)
+df_sessions = df_sessions.apply(get_session_length, axis='columns', exlog=error_log)
 df_sessions['date'] = pd.to_datetime(df_sessions['start_time'], format='ISO8601').dt.date
 df_sessions['day_n'] = df_sessions.groupby('subject')['date'].transform(
     lambda x: [(date - x.min()).days for date in x]
@@ -116,7 +116,7 @@ if args.extended_qc:
     print("Fetching extended QC...")
     df_qc = df_sessions[['eid']].copy()
     df_qc = df_qc.progress_apply(
-        get_extended_qc, axis='columns', exlog=exlog
+        get_extended_qc, axis='columns', exlog=error_log
     ).copy()
 
 
@@ -129,5 +129,5 @@ if df_qc is not None:
 
 # Save error log
 if exlog:
-    df_exceptions = pd.DataFrame(exlog)
+    df_exceptions = pd.DataFrame(error_log)
     df2pqt(df_exceptions, QUERY_DATABASE_LOG_FPATH)

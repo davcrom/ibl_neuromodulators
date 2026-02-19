@@ -109,16 +109,26 @@ def concat_logs(logs):
     )
 
 
-def collect_session_errors(df_sessions: pd.DataFrame, log_fpaths) -> pd.DataFrame:
+def deduplicate_log(df):
+    """Drop rows with duplicate (eid, error_type, error_message) from a log DataFrame."""
+    if df is None:
+        return None
+    if len(df) == 0:
+        return df
+    return df.drop_duplicates(subset=['eid', 'error_type', 'error_message']).reset_index(drop=True)
+
+
+def collect_session_errors(df_sessions: pd.DataFrame, log_sources) -> pd.DataFrame:
     """Merge error logs onto df_sessions, adding a 'logged_errors' column.
 
     Parameters
     ----------
     df_sessions : pd.DataFrame
         Must contain an 'eid' column.
-    log_fpaths : list of Path or str
-        Paths to parquet error logs (schema: eid, error_type, ...).
-        Missing files are silently ignored.
+    log_sources : list of Path, str, or pd.DataFrame
+        Paths to parquet error logs or pre-loaded DataFrames (schema: eid, error_type, ...).
+        Missing files and empty DataFrames are silently ignored.
+        Duplicate (eid, error_type, error_message) rows are removed before grouping.
 
     Returns
     -------
@@ -127,12 +137,17 @@ def collect_session_errors(df_sessions: pd.DataFrame, log_fpaths) -> pd.DataFram
         per session (empty list if no errors logged).
     """
     dfs = []
-    for p in log_fpaths:
-        if Path(p).exists():
-            dfs.append(pd.read_parquet(p))
+    for source in log_sources:
+        if isinstance(source, pd.DataFrame):
+            if len(source) > 0:
+                dfs.append(source)
+        else:
+            p = Path(source)
+            if p.exists():
+                dfs.append(pd.read_parquet(p))
 
     if dfs:
-        all_errors = pd.concat(dfs, ignore_index=True)
+        all_errors = deduplicate_log(pd.concat(dfs, ignore_index=True))
         errors_by_eid = (
             all_errors.groupby('eid')['error_type']
             .apply(list)
@@ -381,7 +396,7 @@ def clean_sessions(df, exclude_subjects=None, exclude_session_types=None, verbos
     df : pd.DataFrame
         Sessions dataframe
     exclude_subjects : list, optional
-        Subjects to exclude. Defaults to EXCLUDE_SUBJECTS from config.
+        Subjects to exclude. Defaults to SUBJECTS_TO_EXCLUDE from config.
     exclude_session_types : list, optional
         Session types to exclude. Defaults to EXCLUDE_SESSION_TYPES from config.
     verbose : bool
@@ -393,7 +408,7 @@ def clean_sessions(df, exclude_subjects=None, exclude_session_types=None, verbos
         Cleaned sessions dataframe
     """
     if exclude_subjects is None:
-        exclude_subjects = EXCLUDE_SUBJECTS
+        exclude_subjects = SUBJECTS_TO_EXCLUDE
     if exclude_session_types is None:
         exclude_session_types = EXCLUDE_SESSION_TYPES
 

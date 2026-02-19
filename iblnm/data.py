@@ -358,6 +358,11 @@ class PhotometrySession(PhotometrySessionLoader):
                 )
             self.photometry['GCaMP_preprocessed'] = pd.DataFrame(preprocessed)
 
+            if 'trials' in f:
+                self.trials = pd.DataFrame(
+                    {col: f[f'trials/{col}'][:] for col in f['trials']}
+                )
+
             if 'responses' in f:
                 resp_grp = f['responses']
                 tpts = resp_grp['time'][:]
@@ -393,37 +398,26 @@ class PhotometrySession(PhotometrySessionLoader):
             row = {'brain_region': brain_region, 'band': band, 'eid': self.eid, **metrics}
             self.qc = pd.concat([self.qc, pd.DataFrame([row])], ignore_index=True)
 
-    def run_qc(self, signal_band=None, raw_metrics=None, sliding_metrics=None,
-               metrics_kwargs=None, sliding_kwargs=None, brain_region=None, pipeline=None):
-        """
-        Run quality control on the photometry session.
+    def run_raw_qc(self, raw_metrics=None):
+        """Load raw photometry and compute session-level QC metrics.
 
-        Parameters
-        ----------
-        signal_band : str or list of str, optional
-            Signal band(s) to run QC on. If None, runs on all bands.
-        raw_metrics : list of str, optional
-            List of raw metric names to compute. If None, uses default from config.
-        sliding_metrics : list of str, optional
-            List of sliding window metric names to compute. If None, uses default from config.
-        metrics_kwargs : dict, optional
-            Custom kwargs for specific metrics. If None, uses default from config.
-        sliding_kwargs : dict, optional
-            Sliding window parameters. If None, uses default from config.
-        brain_region : str or list of str, optional
-            Restrict QC to specific brain region(s)
-        pipeline : list of dict, optional
-            Processing pipeline to apply before QC
-
-        Returns
-        -------
-        pd.DataFrame
-            QC results with one row per (brain_region, band) combination.
-            Columns: eid, band, brain_region, + one column per metric.
+        Updates self.qc with raw metric columns (n_band_inversions, n_early_samples).
+        Call validate_qc() after this to check for band inversions and early samples.
         """
-        # Get metric names from config if not provided
         if raw_metrics is None:
             raw_metrics = QC_RAW_METRICS
+        raw_photometry = self._load_raw_photometry()
+        raw_metric_values = {m: getattr(metrics, m)(raw_photometry) for m in raw_metrics}
+        self.qc = pd.DataFrame([{'eid': self.eid, **raw_metric_values}])
+
+    def run_sliding_qc(self, signal_band=None, sliding_metrics=None,
+                       metrics_kwargs=None, sliding_kwargs=None,
+                       brain_region=None, pipeline=None):
+        """Run sliding-window QC on photometry signals.
+
+        Updates self.qc with per-(band, brain_region) sliding metrics,
+        merging in any raw metrics already stored from run_raw_qc().
+        """
         if sliding_metrics is None:
             sliding_metrics = QC_SLIDING_METRICS
         if metrics_kwargs is None:
@@ -431,7 +425,6 @@ class PhotometrySession(PhotometrySessionLoader):
         if sliding_kwargs is None:
             sliding_kwargs = QC_SLIDING_KWARGS
 
-        # Run sliding metrics QC - returns tidy data
         qc_tidy = qc_signals(
             self.photometry,
             metrics=[getattr(metrics, m) for m in sliding_metrics],
@@ -442,42 +435,96 @@ class PhotometrySession(PhotometrySessionLoader):
             sliding_kwargs=sliding_kwargs,
         )
 
-        # Average across windows if sliding was used, then pivot to wide format
-        # One row per (band, brain_region), one column per metric
         if 'window' in qc_tidy.columns:
             qc_tidy = qc_tidy.groupby(['band', 'brain_region', 'metric'], as_index=False)['value'].mean()
 
         df_qc = qc_tidy.pivot(index=['band', 'brain_region'], columns='metric', values='value').reset_index()
-        df_qc.columns.name = None  # Remove the 'metric' name from columns
-
-        # Add raw metrics (computed on raw photometry, same value for all rows)
-        raw_photometry = self._load_raw_photometry()
-        raw_metric_values = {}
-        for metric_name in raw_metrics:
-            metric_func = getattr(metrics, metric_name)
-            raw_metric_values[metric_name] = metric_func(raw_photometry)
-
-        # Add raw metrics and eid to the DataFrame
-        for metric_name, value in raw_metric_values.items():
-            df_qc[metric_name] = value
+        df_qc.columns.name = None
         df_qc['eid'] = self.eid
 
-        # Merge with existing QC (from preprocess)
-        if self.qc.empty:
-            self.qc = df_qc
-        else:
-            self.qc = self.qc.merge(
-                df_qc, on=['brain_region', 'band'], how='outer', suffixes=('', '_new')
-            )
-            # Update with new values where they exist
-            for col in df_qc.columns:
-                if col + '_new' in self.qc.columns:
-                    self.qc[col] = self.qc[col + '_new'].combine_first(self.qc[col])
-                    self.qc.drop(columns=[col + '_new'], inplace=True)
-            if 'eid' not in self.qc.columns:
-                self.qc['eid'] = self.eid
+        # Incorporate raw metrics from run_raw_qc() if present
+        if not self.qc.empty:
+            raw_cols = [c for c in self.qc.columns if c not in ('eid', 'brain_region', 'band')]
+            for col in raw_cols:
+                df_qc[col] = self.qc[col].iloc[0]
 
-        return self.qc
+        self.qc = df_qc
+
+    # =========================================================================
+    # Response Convenience Methods
+    # =========================================================================
+
+    def subtract_baseline(self, responses=None, window=None):
+        """Subtract per-trial pre-event baseline from response traces.
+
+        Parameters
+        ----------
+        responses : xr.DataArray, optional
+            dims (region, event, trial, time). Defaults to self.responses.
+        window : tuple(float, float), optional
+            Baseline window in seconds [t_start, t_end). Defaults to
+            (RESPONSE_WINDOW[0], 0.0).
+
+        Returns
+        -------
+        xr.DataArray
+            Baseline-subtracted responses, same shape and coords as input.
+        """
+        if responses is None:
+            responses = self.responses
+        if window is None:
+            window = (self.RESPONSE_WINDOW[0], 0.0)
+        tpts = responses.coords['time'].values
+        i0 = np.searchsorted(tpts, window[0])
+        i1 = np.searchsorted(tpts, window[1])
+        baseline = responses.isel(time=slice(i0, i1)).mean(dim='time', skipna=True)
+        return responses - baseline
+
+    def mask_subsequent_events(self, responses=None, event_order=None):
+        """Mask response times that fall after the next event onset.
+
+        For each consecutive pair (e0, e1) in event_order, per-trial times
+        t > (trials[e1] - trials[e0]) are replaced with NaN in the e0
+        response matrix. Trials where the next event time is NaN are not masked.
+
+        Parameters
+        ----------
+        responses : xr.DataArray, optional
+            dims (region, event, trial, time). Defaults to self.responses.
+        event_order : list[str], optional
+            Chronologically ordered event names. Defaults to RESPONSE_EVENTS.
+
+        Returns
+        -------
+        xr.DataArray
+            Masked responses, same shape and coords as input.
+        """
+        import xarray as xr
+        if responses is None:
+            responses = self.responses
+        if event_order is None:
+            event_order = list(RESPONSE_EVENTS)
+        if not hasattr(self, 'trials') or self.trials is None:
+            return responses
+        events_present = list(responses.coords['event'].values)
+        tpts = responses.coords['time'].values
+        result = responses.copy()
+        for i, event in enumerate(event_order[:-1]):
+            next_event = event_order[i + 1]
+            if event not in events_present:
+                continue
+            if event not in self.trials.columns or next_event not in self.trials.columns:
+                continue
+            dt = self.trials[next_event].values - self.trials[event].values
+            nan_dt = np.isnan(dt)
+            keep = (tpts[None, :] <= dt[:, None]) | nan_dt[:, None]
+            keep_da = xr.DataArray(
+                keep, dims=['trial', 'time'],
+                coords={'trial': responses.coords['trial'],
+                        'time':  responses.coords['time']},
+            )
+            result.loc[dict(event=event)] = result.sel(event=event).where(keep_da)
+        return result
 
     # =========================================================================
     # Task Performance Methods

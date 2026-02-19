@@ -26,7 +26,8 @@ from iblnm.config import (
 )
 from iblnm.util import (
     clean_sessions, drop_junk_duplicates,
-    aggregate_qc_per_session, concat_logs, make_log_entry, LOG_COLUMNS,
+    aggregate_qc_per_session, concat_logs, deduplicate_log, make_log_entry,
+    collect_session_errors, LOG_COLUMNS,
 )
 from iblnm.vis import (
     session_overview_matrix, target_overview_barplot, mouse_overview_barplot, set_plotsize
@@ -52,7 +53,7 @@ df_sessions = clean_sessions(df_sessions)
 n_after_clean = len(df_sessions)
 
 # Recompute session_n so all animals start at session 1 after filtering
-df_sessions['session_n'] = df_sessions.groupby('subject')['date'].rank(method='dense')
+df_sessions['session_n'] = df_sessions.groupby('subject')['start_time'].rank(method='dense')
 
 # Drop duplicates
 df_sessions = drop_junk_duplicates(df_sessions, ['subject', 'day_n'])
@@ -81,17 +82,26 @@ if PERFORMANCE_FPATH.exists():
     available_perf_cols = [c for c in perf_cols if c in df_perf_full.columns]
     df_perf = df_perf_full[available_perf_cols]
 
-# Determine trials_in_photometry_time from photometry log
+# Load upstream error logs and attach to df_sessions
+upstream_logs = []
+for name, path in [('query_database', QUERY_DATABASE_LOG_FPATH),
+                    ('photometry', PHOTOMETRY_LOG_FPATH),
+                    ('task', TASK_LOG_FPATH)]:
+    if path.exists():
+        df_log = pd.read_parquet(path)
+        upstream_logs.append(df_log)
+        print(f"Loaded {len(df_log)} errors from {name}")
+
+df_sessions = collect_session_errors(df_sessions, upstream_logs)
+
+# Determine trials_in_photometry_time from logged_errors
 # Sessions with QC results that don't have a TrialsNotInPhotometryTime error pass
 eids_with_photometry = set(df_qc['eid'].unique()) if df_qc is not None else set()
-if PHOTOMETRY_LOG_FPATH.exists():
-    df_photometry_log = pd.read_parquet(PHOTOMETRY_LOG_FPATH)
-    eids_tipt_failed = set(
-        df_photometry_log[df_photometry_log['error_type'] == 'TrialsNotInPhotometryTime']['eid']
-    )
-else:
-    df_photometry_log = None
-    eids_tipt_failed = set()
+eids_tipt_failed = set(
+    df_sessions[df_sessions['logged_errors'].apply(
+        lambda errs: 'TrialsNotInPhotometryTime' in errs
+    )]['eid']
+)
 eids_tipt_ok = eids_with_photometry - eids_tipt_failed
 
 # Build session-level filter DataFrame
@@ -110,17 +120,6 @@ df_filters['trials_in_photometry_time'] = df_filters['eid'].isin(eids_tipt_ok)
 
 if df_perf is not None:
     df_filters = df_filters.merge(df_perf, on='eid', how='left')
-
-
-# Load upstream error logs
-upstream_logs = []
-for name, path in [('query_database', QUERY_DATABASE_LOG_FPATH),
-                    ('photometry', PHOTOMETRY_LOG_FPATH),
-                    ('task', TASK_LOG_FPATH)]:
-    if path.exists():
-        df_log = pd.read_parquet(path)
-        upstream_logs.append(df_log)
-        print(f"Loaded {len(df_log)} errors from {name}")
 
 
 # =============================================================================
@@ -224,8 +223,8 @@ if df_qc is not None and len(df_qc) > 0:
 
 df_flag_errors = pd.DataFrame(flag_errors) if flag_errors else pd.DataFrame(columns=LOG_COLUMNS)
 
-# Concatenate all logs → unified errors.pqt
-df_errors = concat_logs(upstream_logs + [df_flag_errors])
+# Concatenate all logs → unified errors.pqt (deduplicated by eid+type+message)
+df_errors = deduplicate_log(concat_logs(upstream_logs + [df_flag_errors]))
 
 
 # =============================================================================

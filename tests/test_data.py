@@ -661,6 +661,35 @@ class TestSaveLoadH5:
             rtol=1e-5,
         )
 
+    def test_load_h5_restores_trials(self, mock_photometry_session, tmp_path):
+        """load_h5 should restore trials saved in the HDF5 trials group."""
+        session = mock_photometry_session
+        session.preprocess()
+        n = 50
+        session.trials = pd.DataFrame({
+            'stimOn_times':        np.linspace(99.5, 499.5, n),
+            'firstMovement_times': np.linspace(100.3, 500.3, n),
+            'feedback_times':      np.linspace(101.0, 501.0, n),
+            'goCue_times':         np.linspace(99.6, 499.6, n),
+            'response_times':      np.linspace(100.4, 500.4, n),
+            'intervals_0':         np.linspace(99.0, 499.0, n),
+            'intervals_1':         np.linspace(102.0, 502.0, n),
+            'choice':              np.random.choice([-1, 1], n).astype(float),
+            'feedbackType':        np.random.choice([-1, 1], n).astype(float),
+            'probabilityLeft':     np.full(n, 0.5),
+            'signed_contrast':     np.zeros(n),
+            'contrast':            np.zeros(n),
+        })
+        saved_stim = session.trials['stimOn_times'].values.copy()
+        fpath = tmp_path / f'{session.eid}.h5'
+        session.save_h5(fpath)
+        session.save_h5(fpath, mode='a')
+        session.trials = None
+        session.load_h5(fpath)
+        assert session.trials is not None
+        assert 'stimOn_times' in session.trials.columns
+        np.testing.assert_allclose(session.trials['stimOn_times'].values, saved_stim)
+
     def test_load_h5_roundtrip(self, mock_photometry_session, tmp_path):
         """load_h5 should restore preprocessed signal from saved file."""
         session = mock_photometry_session
@@ -757,6 +786,298 @@ class TestBasicPerformance:
         result = session.basic_performance()
         assert 0 < result['fraction_correct'] <= 1
         assert 0 <= result['nogo_fraction'] < 1
+
+
+# =============================================================================
+# QC Method Tests
+# =============================================================================
+
+class TestRunRawQc:
+    """Tests for PhotometrySession.run_raw_qc."""
+
+    def test_sets_qc_with_raw_metric_columns(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        from unittest.mock import patch
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        raw_phot = pd.DataFrame({'col1': [1.0, 2.0]}, index=[0.0, 1.0])
+        with patch.object(session, '_load_raw_photometry', return_value=raw_phot):
+            with patch('iblnm.data.metrics') as mock_metrics:
+                mock_metrics.n_band_inversions.return_value = 0
+                mock_metrics.n_early_samples.return_value = 2
+                session.run_raw_qc()
+        assert 'n_band_inversions' in session.qc.columns
+        assert 'n_early_samples' in session.qc.columns
+
+    def test_sets_qc_values_from_metrics(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        from unittest.mock import patch
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        raw_phot = pd.DataFrame({'col1': [1.0, 2.0]}, index=[0.0, 1.0])
+        with patch.object(session, '_load_raw_photometry', return_value=raw_phot):
+            with patch('iblnm.data.metrics') as mock_metrics:
+                mock_metrics.n_band_inversions.return_value = 3
+                mock_metrics.n_early_samples.return_value = 5
+                session.run_raw_qc()
+        assert session.qc['n_band_inversions'].iloc[0] == 3
+        assert session.qc['n_early_samples'].iloc[0] == 5
+
+    def test_includes_eid(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        from unittest.mock import patch
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        with patch.object(session, '_load_raw_photometry', return_value=pd.DataFrame({'c': [1.0]})):
+            with patch('iblnm.data.metrics') as mock_metrics:
+                mock_metrics.n_band_inversions.return_value = 0
+                mock_metrics.n_early_samples.return_value = 0
+                session.run_raw_qc()
+        assert 'eid' in session.qc.columns
+        assert session.qc['eid'].iloc[0] == 'test-eid-123'
+
+    def test_propagates_load_failure(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        from unittest.mock import patch
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        with patch.object(session, '_load_raw_photometry', side_effect=Exception("load failed")):
+            with pytest.raises(Exception, match="load failed"):
+                session.run_raw_qc()
+
+
+class TestRunSlidingQc:
+    """Tests for PhotometrySession.run_sliding_qc."""
+
+    def _make_tidy_qc(self):
+        return pd.DataFrame({
+            'band': ['GCaMP', 'GCaMP'],
+            'brain_region': ['VTA', 'VTA'],
+            'metric': ['n_unique_samples', 'n_unique_samples'],
+            'value': [0.8, 0.9],
+            'window': [0, 1],
+        })
+
+    def test_sets_qc_per_region_band(self, mock_photometry_session):
+        from unittest.mock import patch
+        session = mock_photometry_session
+        with patch('iblnm.data.qc_signals', return_value=self._make_tidy_qc()):
+            session.run_sliding_qc()
+        assert 'brain_region' in session.qc.columns
+        assert 'band' in session.qc.columns
+        assert 'n_unique_samples' in session.qc.columns
+
+    def test_averages_across_windows(self, mock_photometry_session):
+        from unittest.mock import patch
+        session = mock_photometry_session
+        with patch('iblnm.data.qc_signals', return_value=self._make_tidy_qc()):
+            session.run_sliding_qc()
+        assert len(session.qc) == 1  # One row for VTA/GCaMP after averaging
+        assert session.qc['n_unique_samples'].iloc[0] == pytest.approx((0.8 + 0.9) / 2)
+
+    def test_incorporates_raw_metrics_from_run_raw_qc(self, mock_photometry_session):
+        from unittest.mock import patch
+        session = mock_photometry_session
+        # Simulate state after run_raw_qc()
+        session.qc = pd.DataFrame([{'eid': session.eid, 'n_band_inversions': 0, 'n_early_samples': 0}])
+        with patch('iblnm.data.qc_signals', return_value=self._make_tidy_qc()):
+            session.run_sliding_qc()
+        assert 'n_band_inversions' in session.qc.columns
+        assert 'n_early_samples' in session.qc.columns
+
+    def test_propagates_qc_signals_failure(self, mock_photometry_session):
+        from unittest.mock import patch
+        session = mock_photometry_session
+        with patch('iblnm.data.qc_signals', side_effect=Exception("qc_signals failed")):
+            with pytest.raises(Exception, match="qc_signals failed"):
+                session.run_sliding_qc()
+
+    def test_includes_eid(self, mock_photometry_session):
+        from unittest.mock import patch
+        session = mock_photometry_session
+        with patch('iblnm.data.qc_signals', return_value=self._make_tidy_qc()):
+            session.run_sliding_qc()
+        assert 'eid' in session.qc.columns
+        assert session.qc['eid'].iloc[0] == session.eid
+
+
+# =============================================================================
+# Baseline Subtraction Tests
+# =============================================================================
+
+def _make_responses(tpts, vals, region='R', event='e'):
+    """Build a minimal (1 region, 1 event, n_trials, n_times) DataArray."""
+    import xarray as xr
+    data = np.array([[[vals]]] if vals.ndim == 1 else [[vals]])
+    return xr.DataArray(
+        data,
+        dims=['region', 'event', 'trial', 'time'],
+        coords={
+            'region': [region],
+            'event':  [event],
+            'trial':  np.arange(data.shape[2]),
+            'time':   tpts,
+        },
+    )
+
+
+class TestSubtractBaseline:
+    """Tests for PhotometrySession.subtract_baseline."""
+
+    def _session(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        return PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+
+    def test_subtracts_pretrial_mean(self, mock_session_series):
+        session = self._session(mock_session_series)
+        tpts = np.array([-1.0, -0.5, -0.1, 0.5, 1.0])
+        # window=(-1, 0) → tpts[0:3]=[-1, -0.5, -0.1], mean=4.0
+        vals = np.array([2., 4., 6., 8., 10.])
+        responses = _make_responses(tpts, vals)
+        result = session.subtract_baseline(responses, window=(-1.0, 0.0))
+        np.testing.assert_allclose(result.values[0, 0, 0], [-2., 0., 2., 4., 6.])
+
+    def test_subtracts_per_trial(self, mock_session_series):
+        """Each trial gets its own baseline removed."""
+        session = self._session(mock_session_series)
+        tpts = np.array([-1.0, -0.5, 0.5, 1.0])
+        # window=(-1, 0) → tpts[0:2]=[-1, -0.5]
+        # trial 0: [2, 4, 6, 8], baseline=3.0 → [-1, 1, 3, 5]
+        # trial 1: [10, 20, 30, 40], baseline=15.0 → [-5, 5, 15, 25]
+        vals = np.array([[2., 4., 6., 8.], [10., 20., 30., 40.]])
+        responses = _make_responses(tpts, vals)
+        result = session.subtract_baseline(responses, window=(-1.0, 0.0))
+        np.testing.assert_allclose(result.values[0, 0, 0], [-1., 1., 3., 5.])
+        np.testing.assert_allclose(result.values[0, 0, 1], [-5., 5., 15., 25.])
+
+    def test_does_not_modify_self_responses(self, mock_session_series):
+        """Returns new DataArray; self.responses unchanged."""
+        import xarray as xr
+        session = self._session(mock_session_series)
+        tpts = np.array([-1.0, -0.5, 0.5, 1.0])
+        vals = np.array([1., 2., 3., 4.])
+        responses = _make_responses(tpts, vals)
+        session.responses = responses.copy()
+        original_vals = session.responses.values.copy()
+        result = session.subtract_baseline(responses, window=(-1.0, 0.0))
+        np.testing.assert_array_equal(session.responses.values, original_vals)
+        assert result is not session.responses
+
+    def test_defaults_to_self_responses(self, mock_session_series):
+        """Calling without args operates on self.responses."""
+        session = self._session(mock_session_series)
+        tpts = np.array([-1.0, -0.5, 0.5, 1.0])
+        vals = np.array([2., 4., 6., 8.])
+        session.responses = _make_responses(tpts, vals)
+        result = session.subtract_baseline(window=(-1.0, 0.0))
+        # baseline = mean(2, 4) = 3.0; expected = [-1, 1, 3, 5]
+        np.testing.assert_allclose(result.values[0, 0, 0], [-1., 1., 3., 5.])
+
+    def test_empty_window_produces_nan(self, mock_session_series):
+        """Window entirely outside time axis → baseline NaN → output all NaN."""
+        session = self._session(mock_session_series)
+        tpts = np.array([0.5, 1.0, 1.5])
+        vals = np.array([1., 2., 3.])
+        responses = _make_responses(tpts, vals)
+        result = session.subtract_baseline(responses, window=(-1.0, 0.0))
+        assert np.all(np.isnan(result.values))
+
+
+# =============================================================================
+# Event Masking Tests
+# =============================================================================
+
+class TestMaskSubsequentEvents:
+    """Tests for PhotometrySession.mask_subsequent_events."""
+
+    def _make_session_and_responses(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        import xarray as xr
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        tpts = np.array([-1.0, -0.5, 0.0, 0.5, 1.0])
+        data = np.ones((1, 2, 2, 5))  # (region, event, trial, time)
+        responses = xr.DataArray(
+            data,
+            dims=['region', 'event', 'trial', 'time'],
+            coords={
+                'region': ['R'],
+                'event':  ['stimOn_times', 'firstMovement_times'],
+                'trial':  [0, 1],
+                'time':   tpts,
+            },
+        )
+        # trial 0: dt = 0.3 - 0.0 = 0.3 → mask tpts > 0.3 (indices 3, 4)
+        # trial 1: firstMovement = NaN → no masking
+        session.trials = pd.DataFrame({
+            'stimOn_times':        [0.0, 0.0],
+            'firstMovement_times': [0.3, np.nan],
+            'feedback_times':      [1.5, 1.5],
+        })
+        return session, responses
+
+    def test_masks_times_after_next_event(self, mock_session_series):
+        session, responses = self._make_session_and_responses(mock_session_series)
+        result = session.mask_subsequent_events(
+            responses,
+            event_order=['stimOn_times', 'firstMovement_times', 'feedback_times'],
+        )
+        mat = result.sel(region='R', event='stimOn_times').values
+        assert np.isnan(mat[0, 3])       # trial 0, t=0.5 > 0.3 → NaN
+        assert np.isnan(mat[0, 4])       # trial 0, t=1.0 > 0.3 → NaN
+        assert not np.isnan(mat[0, 2])   # trial 0, t=0.0 ≤ 0.3 → kept
+        assert not np.isnan(mat[1, 3])   # trial 1, NaN dt → not masked
+
+    def test_last_event_not_masked(self, mock_session_series):
+        """firstMovement event matrix is unchanged (no event after it in responses)."""
+        session, responses = self._make_session_and_responses(mock_session_series)
+        result = session.mask_subsequent_events(
+            responses,
+            event_order=['stimOn_times', 'firstMovement_times'],
+        )
+        mat = result.sel(region='R', event='firstMovement_times').values
+        assert not np.any(np.isnan(mat))
+
+    def test_nan_dt_not_masked(self, mock_session_series):
+        """Trial 1 has NaN firstMovement → stimOn response fully intact."""
+        session, responses = self._make_session_and_responses(mock_session_series)
+        result = session.mask_subsequent_events(
+            responses,
+            event_order=['stimOn_times', 'firstMovement_times', 'feedback_times'],
+        )
+        mat = result.sel(region='R', event='stimOn_times').values
+        assert not np.any(np.isnan(mat[1]))
+
+    def test_no_trials_returns_unchanged(self, mock_session_series):
+        """If self.trials is None, return responses unchanged."""
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = None
+        tpts = np.array([-1.0, 0.0, 1.0])
+        vals = np.array([1., 2., 3.])
+        responses = _make_responses(tpts, vals)
+        result = session.mask_subsequent_events(responses)
+        np.testing.assert_array_equal(result.values, responses.values)
+
+    def test_event_not_in_responses_skipped(self, mock_session_series):
+        """Event in event_order but not in DataArray coords → no error."""
+        from iblnm.data import PhotometrySession
+        import xarray as xr
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        tpts = np.array([-1.0, 0.0, 1.0])
+        data = np.ones((1, 1, 2, 3))
+        responses = xr.DataArray(
+            data,
+            dims=['region', 'event', 'trial', 'time'],
+            coords={'region': ['R'], 'event': ['feedback_times'],
+                    'trial': [0, 1], 'time': tpts},
+        )
+        session.trials = pd.DataFrame({
+            'stimOn_times':        [0.0, 0.0],
+            'firstMovement_times': [0.3, 0.4],
+            'feedback_times':      [1.5, 1.5],
+        })
+        # stimOn_times not in responses → skip without error
+        result = session.mask_subsequent_events(
+            responses,
+            event_order=['stimOn_times', 'firstMovement_times', 'feedback_times'],
+        )
+        np.testing.assert_array_equal(result.values, responses.values)
 
 
 class TestBlockPerformance:
