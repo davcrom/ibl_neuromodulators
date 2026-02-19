@@ -62,19 +62,19 @@ def compute_all_session_performance(df_sessions, one=None, verbose=True):
             continue
 
         # Block 2: n_trials (fatal)
-        n_trial_errors = ps.validate_n_trials()
-        error_log.extend(n_trial_errors)
-        if n_trial_errors:
+        try:
+            ps.validate_n_trials()
+        except Exception as e:
+            error_log.append(make_log_entry(eid, error=e))
             continue
 
         # Block 3: event completeness (non-blocking — logged only)
-        error_log.extend(ps.validate_event_completeness())
+        try:
+            ps.validate_event_completeness()
+        except Exception as e:
+            error_log.append(make_log_entry(eid, error=e))
 
-        # Block 4: block structure (blocks block_performance for biased/ephys)
-        block_errors = ps.validate_block_structure()
-        error_log.extend(block_errors)
-
-        # Block 5: basic performance (fatal)
+        # Block 4: basic performance (fatal)
         try:
             result = {'eid': eid, 'n_trials': len(ps.trials)}
             result.update(ps.basic_performance())
@@ -82,12 +82,12 @@ def compute_all_session_performance(df_sessions, one=None, verbose=True):
             error_log.append(make_log_entry(eid, error=e))
             continue
 
-        # Block 6: block performance (skipped if block_errors)
-        if not block_errors:
-            try:
-                result.update(ps.block_performance())
-            except Exception as e:
-                error_log.append(make_log_entry(eid, error=e))
+        # Block 5: validate block structure then compute block performance (non-fatal)
+        try:
+            ps.validate_block_structure()
+            result.update(ps.block_performance())
+        except Exception as e:
+            error_log.append(make_log_entry(eid, error=e))
 
         results.append(result)
 

@@ -52,6 +52,14 @@ class EarlySamples(Exception):
     """Photometry signal has early samples."""
 
 
+class FewUniqueSamples(Exception):
+    """One or more photometry channels have too few unique samples."""
+
+
+class QCValidationError(Exception):
+    """One or more raw QC checks failed (band inversions, early samples)."""
+
+
 class PhotometrySession(PhotometrySessionLoader):
     """Data class for an IBL photometry session."""
 
@@ -160,91 +168,69 @@ class PhotometrySession(PhotometrySessionLoader):
 
 
     def validate_n_trials(self):
-        """Returns log entry if n_trials < MIN_NTRIALS, else empty list."""
+        """Raises InsufficientTrials if n_trials < MIN_NTRIALS."""
         if len(self.trials) < MIN_NTRIALS:
-            return [make_log_entry(
-                self.eid,
-                error_type='InsufficientTrials',
-                error_message=f"n_trials={len(self.trials)} < MIN_NTRIALS={MIN_NTRIALS}",
-            )]
-        return []
+            raise InsufficientTrials(
+                f"n_trials={len(self.trials)} < MIN_NTRIALS={MIN_NTRIALS}"
+            )
 
     def validate_block_structure(self):
-        """Returns log entry if biased/ephys session has rapidly flipping blocks, else empty list."""
+        """Raises BlockStructureBug if biased/ephys session has rapidly flipping blocks."""
         if self.session_type not in ('biased', 'ephys'):
-            return []
+            return
         block_info = task.validate_block_structure(self.trials)
         if block_info['flagged']:
-            return [make_log_entry(
-                self.eid,
-                error_type='BlockStructureBug',
-                error_message=f"Min block length: {block_info['min_block_length']}, "
-                              f"n_blocks: {block_info['n_blocks']}",
-            )]
-        return []
+            raise BlockStructureBug(
+                f"Min block length: {block_info['min_block_length']}, "
+                f"n_blocks: {block_info['n_blocks']}"
+            )
 
     def validate_event_completeness(self):
-        """Returns one log entry per incomplete event in RESPONSE_EVENTS, else empty list."""
-        errors = []
-        for event in RESPONSE_EVENTS:
+        """Raises IncompleteEventTimes with all missing events if any are below threshold."""
+        missing = [
+            event for event in RESPONSE_EVENTS
             if (event not in self.trials.columns
-                    or self.trials[event].notna().mean() < EVENT_COMPLETENESS_THRESHOLD):
-                errors.append(make_log_entry(
-                    self.eid,
-                    error_type='IncompleteEventTimes',
-                    error_message=f"Incomplete event: {event}",
-                ))
-        return errors
+                or self.trials[event].notna().mean() < EVENT_COMPLETENESS_THRESHOLD)
+        ]
+        if missing:
+            raise IncompleteEventTimes(missing)
 
     def validate_few_unique_samples(self):
-        """Returns log entry per channel with n_unique_samples below threshold, else empty list."""
+        """Raises FewUniqueSamples listing channels below threshold."""
         if self.qc.empty or 'n_unique_samples' not in self.qc.columns:
-            return []
-        flagged = self.qc[self.qc['n_unique_samples'] < N_UNIQUE_SAMPLES_THRESHOLD]
-        return [
-            make_log_entry(
-                self.eid,
-                error_type='FewUniqueSamples',
-                error_message=f"{row['brain_region']}/{row['band']}: "
-                              f"n_unique_samples={row['n_unique_samples']:.3f}",
+            return
+        rows = self.qc[self.qc['n_unique_samples'] < N_UNIQUE_SAMPLES_THRESHOLD]
+        if not rows.empty:
+            channels = ', '.join(
+                f"{r['brain_region']}/{r['band']}={r['n_unique_samples']:.3f}"
+                for _, r in rows.iterrows()
             )
-            for _, row in flagged.iterrows()
-        ]
+            raise FewUniqueSamples(f"Few unique samples: {channels}")
 
     def validate_trials_in_photometry_time(self, band=None):
-        """Returns log entry if trial times fall outside photometry window, else empty list."""
+        """Raises TrialsNotInPhotometryTime if trial times fall outside photometry window."""
         if band is None:
             band = 'GCaMP_preprocessed' if 'GCaMP_preprocessed' in self.photometry else 'GCaMP'
         phot_times = self.photometry[band].index
         trial_start = self.trials['stimOn_times'].min()
         trial_stop = self.trials['feedback_times'].max()
         if not (trial_start >= phot_times.min() and trial_stop <= phot_times.max()):
-            return [make_log_entry(
-                self.eid,
-                error_type='TrialsNotInPhotometryTime',
-                error_message=f"Trials [{trial_start:.1f}, {trial_stop:.1f}] outside "
-                              f"photometry [{phot_times.min():.1f}, {phot_times.max():.1f}]",
-            )]
-        return []
+            raise TrialsNotInPhotometryTime(
+                f"Trials [{trial_start:.1f}, {trial_stop:.1f}] outside "
+                f"photometry [{phot_times.min():.1f}, {phot_times.max():.1f}]"
+            )
 
     def validate_qc(self):
-        """Returns log entries for QC failures (band inversions, early samples), else empty list."""
-        errors = []
+        """Raises QCValidationError listing all raw QC issues found."""
         if self.qc.empty:
-            return errors
+            return
+        issues = []
         if 'n_band_inversions' in self.qc.columns and (self.qc['n_band_inversions'] > 0).any():
-            errors.append(make_log_entry(
-                self.eid,
-                error_type='BandInversion',
-                error_message="Band inversions detected",
-            ))
+            issues.append("band inversions detected")
         if 'n_early_samples' in self.qc.columns and (self.qc['n_early_samples'] > 0).any():
-            errors.append(make_log_entry(
-                self.eid,
-                error_type='EarlySamples',
-                error_message="Early samples detected",
-            ))
-        return errors
+            issues.append("early samples detected")
+        if issues:
+            raise QCValidationError('; '.join(issues))
 
     def _load_raw_photometry(self):
         raw_photometry = self.one.load_dataset(

@@ -163,40 +163,33 @@ class TestLoadPhotometry:
 class TestValidateNTrials:
     """Tests for PhotometrySession.validate_n_trials."""
 
-    def test_returns_error_when_insufficient(self, mock_session_series):
-        from iblnm.data import PhotometrySession
+    def test_raises_when_insufficient(self, mock_session_series):
+        from iblnm.data import PhotometrySession, InsufficientTrials
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.trials = pd.DataFrame({'a': range(50)})  # 50 < MIN_NTRIALS (90)
-        errors = session.validate_n_trials()
-        assert len(errors) == 1
-        assert errors[0]['error_type'] == 'InsufficientTrials'
-        assert errors[0]['eid'] == 'test-eid-123'
+        with pytest.raises(InsufficientTrials, match='n_trials=50'):
+            session.validate_n_trials()
 
-    def test_returns_empty_when_sufficient(self, mock_session_series):
+    def test_does_not_raise_when_sufficient(self, mock_session_series):
         from iblnm.data import PhotometrySession
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.trials = pd.DataFrame({'a': range(200)})
-        assert session.validate_n_trials() == []
+        session.validate_n_trials()  # should not raise
 
 
 class TestValidateBlockStructure:
     """Tests for PhotometrySession.validate_block_structure."""
 
-    def test_returns_error_with_flipping_blocks(self, mock_session_series):
-        from iblnm.data import PhotometrySession
+    def test_raises_with_flipping_blocks(self, mock_session_series):
+        from iblnm.data import PhotometrySession, BlockStructureBug
         series = mock_session_series.copy()
         series['session_type'] = 'biased'
         session = PhotometrySession(series, one=MagicMock(), load_data=False)
-        # Rapidly flipping blocks
-        session.trials = pd.DataFrame({
-            'probabilityLeft': np.tile([0.8, 0.2], 50),
-        })
-        errors = session.validate_block_structure()
-        assert len(errors) == 1
-        assert errors[0]['error_type'] == 'BlockStructureBug'
-        assert errors[0]['eid'] == 'test-eid-123'
+        session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
+        with pytest.raises(BlockStructureBug):
+            session.validate_block_structure()
 
-    def test_returns_empty_with_valid_blocks(self, mock_session_series):
+    def test_does_not_raise_with_valid_blocks(self, mock_session_series):
         from iblnm.data import PhotometrySession
         series = mock_session_series.copy()
         series['session_type'] = 'biased'
@@ -204,193 +197,171 @@ class TestValidateBlockStructure:
         session.trials = pd.DataFrame({
             'probabilityLeft': np.concatenate([np.full(100, 0.8), np.full(100, 0.2)]),
         })
-        assert session.validate_block_structure() == []
+        session.validate_block_structure()  # should not raise
 
-    def test_skips_for_training(self, mock_session_series):
+    def test_does_not_raise_for_training(self, mock_session_series):
         from iblnm.data import PhotometrySession
         series = mock_session_series.copy()
         series['session_type'] = 'training'
         session = PhotometrySession(series, one=MagicMock(), load_data=False)
-        session.trials = pd.DataFrame({
-            'probabilityLeft': np.tile([0.8, 0.2], 50),  # Would be flagged for biased
-        })
-        assert session.validate_block_structure() == []
+        session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
+        session.validate_block_structure()  # should not raise for training
 
 
 class TestValidateEventCompleteness:
     """Tests for PhotometrySession.validate_event_completeness."""
 
-    def test_returns_one_error_per_incomplete_event(self, mock_session_series):
-        from iblnm.data import PhotometrySession
+    def test_raises_with_incomplete_events(self, mock_session_series):
+        from iblnm.data import PhotometrySession, IncompleteEventTimes
         from iblnm.config import RESPONSE_EVENTS
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        n = 100
-        data = {e: np.random.rand(n) for e in RESPONSE_EVENTS}
-        # Make first two events mostly NaN (15% present, below threshold)
-        data[RESPONSE_EVENTS[0]][:85] = np.nan
+        data = {e: np.random.rand(100) for e in RESPONSE_EVENTS}
+        data[RESPONSE_EVENTS[0]][:85] = np.nan   # 15% present — below threshold
         data[RESPONSE_EVENTS[1]][:85] = np.nan
         session.trials = pd.DataFrame(data)
-        errors = session.validate_event_completeness()
-        assert len(errors) == 2
-        assert all(e['error_type'] == 'IncompleteEventTimes' for e in errors)
-        msg_events = {e['error_message'].split(': ')[-1] for e in errors}
-        assert msg_events == {RESPONSE_EVENTS[0], RESPONSE_EVENTS[1]}
+        with pytest.raises(IncompleteEventTimes) as exc_info:
+            session.validate_event_completeness()
+        assert RESPONSE_EVENTS[0] in exc_info.value.missing_events
+        assert RESPONSE_EVENTS[1] in exc_info.value.missing_events
 
-    def test_returns_empty_when_all_complete(self, mock_session_series):
+    def test_does_not_raise_when_all_complete(self, mock_session_series):
         from iblnm.data import PhotometrySession
         from iblnm.config import RESPONSE_EVENTS
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.trials = pd.DataFrame({e: np.random.rand(100) for e in RESPONSE_EVENTS})
-        assert session.validate_event_completeness() == []
+        session.validate_event_completeness()  # should not raise
 
-    def test_missing_column_counts_as_incomplete(self, mock_session_series):
-        from iblnm.data import PhotometrySession
+    def test_missing_column_included_in_missing_events(self, mock_session_series):
+        from iblnm.data import PhotometrySession, IncompleteEventTimes
         from iblnm.config import RESPONSE_EVENTS
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        # Provide only some events
         session.trials = pd.DataFrame({'stimOn_times': np.random.rand(100)})
-        errors = session.validate_event_completeness()
-        missing_in_errors = {e['error_message'].split(': ')[-1] for e in errors}
+        with pytest.raises(IncompleteEventTimes) as exc_info:
+            session.validate_event_completeness()
         for event in RESPONSE_EVENTS:
             if event != 'stimOn_times':
-                assert event in missing_in_errors
+                assert event in exc_info.value.missing_events
 
 
 class TestValidateTrialsInPhotometryTime:
     """Tests for PhotometrySession.validate_trials_in_photometry_time."""
 
-    def test_returns_error_when_trials_outside(self, mock_session_series, mock_photometry_data):
-        from iblnm.data import PhotometrySession
+    def test_raises_when_trials_outside(self, mock_session_series, mock_photometry_data):
+        from iblnm.data import PhotometrySession, TrialsNotInPhotometryTime
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.photometry = mock_photometry_data
-        # Trials start before photometry
         session.trials = pd.DataFrame({
             'stimOn_times': [-10.0, 100.0],
             'feedback_times': [100.0, 200.0],
         })
-        errors = session.validate_trials_in_photometry_time()
-        assert len(errors) == 1
-        assert errors[0]['error_type'] == 'TrialsNotInPhotometryTime'
-        assert errors[0]['eid'] == 'test-eid-123'
+        with pytest.raises(TrialsNotInPhotometryTime):
+            session.validate_trials_in_photometry_time()
 
-    def test_returns_empty_when_trials_inside(self, mock_session_series, mock_photometry_data):
+    def test_does_not_raise_when_trials_inside(self, mock_session_series, mock_photometry_data):
         from iblnm.data import PhotometrySession
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.photometry = mock_photometry_data
-        # Trials within photometry window [0, 600]
         session.trials = pd.DataFrame({
             'stimOn_times': [10.0, 100.0],
             'feedback_times': [100.0, 500.0],
         })
-        assert session.validate_trials_in_photometry_time() == []
+        session.validate_trials_in_photometry_time()  # should not raise
 
     def test_uses_preprocessed_band_when_no_raw(self, mock_photometry_session):
         """Should fall back to GCaMP_preprocessed when GCaMP is not available."""
+        from iblnm.data import TrialsNotInPhotometryTime
         session = mock_photometry_session
         session.preprocess()
-        # Remove raw band, keep only preprocessed
         del session.photometry['GCaMP']
         del session.photometry['Isosbestic']
-        # Trials within preprocessed window
         session.trials = pd.DataFrame({
             'stimOn_times': [10.0, 100.0],
             'feedback_times': [100.0, 500.0],
         })
-        assert session.validate_trials_in_photometry_time() == []
+        session.validate_trials_in_photometry_time()  # should not raise
 
 
 class TestValidateFewUniqueSamples:
-    def test_returns_error_below_threshold(self, mock_session_series):
-        from iblnm.data import PhotometrySession
+    def test_raises_below_threshold(self, mock_session_series):
+        from iblnm.data import PhotometrySession, FewUniqueSamples
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
             'brain_region': ['VTA'], 'band': ['GCaMP'],
-            'n_unique_samples': [0.01],  # below 0.05 threshold
+            'n_unique_samples': [0.01],
         })
-        errors = session.validate_few_unique_samples()
-        assert len(errors) == 1
-        assert errors[0]['error_type'] == 'FewUniqueSamples'
-        assert errors[0]['eid'] == 'test-eid-123'
+        with pytest.raises(FewUniqueSamples, match='VTA/GCaMP'):
+            session.validate_few_unique_samples()
 
-    def test_returns_empty_above_threshold(self, mock_session_series):
+    def test_does_not_raise_above_threshold(self, mock_session_series):
         from iblnm.data import PhotometrySession
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
             'brain_region': ['VTA'], 'band': ['GCaMP'],
             'n_unique_samples': [0.5],
         })
-        assert session.validate_few_unique_samples() == []
+        session.validate_few_unique_samples()  # should not raise
 
-    def test_returns_empty_when_qc_empty(self, mock_session_series):
+    def test_does_not_raise_when_qc_empty(self, mock_session_series):
         from iblnm.data import PhotometrySession
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        assert session.validate_few_unique_samples() == []
+        session.validate_few_unique_samples()  # should not raise
 
-    def test_returns_empty_when_column_missing(self, mock_session_series):
+    def test_does_not_raise_when_column_missing(self, mock_session_series):
         from iblnm.data import PhotometrySession
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({'brain_region': ['VTA'], 'band': ['GCaMP']})
-        assert session.validate_few_unique_samples() == []
+        session.validate_few_unique_samples()  # should not raise
 
 
 class TestValidateQc:
     """Tests for PhotometrySession.validate_qc."""
 
-    def test_returns_empty_when_qc_clean(self, mock_session_series):
+    def test_does_not_raise_when_qc_clean(self, mock_session_series):
         from iblnm.data import PhotometrySession
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
-            'brain_region': ['VTA'],
-            'band': ['GCaMP'],
-            'n_band_inversions': [0],
-            'n_early_samples': [0],
+            'brain_region': ['VTA'], 'band': ['GCaMP'],
+            'n_band_inversions': [0], 'n_early_samples': [0],
         })
-        assert session.validate_qc() == []
+        session.validate_qc()  # should not raise
 
-    def test_returns_error_on_band_inversions(self, mock_session_series):
-        from iblnm.data import PhotometrySession
+    def test_raises_on_band_inversions(self, mock_session_series):
+        from iblnm.data import PhotometrySession, QCValidationError
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
-            'brain_region': ['VTA'],
-            'band': ['GCaMP'],
-            'n_band_inversions': [3],
-            'n_early_samples': [0],
+            'brain_region': ['VTA'], 'band': ['GCaMP'],
+            'n_band_inversions': [3], 'n_early_samples': [0],
         })
-        errors = session.validate_qc()
-        assert len(errors) == 1
-        assert errors[0]['error_type'] == 'BandInversion'
+        with pytest.raises(QCValidationError, match='band inversions'):
+            session.validate_qc()
 
-    def test_returns_error_on_early_samples(self, mock_session_series):
-        from iblnm.data import PhotometrySession
+    def test_raises_on_early_samples(self, mock_session_series):
+        from iblnm.data import PhotometrySession, QCValidationError
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
-            'brain_region': ['VTA'],
-            'band': ['GCaMP'],
-            'n_band_inversions': [0],
-            'n_early_samples': [5],
+            'brain_region': ['VTA'], 'band': ['GCaMP'],
+            'n_band_inversions': [0], 'n_early_samples': [5],
         })
-        errors = session.validate_qc()
-        assert len(errors) == 1
-        assert errors[0]['error_type'] == 'EarlySamples'
+        with pytest.raises(QCValidationError, match='early samples'):
+            session.validate_qc()
 
-    def test_returns_both_errors(self, mock_session_series):
-        from iblnm.data import PhotometrySession
+    def test_raises_with_both_issues_in_message(self, mock_session_series):
+        from iblnm.data import PhotometrySession, QCValidationError
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
-            'brain_region': ['VTA'],
-            'band': ['GCaMP'],
-            'n_band_inversions': [3],
-            'n_early_samples': [5],
+            'brain_region': ['VTA'], 'band': ['GCaMP'],
+            'n_band_inversions': [3], 'n_early_samples': [5],
         })
-        errors = session.validate_qc()
-        assert len(errors) == 2
-        error_types = {e['error_type'] for e in errors}
-        assert error_types == {'BandInversion', 'EarlySamples'}
+        with pytest.raises(QCValidationError) as exc_info:
+            session.validate_qc()
+        msg = str(exc_info.value)
+        assert 'band inversions' in msg
+        assert 'early samples' in msg
 
-    def test_returns_empty_when_qc_empty(self, mock_session_series):
+    def test_does_not_raise_when_qc_empty(self, mock_session_series):
         from iblnm.data import PhotometrySession
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        assert session.validate_qc() == []
+        session.validate_qc()  # should not raise
 
 
 # =============================================================================

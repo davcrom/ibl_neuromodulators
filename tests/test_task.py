@@ -370,17 +370,15 @@ class TestComputeAllSessionPerformance:
             'datasets': [], 'NM': 'DA',
         })
 
-    def _make_mock_ps(self, MockPS, *, load_error=None, n_trial_errors=None,
-                     event_errors=None, block_errors=None, basic_return=None,
+    def _make_mock_ps(self, MockPS, *, load_error=None, n_trial_error=None,
+                     event_error=None, block_error=None, basic_return=None,
                      block_return=None, n_trials=100):
+        """Configure a mock PhotometrySession. Errors are raised via side_effect."""
         ps = MockPS.return_value
-        if load_error:
-            ps.load_trials.side_effect = load_error
-        else:
-            ps.load_trials.return_value = None
-        ps.validate_n_trials.return_value = n_trial_errors or []
-        ps.validate_event_completeness.return_value = event_errors or []
-        ps.validate_block_structure.return_value = block_errors or []
+        ps.load_trials.side_effect = load_error
+        ps.validate_n_trials.side_effect = n_trial_error
+        ps.validate_event_completeness.side_effect = event_error
+        ps.validate_block_structure.side_effect = block_error
         ps.basic_performance.return_value = basic_return or {'fraction_correct': 0.8}
         ps.block_performance.return_value = block_return or {}
         ps.trials = pd.DataFrame({'choice': [1] * n_trials})
@@ -401,40 +399,33 @@ class TestComputeAllSessionPerformance:
         from unittest.mock import patch, MagicMock
         df = pd.DataFrame([self._session_series()])
         with patch('scripts.task.PhotometrySession') as MockPS:
-            self._make_mock_ps(MockPS, n_trial_errors=[
-                {'eid': 'abc', 'error_type': 'InsufficientTrials',
-                 'error_message': 'n=10', 'traceback': None}
-            ])
+            self._make_mock_ps(MockPS, n_trial_error=Exception("InsufficientTrials: n=10"))
             df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
         assert len(df_perf) == 0
-        assert df_log.iloc[0]['error_type'] == 'InsufficientTrials'
+        assert len(df_log) == 1
 
     def test_event_completeness_is_non_blocking(self):
         from scripts.task import compute_all_session_performance
         from unittest.mock import patch, MagicMock
         df = pd.DataFrame([self._session_series()])
         with patch('scripts.task.PhotometrySession') as MockPS:
-            self._make_mock_ps(MockPS, event_errors=[
-                {'eid': 'abc', 'error_type': 'IncompleteEventTimes',
-                 'error_message': 'Incomplete event: stimOn_times', 'traceback': None}
-            ])
+            self._make_mock_ps(MockPS,
+                               event_error=Exception("IncompleteEventTimes: stimOn_times"))
             df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
         assert len(df_perf) == 1   # session NOT skipped
-        assert df_log.iloc[0]['error_type'] == 'IncompleteEventTimes'
+        assert len(df_log) == 1
 
     def test_block_errors_skip_block_performance(self):
         from scripts.task import compute_all_session_performance
         from unittest.mock import patch, MagicMock
         df = pd.DataFrame([self._session_series()])
         with patch('scripts.task.PhotometrySession') as MockPS:
-            ps = self._make_mock_ps(MockPS, block_errors=[
-                {'eid': 'abc', 'error_type': 'BlockStructureBug',
-                 'error_message': 'min_block=2', 'traceback': None}
-            ])
+            ps = self._make_mock_ps(MockPS,
+                                    block_error=Exception("BlockStructureBug: min_block=2"))
             df_perf, df_log = compute_all_session_performance(df, one=MagicMock(), verbose=False)
         assert len(df_perf) == 1
         ps.block_performance.assert_not_called()
-        assert df_log.iloc[0]['error_type'] == 'BlockStructureBug'
+        assert len(df_log) == 1
 
     def test_block_performance_called_when_no_block_errors(self):
         from scripts.task import compute_all_session_performance

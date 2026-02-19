@@ -60,9 +60,10 @@ def run_photometry_pipeline(df_sessions, one=None, verbose=True):
             continue
 
         # Trials in photometry time (fatal)
-        tipt_errors = ps.validate_trials_in_photometry_time()
-        error_log.extend(tipt_errors)
-        if tipt_errors:
+        try:
+            ps.validate_trials_in_photometry_time()
+        except Exception as e:
+            error_log.append(make_log_entry(eid, error=e))
             continue
 
         # Block 2: QC (run_qc non-fatal; band inversions + early samples fatal)
@@ -73,12 +74,16 @@ def run_photometry_pipeline(df_sessions, one=None, verbose=True):
             error_log.append(make_log_entry(eid, error=e))
             continue
 
-        qc_errors = ps.validate_qc()          # band inversions, early samples → fatal
-        error_log.extend(qc_errors)
-        if qc_errors:
+        try:
+            ps.validate_qc()
+        except Exception as e:
+            error_log.append(make_log_entry(eid, error=e))
             continue
 
-        error_log.extend(ps.validate_few_unique_samples())  # logged only
+        try:
+            ps.validate_few_unique_samples()       # non-fatal: logged only
+        except Exception as e:
+            error_log.append(make_log_entry(eid, error=e))
 
         # Block 3: Preprocess + save signal (fatal for response extraction)
         try:
@@ -90,16 +95,21 @@ def run_photometry_pipeline(df_sessions, one=None, verbose=True):
 
         # Block 4: Extract responses
         # Too few trials → fatal (skip extraction entirely)
-        n_trial_errors = ps.validate_n_trials()
-        error_log.extend(n_trial_errors)
-        if n_trial_errors:
+        try:
+            ps.validate_n_trials()
+        except Exception as e:
+            error_log.append(make_log_entry(eid, error=e))
             continue
 
         # Incomplete event times → per-event (skip that event, process the rest)
-        event_errors = ps.validate_event_completeness()
-        error_log.extend(event_errors)
-        failed_events = {e['error_message'].split(': ')[-1] for e in event_errors}
-        events_to_extract = [e for e in RESPONSE_EVENTS if e not in failed_events]
+        events_to_extract = list(RESPONSE_EVENTS)
+        try:
+            ps.validate_event_completeness()
+        except Exception as e:
+            error_log.append(make_log_entry(eid, error=e))
+            events_to_extract = [  # missing_events carries the list for logic
+                ev for ev in RESPONSE_EVENTS if ev not in getattr(e, 'missing_events', [])
+            ]
 
         if events_to_extract:
             try:
