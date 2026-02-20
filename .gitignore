@@ -3,6 +3,9 @@
 *.png
 *.pqt
 specs/
+data/
+metadata/
+figures/
 
 
 # Byte-compiled / optimized / DLL files

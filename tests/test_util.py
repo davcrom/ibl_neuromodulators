@@ -7,7 +7,8 @@ from iblnm.util import (
     has_dataset,
     has_dataset_category,
     add_dataset_flags,
-    drop_junk_duplicates,
+    resolve_duplicate_group,
+    exception_logger,
     make_log_entry,
     concat_logs,
     deduplicate_log,
@@ -17,6 +18,7 @@ from iblnm.util import (
     collect_session_errors,
     InvalidSessionType,
     InvalidTargetNM,
+    TrueDuplicateSession,
     LOG_COLUMNS,
 )
 
@@ -45,83 +47,123 @@ class TestHasDataset:
         assert has_dataset(session, 'd') is False
 
 
-class TestDropJunkDuplicates:
-    def test_defaults_to_raw_columns_only(self):
-        """Default scoring uses has_raw_* columns, ignoring has_extracted_*."""
-        df = pd.DataFrame({
-            'subject': ['A', 'A'],
-            'session_n': [1, 1],
-            'has_raw_task': [False, True],
-            'has_raw_photometry': [True, True],
-            'has_extracted_task': [True, False],  # opposite of raw
-        })
-        result = drop_junk_duplicates(df, group_cols=['subject', 'session_n'], verbose=False)
-        assert len(result) == 1
-        # Should keep the session with more raw data (row 1), not more extracted
-        assert result.iloc[0]['has_raw_task'] == True
-        assert result.iloc[0]['has_extracted_task'] == False
+def _make_group(eids, error_lists, subject='S1', day_n=1):
+    return pd.DataFrame({
+        'eid': eids,
+        'subject': subject,
+        'day_n': day_n,
+        'logged_errors': error_lists,
+    })
 
-    def test_keeps_raw_complete_over_incomplete(self):
-        """When group has raw-complete and raw-incomplete, keep raw-complete."""
-        df = pd.DataFrame({
-            'subject': ['A', 'A'],
-            'session_n': [1, 1],
-            'has_raw_task': [True, False],
-            'has_raw_photometry': [True, True],
-        })
-        result = drop_junk_duplicates(df, group_cols=['subject', 'session_n'], verbose=False)
-        assert len(result) == 1
-        assert result.iloc[0]['has_raw_task'] == True
 
-    def test_keeps_one_when_equal_score(self):
-        """When group has equal raw completeness, keep one."""
-        df = pd.DataFrame({
-            'subject': ['A', 'A'],
-            'session_n': [1, 1],
-            'has_raw_task': [True, True],
-            'has_raw_photometry': [False, False],
-        })
-        result = drop_junk_duplicates(df, group_cols=['subject', 'session_n'], verbose=False)
-        assert len(result) == 1
+class TestResolveDuplicateGroup:
+    def test_single_session_returned_unchanged(self):
+        """Single-session group: returned as-is."""
+        group = _make_group(['a'], [[]])
+        result = resolve_duplicate_group(group)
+        assert result['eid'] == 'a'
 
-    def test_custom_completeness_cols(self):
-        """Can specify custom completeness columns."""
+    def test_drops_bad_keeps_good(self):
+        """Session with disqualifying error dropped when clean duplicate exists."""
+        group = _make_group(['a', 'b'], [['MissingRawData'], []])
+        result = resolve_duplicate_group(group)
+        assert result['eid'] == 'b'
+
+    def test_keeps_first_when_all_bad(self):
+        """All sessions bad: keep first, no exception."""
+        group = _make_group(['a', 'b'], [['MissingRawData'], ['MissingRawData']])
+        result = resolve_duplicate_group(group)
+        assert result['eid'] == 'a'
+
+    def test_raises_for_genuine_conflict(self):
+        """Multiple clean sessions raise TrueDuplicateSession."""
+        group = _make_group(['a', 'b'], [[], []])
+        with pytest.raises(TrueDuplicateSession):
+            resolve_duplicate_group(group)
+
+    def test_logs_conflict_and_returns_first_row(self):
+        """With exlog: conflict logged, first row returned."""
+        group = _make_group(['a', 'b'], [[], []])
+        exlog = []
+        result = resolve_duplicate_group(group, exlog=exlog)
+        assert result['eid'] == 'a'
+        assert len(exlog) == 1
+        assert exlog[0]['error_type'] == 'TrueDuplicateSession'
+
+    def test_conflict_prefers_good_over_bad(self):
+        """Conflict with one bad + two good: logs conflict, returns first GOOD row."""
+        group = _make_group(['a', 'b', 'c'], [['MissingRawData'], [], []])
+        exlog = []
+        result = resolve_duplicate_group(group, exlog=exlog)
+        assert result['eid'] == 'b'
+        assert len(exlog) == 1
+
+    def test_custom_disqualifying_errors(self):
+        """Custom disqualifying_errors list is respected."""
+        group = _make_group(['a', 'b'], [['CustomError'], []])
+        result = resolve_duplicate_group(group, disqualifying_errors=['CustomError'])
+        assert result['eid'] == 'b'
+
+    def test_groupby_apply_integration(self):
+        """groupby.apply with resolve_duplicate_group deduplicates correctly."""
         df = pd.DataFrame({
-            'subject': ['A', 'A'],
-            'session_n': [1, 1],
-            'has_raw_task': [True, True],
-            'custom_flag': [True, False],
+            'eid': ['a', 'b', 'c', 'd', 'e'],
+            'subject': ['S1', 'S1', 'S1', 'S2', 'S2'],
+            'day_n': [1, 1, 2, 1, 1],
+            'logged_errors': [['MissingRawData'], [], [], [], []],
         })
-        result = drop_junk_duplicates(
-            df, group_cols=['subject', 'session_n'],
-            completeness_cols=['custom_flag'], verbose=False
+        exlog = []
+        result = (
+            df.groupby(['subject', 'day_n'], group_keys=False)
+            .apply(resolve_duplicate_group, exlog=exlog, include_groups=True)
+            .reset_index(drop=True)
         )
-        assert len(result) == 1
-        assert result.iloc[0]['custom_flag'] == True
-
-    def test_multiple_groups(self):
-        """Each group keeps one session."""
-        df = pd.DataFrame({
-            'subject': ['A', 'A', 'A', 'B', 'B'],
-            'session_n': [1, 1, 2, 1, 1],
-            'has_raw_task': [True, False, True, False, False],
-            'has_raw_photometry': [True, True, True, True, False],
-        })
-        result = drop_junk_duplicates(df, group_cols=['subject', 'session_n'], verbose=False)
         assert len(result) == 3
-        a1 = result[(result['subject'] == 'A') & (result['session_n'] == 1)]
-        assert len(a1) == 1
-        assert a1.iloc[0]['has_raw_task'] == True
+        s1d1 = result[(result['subject'] == 'S1') & (result['day_n'] == 1)]
+        assert list(s1d1['eid']) == ['b']
+        assert len(exlog) == 1
+        assert exlog[0]['error_type'] == 'TrueDuplicateSession'
 
-    def test_preserves_unique_sessions(self):
-        """Sessions with unique subject/session_n are preserved."""
-        df = pd.DataFrame({
-            'subject': ['A', 'B', 'C'],
-            'session_n': [1, 1, 1],
-            'has_raw_task': [True, False, True],
-        })
-        result = drop_junk_duplicates(df, group_cols=['subject', 'session_n'], verbose=False)
-        assert len(result) == 3
+
+class TestExceptionLoggerDataFrame:
+    def test_logs_first_eid_and_returns_first_row(self):
+        """When first arg is a DataFrame, logs first eid and returns first row on exception."""
+        @exception_logger
+        def always_raises(group):
+            raise ValueError("test error")
+
+        group = pd.DataFrame({'eid': ['x', 'y'], 'val': [1, 2]})
+        exlog = []
+        result = always_raises(group, exlog=exlog)
+
+        assert len(exlog) == 1
+        assert exlog[0]['eid'] == 'x'
+        assert exlog[0]['error_type'] == 'ValueError'
+        assert isinstance(result, pd.Series)
+        assert result['eid'] == 'x'
+
+    def test_reraises_without_exlog(self):
+        """Without exlog, exception propagates normally."""
+        @exception_logger
+        def always_raises(group):
+            raise ValueError("test error")
+
+        group = pd.DataFrame({'eid': ['x'], 'val': [1]})
+        with pytest.raises(ValueError):
+            always_raises(group)
+
+    def test_series_behaviour_unchanged(self):
+        """Series (single row) behaviour is unchanged."""
+        @exception_logger
+        def always_raises(series):
+            raise KeyError("missing")
+
+        series = pd.Series({'eid': 'abc', 'val': 42})
+        exlog = []
+        result = always_raises(series, exlog=exlog)
+
+        assert exlog[0]['eid'] == 'abc'
+        assert result['eid'] == 'abc'
 
 
 class TestAddDatasetFlags:

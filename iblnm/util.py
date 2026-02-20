@@ -54,11 +54,24 @@ class InvalidTargetNM(Exception):
 class InvalidSessionLength(Exception):
     """Session start and end times are on different days"""
 
+class TrueDuplicateSession(Exception):
+    """Two or more sessions on the same day pass all quality criteria.
+
+    Carries fallback_row: the best row to return when the exception is caught.
+    """
+    def __init__(self, msg, fallback_row=None):
+        super().__init__(msg)
+        self.fallback_row = fallback_row
+
 
 def exception_logger(func):
     """
     Decorator that allows session processing functions to log exceptions.
     Use exlog parameter to capture errors instead of raising them.
+
+    Works with both pd.Series (single row, e.g. from df.apply) and pd.DataFrame
+    (group, e.g. from groupby.apply). For DataFrames the first eid is used for
+    the log entry and the first row is returned on error.
     """
     @wraps(func)
     def wrapper(series, *args, exlog=None, **kwargs):
@@ -66,10 +79,14 @@ def exception_logger(func):
             return func(series, *args, **kwargs)
         except Exception as e:
             if exlog is not None:
-                exlog.append(make_log_entry(
-                    series.get('eid', 'unknown'), error=e
-                ))
-                return series
+                if isinstance(series, pd.DataFrame):
+                    eid = series['eid'].iloc[0] if len(series) > 0 else 'unknown'
+                    exlog.append(make_log_entry(eid, error=e))
+                    fallback = getattr(e, 'fallback_row', None)
+                    return fallback if fallback is not None else series.iloc[0]
+                else:
+                    exlog.append(make_log_entry(series.get('eid', 'unknown'), error=e))
+                    return series
             else:
                 raise
     return wrapper
@@ -371,20 +388,49 @@ def get_session_length(session):
     return session
 
 
-# FIXME: needs to explicitly flag unresolvable duplicates (!)
-def drop_junk_duplicates(df, group_cols, completeness_cols=None, verbose=True):
-    """Keep one session per group, preferring sessions with more complete data."""
-    if completeness_cols is None:
-        completeness_cols = [c for c in df.columns if c.startswith('has_raw_')]
-    n_initial = len(df)
-    df = df.copy()
-    df['_score'] = df[completeness_cols].fillna(False).sum(axis=1)
-    df = (df.sort_values('_score', ascending=False)
-          .drop_duplicates(subset=group_cols, keep='first')
-          .drop(columns='_score'))
-    if verbose:
-        print(f"Dropped duplicates: {n_initial} → {len(df)} ({n_initial - len(df)} removed)")
-    return df
+DEFAULT_DISQUALIFYING_ERRORS = (
+    'MissingRawData',
+    'InsufficientTrials',
+    'TrialsNotInPhotometryTime',
+)
+
+
+@exception_logger
+def resolve_duplicate_group(group, disqualifying_errors=DEFAULT_DISQUALIFYING_ERRORS):
+    """Return the single row to keep from a group of duplicate sessions.
+
+    Designed for use with df.groupby(...).apply(resolve_duplicate_group, exlog=...).
+    Raises TrueDuplicateSession when multiple sessions have no disqualifying errors;
+    exception_logger catches this, logs one entry (first eid), and returns the first row.
+
+    Parameters
+    ----------
+    group : pd.DataFrame
+        One group of sessions sharing the same subject/day combination.
+    disqualifying_errors : iterable of str
+        Error types that mark a session as safely droppable.
+
+    Returns
+    -------
+    pd.Series — the row to keep.
+    """
+    if len(group) == 1:
+        return group.iloc[0]
+
+    disqualifying_errors = set(disqualifying_errors)
+    is_bad = group['logged_errors'].apply(
+        lambda errs: any(e in disqualifying_errors for e in errs))
+    good = group[~is_bad]
+
+    if len(good) == 0:
+        return group.iloc[0]
+    if len(good) == 1:
+        return good.iloc[0]
+
+    raise TrueDuplicateSession(
+        f"Multiple valid sessions: {list(good['eid'])}",
+        fallback_row=good.iloc[0],
+    )
 
 
 def clean_sessions(df, exclude_subjects=None, exclude_session_types=None, verbose=True):
