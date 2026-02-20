@@ -187,3 +187,100 @@ block_perf = ps.block_performance()
 fit = ps.fit_psychometric()
 # {'bias': ..., 'threshold': ..., 'lapse_left': ..., 'lapse_right': ..., 'r_squared': ..., 'n_trials': ...}
 ```
+
+---
+
+## DataFrames
+
+### `metadata/sessions.pqt` — one row per session
+
+| column | type | description |
+|---|---|---|
+| `eid` | str | Alyx session UUID |
+| `subject` | str | mouse name |
+| `start_time` | str | ISO8601 session start |
+| `session_type` | str | training / biased / ephys / habituation / histology |
+| `NM` | str | neuromodulator: DA, 5HT, NE, ACh |
+| `brain_region` | list[str] | recording targets, e.g. `['VTA', 'SNc']` |
+| `hemisphere` | list[str] | hemisphere per region, e.g. `['l', 'r']` |
+| `target_NM` | list[str] | combined labels, e.g. `['VTA-DA', 'SNc-DA']` |
+| `lab` | str | recording lab |
+| `day_n` | int | days since subject's first session |
+| `session_n` | float | session index (dense rank within subject) |
+| `session_length` | float | duration in seconds |
+| `strain`, `line`, `genotype` | str | mouse genetics |
+| `datasets` | list[str] | ALF dataset paths available on ONE |
+
+### `data/qc_photometry.pqt` — one row per (session, brain region, band)
+
+| column | type | description |
+|---|---|---|
+| `eid` | str | session UUID |
+| `brain_region` | str | single recording target |
+| `band` | str | GCaMP or Isosbestic |
+| `n_unique_samples` | float | fraction of unique signal values (< 0.1 → flat/clipped) |
+| `n_band_inversions` | int | samples where GCaMP < Isosbestic (> 0 → fatal) |
+| `n_early_samples` | int | samples before recording officially started (> 0 → fatal) |
+| `ar_score` | float | AR(1) autocorrelation coefficient |
+| `median_absolute_deviance` | float | MAD of signal |
+| `percentile_asymmetry` | float | (p75−p50) / (p50−p25) — skewness proxy |
+| `percentile_distance` | float | (p75−p25) / median — spread proxy |
+| `bleaching_tau` | float | photobleaching time constant in seconds (GCaMP only) |
+| `iso_correlation` | float | Pearson r between GCaMP and Isosbestic (GCaMP only) |
+
+### `data/performance.pqt` — one row per session
+
+| column | type | description |
+|---|---|---|
+| `eid` | str | session UUID |
+| `n_trials` | int | total trial count |
+| `fraction_correct` | float | overall fraction correct |
+| `fraction_correct_easy` | float | fraction correct on 100% contrast trials |
+| `nogo_fraction` | float | fraction of no-go trials |
+| `psych_50_{param}` | float | psychometric fit on 50/50 block; params: bias, threshold, lapse_left, lapse_right, r_squared |
+| `psych_80_{param}` | float | psychometric fit on 80% left block (biased/ephys only) |
+| `psych_20_{param}` | float | psychometric fit on 20% left block (biased/ephys only) |
+| `bias_shift` | float | psych_80_bias − psych_20_bias (biased/ephys only) |
+
+---
+
+## HDF5 file structure
+
+One file per session: `data/sessions/{eid}.h5`.
+
+```
+{eid}.h5
+├── attrs
+│   ├── eid            str       session UUID
+│   ├── subject        str       mouse name
+│   ├── session_type   str       training / biased / ephys
+│   ├── date           str       YYYY-MM-DD
+│   ├── fs             int       30  (Hz, resampled signal rate)
+│   └── response_window  float[2]  [-1.0, 1.0]  (seconds)
+│
+├── times              float64 (N,)    sample times at 30 Hz
+│
+├── preprocessed/
+│   └── {brain_region} float64 (N,)   z-scored, isosbestic-corrected GCaMP signal
+│                                      one dataset per recorded region
+│
+├── trials/
+│   ├── stimOn_times          float64 (T,)
+│   ├── firstMovement_times   float64 (T,)
+│   ├── feedback_times        float64 (T,)
+│   ├── response_times        float64 (T,)
+│   ├── choice                float64 (T,)   -1 = CCW, 0 = no-go, 1 = CW
+│   ├── feedbackType          float64 (T,)   1 = reward, -1 = punishment
+│   ├── probabilityLeft       float64 (T,)   0.2, 0.5, or 0.8
+│   ├── signed_contrast       float64 (T,)   negative = right stimulus
+│   └── contrast              float64 (T,)   unsigned contrast
+│
+└── responses/
+    ├── time           float64 (W,)    time axis relative to event (e.g. 60 pts for [-1, 1] s)
+    └── {brain_region}/
+        ├── stimOn_times          float64 (T, W)   attrs: window_t0, window_t1
+        ├── firstMovement_times   float64 (T, W)
+        └── feedback_times        float64 (T, W)
+```
+
+`N` = samples at 30 Hz, `T` = trial count, `W` = response window samples (60 for a [−1, 1] s window at 30 Hz).
