@@ -344,7 +344,7 @@ class PhotometrySession(PhotometrySessionLoader):
             Path to the HDF5 file.
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
-            'signal', 'trials', 'responses'.
+            'signal', 'trials', 'responses', 'wheel'.
             None loads all groups present in the file.
         """
         import h5py
@@ -389,6 +389,12 @@ class PhotometrySession(PhotometrySessionLoader):
                         'time': tpts,
                     },
                 )
+
+            if (groups is None or 'wheel' in groups) and 'wheel' in f:
+                self.wheel_velocity = f['wheel/velocity'][:].astype(np.float32)
+                self.wheel_fs = f['wheel'].attrs['fs']
+                self._wheel_t0_event = f['wheel'].attrs['t0_event']
+                self._wheel_t1_event = f['wheel'].attrs['t1_event']
 
     def _append_qc(self, brain_region: str, band: str, metrics: dict) -> None:
         """Append or update a QC row in the DataFrame."""

@@ -1,298 +1,182 @@
 """
 Demo: Loading and exploring a photometry session
 =================================================
-This script shows you how to:
+This script shows how to:
   1. Load the sessions table and filter it to find sessions of interest
-  2. Open an HDF5 file and load trials, photometry, and wheel data
-  3. Do some basic exploration with numpy and pandas
+  2. Load trial, photometry, and wheel data for a single session
+  3. Plot the photometry response around feedback, split by outcome
 
-Prerequisites: numpy, pandas, matplotlib, h5py
-    pip install numpy pandas matplotlib h5py
+Requirements: numpy, pandas, matplotlib, h5py, one, iblnm
 """
 
 import numpy as np
 import pandas as pd
-import h5py
 import matplotlib.pyplot as plt
-from pathlib import Path
+from one.api import ONE
 
-# ---------------------------------------------------------------------------
-# Paths — adjust these to match your local setup
-# ---------------------------------------------------------------------------
-
-PROJECT_ROOT = Path(__file__).parent.parent
-SESSIONS_FPATH = PROJECT_ROOT / 'metadata' / 'sessions.pqt'
-H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
+from iblnm.config import SESSIONS_FPATH, SESSIONS_H5_DIR
+from iblnm.data import PhotometrySession
 
 
 # ===========================================================================
 # 1. Load the sessions table
 # ===========================================================================
-# sessions.pqt is a Parquet file — a compact, column-oriented table format.
-# pd.read_parquet() loads it into a standard pandas DataFrame.
+# sessions.pqt is a parquet file — a compact column-oriented table.
+# Each row is one session. Key columns:
+#   subject         — mouse name
+#   NM              — neuromodulator (DA, 5HT, NE, ACh)
+#   brain_region    — list of recording targets, e.g. ['VTA']
+#   session_type    — 'training', 'biased', or 'ephys'
+#   eid             — unique session identifier (used to find the HDF5 file)
 
 df_sessions = pd.read_parquet(SESSIONS_FPATH)
-
-print(f"Total sessions: {len(df_sessions)}")
-print(f"\nColumns:\n{df_sessions.columns.tolist()}")
-print(f"\nFirst row:\n{df_sessions.iloc[0]}")
+print(f"Sessions in table: {len(df_sessions)}")
 
 
 # ===========================================================================
-# 2. Filtering sessions
+# 2. Filter to find sessions of interest
 # ===========================================================================
-# df_sessions is just a pandas DataFrame, so you can filter it using
-# standard boolean indexing.
+# Standard pandas boolean indexing. brain_region is a list column, so we
+# use .apply() to check whether a region appears in each row's list.
 
-# --- Filter by neuromodulator ---
-# The 'NM' column records which neuromodulator is measured (DA, 5HT, NE, ACh).
-da_sessions = df_sessions[df_sessions['NM'] == 'DA']
-print(f"\nDopamine sessions: {len(da_sessions)}")
-
-# --- Filter by brain region ---
-# 'brain_region' is a list column — each cell is a list of brain region names.
-# We use .apply() to check whether a given region appears in that list.
-vta_sessions = df_sessions[
-    df_sessions['brain_region'].apply(lambda regions: 'VTA' in regions)
-]
-print(f"VTA sessions: {len(vta_sessions)}")
-
-# --- Filter by session type ---
-# 'session_type' can be 'training', 'biased', or 'ephys'.
-biased_sessions = df_sessions[df_sessions['session_type'] == 'biased']
-print(f"Biased sessions: {len(biased_sessions)}")
-
-# --- Combine filters ---
-# Use & (and) or | (or) to combine boolean masks.
-vta_biased = df_sessions[
+mask = (
+    (df_sessions['NM'] == 'DA') &
     (df_sessions['session_type'] == 'biased') &
-    (df_sessions['brain_region'].apply(lambda r: 'VTA' in r))
-]
-print(f"VTA biased sessions: {len(vta_biased)}")
-
-# --- Filter by subject ---
-subjects = df_sessions['subject'].unique()
-print(f"\nSubjects: {subjects}")
-# one_subject = df_sessions[df_sessions['subject'] == subjects[0]]
+    (df_sessions['brain_region'].apply(lambda regions: 'VTA' in regions))
+)
+df_vta_biased = df_sessions[mask]
+print(f"VTA dopamine biased sessions: {len(df_vta_biased)}")
 
 
 # ===========================================================================
-# 3. Pick a session and find its HDF5 file
+# 3. Pick one session and load its data
 # ===========================================================================
-# Each session has a unique identifier called an 'eid' (experiment ID).
-# After running the pipeline, each session has a corresponding HDF5 file
-# at data/sessions/{eid}.h5 .
+# Each session's data is stored as an HDF5 file at data/sessions/{eid}.h5.
+# We find the first session that already has a file on disk.
 
-# Pick the first VTA biased session with an existing HDF5 file.
-session = None
-for _, row in vta_biased.iterrows():
-    fpath = H5_DIR / f"{row['eid']}.h5"
-    if fpath.exists():
-        session = row
-        break
+session_row = next(
+    row for _, row in df_vta_biased.iterrows()
+    if (SESSIONS_H5_DIR / f"{row['eid']}.h5").exists()
+)
 
-if session is None:
-    raise FileNotFoundError(
-        "No HDF5 file found for any VTA biased session. "
-        "Run the photometry pipeline first."
-    )
+one = ONE()
+ps = PhotometrySession(session_row, one=one)
+fpath = SESSIONS_H5_DIR / f'{ps.eid}.h5'
 
-eid = session['eid']
-fpath = H5_DIR / f"{eid}.h5"
-print(f"\nLoading session: {eid}")
-print(f"Subject: {session['subject']}, type: {session['session_type']}")
+print(f"\nLoading: {ps.subject}  {ps.date}  ({ps.session_type})")
+
+# load_h5 with no arguments loads everything in the file:
+#   ps.trials          — DataFrame of trial events and outcomes
+#   ps.photometry      — dict; ['GCaMP_preprocessed'] is a DataFrame (time × region)
+#   ps.responses       — xarray DataArray (region × event × trial × time)
+#   ps.wheel_velocity  — numpy array (n_trials × n_samples)
+ps.load_h5(fpath)
 
 
 # ===========================================================================
-# 4. Explore the HDF5 file structure
+# 4. Explore the trials DataFrame
 # ===========================================================================
-# HDF5 files are organised like a file system, with groups (folders) and
-# datasets (arrays). h5py lets you navigate them using dict-like syntax.
+# Each row is one trial. Key columns:
+#   stimOn_times        — stimulus appeared (seconds, session clock)
+#   firstMovement_times — first wheel movement
+#   feedback_times      — reward or punishment delivered
+#   choice              — -1 left, 1 right, 0 no-go
+#   feedbackType        — 1 reward, -1 punishment
+#   signed_contrast     — stimulus contrast (negative = left, positive = right)
 
-with h5py.File(fpath, 'r') as f:
-    print(f"\nTop-level groups in the HDF5 file: {list(f.keys())}")
-    print(f"File metadata: {dict(f.attrs)}")
+print(f"\nTrials: {len(ps.trials)}")
+print(f"Fraction correct: {(ps.trials['feedbackType'] == 1).mean():.2f}")
 
-    if 'trials' in f:
-        print(f"\nTrial columns: {list(f['trials'].keys())}")
-    if 'preprocessed' in f:
-        print(f"Photometry regions: {list(f['preprocessed'].keys())}")
-    if 'wheel' in f:
-        print(f"Wheel metadata: {dict(f['wheel'].attrs)}")
-
-
-# ===========================================================================
-# 5. Load trials
-# ===========================================================================
-# Trials are stored as individual 1D arrays (one per column) inside the
-# 'trials' group. We load them into a pandas DataFrame for easy analysis.
-
-with h5py.File(fpath, 'r') as f:
-    trials = pd.DataFrame({
-        col: f[f'trials/{col}'][:]   # [:] reads the whole array into numpy
-        for col in f['trials']
-    })
-
-print(f"\nTrials: {len(trials)} rows")
-print(trials.head())
-
-# Key trial columns:
-#   stimOn_times      — when the visual stimulus appeared (seconds, session clock)
-#   feedback_times    — when reward or punishment was delivered
-#   firstMovement_times — when the mouse first moved the wheel
-#   choice            — which way the mouse turned: -1 = left, 1 = right, 0 = no-go
-#   feedbackType      — 1 = reward, -1 = punishment
-#   signed_contrast   — stimulus contrast, negative = left side, positive = right
-#   probabilityLeft   — prior probability of stimulus being on the left (0.2 / 0.5 / 0.8)
-
-fraction_correct = (trials['feedbackType'] == 1).mean()
-print(f"\nFraction correct: {fraction_correct:.2f}")
-
-# Reaction time = first movement minus stimulus onset
-trials['reaction_time'] = trials['firstMovement_times'] - trials['stimOn_times']
-print(f"Median reaction time: {trials['reaction_time'].median() * 1000:.0f} ms")
+reaction_time = ps.trials['firstMovement_times'] - ps.trials['stimOn_times']
+print(f"Median reaction time: {reaction_time.median() * 1000:.0f} ms")
 
 
 # ===========================================================================
-# 6. Load photometry signal
+# 5. Explore the photometry signal
 # ===========================================================================
-# The preprocessed signal is stored in the 'preprocessed' group.
-# Each column is a brain region. The shared time axis is in 'times'.
-# The signal is in z-score units (mean 0, std 1).
+# ps.photometry['GCaMP_preprocessed'] is a DataFrame:
+#   index  — time in seconds (sampled at 30 Hz)
+#   columns — one per brain region (z-score units)
 
-with h5py.File(fpath, 'r') as f:
-    times = f['times'][:]                          # 1D array of timestamps (seconds)
-    photometry = pd.DataFrame({
-        region: f[f'preprocessed/{region}'][:]
-        for region in f['preprocessed']
-    }, index=times)
-
-print(f"\nPhotometry signal: {photometry.shape[0]} samples x {photometry.shape[1]} regions")
-print(f"Sampling rate: {1 / np.diff(times).mean():.1f} Hz")
-print(f"Duration: {times[-1] - times[0]:.0f} s")
-print(f"Regions: {photometry.columns.tolist()}")
+signal = ps.photometry['GCaMP_preprocessed']
+print(f"\nPhotometry: {signal.shape[0]} samples, regions: {signal.columns.tolist()}")
+print(f"Duration: {signal.index[-1] - signal.index[0]:.0f} s")
 
 
 # ===========================================================================
-# 7. Load pre-computed per-trial responses
+# 6. Explore the per-trial responses
 # ===========================================================================
-# The 'responses' group contains peri-event response matrices — snippets of
-# photometry signal aligned to each trial event.
-#
-# Layout: responses/{region}/{event}  →  array of shape (n_trials, n_timepoints)
-#         responses/time              →  1D array of timepoints (relative to event)
+# ps.responses is an xarray DataArray with dimensions:
+#   region — brain region
+#   event  — trial event the signal is aligned to
+#   trial  — trial index
+#   time   — seconds relative to the event
 
-with h5py.File(fpath, 'r') as f:
-    resp_grp = f['responses']
-    tpts = resp_grp['time'][:]                       # time axis, e.g. -1 to +1 s
-    regions = [k for k in resp_grp.keys() if k != 'time']
-    events  = list(resp_grp[regions[0]].keys())
-
-    # Load as a dict: responses[region][event] = (n_trials, n_timepoints) array
-    responses = {
-        region: {
-            event: resp_grp[f'{region}/{event}'][:]
-            for event in events
-        }
-        for region in regions
-    }
-
-print(f"\nResponse window: {tpts[0]:.2f} to {tpts[-1]:.2f} s")
-print(f"Regions: {regions}")
-print(f"Events: {events}")
-print(f"Shape per region/event: {responses[regions[0]][events[0]].shape}")
-
-# Example: average response across all trials, for the first region at feedback
-region = regions[0]
-resp_at_feedback = responses[region]['feedback_times']       # (n_trials, n_timepoints)
-mean_response = np.nanmean(resp_at_feedback, axis=0)         # average over trials
-print(f"\nMean peak response at feedback ({region}): {mean_response.max():.3f} z")
+print(f"\nResponses shape: {dict(zip(ps.responses.dims, ps.responses.shape))}")
+print(f"Events: {ps.responses.coords['event'].values.tolist()}")
+print(f"Time window: {float(ps.responses.time[0]):.2f} to {float(ps.responses.time[-1]):.2f} s")
 
 
 # ===========================================================================
-# 8. Load wheel velocity
+# 7. Explore the wheel velocity
 # ===========================================================================
-# wheel_velocity is a (n_trials, n_samples) matrix.
-# Each row is one trial: wheel velocity from stimOn to feedback, in cm/s.
-# Trials shorter than the longest trial are NaN-padded on the right.
+# ps.wheel_velocity is a (n_trials × n_samples) numpy array.
+# Each row is one trial: velocity from stimOn to feedback (cm/s).
+# Rows shorter than the longest trial are NaN-padded on the right.
 
-with h5py.File(fpath, 'r') as f:
-    if 'wheel' not in f:
-        print("\nNo wheel data in this file — run wheel.py first.")
-        wheel_velocity = None
-    else:
-        wheel_velocity = f['wheel/velocity'][:]      # (n_trials, n_samples)
-        wheel_fs = f['wheel'].attrs['fs']            # sampling rate in Hz
-        t0_event = f['wheel'].attrs['t0_event']      # 'stimOn_times'
-        t1_event = f['wheel'].attrs['t1_event']      # 'feedback_times'
+print(f"\nWheel velocity: {ps.wheel_velocity.shape}  (trials × samples at {ps.wheel_fs} Hz)")
 
-if wheel_velocity is not None:
-    # Build a time axis for a single trial (starts at t0_event = 0)
-    n_samples = wheel_velocity.shape[1]
-    wheel_times = np.arange(n_samples) / wheel_fs    # seconds from stimOn
-
-    print(f"\nWheel velocity: {wheel_velocity.shape} (trials x samples)")
-    print(f"Sampling rate: {wheel_fs} Hz")
-    print(f"Aligned from '{t0_event}' to '{t1_event}'")
-
-    # How many trials have any movement (max |velocity| > threshold)?
-    max_velocity = np.nanmax(np.abs(wheel_velocity), axis=1)
-    n_moving = (max_velocity > 10).sum()
-    print(f"Trials with movement (>10 cm/s): {n_moving}/{len(trials)}")
+# Build a time axis for the velocity matrix (time 0 = stimulus onset)
+n_samples = ps.wheel_velocity.shape[1]
+wheel_times = np.arange(n_samples) / ps.wheel_fs
 
 
 # ===========================================================================
-# 9. Plot: photometry response at feedback, split by reward vs punishment
+# 8. Plot: photometry at feedback, reward vs punishment
 # ===========================================================================
 
-region = regions[0]
-resp = responses[region]['feedback_times']     # (n_trials, n_timepoints)
+region = ps.responses.coords['region'].values[0]
+resp = ps.responses.sel(region=region, event='feedback_times').values  # (n_trials, n_time)
+tpts = ps.responses.coords['time'].values
 
-reward_mask  = trials['feedbackType'].values == 1
-punish_mask  = trials['feedbackType'].values == -1
+reward_mask = ps.trials['feedbackType'].values == 1
+punish_mask = ps.trials['feedbackType'].values == -1
 
-reward_mean  = np.nanmean(resp[reward_mask],  axis=0)
-punish_mean  = np.nanmean(resp[punish_mask],  axis=0)
-reward_sem   = np.nanstd(resp[reward_mask],   axis=0) / np.sqrt(reward_mask.sum())
-punish_sem   = np.nanstd(resp[punish_mask],   axis=0) / np.sqrt(punish_mask.sum())
+fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
-fig, ax = plt.subplots(figsize=(6, 4))
-ax.axvline(0, color='gray', linestyle='--', linewidth=0.8)   # event time
+# --- Photometry ---
+ax = axes[0]
+for mask, color, label in [
+    (reward_mask, 'green', 'Reward'),
+    (punish_mask, 'red',   'Punishment'),
+]:
+    mean = np.nanmean(resp[mask], axis=0)
+    sem  = np.nanstd(resp[mask],  axis=0) / np.sqrt(mask.sum())
+    ax.fill_between(tpts, mean - sem, mean + sem, alpha=0.3, color=color)
+    ax.plot(tpts, mean, color=color, label=f'{label} (n={mask.sum()})')
+
+ax.axvline(0, color='gray', linestyle='--', linewidth=0.8)
 ax.axhline(0, color='gray', linestyle='-',  linewidth=0.5)
-
-ax.fill_between(tpts, reward_mean - reward_sem, reward_mean + reward_sem,
-                alpha=0.3, color='green')
-ax.fill_between(tpts, punish_mean - punish_sem, punish_mean + punish_sem,
-                alpha=0.3, color='red')
-ax.plot(tpts, reward_mean, color='green', label=f'Reward (n={reward_mask.sum()})')
-ax.plot(tpts, punish_mean, color='red',   label=f'Punishment (n={punish_mask.sum()})')
-
 ax.set_xlabel('Time from feedback (s)')
 ax.set_ylabel('Photometry signal (z-score)')
-ax.set_title(f'{region}  —  {session["subject"]}  ({session["session_type"]})')
+ax.set_title(f'{region}')
 ax.legend()
+
+# --- Wheel velocity ---
+ax = axes[1]
+for mask, color, label in [
+    (reward_mask, 'green', 'Reward'),
+    (punish_mask, 'red',   'Punishment'),
+]:
+    mean = np.nanmean(ps.wheel_velocity[mask], axis=0)
+    ax.plot(wheel_times, mean, color=color, label=label)
+
+ax.axhline(0, color='gray', linestyle='-', linewidth=0.5)
+ax.set_xlabel('Time from stimulus onset (s)')
+ax.set_ylabel('Wheel velocity (cm/s)')
+ax.set_title('Wheel velocity')
+ax.legend()
+
+fig.suptitle(f'{ps.subject}  —  {ps.date}  ({ps.session_type})')
 fig.tight_layout()
 plt.show()
-
-
-# ===========================================================================
-# 10. Plot: wheel velocity on reward vs punishment trials
-# ===========================================================================
-
-if wheel_velocity is not None:
-    reward_vel = wheel_velocity[reward_mask]
-    punish_vel = wheel_velocity[punish_mask]
-
-    reward_vel_mean = np.nanmean(reward_vel, axis=0)
-    punish_vel_mean = np.nanmean(punish_vel, axis=0)
-
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.axhline(0, color='gray', linestyle='-', linewidth=0.5)
-    ax.plot(wheel_times, reward_vel_mean, color='green', label='Reward')
-    ax.plot(wheel_times, punish_vel_mean, color='red',   label='Punishment')
-    ax.set_xlabel('Time from stimulus onset (s)')
-    ax.set_ylabel('Wheel velocity (cm/s)')
-    ax.set_title(f'Wheel velocity  —  {session["subject"]}')
-    ax.legend()
-    fig.tight_layout()
-    plt.show()
