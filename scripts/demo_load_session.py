@@ -40,7 +40,7 @@ print(f"Sessions in table: {len(df_sessions)}")
 # use .apply() to check whether a region appears in each row's list.
 
 mask = (
-    (df_sessions['NM'] == 'DA') &
+    # ~(df_sessions['NM'] == 'DA') &
     (df_sessions['session_type'] == 'biased') &
     (df_sessions['brain_region'].apply(lambda regions: 'VTA' in regions))
 )
@@ -136,19 +136,27 @@ wheel_times = np.arange(n_samples) / ps.wheel_fs
 # ===========================================================================
 
 region = ps.responses.coords['region'].values[0]
-resp = ps.responses.sel(region=region, event='feedback_times').values  # (n_trials, n_time)
 tpts = ps.responses.coords['time'].values
 
 reward_mask = ps.trials['feedbackType'].values == 1
 punish_mask = ps.trials['feedbackType'].values == -1
+
+# Clip each trial at the time of the next event, then subtract the pre-event baseline.
+# mask_subsequent_events: replaces timepoints after the next event onset with NaN,
+#   so responses to e.g. stimOn don't bleed into the movement period.
+# subtract_baseline: subtracts the mean of the pre-event window (default: full pre-event period).
+responses = ps.mask_subsequent_events(ps.responses)
+responses = ps.subtract_baseline(responses)
+
+resp = responses.sel(region=region, event='stimOn_times').values  # (n_trials, n_time)
 
 fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
 # --- Photometry ---
 ax = axes[0]
 for mask, color, label in [
-    (reward_mask, 'green', 'Reward'),
-    (punish_mask, 'red',   'Punishment'),
+    (reward_mask, 'green', 'Correct'),
+    (punish_mask, 'red',   'Incorrect'),
 ]:
     mean = np.nanmean(resp[mask], axis=0)
     sem  = np.nanstd(resp[mask],  axis=0) / np.sqrt(mask.sum())
@@ -163,13 +171,18 @@ ax.set_title(f'{region}')
 ax.legend()
 
 # --- Wheel velocity ---
+# Trim to the first 1 s after stimulus onset
+n_plot = int(ps.wheel_fs)                      # number of samples in 1 s
+t_plot = wheel_times[:n_plot]
+vel_plot = ps.wheel_velocity[:, :n_plot]       # (n_trials, n_plot)
+
 ax = axes[1]
-for mask, color, label in [
-    (reward_mask, 'green', 'Reward'),
-    (punish_mask, 'red',   'Punishment'),
-]:
-    mean = np.nanmean(ps.wheel_velocity[mask], axis=0)
-    ax.plot(wheel_times, mean, color=color, label=label)
+for mask, color in [(reward_mask, 'green'), (punish_mask, 'red')]:
+    ax.plot(t_plot, vel_plot[mask].T, color=color, linewidth=0.3, alpha=0.4)
+
+# Add a dummy line per colour for the legend
+ax.plot([], [], color='green', label=f'Correct (n={reward_mask.sum()})')
+ax.plot([], [], color='red',   label=f'Incorrect (n={punish_mask.sum()})')
 
 ax.axhline(0, color='gray', linestyle='-', linewidth=0.5)
 ax.set_xlabel('Time from stimulus onset (s)')
