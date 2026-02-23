@@ -13,41 +13,41 @@ class TestCustomExceptions:
     """Custom exception classes exist and behave correctly."""
 
     def test_insufficient_trials_is_exception(self):
-        from iblnm.data import InsufficientTrials
+        from iblnm.validation import InsufficientTrials
         assert issubclass(InsufficientTrials, Exception)
 
     def test_block_structure_bug_is_exception(self):
-        from iblnm.data import BlockStructureBug
+        from iblnm.validation import BlockStructureBug
         assert issubclass(BlockStructureBug, Exception)
 
     def test_incomplete_event_times_is_exception(self):
-        from iblnm.data import IncompleteEventTimes
+        from iblnm.validation import IncompleteEventTimes
         assert issubclass(IncompleteEventTimes, Exception)
 
     def test_incomplete_event_times_stores_missing_events(self):
-        from iblnm.data import IncompleteEventTimes
+        from iblnm.validation import IncompleteEventTimes
         exc = IncompleteEventTimes(['goCue_times', 'feedback_times'])
         assert exc.missing_events == ['goCue_times', 'feedback_times']
         assert 'goCue_times' in str(exc)
 
     def test_trials_not_in_photometry_time_is_exception(self):
-        from iblnm.data import TrialsNotInPhotometryTime
+        from iblnm.validation import TrialsNotInPhotometryTime
         assert issubclass(TrialsNotInPhotometryTime, Exception)
 
     def test_missing_extracted_data_is_exception(self):
-        from iblnm.data import MissingExtractedData
+        from iblnm.validation import MissingExtractedData
         assert issubclass(MissingExtractedData, Exception)
 
     def test_missing_raw_data_is_exception(self):
-        from iblnm.data import MissingRawData
+        from iblnm.validation import MissingRawData
         assert issubclass(MissingRawData, Exception)
 
     def test_band_inversion_is_exception(self):
-        from iblnm.data import BandInversion
+        from iblnm.validation import BandInversion
         assert issubclass(BandInversion, Exception)
 
     def test_early_samples_is_exception(self):
-        from iblnm.data import EarlySamples
+        from iblnm.validation import EarlySamples
         assert issubclass(EarlySamples, Exception)
 
 
@@ -164,7 +164,8 @@ class TestValidateNTrials:
     """Tests for PhotometrySession.validate_n_trials."""
 
     def test_raises_when_insufficient(self, mock_session_series):
-        from iblnm.data import PhotometrySession, InsufficientTrials
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import InsufficientTrials
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.trials = pd.DataFrame({'a': range(50)})  # 50 < MIN_NTRIALS (90)
         with pytest.raises(InsufficientTrials, match='n_trials=50'):
@@ -181,7 +182,8 @@ class TestValidateBlockStructure:
     """Tests for PhotometrySession.validate_block_structure."""
 
     def test_raises_with_flipping_blocks(self, mock_session_series):
-        from iblnm.data import PhotometrySession, BlockStructureBug
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import BlockStructureBug
         series = mock_session_series.copy()
         series['session_type'] = 'biased'
         session = PhotometrySession(series, one=MagicMock(), load_data=False)
@@ -212,7 +214,8 @@ class TestValidateEventCompleteness:
     """Tests for PhotometrySession.validate_event_completeness."""
 
     def test_raises_with_incomplete_events(self, mock_session_series):
-        from iblnm.data import PhotometrySession, IncompleteEventTimes
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import IncompleteEventTimes
         from iblnm.config import RESPONSE_EVENTS
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         data = {e: np.random.rand(100) for e in RESPONSE_EVENTS}
@@ -232,7 +235,8 @@ class TestValidateEventCompleteness:
         session.validate_event_completeness()  # should not raise
 
     def test_missing_column_included_in_missing_events(self, mock_session_series):
-        from iblnm.data import PhotometrySession, IncompleteEventTimes
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import IncompleteEventTimes
         from iblnm.config import RESPONSE_EVENTS
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.trials = pd.DataFrame({'stimOn_times': np.random.rand(100)})
@@ -247,7 +251,8 @@ class TestValidateTrialsInPhotometryTime:
     """Tests for PhotometrySession.validate_trials_in_photometry_time."""
 
     def test_raises_when_trials_outside(self, mock_session_series, mock_photometry_data):
-        from iblnm.data import PhotometrySession, TrialsNotInPhotometryTime
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import TrialsNotInPhotometryTime
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.photometry = mock_photometry_data
         session.trials = pd.DataFrame({
@@ -269,7 +274,7 @@ class TestValidateTrialsInPhotometryTime:
 
     def test_uses_preprocessed_band_when_no_raw(self, mock_photometry_session):
         """Should fall back to GCaMP_preprocessed when GCaMP is not available."""
-        from iblnm.data import TrialsNotInPhotometryTime
+        from iblnm.validation import TrialsNotInPhotometryTime
         session = mock_photometry_session
         session.preprocess()
         del session.photometry['GCaMP']
@@ -283,7 +288,8 @@ class TestValidateTrialsInPhotometryTime:
 
 class TestValidateFewUniqueSamples:
     def test_raises_below_threshold(self, mock_session_series):
-        from iblnm.data import PhotometrySession, FewUniqueSamples
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import FewUniqueSamples
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
             'brain_region': ['VTA'], 'band': ['GCaMP'],
@@ -326,7 +332,8 @@ class TestValidateQc:
         session.validate_qc()  # should not raise
 
     def test_raises_on_band_inversions(self, mock_session_series):
-        from iblnm.data import PhotometrySession, QCValidationError
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import QCValidationError
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
             'brain_region': ['VTA'], 'band': ['GCaMP'],
@@ -336,7 +343,8 @@ class TestValidateQc:
             session.validate_qc()
 
     def test_raises_on_early_samples(self, mock_session_series):
-        from iblnm.data import PhotometrySession, QCValidationError
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import QCValidationError
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
             'brain_region': ['VTA'], 'band': ['GCaMP'],
@@ -346,7 +354,8 @@ class TestValidateQc:
             session.validate_qc()
 
     def test_raises_with_both_issues_in_message(self, mock_session_series):
-        from iblnm.data import PhotometrySession, QCValidationError
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import QCValidationError
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.qc = pd.DataFrame({
             'brain_region': ['VTA'], 'band': ['GCaMP'],

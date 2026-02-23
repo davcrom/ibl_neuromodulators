@@ -12,10 +12,13 @@ from iblnm.io import (
     get_subject_info, get_session_info, get_datasets, get_extended_qc,
 )
 from iblnm.util import (
-    enforce_schema, validate_subject, validate_strain, validate_line,
-    validate_neuromodulator, validate_target, validate_hemisphere,
-    validate_datasets, get_session_type, get_targetNM, get_session_length,
+    enforce_schema, get_session_type, get_targetNM, get_session_length,
     df2pqt,
+)
+from iblnm.validation import (
+    validate_subject, validate_strain, validate_line,
+    validate_neuromodulator, validate_target, validate_hemisphere,
+    validate_datasets,
 )
 
 
@@ -109,6 +112,9 @@ if df_existing is not None:
     print(f"Merging {len(df_sessions)} new sessions with {len(df_existing)} existing sessions...")
     df_sessions = pd.concat([df_existing, df_sessions], ignore_index=True)
 
+# Normalise list columns to Python lists throughout (concat can produce numpy arrays)
+df_sessions = enforce_schema(df_sessions, SESSION_SCHEMA)
+
 
 # Fetch extended QC if requested
 df_qc = None
@@ -121,13 +127,16 @@ if args.extended_qc:
 
 
 # Save sessions
-df2pqt(df_sessions, SESSIONS_FPATH)
+df_sessions.to_parquet(SESSIONS_FPATH, index=False)
 
 # Save QC if fetched
 if df_qc is not None:
     df2pqt(df_qc, SESSIONS_QC_FPATH)
 
-# Save error log
-if exlog:
+# Save error log (append to existing when not redownloading)
+if error_log:
     df_exceptions = pd.DataFrame(error_log)
-    df2pqt(df_exceptions, QUERY_DATABASE_LOG_FPATH)
+    if not args.redownload and QUERY_DATABASE_LOG_FPATH.exists():
+        df_existing_log = pd.read_parquet(QUERY_DATABASE_LOG_FPATH)
+        df_exceptions = pd.concat([df_existing_log, df_exceptions], ignore_index=True)
+    df_exceptions.to_parquet(QUERY_DATABASE_LOG_FPATH, index=False)

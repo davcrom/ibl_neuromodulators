@@ -14,50 +14,11 @@ from iblnm.config import *
 from iblnm.analysis import get_responses
 from iblnm import task
 from iblnm.task import _get_signed_contrast
-from iblnm.util import make_log_entry
-
-
-class MissingExtractedData(Exception):
-    """Extracted dataset not found on Alyx (raw data exists)."""
-
-
-class MissingRawData(Exception):
-    """Raw dataset not found on Alyx."""
-
-
-class InsufficientTrials(Exception):
-    """Session has too few trials for analysis."""
-
-
-class BlockStructureBug(Exception):
-    """Biased/ephys session has rapidly flipping blocks."""
-
-
-class IncompleteEventTimes(Exception):
-    """Event times below completeness threshold."""
-    def __init__(self, missing_events):
-        self.missing_events = missing_events
-        super().__init__(f"Incomplete events: {', '.join(missing_events)}")
-
-
-class TrialsNotInPhotometryTime(Exception):
-    """Trial times fall outside photometry recording window."""
-
-
-class BandInversion(Exception):
-    """Photometry signal has band inversions."""
-
-
-class EarlySamples(Exception):
-    """Photometry signal has early samples."""
-
-
-class FewUniqueSamples(Exception):
-    """One or more photometry channels have too few unique samples."""
-
-
-class QCValidationError(Exception):
-    """One or more raw QC checks failed (band inversions, early samples)."""
+from iblnm.validation import (
+    MissingExtractedData, MissingRawData, InsufficientTrials, BlockStructureBug,
+    IncompleteEventTimes, TrialsNotInPhotometryTime, BandInversion, EarlySamples,
+    FewUniqueSamples, QCValidationError,
+)
 
 
 class PhotometrySession(PhotometrySessionLoader):
@@ -140,13 +101,11 @@ class PhotometrySession(PhotometrySessionLoader):
         try:
             super().load_trials()
         except ALFObjectNotFound:
-            has_raw = any(d in self.datasets for d in [
-                'raw_behavior_data/_iblrig_taskData.raw.jsonable',
-                'raw_task_data_00/_iblrig_taskData.raw.jsonable',
-            ])
-            if has_raw:
-                raise MissingExtractedData("Trials could not be downloaded")
-            raise MissingRawData("No raw task data")
+            try:
+                _ = self.one.load_dataset(self.eid, '_iblrig_taskData.raw.jsonable')
+            except ALFObjectNotFound:
+                raise MissingRawData("_iblrig_taskData.raw.jsonable")
+            raise MissingExtractedData("_ibl_trials.table.pqt")
         self.trials['signed_contrast'] = _get_signed_contrast(self.trials)
         self.trials['contrast'] = np.abs(self.trials['signed_contrast'])
 
@@ -162,9 +121,11 @@ class PhotometrySession(PhotometrySessionLoader):
                 post=post
             )
         except ALFObjectNotFound:
-            if 'raw_photometry_data/_neurophotometrics_fpData.raw.pqt' in self.datasets:
-                raise MissingExtractedData("Photometry could not be downloaded")
-            raise MissingRawData("No raw photometry signal found")
+            try:
+                _ = self.one.load_dataset(self.eid, '_neurophotometrics_fpData.raw.pqt')
+            except ALFObjectNotFound:
+                raise MissingRawData("_neurophotometrics_fpData.raw.pqt")
+            raise MissingExtractedData("photometry.signal.pqt")
 
 
     def validate_n_trials(self):
@@ -287,11 +248,21 @@ class PhotometrySession(PhotometrySessionLoader):
         )
         return self.responses
 
-    def save_h5(self, fpath=None, band='GCaMP_preprocessed', mode='w'):
+    def save_h5(self, fpath=None, groups=None, band='GCaMP_preprocessed', mode='w'):
         """Save session data to HDF5.
 
-        mode='w': Create file with preprocessed signal + session attrs.
-        mode='a': Append trials + responses to existing file.
+        Parameters
+        ----------
+        fpath : Path or str, optional
+            Output path. Defaults to SESSIONS_H5_DIR / {eid}.h5.
+        groups : sequence of str, optional
+            Which data groups to write. Any subset of:
+            'signal', 'trials', 'responses', 'wheel'.
+            None applies mode-based defaults:
+              mode='w' → ('signal',)
+              mode='a' → all available among ('trials', 'responses', 'wheel')
+        mode : str
+            HDF5 file open mode ('w' creates/truncates, 'a' appends).
         """
         import h5py
         from pathlib import Path
@@ -300,8 +271,18 @@ class PhotometrySession(PhotometrySessionLoader):
         fpath = Path(fpath)
         fpath.parent.mkdir(parents=True, exist_ok=True)
 
-        with h5py.File(fpath, mode) as f:
+        if groups is None:
             if mode == 'w':
+                groups = ('signal',)
+            else:
+                groups = [g for g, available in (
+                    ('trials',    hasattr(self, 'trials') and self.trials is not None),
+                    ('responses', hasattr(self, 'responses') and self.responses is not None),
+                    ('wheel',     hasattr(self, 'wheel_velocity') and self.wheel_velocity is not None),
+                ) if available]
+
+        with h5py.File(fpath, mode) as f:
+            if 'signal' in groups:
                 f.attrs['eid'] = self.eid
                 f.attrs['subject'] = self.subject
                 f.attrs['session_type'] = self.session_type
@@ -316,54 +297,76 @@ class PhotometrySession(PhotometrySessionLoader):
                     grp.create_dataset(col, data=preprocessed[col].values,
                                        compression='gzip', compression_opts=4)
 
-            elif mode == 'a':
-                if hasattr(self, 'trials') and self.trials is not None:
-                    if 'trials' in f:
-                        del f['trials']
-                    cols = TRIAL_COLUMNS + ['signed_contrast', 'contrast']
-                    available = [c for c in cols if c in self.trials.columns]
-                    grp = f.create_group('trials')
-                    for col in available:
-                        grp.create_dataset(col, data=self.trials[col].values)
+            if 'trials' in groups and hasattr(self, 'trials') and self.trials is not None:
+                if 'trials' in f:
+                    del f['trials']
+                cols = TRIAL_COLUMNS + ['signed_contrast', 'contrast']
+                available = [c for c in cols if c in self.trials.columns]
+                grp = f.create_group('trials')
+                for col in available:
+                    grp.create_dataset(col, data=self.trials[col].values)
 
-                if hasattr(self, 'responses') and self.responses is not None:
-                    if 'responses' in f:
-                        del f['responses']
-                    grp = f.create_group('responses')
-                    tpts = self.responses.coords['time'].values
-                    grp.create_dataset('time', data=tpts)
-                    for region in self.responses.coords['region'].values:
-                        region_grp = grp.create_group(region)
-                        for event in self.responses.coords['event'].values:
-                            resp = self.responses.sel(region=region, event=event).values
-                            ds = region_grp.create_dataset(
-                                event, data=resp.astype(np.float64),
-                                compression='gzip', compression_opts=4
-                            )
-                            ds.attrs['window_t0'] = tpts[0]
-                            ds.attrs['window_t1'] = tpts[-1]
+            if 'responses' in groups and hasattr(self, 'responses') and self.responses is not None:
+                if 'responses' in f:
+                    del f['responses']
+                grp = f.create_group('responses')
+                tpts = self.responses.coords['time'].values
+                grp.create_dataset('time', data=tpts)
+                for region in self.responses.coords['region'].values:
+                    region_grp = grp.create_group(region)
+                    for event in self.responses.coords['event'].values:
+                        resp = self.responses.sel(region=region, event=event).values
+                        ds = region_grp.create_dataset(
+                            event, data=resp.astype(np.float64),
+                            compression='gzip', compression_opts=4
+                        )
+                        ds.attrs['window_t0'] = tpts[0]
+                        ds.attrs['window_t1'] = tpts[-1]
 
-    def load_h5(self, fpath):
-        """Load preprocessed signal and responses from HDF5 file."""
+            if 'wheel' in groups and hasattr(self, 'wheel_velocity') and self.wheel_velocity is not None:
+                if 'wheel' in f:
+                    del f['wheel']
+                grp = f.create_group('wheel')
+                grp.create_dataset(
+                    'velocity', data=self.wheel_velocity,
+                    compression='gzip', compression_opts=4,
+                )
+                grp.attrs['fs'] = self.wheel_fs
+                grp.attrs['t0_event'] = getattr(self, '_wheel_t0_event', 'stimOn_times')
+                grp.attrs['t1_event'] = getattr(self, '_wheel_t1_event', 'feedback_times')
+
+    def load_h5(self, fpath, groups=None):
+        """Load session data from HDF5 file.
+
+        Parameters
+        ----------
+        fpath : Path or str
+            Path to the HDF5 file.
+        groups : sequence of str, optional
+            Which data groups to load. Any subset of:
+            'signal', 'trials', 'responses'.
+            None loads all groups present in the file.
+        """
         import h5py
         import xarray as xr
 
         with h5py.File(fpath, 'r') as f:
-            times = f['times'][:]
-            preprocessed = {}
-            for name in f['preprocessed']:
-                preprocessed[name] = pd.Series(
-                    f[f'preprocessed/{name}'][:].astype(np.float64),
-                    index=times
-                )
-            self.photometry['GCaMP_preprocessed'] = pd.DataFrame(preprocessed)
+            if (groups is None or 'signal' in groups) and 'preprocessed' in f:
+                times = f['times'][:]
+                preprocessed = {}
+                for name in f['preprocessed']:
+                    preprocessed[name] = pd.Series(
+                        f[f'preprocessed/{name}'][:].astype(np.float64),
+                        index=times
+                    )
+                self.photometry['GCaMP_preprocessed'] = pd.DataFrame(preprocessed)
 
-            if 'trials' in f:
+            if (groups is None or 'trials' in groups) and 'trials' in f:
                 self.trials = pd.DataFrame(
                     {col: f[f'trials/{col}'][:] for col in f['trials']}
                 )
 
-            if 'responses' in f:
+            if (groups is None or 'responses' in groups) and 'responses' in f:
                 resp_grp = f['responses']
                 tpts = resp_grp['time'][:]
                 regions = [k for k in resp_grp.keys() if k != 'time']
@@ -449,6 +452,67 @@ class PhotometrySession(PhotometrySessionLoader):
                 df_qc[col] = self.qc[col].iloc[0]
 
         self.qc = df_qc
+
+
+    # =========================================================================
+    # Preprocessing Methods
+    # =========================================================================
+
+    def preprocess(
+        self,
+        pipeline=None,
+        signal_band='GCaMP',
+        reference_band='Isosbestic',
+        targets=None,
+        output_band='GCaMP_preprocessed',
+        regression_method: str = 'mse',
+    ):
+        """Run preprocessing pipeline and store result as new band.
+
+        Pipeline steps (bleach correct → isosbestic correct → zscore) are defined
+        in config.PREPROCESSING_PIPELINES. Resampling to TARGET_FS is applied after
+        the pipeline as a separate step.
+        """
+        from iblphotometry.pipelines import run_pipeline
+        from iblnm.analysis import compute_bleaching_tau, compute_iso_correlation, resample_signal
+
+        if pipeline is None:
+            pipeline = PREPROCESSING_PIPELINES['isosbestic_correction']
+
+        if targets is None:
+            targets = list(self.photometry[signal_band].columns)
+
+        needs_reference = any('reference' in step.get('inputs', ()) for step in pipeline)
+
+        if needs_reference and reference_band is None:
+            raise ValueError("Pipeline requires reference_band")
+
+        preprocessed = {}
+
+        for brain_region in targets:
+            signal = self.photometry[signal_band][brain_region]
+            qc_metrics = {'bleaching_tau': compute_bleaching_tau(signal)}
+
+            if needs_reference:
+                reference = self.photometry[reference_band][brain_region]
+                res = run_pipeline(pipeline, signal=signal, reference=reference, full_output=True)
+                result = res['result']
+                # iso_correlation computed on bleach-corrected signals before isosbestic step
+                signal_bc = res.get('signal_bleach_corrected', signal)
+                reference_bc = res.get('reference_bleach_corrected', reference)
+                qc_metrics['iso_correlation'] = compute_iso_correlation(
+                    signal_bc, reference_bc, regression_method=regression_method
+                )
+            else:
+                result = run_pipeline(pipeline, signal=signal)
+
+            result = resample_signal(result, target_fs=TARGET_FS)
+            preprocessed[brain_region] = result
+            self._append_qc(brain_region, signal_band, qc_metrics)
+
+        self.photometry[output_band] = pd.DataFrame(preprocessed)
+        return self.photometry[output_band]
+
 
     # =========================================================================
     # Response Convenience Methods
@@ -576,62 +640,45 @@ class PhotometrySession(PhotometrySessionLoader):
     def fit_psychometric_by_block(self):
         return task.fit_psychometric_by_block(self.trials)
 
+
     # =========================================================================
-    # Preprocessing Methods
+    # Wheel Methods
     # =========================================================================
 
-    def preprocess(
-        self,
-        pipeline=None,
-        signal_band='GCaMP',
-        reference_band='Isosbestic',
-        targets=None,
-        output_band='GCaMP_preprocessed',
-        regression_method: str = 'mse',
-    ):
-        """Run preprocessing pipeline and store result as new band.
+    def load_wheel(self, fs=None):
+        """Load wheel position and velocity from ONE.
 
-        Pipeline steps (bleach correct → isosbestic correct → zscore) are defined
-        in config.PREPROCESSING_PIPELINES. Resampling to TARGET_FS is applied after
-        the pipeline as a separate step.
+        Interpolates to WHEEL_FS Hz and computes velocity via Butterworth filter.
+        Stores result in self.wheel (DataFrame: times, position, velocity, acceleration).
         """
-        from iblphotometry.pipelines import run_pipeline
-        from iblnm.analysis import compute_bleaching_tau, compute_iso_correlation, resample_signal
+        if fs is None:
+            fs = WHEEL_FS
+        try:
+            super().load_wheel(fs=fs)
+        except ALFObjectNotFound:
+            try:
+                self.one.load_dataset(self.eid, '_iblrig_encoderPositions.raw.ssv')
+            except ALFObjectNotFound:
+                raise MissingRawData("_iblrig_encoderPositions.raw.ssv")
+            raise MissingExtractedData("_ibl_wheel.position.npy")
+        self.wheel_fs = fs
 
-        if pipeline is None:
-            pipeline = PREPROCESSING_PIPELINES['isosbestic_correction']
+    def extract_wheel_velocity(self, t0_event='stimOn_times', t1_event='feedback_times'):
+        """Extract per-trial wheel velocity from t0_event to t1_event.
 
-        if targets is None:
-            targets = list(self.photometry[signal_band].columns)
-
-        needs_reference = any('reference' in step.get('inputs', ()) for step in pipeline)
-
-        if needs_reference and reference_band is None:
-            raise ValueError("Pipeline requires reference_band")
-
-        preprocessed = {}
-
-        for brain_region in targets:
-            signal = self.photometry[signal_band][brain_region]
-            qc_metrics = {'bleaching_tau': compute_bleaching_tau(signal)}
-
-            if needs_reference:
-                reference = self.photometry[reference_band][brain_region]
-                res = run_pipeline(pipeline, signal=signal, reference=reference, full_output=True)
-                result = res['result']
-                # iso_correlation computed on bleach-corrected signals before isosbestic step
-                signal_bc = res.get('signal_bleach_corrected', signal)
-                reference_bc = res.get('reference_bleach_corrected', reference)
-                qc_metrics['iso_correlation'] = compute_iso_correlation(
-                    signal_bc, reference_bc, regression_method=regression_method
-                )
-            else:
-                result = run_pipeline(pipeline, signal=signal)
-
-            result = resample_signal(result, target_fs=TARGET_FS)
-            preprocessed[brain_region] = result
-            self._append_qc(brain_region, signal_band, qc_metrics)
-
-        self.photometry[output_band] = pd.DataFrame(preprocessed)
-        return self.photometry[output_band]
+        Returns a float32 (T, W) matrix where W is the longest trial in samples.
+        Shorter trials and NaN-event trials are NaN-padded on the right.
+        Stores result in self.wheel_velocity and returns it.
+        """
+        wheel_signal = pd.Series(
+            self.wheel['velocity'].values,
+            index=self.wheel['times'].values,
+        )
+        t0_times = self.trials[t0_event].values
+        t1_times = self.trials[t1_event].values
+        velocity_matrix, _ = get_responses(wheel_signal, events=t0_times, t0=0.0, t1=t1_times)
+        self.wheel_velocity = velocity_matrix.astype(np.float32)
+        self._wheel_t0_event = t0_event
+        self._wheel_t1_event = t1_event
+        return self.wheel_velocity
 

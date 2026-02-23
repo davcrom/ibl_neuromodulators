@@ -18,8 +18,7 @@ from tqdm import tqdm
 
 from iblnm.config import (
     SESSIONS_FPATH, QCPHOTOMETRY_FPATH, PHOTOMETRY_LOG_FPATH,
-    QUERY_DATABASE_LOG_FPATH,
-    SESSION_TYPES_TO_ANALYZE, VALID_NEUROMODULATORS, VALID_TARGETS, VALID_TARGETNMS,
+    QUERY_DATABASE_LOG_FPATH, SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE,
     RESPONSE_EVENTS,
 )
 from iblnm.io import _get_default_connection
@@ -92,7 +91,7 @@ def run_photometry_pipeline(df_sessions, one=None, verbose=True):
         # Block 3: Preprocess + save signal (fatal for response extraction)
         try:
             ps.preprocess()
-            ps.save_h5(mode='w')
+            ps.save_h5(groups=['signal'])
         except Exception as e:
             error_log.append(make_log_entry(eid, error=e))
             continue
@@ -118,7 +117,7 @@ def run_photometry_pipeline(df_sessions, one=None, verbose=True):
         if events_to_extract:
             try:
                 ps.extract_responses(events=events_to_extract)
-                ps.save_h5(mode='a')
+                ps.save_h5(groups=['trials', 'responses'], mode='a')
             except Exception as e:
                 error_log.append(make_log_entry(eid, error=e))
 
@@ -133,15 +132,18 @@ if __name__ == '__main__':
     df_sessions = pd.read_parquet(SESSIONS_FPATH)
     print(f"Loaded {len(df_sessions)} sessions")
 
-    # Merge error flags from upstream pipeline logs and drop sessions with fatal upstream errors
-    df_sessions = collect_session_errors(df_sessions, [QUERY_DATABASE_LOG_FPATH])
-    fatal_errors = {'InvalidNeuromodulator', 'InvalidTarget', 'InvalidTargetNM'}
-    df_sessions = df_sessions[
-        df_sessions['logged_errors'].apply(lambda errs: not any(e in fatal_errors for e in errs))
-    ]
+    # ~# Merge error flags from upstream pipeline logs and drop sessions with fatal upstream errors
+    # ~df_sessions = collect_session_errors(df_sessions, [QUERY_DATABASE_LOG_FPATH])
+    # ~fatal_errors = {'InvalidSubject', 'InvalidSessionType'}
+    # ~df_sessions = df_sessions[
+        # ~df_sessions['logged_errors'].apply(lambda errs: not any(e in fatal_errors for e in errs))
+    # ~]
 
     # Filter to sessions that are valid for photometry analysis
-    df_sessions = df_sessions[df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE)]
+    df_sessions = df_sessions[
+        df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE) &
+        ~df_sessions['subject'].isin(SUBJECTS_TO_EXCLUDE)
+    ]
 
     print(f"Processing {len(df_sessions)} sessions after filtering")
 

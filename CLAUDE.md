@@ -72,7 +72,8 @@ iblnm/           # Core package
   io.py          # Alyx queries
   task.py        # Task performance computation
   analysis.py    # Response extraction
-  util.py        # Helpers, metadata merging
+  validation.py  # Exceptions, exception_logger, validate_* functions
+  util.py        # Logging, pandas helpers, parquet I/O
   vis.py         # Plotting (generic functions)
 scripts/         # Analysis scripts
 tests/           # pytest

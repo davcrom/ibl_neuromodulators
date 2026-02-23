@@ -13,7 +13,8 @@ iblnm/                      # Core package
   io.py                     # Alyx/ONE queries (subject info, session info, datasets)
   task.py                   # Task performance computation (psychometrics, block validation)
   analysis.py               # Signal processing (response extraction, preprocessing utilities)
-  util.py                   # Validation, logging, pandas utilities, parquet I/O
+  validation.py             # Custom exceptions, exception_logger, validate_* functions
+  util.py                   # Logging, pandas utilities, parquet I/O
   vis.py                    # Plotting functions
 
 scripts/                    # Analysis scripts (run in order)
@@ -23,6 +24,7 @@ scripts/                    # Analysis scripts (run in order)
   dataset_overview.py       # 4. Session coverage figures
   qc_overview.py            # 5. QC metric distributions
   task_performance_overview.py  # 6. Learning curves and psychometric figures
+  wheel.py                  # 7. Extract per-trial wheel velocity → HDF5
 
 tests/                      # pytest
 specs/                      # Design docs for non-trivial features
@@ -275,12 +277,16 @@ One file per session: `data/sessions/{eid}.h5`.
 │   ├── signed_contrast       float64 (T,)   negative = right stimulus
 │   └── contrast              float64 (T,)   unsigned contrast
 │
-└── responses/
-    ├── time           float64 (W,)    time axis relative to event (e.g. 60 pts for [-1, 1] s)
-    └── {brain_region}/
-        ├── stimOn_times          float64 (T, W)   attrs: window_t0, window_t1
-        ├── firstMovement_times   float64 (T, W)
-        └── feedback_times        float64 (T, W)
+├── responses/
+│   ├── time           float64 (W,)    time axis relative to event (e.g. 60 pts for [-1, 1] s)
+│   └── {brain_region}/
+│       ├── stimOn_times          float64 (T, W)   attrs: window_t0, window_t1
+│       ├── firstMovement_times   float64 (T, W)
+│       └── feedback_times        float64 (T, W)
+│
+└── wheel/
+    ├── velocity       float32 (T, W)  per-trial wheel velocity (rad/s); NaN-padded to longest trial
+    └── attrs: fs=1000 (Hz), t0_event='stimOn_times', t1_event='feedback_times'
 ```
 
 `N` = samples at 30 Hz, `T` = trial count, `W` = response window samples (60 for a [−1, 1] s window at 30 Hz).

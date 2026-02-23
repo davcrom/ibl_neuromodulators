@@ -27,7 +27,7 @@ from iblnm.util import make_log_entry, LOG_COLUMNS, collect_session_errors
 from iblnm.data import PhotometrySession
 
 
-def compute_all_session_performance(df_sessions, one=None, verbose=True):
+def run_task_pipeline(df_sessions, one=None, verbose=True):
     """
     Compute task performance metrics for all sessions.
 
@@ -98,19 +98,22 @@ if __name__ == '__main__':
     df_sessions = pd.read_parquet(SESSIONS_FPATH)
     print(f"Loaded {len(df_sessions)} sessions")
 
-    # Merge error flags from upstream pipeline logs and drop sessions with fatal upstream errors
-    df_sessions = collect_session_errors(df_sessions, [QUERY_DATABASE_LOG_FPATH])
-    fatal_errors = {'InvalidNeuromodulator', 'InvalidTarget', 'InvalidTargetNM'}
-    df_sessions = df_sessions[
-        df_sessions['logged_errors'].apply(lambda errs: not any(e in fatal_errors for e in errs))
-    ]
+    # ~# Merge error flags from upstream pipeline logs and drop sessions with fatal upstream errors
+    # ~df_sessions = collect_session_errors(df_sessions, [QUERY_DATABASE_LOG_FPATH])
+    # ~fatal_errors = {'InvalidSubject', 'InvalidSessionType'}
+    # ~df_sessions = df_sessions[
+        # ~df_sessions['logged_errors'].apply(lambda errs: not any(e in fatal_errors for e in errs))
+    # ~]
 
-    # Filter to sessions valid for task analysis
-    df_sessions = df_sessions[df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE)].copy()
+    # Filter to sessions that are valid for task analysis
+    df_sessions = df_sessions[
+        df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE) &
+        ~df_sessions['subject'].isin(SUBJECTS_TO_EXCLUDE)
+    ]
     print(f"Processing {len(df_sessions)} sessions after filtering")
 
     one = _get_default_connection()
-    df_performance, df_log = compute_all_session_performance(df_sessions, one=one)
+    df_performance, df_log = run_task_pipeline(df_sessions, one=one)
 
     Path(PERFORMANCE_FPATH).parent.mkdir(parents=True, exist_ok=True)
     df_performance.to_parquet(PERFORMANCE_FPATH)

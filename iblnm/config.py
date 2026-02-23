@@ -20,6 +20,7 @@ SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 QUERY_DATABASE_LOG_FPATH = PROJECT_ROOT / 'metadata/query_database_log.pqt'
 PHOTOMETRY_LOG_FPATH = PROJECT_ROOT / 'metadata/photometry_log.pqt'
 TASK_LOG_FPATH = PROJECT_ROOT / 'metadata/task_log.pqt'
+WHEEL_LOG_FPATH = PROJECT_ROOT / 'metadata/wheel_log.pqt'
 ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
 
 
@@ -161,23 +162,6 @@ TARGET2NM = {
 }
 
 
-# TEMPFIX: check if still needed
-ALYX_DATASETS = [
-    'raw_behavior_data/_iblrig_taskData.raw.jsonable',  # old data, before v8
-    'raw_behavior_data/_iblrig_taskSettings.raw.json',
-    'raw_task_data_00/_iblrig_taskData.raw.jsonable',  # new data, >v8
-    'raw_task_data_00/_iblrig_taskSettings.raw.json',
-    'raw_video_data/_iblrig_leftCamera.raw.mp4',
-    'alf/_ibl_trials.table.pqt',  # old format
-    'alf/_ibl_wheel.position.npy',
-    'alf/task_00/_ibl_trials.table.pqt',  # new format
-    'alf/task_00/_ibl_wheel.position.npy',
-    'alf/photometry/photometry.signal.pqt',
-    'alf/photometry/photometryROI.locations.pqt',
-    'raw_photometry_data/_neurophotometrics_fpData.channels.csv',
-    'raw_photometry_data/_neurophotometrics_fpData.raw.pqt',
-]
-
 # Dataset categories for checking data presence
 DATASET_CATEGORIES = {
     'raw_task': [
@@ -226,7 +210,8 @@ SESSION_TYPES_TO_ANALYZE = ('training', 'biased', 'ephys')
 SESSION_TYPES_TO_EXCLUDE = ('advanced', 'neuromodulator', 'misc')
 
 # Resampling
-TARGET_FS = 30  # Hz, target sampling rate for resampled signals
+TARGET_FS = 30    # Hz, target sampling rate for photometry signals
+WHEEL_FS = 100    # Hz, interpolation rate for wheel velocity
 
 # Trial columns to store in HDF5 (beyond computed signed_contrast, contrast)
 TRIAL_COLUMNS = [

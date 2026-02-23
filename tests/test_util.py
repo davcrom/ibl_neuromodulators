@@ -16,10 +16,12 @@ from iblnm.util import (
     get_session_type,
     get_targetNM,
     collect_session_errors,
+    LOG_COLUMNS,
+)
+from iblnm.validation import (
     InvalidSessionType,
     InvalidTargetNM,
     TrueDuplicateSession,
-    LOG_COLUMNS,
 )
 
 
