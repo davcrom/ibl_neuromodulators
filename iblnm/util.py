@@ -203,9 +203,12 @@ def get_targetNM(session):
 @exception_logger
 def get_session_length(session):
     t0 = datetime.fromisoformat(session['start_time'])
-    t1 = datetime.fromisoformat(session['end_time'])
-    if t0.date()!= t1.date():
-        raise InvalidSessionLength(f"Session start and end time on different days")
+    end_time = session['end_time']
+    if not isinstance(end_time, str):
+        raise InvalidSessionLength("Missing end_time")
+    t1 = datetime.fromisoformat(end_time)
+    if t0.date() != t1.date():
+        raise InvalidSessionLength("Session start and end time on different days")
     session['session_length'] = (t1 - t0).total_seconds()
     return session
 

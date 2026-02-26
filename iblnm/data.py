@@ -52,8 +52,10 @@ class PhotometrySession(PhotometrySessionLoader):
         self.session_type = session_series['session_type']
         self.NM = session_series.get('NM')
         self.datasets = session_series.get('datasets', [])
-        self.brain_region = list(session_series.get('brain_region', []) or [])
-        self.hemisphere = list(session_series.get('hemisphere', []) or [])
+        raw_br = session_series.get('brain_region', [])
+        self.brain_region = list(raw_br) if isinstance(raw_br, (list, np.ndarray)) else []
+        raw_hm = session_series.get('hemisphere', [])
+        self.hemisphere = list(raw_hm) if isinstance(raw_hm, (list, np.ndarray)) else []
 
         super().__init__(*args, eid=self.eid, **kwargs)
         if not isinstance(self.photometry, dict):

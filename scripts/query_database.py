@@ -1,4 +1,5 @@
 import argparse
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 tqdm.pandas()
@@ -84,6 +85,35 @@ print("Getting experiment descriptions...")
 df_sessions = df_sessions.progress_apply(
     get_session_info, axis='columns', exlog=error_log
 ).copy()
+
+# TEMPFIX: for sessions where get_session_info failed to populate brain_region
+# (e.g. missing experiment description), try the photometry locations file instead
+from one.alf.exceptions import ALFObjectNotFound as _ALFObjectNotFound
+_empty_br = df_sessions['brain_region'].apply(
+    lambda x: not isinstance(x, (list, np.ndarray)) or len(x) == 0
+)
+print(f"  {_empty_br.sum()} sessions with empty brain_region, trying locations file...")
+_n_filled = 0
+for idx in df_sessions.index[_empty_br]:
+    eid = df_sessions.at[idx, 'eid']
+    try:
+        loc = one.load_dataset(eid, 'photometryROI.locations.pqt')
+        regions = list(loc['brain_region'].values)
+        if regions:
+            df_sessions.at[idx, 'brain_region'] = regions
+            df_sessions.at[idx, 'hemisphere'] = [
+                r[-1] if r.endswith(('-l', '-r')) else None for r in regions
+            ]
+            _n_filled += 1
+    except _ALFObjectNotFound:
+        pass
+    except Exception as e:
+        error_log.append({
+            'eid': eid, 'error_type': type(e).__name__,
+            'error_message': str(e), 'traceback': None,
+        })
+print(f"  Filled {_n_filled} sessions from locations file")
+
 df_sessions.apply(validate_target, axis='columns', exlog=error_log)
 df_sessions.apply(validate_hemisphere, axis='columns', exlog=error_log)
 

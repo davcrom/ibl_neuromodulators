@@ -10,6 +10,7 @@ Produces four session overview matrices:
 All flags are derived from upstream error logs — no QC parquet is loaded.
 No write-back to any upstream file.
 """
+import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
@@ -19,11 +20,12 @@ from iblnm.config import (
     TASK_LOG_FPATH,
     ERRORS_FPATH, FIGURE_DPI,
     SUBJECTS_TO_EXCLUDE, SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
+    TARGET2NM,
 )
 from iblnm.util import (
     resolve_duplicate_group,
     concat_logs, deduplicate_log,
-    collect_session_errors, LOG_COLUMNS,
+    collect_session_errors, fill_empty_lists_from_group, LOG_COLUMNS,
 )
 from iblnm.vis import (
     session_overview_matrix, target_overview_barplot, mouse_overview_barplot, set_plotsize
@@ -155,6 +157,42 @@ print(f"  Passes basic QC: {n_qc}")
 # =============================================================================
 # Target-NM Barplots (per recording, QC-passing sessions only)
 # =============================================================================
+
+# Fill empty brain_region/hemisphere from other sessions of the same subject
+df_sessions = fill_empty_lists_from_group(df_sessions, 'brain_region')
+df_sessions = fill_empty_lists_from_group(df_sessions, 'hemisphere')
+n_filled = df_sessions['brain_region'].apply(lambda x: len(x) > 0 if isinstance(x, (list, np.ndarray)) else False).sum()
+print(f"  After filling from subject group: {n_filled} sessions with brain_region")
+
+# TEMPFIX: normalize brain_region naming errors from Alyx metadata
+_REGION_FIXES = {'DRN': 'DR', 'SNC': 'SNc'}
+
+def _fix_regions(regions):
+    if not isinstance(regions, (list, np.ndarray)):
+        return regions
+    fixed = []
+    for r in regions:
+        bare = r.rsplit('-', 1)[0] if r.endswith(('-l', '-r')) else r
+        suffix = r[len(bare):]
+        fixed.append(_REGION_FIXES.get(bare, bare) + suffix)
+    return fixed
+
+df_sessions['brain_region'] = df_sessions['brain_region'].apply(_fix_regions)
+
+# Rebuild NM and target_NM from corrected brain_region
+def _target_nm_from_region(region):
+    bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
+    nm = TARGET2NM.get(bare)
+    return f'{bare}-{nm}' if nm else None
+
+df_sessions['target_NM'] = df_sessions['brain_region'].apply(
+    lambda rs: [_target_nm_from_region(r) for r in rs]
+    if isinstance(rs, (list, np.ndarray)) else rs
+)
+df_sessions['NM'] = df_sessions['target_NM'].apply(
+    lambda ts: ts[0].split('-')[-1]
+    if isinstance(ts, (list, np.ndarray)) and len(ts) > 0 and ts[0] else None
+)
 
 # Explode to one row per recording (brain_region / target_NM are parallel lists)
 df_recordings = (
