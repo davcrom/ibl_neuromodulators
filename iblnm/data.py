@@ -17,7 +17,7 @@ from iblnm.task import _get_signed_contrast
 from iblnm.validation import (
     MissingExtractedData, MissingRawData, InsufficientTrials, BlockStructureBug,
     IncompleteEventTimes, TrialsNotInPhotometryTime, BandInversion, EarlySamples,
-    FewUniqueSamples, QCValidationError,
+    FewUniqueSamples, QCValidationError, AmbiguousRegionMapping,
 )
 
 
@@ -52,6 +52,8 @@ class PhotometrySession(PhotometrySessionLoader):
         self.session_type = session_series['session_type']
         self.NM = session_series.get('NM')
         self.datasets = session_series.get('datasets', [])
+        self.brain_region = list(session_series.get('brain_region', []) or [])
+        self.hemisphere = list(session_series.get('hemisphere', []) or [])
 
         super().__init__(*args, eid=self.eid, **kwargs)
         if not isinstance(self.photometry, dict):
@@ -126,7 +128,50 @@ class PhotometrySession(PhotometrySessionLoader):
             except ALFObjectNotFound:
                 raise MissingRawData("_neurophotometrics_fpData.raw.pqt")
             raise MissingExtractedData("photometry.signal.pqt")
+        self._match_photometry_to_metadata()
 
+    def _match_photometry_to_metadata(self):
+        """Rename photometry columns to match brain_region metadata.
+
+        Photometry columns from brainbox may use bare names ('VTA') while
+        brain_region metadata includes hemisphere suffixes ('VTA-r').
+        This method renames columns to match metadata names.
+
+        Raises AmbiguousRegionMapping if any column matches zero or multiple
+        metadata entries (e.g. bare 'NBM' with metadata ['NBM-l', 'NBM-r']).
+        """
+        if not self.photometry or not self.brain_region:
+            return
+
+        ref_band = next(iter(self.photometry))
+        phot_cols = list(self.photometry[ref_band].columns)
+
+        # If columns already match metadata, nothing to do
+        if sorted(phot_cols) == sorted(self.brain_region):
+            return
+
+        # Build rename map: each photometry column must match exactly one
+        # metadata entry by name (exact match or bare→suffixed)
+        rename = {}
+        for col in phot_cols:
+            if col in self.brain_region:
+                continue  # exact match, no rename needed
+            matches = [r for r in self.brain_region if r.rsplit('-', 1)[0] == col]
+            if len(matches) == 1:
+                rename[col] = matches[0]
+            elif len(matches) == 0:
+                raise AmbiguousRegionMapping(
+                    f"Photometry column '{col}' has no match in "
+                    f"brain_region {self.brain_region}"
+                )
+            else:
+                raise AmbiguousRegionMapping(
+                    f"Photometry column '{col}' matches multiple entries in "
+                    f"brain_region {self.brain_region}: {matches}"
+                )
+
+        for band_df in self.photometry.values():
+            band_df.rename(columns=rename, inplace=True)
 
     def validate_n_trials(self):
         """Raises InsufficientTrials if n_trials < MIN_NTRIALS."""

@@ -187,12 +187,16 @@ def get_session_type(session):
 def get_targetNM(session):
     NM = session['NM']
     target_NMs = [
-        f"{region.split('-')[0]}-{NM}" for region in session['brain_region']
+        f"{region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region}-{NM}"
+        if region else None
+        for region in session['brain_region']
     ]
-    for target_NM in target_NMs:
-        if target_NM not in VALID_TARGETNMS:
-            raise InvalidTargetNM(f"Target-NM {target_NM} is not recognized.")
+    # Always set target_NM so it stays parallel with brain_region/hemisphere,
+    # even if validation below raises and exception_logger catches it.
     session['target_NM'] = target_NMs
+    invalid = [t for t in target_NMs if t is not None and t not in VALID_TARGETNMS]
+    if invalid:
+        raise InvalidTargetNM(f"Target-NM {invalid} not recognized.")
     return session
 
 

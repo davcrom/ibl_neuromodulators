@@ -61,7 +61,7 @@ session_row = next(
 
 one = ONE()
 ps = PhotometrySession(session_row, one=one)
-fpath = SESSIONS_H5_DIR / f'{ps.eid}.h5'
+fpath = 'DA_sessions' / f'{ps.eid}.h5'
 
 print(f"\nLoading: {ps.subject}  {ps.date}  ({ps.session_type})")
 

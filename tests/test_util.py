@@ -489,32 +489,42 @@ class TestGetSessionType:
 class TestGetTargetNM:
     """Tests for get_targetNM function."""
 
-    def test_single_region(self):
-        """Single brain region + NM produces valid target_NM."""
+    def test_single_region_suffixed(self):
+        """Suffixed brain region 'VTA-r' → target_NM 'VTA-DA' (suffix stripped)."""
         session = pd.Series({
             'eid': 'eid-1',
             'NM': 'DA',
-            'brain_region': ['VTA'],
+            'brain_region': ['VTA-r'],
         })
         result = get_targetNM(session)
         assert result['target_NM'] == ['VTA-DA']
 
-    def test_multiple_regions(self):
-        """Multiple brain regions produce multiple target_NMs."""
+    def test_multiple_regions_suffixed(self):
+        """Multiple suffixed regions produce correct target_NMs."""
         session = pd.Series({
             'eid': 'eid-1',
             'NM': 'DA',
-            'brain_region': ['VTA', 'SNc'],
+            'brain_region': ['VTA-r', 'SNc-l'],
         })
         result = get_targetNM(session)
         assert result['target_NM'] == ['VTA-DA', 'SNc-DA']
 
-    def test_strips_hemisphere_suffix(self):
-        """Hemisphere suffix (e.g., 'VTA-l') is stripped before combining."""
+    def test_midline_region_no_suffix(self):
+        """Midline region 'DR' (no suffix) produces correct target_NM."""
+        session = pd.Series({
+            'eid': 'eid-1',
+            'NM': '5HT',
+            'brain_region': ['DR'],
+        })
+        result = get_targetNM(session)
+        assert result['target_NM'] == ['DR-5HT']
+
+    def test_mixed_suffixed_and_bare(self):
+        """Mix of suffixed and bare regions."""
         session = pd.Series({
             'eid': 'eid-1',
             'NM': 'DA',
-            'brain_region': ['VTA-l', 'SNc-r'],
+            'brain_region': ['VTA-r', 'SNc'],
         })
         result = get_targetNM(session)
         assert result['target_NM'] == ['VTA-DA', 'SNc-DA']
@@ -524,24 +534,23 @@ class TestGetTargetNM:
         session = pd.Series({
             'eid': 'eid-1',
             'NM': 'DA',
-            'brain_region': ['XYZ'],
+            'brain_region': ['XYZ-r'],
         })
         with pytest.raises(InvalidTargetNM, match='XYZ-DA'):
             get_targetNM(session)
 
     def test_exception_logged_when_exlog_provided(self):
-        """Invalid target logs to exlog instead of raising."""
+        """Invalid target logs to exlog; target_NM is still set (parallel with brain_region)."""
         session = pd.Series({
             'eid': 'eid-1',
             'NM': 'DA',
-            'brain_region': ['XYZ'],
+            'brain_region': ['XYZ-r'],
         })
         exlog = []
         result = get_targetNM(session, exlog=exlog)
         assert len(exlog) == 1
         assert exlog[0]['error_type'] == 'InvalidTargetNM'
-        # target_NM should not be set (original series returned)
-        assert 'target_NM' not in result or result.get('target_NM') is None
+        assert result['target_NM'] == ['XYZ-DA']
 
     def test_empty_brain_region(self):
         """Empty brain_region list produces empty target_NM."""

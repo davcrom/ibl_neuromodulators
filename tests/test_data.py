@@ -1089,6 +1089,118 @@ class TestMaskSubsequentEvents:
         np.testing.assert_array_equal(result.values, responses.values)
 
 
+class TestMatchPhotometryToMetadata:
+    """_match_photometry_to_metadata renames columns to match brain_region metadata."""
+
+    def _make_session(self, mock_session_series, brain_region, hemisphere):
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        series['brain_region'] = brain_region
+        series['hemisphere'] = hemisphere
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        return session
+
+    def test_renames_bare_to_suffixed(self, mock_session_series):
+        """Bare column 'VTA' + metadata 'VTA-r' → renames to 'VTA-r'."""
+        session = self._make_session(mock_session_series, ['VTA-r'], ['r'])
+        t = np.linspace(0, 10, 100)
+        session.photometry = {
+            'GCaMP': pd.DataFrame({'VTA': np.ones(100)}, index=t),
+            'Isosbestic': pd.DataFrame({'VTA': np.ones(100)}, index=t),
+        }
+        session._match_photometry_to_metadata()
+
+        assert list(session.photometry['GCaMP'].columns) == ['VTA-r']
+        assert list(session.photometry['Isosbestic'].columns) == ['VTA-r']
+
+    def test_exact_match_no_rename(self, mock_session_series):
+        """Columns already match metadata → no rename."""
+        session = self._make_session(mock_session_series, ['VTA-r'], ['r'])
+        t = np.linspace(0, 10, 100)
+        session.photometry = {
+            'GCaMP': pd.DataFrame({'VTA-r': np.ones(100)}, index=t),
+        }
+        session._match_photometry_to_metadata()
+
+        assert list(session.photometry['GCaMP'].columns) == ['VTA-r']
+
+    def test_midline_exact_match(self, mock_session_series):
+        """Midline region 'DR' matches metadata 'DR' exactly."""
+        session = self._make_session(mock_session_series, ['DR'], [None])
+        t = np.linspace(0, 10, 100)
+        session.photometry = {
+            'GCaMP': pd.DataFrame({'DR': np.ones(100)}, index=t),
+        }
+        session._match_photometry_to_metadata()
+
+        assert list(session.photometry['GCaMP'].columns) == ['DR']
+
+    def test_bilateral_suffixed_exact_match(self, mock_session_series):
+        """Bilateral NBM with suffixed columns matches metadata."""
+        session = self._make_session(mock_session_series, ['NBM-l', 'NBM-r'], ['l', 'r'])
+        t = np.linspace(0, 10, 100)
+        session.photometry = {
+            'GCaMP': pd.DataFrame({
+                'NBM-l': np.ones(100), 'NBM-r': np.ones(100),
+            }, index=t),
+        }
+        session._match_photometry_to_metadata()
+
+        assert sorted(session.photometry['GCaMP'].columns) == ['NBM-l', 'NBM-r']
+
+    def test_bilateral_bare_raises_ambiguous(self, mock_session_series):
+        """Bare 'NBM' with metadata ['NBM-l','NBM-r'] → AmbiguousRegionMapping."""
+        from iblnm.validation import AmbiguousRegionMapping
+        session = self._make_session(mock_session_series, ['NBM-l', 'NBM-r'], ['l', 'r'])
+        t = np.linspace(0, 10, 100)
+        session.photometry = {
+            'GCaMP': pd.DataFrame(
+                np.ones((100, 2)), columns=['NBM', 'NBM'], index=t,
+            ),
+        }
+        with pytest.raises(AmbiguousRegionMapping, match='multiple'):
+            session._match_photometry_to_metadata()
+
+    def test_no_match_raises(self, mock_session_series):
+        """Column with no matching metadata entry raises AmbiguousRegionMapping."""
+        from iblnm.validation import AmbiguousRegionMapping
+        session = self._make_session(mock_session_series, ['VTA-r'], ['r'])
+        t = np.linspace(0, 10, 100)
+        session.photometry = {
+            'GCaMP': pd.DataFrame({'XYZ': np.ones(100)}, index=t),
+        }
+        with pytest.raises(AmbiguousRegionMapping, match='no match'):
+            session._match_photometry_to_metadata()
+
+    def test_mixed_regions_rename(self, mock_session_series):
+        """Multi-region: bare 'VTA' → 'VTA-r', midline 'DR' stays."""
+        session = self._make_session(
+            mock_session_series, ['VTA-r', 'DR'], ['r', None],
+        )
+        t = np.linspace(0, 10, 100)
+        session.photometry = {
+            'GCaMP': pd.DataFrame({'VTA': np.ones(100), 'DR': np.ones(100)}, index=t),
+        }
+        session._match_photometry_to_metadata()
+
+        assert sorted(session.photometry['GCaMP'].columns) == ['DR', 'VTA-r']
+
+    def test_empty_photometry_noop(self, mock_session_series):
+        """Empty photometry dict → no error."""
+        session = self._make_session(mock_session_series, ['VTA-r'], ['r'])
+        session.photometry = {}
+        session._match_photometry_to_metadata()  # should not raise
+
+    def test_empty_brain_region_noop(self, mock_session_series):
+        """Empty brain_region list → no error."""
+        session = self._make_session(mock_session_series, [], [])
+        t = np.linspace(0, 10, 100)
+        session.photometry = {
+            'GCaMP': pd.DataFrame({'VTA': np.ones(100)}, index=t),
+        }
+        session._match_photometry_to_metadata()  # should not raise
+
+
 class TestBlockPerformance:
     """Tests for PhotometrySession.block_performance()."""
 

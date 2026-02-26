@@ -132,6 +132,35 @@ class TestNormalizeResponses:
         assert normalized.shape == responses.shape
 
 
+class TestComputeResponseMagnitude:
+    def test_constant_signal_1d(self):
+        """Constant 1D signal returns that constant in any window."""
+        from iblnm.analysis import compute_response_magnitude
+        tpts = np.linspace(-1, 1, 61)
+        response = np.full(len(tpts), 2.0)
+        result = compute_response_magnitude(response, tpts, window=(0.1, 0.35))
+        np.testing.assert_allclose(result, 2.0)
+
+    def test_per_trial_means_2d(self):
+        """2D array returns per-trial means."""
+        from iblnm.analysis import compute_response_magnitude
+        tpts = np.linspace(-1, 1, 61)
+        responses = np.stack([np.full(len(tpts), v) for v in [1.0, 3.0, 5.0]])
+        result = compute_response_magnitude(responses, tpts, window=(0.1, 0.35))
+        np.testing.assert_allclose(result, [1.0, 3.0, 5.0])
+
+    def test_nan_samples_ignored(self):
+        """NaN samples are excluded via nanmean."""
+        from iblnm.analysis import compute_response_magnitude
+        tpts = np.linspace(-1, 1, 61)
+        response = np.full(len(tpts), 4.0)
+        # Set some samples in the window to NaN
+        mask = (tpts >= 0.1) & (tpts < 0.2)
+        response[mask] = np.nan
+        result = compute_response_magnitude(response, tpts, window=(0.1, 0.35))
+        np.testing.assert_allclose(result, 4.0)
+
+
 class TestResampleSignal:
     def test_uniform_output(self):
         """Output timestamps should be exactly uniform at target_fs."""

@@ -99,6 +99,9 @@ class FewUniqueSamples(Exception):
 class QCValidationError(Exception):
     """One or more raw QC checks failed (band inversions, early samples)."""
 
+class AmbiguousRegionMapping(Exception):
+    """Photometry columns cannot be unambiguously mapped to session brain_region metadata."""
+
 
 # =============================================================================
 # Logging helpers
@@ -194,7 +197,8 @@ def validate_neuromodulator(session):
 @exception_logger
 def validate_target(session):
     for target in session['brain_region']:
-        if target not in VALID_TARGETS:
+        bare = target.rsplit('-', 1)[0] if target.endswith(('-l', '-r')) else target
+        if bare not in VALID_TARGETS:
             raise InvalidTarget(f"Target {target} not in {VALID_TARGETS}")
     return None
 
@@ -208,7 +212,7 @@ def _get_fiber_hemisphere_lookup():
     df_fibers = pd.read_csv(FIBERS_FPATH)
     df_fibers = df_fibers.copy()
     df_fibers['hemi'] = df_fibers['X-ml_um'].apply(
-        lambda x: 'L' if x > 0 else ('R' if x < 0 else None)
+        lambda x: 'l' if x > 0 else 'r'
     )
     grouped = df_fibers.groupby(['subject', 'targeted_region'])['hemi']
     return {key: vals.iloc[0] if vals.nunique() == 1 else None
@@ -221,7 +225,8 @@ def validate_hemisphere(session, fiber_lookup=None):
         fiber_lookup = _get_fiber_hemisphere_lookup()
     subject = session['subject']
     for region, hemi_name in zip(session['brain_region'], session['hemisphere']):
-        hemi_fiber = fiber_lookup.get((subject, region))
+        bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
+        hemi_fiber = fiber_lookup.get((subject, bare))
         if hemi_name is not None and hemi_fiber is not None and hemi_name != hemi_fiber:
             raise HemisphereMismatch(
                 f"{subject} {region}: name={hemi_name}, coordinate={hemi_fiber}"

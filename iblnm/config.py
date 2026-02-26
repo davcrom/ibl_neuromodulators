@@ -14,6 +14,7 @@ INSERTIONS_FPATH = PROJECT_ROOT / 'metadata/insertions.csv'  # file with subject
 FIBERS_FPATH = PROJECT_ROOT / 'metadata/fibers.csv'
 QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
 PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
+EVENTS_FPATH = PROJECT_ROOT / 'data/events.pqt'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 
 # Per-script error logs (unified schema: eid, error_type, error_message, traceback)

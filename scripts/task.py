@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from iblnm.config import (
     SESSIONS_FPATH, PERFORMANCE_FPATH, TASK_LOG_FPATH, QUERY_DATABASE_LOG_FPATH,
-    SESSION_TYPES_TO_ANALYZE,
+    SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE
 )
 from iblnm.io import _get_default_connection
 from iblnm.util import make_log_entry, LOG_COLUMNS, collect_session_errors

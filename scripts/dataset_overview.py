@@ -18,7 +18,7 @@ from iblnm.config import (
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH,
     TASK_LOG_FPATH,
     ERRORS_FPATH, FIGURE_DPI,
-    SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
+    SUBJECTS_TO_EXCLUDE, SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
 )
 from iblnm.util import (
     resolve_duplicate_group,
@@ -51,14 +51,18 @@ df_sessions = collect_session_errors(
 )
 
 # Filter: remove sessions with fatal metadata errors
-fatal_errors = {'InvalidNeuromodulator', 'InvalidTarget', 'InvalidTargetNM'}
-df_sessions = df_sessions[
-    df_sessions['logged_errors'].apply(lambda errs: not any(e in fatal_errors for e in errs))
-].copy()
-n_after_fatal = len(df_sessions)
+# ~fatal_errors = {'InvalidNeuromodulator', 'InvalidTarget', 'InvalidTargetNM'}
+# ~df_sessions = df_sessions[
+    # ~df_sessions['logged_errors'].apply(lambda errs: not any(e in fatal_errors for e in errs))
+# ~].copy()
+# ~n_after_fatal = len(df_sessions)
 
-# Filter: keep only session types valid for analysis
-df_sessions = df_sessions[df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE)].copy()
+
+# Filter to sessions that are valid for task analysis
+df_sessions = df_sessions[
+    df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE) &
+    ~df_sessions['subject'].isin(SUBJECTS_TO_EXCLUDE)
+]
 n_after_type = len(df_sessions)
 
 # Deduplicate: one session per (subject, day_n), prefer sessions without disqualifying errors
@@ -73,8 +77,7 @@ n_after_dedup = len(df_sessions)
 
 print("\nSession counts:")
 print(f"  Registered: {n_total}")
-print(f"  After metadata filter: {n_after_fatal} (-{n_total - n_after_fatal})")
-print(f"  After session type filter: {n_after_type} (-{n_after_fatal - n_after_type})")
+print(f"  After session type filter: {n_after_type} (-{n_total - n_after_type})")
 print(f"  After deduplication: {n_after_dedup} (-{n_after_type - n_after_dedup})")
 
 
@@ -89,13 +92,12 @@ df_sessions['has_raw_data'] = _errs.apply(
     lambda e: 'MissingRawData' not in e)
 
 # Matrix 3: complete data (extracted + sufficient trials + trials in photometry time)
-_complete_blockers = {'MissingRawData', 'MissingExtractedData',
-                      'InsufficientTrials', 'TrialsNotInPhotometryTime'}
+_complete_blockers = {'MissingExtractedData', 'InsufficientTrials', 'TrialsNotInPhotometryTime'}
 df_sessions['has_complete_data'] = _errs.apply(
     lambda e: not any(err in _complete_blockers for err in e))
 
 # Matrix 4: passes basic photometry QC
-_qc_blockers = {'MissingRawData', 'TrialsNotInPhotometryTime',
+_qc_blockers = {'MissingExtractedData', 'InsufficientTrials', 'TrialsNotInPhotometryTime',
                 'QCValidationError', 'FewUniqueSamples'}
 df_sessions['passes_basic_qc'] = _errs.apply(
     lambda e: not any(err in _qc_blockers for err in e))

@@ -106,6 +106,28 @@ def resample_signal(signal, target_fs=TARGET_FS):
     return pd.Series(interp(t_uniform), index=t_uniform)
 
 
+def compute_response_magnitude(response, tpts, window):
+    """Mean response within a time window.
+
+    Parameters
+    ----------
+    response : np.ndarray
+        Shape (n_samples,) or (n_trials, n_samples).
+    tpts : np.ndarray
+        Shape (n_samples,). Time points corresponding to the last axis.
+    window : tuple of float
+        (start, end) in seconds.
+
+    Returns
+    -------
+    float or np.ndarray
+        Scalar for 1D input, shape (n_trials,) for 2D input.
+    """
+    i0 = np.searchsorted(tpts, window[0])
+    i1 = np.searchsorted(tpts, window[1])
+    return np.nanmean(response[..., i0:i1], axis=-1)
+
+
 def normalize_responses(responses, tpts, bwin=(-0.1, 0), divide=True):
     i0, i1 = tpts.searchsorted(bwin)
     bvals = responses[:, i0:i1].mean(axis=1, keepdims=True)

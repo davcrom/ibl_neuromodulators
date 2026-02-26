@@ -83,9 +83,10 @@ def get_session_info(session, one=None):
         session['_datasets_from_session_dict'] = []
 
     # Add brain regions from experiment description
+    # brain_region keeps full location including hemisphere suffix (e.g. 'VTA-r', 'DR')
     fibers = session_desc.get('devices', {}).get('neurophotometrics', {}).get('fibers', {})
     regions = [fiber.get('location', '') for fiber in fibers.values()]
-    session['brain_region'] = [region.split('-')[0] for region in regions]
+    session['brain_region'] = regions
     session['hemisphere'] = [
         region[-1] if region.endswith('-l') or region.endswith('-r') else None for region in regions
         ]
