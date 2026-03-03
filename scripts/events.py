@@ -23,7 +23,7 @@ from matplotlib.ticker import FormatStrFormatter
 from tqdm import tqdm
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, EVENTS_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, EVENTS_FPATH, EVENTS_LOG_FPATH,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, VALID_TARGETNMS,
     RESPONSE_EVENTS, RESPONSE_WINDOWS, FIGURE_DPI,
@@ -39,7 +39,7 @@ from iblnm.analysis import compute_response_magnitude
 _LATE_WINDOW_EVENTS = {'feedback_times'}
 
 
-def run_events_pipeline(df_recordings, one=None, h5_dir=None):
+def run_events_pipeline(df_recordings, one=None, h5_dir=None, error_log=None):
     """Extract trial-level response magnitudes from pre-computed H5 files.
 
     Parameters
@@ -51,6 +51,8 @@ def run_events_pipeline(df_recordings, one=None, h5_dir=None):
         ONE instance required by PhotometrySession constructor.
     h5_dir : Path, optional
         Directory containing {eid}.h5 files. Defaults to SESSIONS_H5_DIR.
+    error_log : list, optional
+        Mutable list to collect error dicts (unified schema).
 
     Returns
     -------
@@ -76,7 +78,19 @@ def run_events_pipeline(df_recordings, one=None, h5_dir=None):
         ps = PhotometrySession(rec, one=one)
         ps.load_h5(h5_path, groups=['trials', 'responses'])
 
-        if ps.responses is None or ps.trials is None:
+        if getattr(ps, 'responses', None) is None or getattr(ps, 'trials', None) is None:
+            missing = []
+            if getattr(ps, 'responses', None) is None:
+                missing.append('responses')
+            if getattr(ps, 'trials', None) is None:
+                missing.append('trials')
+            if error_log is not None:
+                error_log.append({
+                    'eid': eid,
+                    'error_type': 'MissingResponses',
+                    'error_message': f"H5 missing groups: {', '.join(missing)}",
+                    'traceback': '',
+                })
             continue
 
         # Check region exists in H5
@@ -277,7 +291,7 @@ if __name__ == '__main__':
 
     # Derive QC flag (same logic as dataset_overview.py)
     _qc_blockers = {
-        'MissingExtractedData', 'InsufficientTrials',
+        'MissingResponses', 'InsufficientTrials',
         'TrialsNotInPhotometryTime', 'QCValidationError', 'FewUniqueSamples',
     }
     df_sessions = df_sessions[
@@ -302,7 +316,8 @@ if __name__ == '__main__':
     # Run pipeline
     # =========================================================================
     one = _get_default_connection()
-    df_events = run_events_pipeline(df_recordings, one=one)
+    error_log = []
+    df_events = run_events_pipeline(df_recordings, one=one, error_log=error_log)
 
     if len(df_events) == 0:
         print("No events extracted. Check H5 files exist.")
@@ -313,6 +328,9 @@ if __name__ == '__main__':
     # =========================================================================
     EVENTS_FPATH.parent.mkdir(parents=True, exist_ok=True)
     df_events.to_parquet(EVENTS_FPATH, index=False)
+
+    if error_log:
+        pd.DataFrame(error_log).to_parquet(EVENTS_LOG_FPATH, index=False)
 
     # =========================================================================
     # Summary

@@ -7,7 +7,7 @@ from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import STRAIN2NM, LINE2NM
 
-from iblnm.util import exception_logger
+from iblnm.validation import exception_logger
 
 
 # Values to extract from the session dict
@@ -62,16 +62,13 @@ def get_subject_info(session, one=None):
 
 
 @exception_logger
-def get_session_info(session, one=None):
-    """Unpack metadata from session dict."""
+def get_session_dict(session, one=None):
+    """Unpack metadata from the Alyx session dict (end_time, lab, users)."""
     if one is None:
         one = _get_default_connection()
 
-    # Fetch dicts with session info
     session_dict = one.alyx.rest('sessions', 'read', id=session['eid'])
-    session_desc = one.load_dataset(session['eid'], '*experiment.desc*')
 
-    # Add select keys from session dict
     for key in SESSIONDICT_KEYS:
         if key in session_dict:
             session[key] = session_dict[key]
@@ -82,16 +79,50 @@ def get_session_info(session, one=None):
     else:
         session['_datasets_from_session_dict'] = []
 
-    # Add brain regions from experiment description
-    # brain_region keeps full location including hemisphere suffix (e.g. 'VTA-r', 'DR')
-    fibers = session_desc.get('devices', {}).get('neurophotometrics', {}).get('fibers', {})
-    regions = [fiber.get('location', '') for fiber in fibers.values()]
-    session['brain_region'] = regions
-    session['hemisphere'] = [
-        region[-1] if region.endswith('-l') or region.endswith('-r') else None for region in regions
-        ]
-
     return session
+
+
+def _regions_from_hemisphere(regions):
+    """Derive hemisphere list from region names."""
+    return [r[-1] if r.endswith(('-l', '-r')) else None for r in regions]
+
+
+@exception_logger
+def get_brain_region(session, one=None):
+    """Populate brain_region and hemisphere from experiment description or locations file.
+
+    Tries the experiment description first. If missing, falls back to
+    photometryROI.locations.pqt. Raises ALFObjectNotFound if neither source
+    has brain region data.
+    """
+    if one is None:
+        one = _get_default_connection()
+
+    # Try experiment description
+    try:
+        session_desc = one.load_dataset(session['eid'], '*experiment.desc*')
+        fibers = session_desc.get('devices', {}).get('neurophotometrics', {}).get('fibers', {})
+        regions = [fiber.get('location', '') for fiber in fibers.values()]
+        session['brain_region'] = regions
+        session['hemisphere'] = _regions_from_hemisphere(regions)
+        return session
+    except ALFObjectNotFound:
+        pass
+
+    # Fallback: photometry locations file
+    try:
+        loc = one.load_dataset(session['eid'], 'photometryROI.locations.pqt')
+        regions = list(loc['brain_region'].values)
+        session['brain_region'] = regions
+        session['hemisphere'] = _regions_from_hemisphere(regions)
+        return session
+    except ALFObjectNotFound:
+        pass
+
+    raise ALFObjectNotFound(
+        f"No brain_region source for {session['eid']}: "
+        f"experiment description and photometryROI.locations.pqt both missing"
+    )
 
 
 @exception_logger

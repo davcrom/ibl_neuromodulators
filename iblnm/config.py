@@ -22,6 +22,7 @@ QUERY_DATABASE_LOG_FPATH = PROJECT_ROOT / 'metadata/query_database_log.pqt'
 PHOTOMETRY_LOG_FPATH = PROJECT_ROOT / 'metadata/photometry_log.pqt'
 TASK_LOG_FPATH = PROJECT_ROOT / 'metadata/task_log.pqt'
 WHEEL_LOG_FPATH = PROJECT_ROOT / 'metadata/wheel_log.pqt'
+EVENTS_LOG_FPATH = PROJECT_ROOT / 'metadata/events_log.pqt'
 ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
 
 

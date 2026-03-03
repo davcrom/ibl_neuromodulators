@@ -69,6 +69,9 @@ class TrueDuplicateSession(Exception):
 class MissingExtractedData(Exception):
     """Extracted dataset not found on Alyx (raw data exists)."""
 
+class MissingResponses(Exception):
+    """Pre-computed peri-event responses not found in H5 file."""
+
 class MissingRawData(Exception):
     """Raw dataset not found on Alyx."""
 

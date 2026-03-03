@@ -1,5 +1,4 @@
 import argparse
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 tqdm.pandas()
@@ -10,7 +9,7 @@ from iblnm.config import (
     SESSION_SCHEMA, SESSIONS_FPATH, SESSIONS_QC_FPATH, QUERY_DATABASE_LOG_FPATH, VALID_TARGETS,
 )
 from iblnm.io import (
-    get_subject_info, get_session_info, get_datasets, get_extended_qc,
+    get_subject_info, get_session_dict, get_brain_region, get_datasets, get_extended_qc,
 )
 from iblnm.util import (
     enforce_schema, get_session_type, get_targetNM, get_session_length,
@@ -81,39 +80,15 @@ df_sessions.apply(validate_line, axis='columns', exlog=error_log)
 df_sessions.apply(validate_neuromodulator, axis='columns', exlog=error_log)
 
 
-print("Getting experiment descriptions...")
+print("Getting session metadata...")
 df_sessions = df_sessions.progress_apply(
-    get_session_info, axis='columns', exlog=error_log
+    get_session_dict, axis='columns', exlog=error_log
 ).copy()
 
-# TEMPFIX: for sessions where get_session_info failed to populate brain_region
-# (e.g. missing experiment description), try the photometry locations file instead
-from one.alf.exceptions import ALFObjectNotFound as _ALFObjectNotFound
-_empty_br = df_sessions['brain_region'].apply(
-    lambda x: not isinstance(x, (list, np.ndarray)) or len(x) == 0
-)
-print(f"  {_empty_br.sum()} sessions with empty brain_region, trying locations file...")
-_n_filled = 0
-for idx in df_sessions.index[_empty_br]:
-    eid = df_sessions.at[idx, 'eid']
-    try:
-        loc = one.load_dataset(eid, 'photometryROI.locations.pqt')
-        regions = list(loc['brain_region'].values)
-        if regions:
-            df_sessions.at[idx, 'brain_region'] = regions
-            df_sessions.at[idx, 'hemisphere'] = [
-                r[-1] if r.endswith(('-l', '-r')) else None for r in regions
-            ]
-            _n_filled += 1
-    except _ALFObjectNotFound:
-        pass
-    except Exception as e:
-        error_log.append({
-            'eid': eid, 'error_type': type(e).__name__,
-            'error_message': str(e), 'traceback': None,
-        })
-print(f"  Filled {_n_filled} sessions from locations file")
-
+print("Getting brain regions...")
+df_sessions = df_sessions.progress_apply(
+    get_brain_region, axis='columns', exlog=error_log
+).copy()
 df_sessions.apply(validate_target, axis='columns', exlog=error_log)
 df_sessions.apply(validate_hemisphere, axis='columns', exlog=error_log)
 
