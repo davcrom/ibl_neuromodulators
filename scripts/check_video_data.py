@@ -20,10 +20,13 @@ from tqdm import tqdm
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_QC_FPATH,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE,
-    QCVAL2NUM, DATASET_CATEGORIES
+    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
 )
 from iblnm.io import _get_default_connection
-from iblnm.util import has_dataset_category
+from iblnm.util import (
+    has_dataset_category, collect_session_errors,
+    resolve_duplicate_group,
+)
 
 # --- Parameters ---
 VIDEO_PROBLEMS_FPATH = PROJECT_ROOT / 'metadata/iblnm_video_problems.csv'
@@ -67,7 +70,7 @@ QCVAL2NUM = {
 if __name__ == "__main__":
 
     # =========================================================================
-    # Step 1: Load and filter
+    # Step 1: Load and filter (matches dataset_overview.py pipeline)
     # =========================================================================
 
     print(f"Loading sessions from {SESSIONS_FPATH}")
@@ -75,16 +78,38 @@ if __name__ == "__main__":
     n_total = len(df_sessions)
     print(f"  Total sessions: {n_total}")
 
-    # Keep analyzable session types only
-    valid_subject = ~df_sessions['subject'].isin(SUBJECTS_TO_EXCLUDE)
-    valid_session_type = df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE)
-    valid_data = df_sessions.apply(
-        lambda x: all([has_dataset_category(x, c) for c in DATA_CATEGORIES]),
-        axis='columns'
+    # Attach upstream error logs
+    df_sessions = collect_session_errors(
+        df_sessions,
+        [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH],
     )
 
-    df = df_sessions[valid_subject & valid_session_type & valid_data]
-    print(f"  Valid sessions: {len(df)}")
+    # Filter by session type and subject
+    df_sessions = df_sessions[
+        df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE) &
+        ~df_sessions['subject'].isin(SUBJECTS_TO_EXCLUDE)
+    ]
+    n_after_type = len(df_sessions)
+
+    # Deduplicate: one session per (subject, day_n)
+    dup_log = []
+    df_sessions = (
+        df_sessions.groupby(['subject', 'day_n'], group_keys=False)
+        .apply(resolve_duplicate_group, exlog=dup_log, include_groups=True)
+        .reset_index(drop=True)
+    )
+    n_after_dedup = len(df_sessions)
+
+    print(f"  After session type / subject filter: {n_after_type} (-{n_total - n_after_type})")
+    print(f"  After deduplication: {n_after_dedup} (-{n_after_type - n_after_dedup})")
+
+    # Keep only sessions with required video datasets
+    valid_data = df_sessions.apply(
+        lambda x: all(has_dataset_category(x, c) for c in DATA_CATEGORIES),
+        axis='columns',
+    )
+    df = df_sessions[valid_data].copy()
+    print(f"  With required datasets: {len(df)} (-{n_after_dedup - len(df)})")
 
     # Merge with QC data
     print(f"\nLoading QC from {SESSIONS_QC_FPATH}")
@@ -201,19 +226,13 @@ if __name__ == "__main__":
     df_batches.to_csv(VIDEO_BATCHES_FPATH)
 
     # Final summary
-    n_excluded_subjects = (~valid_subject).sum()
-    n_excluded_type = (~valid_session_type).sum()
-    n_excluded_data = (~valid_data).sum()
-
     print(f"\n{'='*50}")
     print("Summary")
     print(f"{'='*50}")
     print(f"Total sessions: {n_total}")
-    print(f"Excluded:")
-    print(f"  Subjects: {n_excluded_subjects}")
-    print(f"  Session type: {n_excluded_type}")
-    print(f"  Missing datasets: {n_excluded_data}")
-    print(f"Valid sessions: {len(df)}")
+    print(f"  After type/subject filter: {n_after_type}")
+    print(f"  After deduplication: {n_after_dedup}")
+    print(f"  With required datasets: {len(df)}")
     print(f"  Video times downloaded: {n_valid_video}, failed: {n_download_errors}")
     print(f"  Problems: {len(df_problems)}")
     print(f"  Good: {n_good} ({n_batches} batches)")

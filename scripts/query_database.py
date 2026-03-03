@@ -1,12 +1,11 @@
 import argparse
 import pandas as pd
 from tqdm import tqdm
-tqdm.pandas()
 
 from one.api import ONE
 
 from iblnm.config import (
-    SESSION_SCHEMA, SESSIONS_FPATH, SESSIONS_QC_FPATH, QUERY_DATABASE_LOG_FPATH, VALID_TARGETS,
+    SESSION_SCHEMA, SESSIONS_FPATH, SESSIONS_QC_FPATH, QUERY_DATABASE_LOG_FPATH,
 )
 from iblnm.io import (
     get_subject_info, get_session_dict, get_brain_region, get_datasets, get_extended_qc,
@@ -18,9 +17,10 @@ from iblnm.util import (
 from iblnm.validation import (
     validate_subject, validate_strain, validate_line,
     validate_neuromodulator, validate_target, validate_hemisphere,
-    validate_datasets,
+    validate_datasets, fill_hemisphere_from_fiber_insertion_table,
 )
 
+tqdm.pandas()
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Query IBL fibrephotometry database')
@@ -88,6 +88,9 @@ df_sessions = df_sessions.progress_apply(
 print("Getting brain regions...")
 df_sessions = df_sessions.progress_apply(
     get_brain_region, axis='columns', exlog=error_log
+).copy()
+df_sessions = df_sessions.progress_apply(
+    fill_hemisphere_from_fiber_insertion_table, axis='columns', exlog=error_log
 ).copy()
 df_sessions.apply(validate_target, axis='columns', exlog=error_log)
 df_sessions.apply(validate_hemisphere, axis='columns', exlog=error_log)
