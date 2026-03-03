@@ -9,6 +9,8 @@ from iblnm.config import STRAIN2NM, LINE2NM
 
 from iblnm.validation import exception_logger
 
+from iblnm.util import traj2coord
+
 
 # Values to extract from the session dict
 SESSIONDICT_KEYS = ['users', 'lab', 'end_time']
@@ -176,3 +178,41 @@ def get_extended_qc(series, one=None):
             raise ValueError(f"Unexpected QC value type for '{key}': {type(val)}")
 
     return series
+
+@exception_logger
+def get_fiber_coordinates(session, all_trajectories=None, one=None):
+
+    if one is None:
+        one = _get_default_connection()
+
+    if all_trajectories is None:
+        # FIXME: there is something wrong with the session dicts nested in Alyx
+        # trajectories for this project (None, no subject, no project)
+        # TEMPFIX: use the full list of all trajectories, search by chonic
+        # insertion id (see below)
+        all_trajectories = one.alyx.rest('trajectories', 'list')
+
+    subject = session['subject'] if isinstance(session, pd.Series) else session
+    insertions = one.alyx.rest('chronic-insertions', 'list', subject=subject)
+    if len(insertions) == 0:
+        print(f"No chronic insertions found for subject {subject}.")
+        return
+
+    iids = [i['id'] for i in insertions]
+    coords = {}
+    for iid in iids:
+        trajectory = [
+            t for t in all_trajectories if t['chronic_insertion'] == iid
+            ]
+        assert len(trajectory) == 1
+        trajectory = trajectory[0]
+        coords[trajectory['probe_name']] = traj2coord(**trajectory)
+
+    # FIXME: return session as pd.Series with coords inserted
+    return coords
+
+
+
+
+
+
