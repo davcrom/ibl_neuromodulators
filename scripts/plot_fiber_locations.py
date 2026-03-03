@@ -9,6 +9,14 @@ from iblatlas.atlas import AllenAtlas
 from iblnm.config import SESSIONS_FPATH, QCPHOTOMETRY_FPATH, TRAJECTORIES_FPATH
 from iblnm.io import _get_default_connection, get_fiber_coordinates
 
+# Assign point color based on QC value
+ba = AllenAtlas()
+# x, y axes for each slice view (indices into ML=0, AP=1, DV=2 coord array)
+slice_xy = {'coronal': (0, 2), 'sagittal': (1, 2), 'horizontal': (0, 1)}
+slice_fn = {'coronal': ba.plot_cslice, 'sagittal': ba.plot_sslice, 'horizontal': ba.plot_hslice}
+slice_coord_idx = {'coronal': 1, 'sagittal': 0, 'horizontal': 2}
+
+cmap = plt.cm.Reds
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(
@@ -47,22 +55,12 @@ if args.qc_metric and QCPHOTOMETRY_FPATH.exists() and SESSIONS_FPATH.exists():
     eids = df_sessions[df_sessions['subject'] == args.subject]['eid']
     if len(eids) > 0:
         qc_val = df_qc[df_qc['eid'].isin(eids)][args.qc_metric].mean()
-        clevels = df_qc[args.qc_metric].min(), df_qc[args.qc_metric].max()
+        vmin, vmax = df_qc[args.qc_metric].min(), df_qc[args.qc_metric].max()
+        norm = plt.Normalize(vmin=vmin, vmax=vmax)
+        facecolor = cmap(norm(qc_val))
 else:
     print(f"No photometry QC values for subject {args.subject}.")
-    qc_val = 1.
-    clevels = None
-
-# Assign point color based on QC value
-cmap = plt.cm.Reds
-norm = plt.Normalize(vmin=clevels[0], vmax=clevels[1])
-facecolor = cmap(norm(qc_val))
-
-ba = AllenAtlas()
-# x, y axes for each slice view (indices into ML=0, AP=1, DV=2 coord array)
-slice_xy = {'coronal': (0, 2), 'sagittal': (1, 2), 'horizontal': (0, 1)}
-slice_fn = {'coronal': ba.plot_cslice, 'sagittal': ba.plot_sslice, 'horizontal': ba.plot_hslice}
-slice_coord_idx = {'coronal': 1, 'sagittal': 0, 'horizontal': 2}
+    facecolor = cmap(8.)
 
 views = ['sagittal', 'coronal', 'horizontal']
 fig, axs = plt.subplots(len(coords), 3, figsize=(10, 10))
