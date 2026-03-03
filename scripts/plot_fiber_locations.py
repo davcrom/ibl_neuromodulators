@@ -1,3 +1,23 @@
+"""
+Plot Fiber Insertion Locations on Brain Slices
+
+For a given subject, retrieves chronic fiber insertion trajectories from Alyx
+and plots each fiber's tip coordinates on coronal, sagittal, and horizontal
+brain atlas slices. Optionally colors the markers by a photometry QC metric.
+
+Trajectories are cached in metadata/trajectories.json after the first download;
+use --redownload to refresh the cache.
+
+Usage
+-----
+    python plot_fiber_locations.py <subject> [--qc_metric METRIC] [--redownload]
+
+Examples
+--------
+    python plot_fiber_locations.py SWC_054
+    python plot_fiber_locations.py SWC_054 --qc_metric n_unique_samples
+    python plot_fiber_locations.py SWC_054 --redownload
+"""
 import argparse
 import json
 
@@ -20,11 +40,13 @@ cmap = plt.cm.Reds
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(
-    description='Get a fiber insertion trajectory and plot on a brain slice.'
-    )
-parser.add_argument('subject')
-parser.add_argument('--fiber', '-f')
-parser.add_argument('--qc_metric', '-q')
+    description=__doc__,
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+)
+parser.add_argument('subject', help='Alyx subject name (e.g. SWC_054)')
+parser.add_argument('--qc_metric', '-q', metavar='METRIC',
+                    help='Photometry QC column to use for marker color '
+                         '(e.g. n_unique_samples). Requires qc_photometry.pqt.')
 parser.add_argument('--redownload', action='store_true',
                     help='Re-download trajectories from Alyx, ignoring cache')
 args = parser.parse_args()
