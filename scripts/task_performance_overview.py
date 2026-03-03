@@ -7,7 +7,6 @@ pre-computed performance data.
 Input: metadata/performance.pqt
 Output: figures/task_performance/*.png
 """
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -17,7 +16,6 @@ from iblnm.config import (
     PERFORMANCE_FPATH,
     PROJECT_ROOT,
     TARGETNM2POSITION,
-    NM_COLORS,
 )
 
 # Targets to include in overview (exclude MR, SI, PPT)
@@ -127,7 +125,7 @@ if __name__ == '__main__':
     # Filter out sessions with invalid block structure
     if 'block_structure_valid' in df_performance.columns:
         n_total = len(df_performance)
-        df_performance = df_performance[df_performance['block_structure_valid'] == True]
+        df_performance = df_performance[df_performance['block_structure_valid']]
         n_excluded = n_total - len(df_performance)
         if n_excluded > 0:
             print(f"Excluding {n_excluded} sessions with invalid/missing block structure")
@@ -135,7 +133,7 @@ if __name__ == '__main__':
     # Psychometric figure (biased/ephys sessions)
     df_biased_ephys = df_performance[df_performance['session_type'].isin(['biased', 'ephys'])]
     if 'has_extracted_photometry_signal' in df_biased_ephys.columns:
-        df_biased_ephys = df_biased_ephys[df_biased_ephys['has_extracted_photometry_signal'] == True]
+        df_biased_ephys = df_biased_ephys[df_biased_ephys['has_extracted_photometry_signal']]
 
     if len(df_biased_ephys) > 0:
         print("\nGenerating psychometric figure...")
