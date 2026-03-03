@@ -17,29 +17,28 @@ Output: data/events.pqt, figures/events/*.svg
 """
 import numpy as np
 import pandas as pd
-from scipy.stats import sem as scipy_sem
 from matplotlib import pyplot as plt
-from matplotlib.ticker import FormatStrFormatter
 from tqdm import tqdm
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, EVENTS_FPATH, EVENTS_LOG_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, EVENTS_FPATH,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
-    SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, VALID_TARGETNMS,
+    SUBJECTS_TO_EXCLUDE, TARGET2NM, TARGETNMS_TO_ANALYZE,
     RESPONSE_EVENTS, RESPONSE_WINDOWS, FIGURE_DPI,
-    TARGETNM_COLORS,
 )
+from iblnm.vis import plot_relative_contrast
 from iblnm.data import PhotometrySession
 from iblnm.io import _get_default_connection
-from iblnm.util import collect_session_errors
+from iblnm.util import collect_session_errors, fill_empty_lists_from_group
 from iblnm.analysis import compute_response_magnitude
 
+plt.ion()
 
 # Events for which the late window is meaningful (not masked by a subsequent event)
 _LATE_WINDOW_EVENTS = {'feedback_times'}
 
 
-def run_events_pipeline(df_recordings, one=None, h5_dir=None, error_log=None):
+def run_events_pipeline(df_recordings, one=None, h5_dir=None):
     """Extract trial-level response magnitudes from pre-computed H5 files.
 
     Parameters
@@ -51,8 +50,6 @@ def run_events_pipeline(df_recordings, one=None, h5_dir=None, error_log=None):
         ONE instance required by PhotometrySession constructor.
     h5_dir : Path, optional
         Directory containing {eid}.h5 files. Defaults to SESSIONS_H5_DIR.
-    error_log : list, optional
-        Mutable list to collect error dicts (unified schema).
 
     Returns
     -------
@@ -69,6 +66,7 @@ def run_events_pipeline(df_recordings, one=None, h5_dir=None, error_log=None):
                        desc="Extracting response magnitudes"):
         eid = rec['eid']
         brain_region = rec['brain_region']
+        hemisphere = rec['hemisphere']
         h5_path = h5_dir / f'{eid}.h5'
 
         if not h5_path.exists():
@@ -76,21 +74,11 @@ def run_events_pipeline(df_recordings, one=None, h5_dir=None, error_log=None):
 
         # Load session data from H5
         ps = PhotometrySession(rec, one=one)
+        # FIXME: update load_h5 to throw error if requested groups are missing
         ps.load_h5(h5_path, groups=['trials', 'responses'])
 
+        # Check responses and trial data
         if getattr(ps, 'responses', None) is None or getattr(ps, 'trials', None) is None:
-            missing = []
-            if getattr(ps, 'responses', None) is None:
-                missing.append('responses')
-            if getattr(ps, 'trials', None) is None:
-                missing.append('trials')
-            if error_log is not None:
-                error_log.append({
-                    'eid': eid,
-                    'error_type': 'MissingResponses',
-                    'error_message': f"H5 missing groups: {', '.join(missing)}",
-                    'traceback': '',
-                })
             continue
 
         # Check region exists in H5
@@ -98,8 +86,8 @@ def run_events_pipeline(df_recordings, one=None, h5_dir=None, error_log=None):
         if brain_region not in available_regions:
             continue
 
-        # Derive hemisphere from H5 region name
-        hemisphere = brain_region[-1] if brain_region.endswith(('-l', '-r')) else None
+        # Derive hemisphere from region name
+        # ~hemisphere = brain_region[-1] if brain_region.endswith(('-l', '-r')) else None
 
         # Mask responses at subsequent events, then subtract baseline
         responses = ps.mask_subsequent_events(ps.responses)
@@ -176,24 +164,26 @@ def add_relative_contrast(df):
       side              : 'contra' or 'ipsi'
     """
     df = df.copy()
-    df['hemi_sign'] = df['hemisphere'].map({'l': 1, 'r': -1})
+    # Midline structures (e.g. DR) have hemisphere=None; default hemi_sign=1
+    # so right-stimulus is contra, matching the right-hemisphere convention.
+    df['hemi_sign'] = df['hemisphere'].map({'l': 1, 'r': -1}).fillna(1)
     df['relative_contrast'] = df['signed_contrast'] * df['hemi_sign']
-    # NaN relative_contrast (missing hemisphere) → NaN side
-    df['side'] = np.where(df['relative_contrast'] >= 0, 'contra', 'ipsi')
-    df.loc[df['hemi_sign'].isna(), 'side'] = np.nan
+    # Use np.signbit to correctly assign -0.0 (right hemisphere, zero contrast) to ipsi.
+    # np.signbit(-0.0) = True → ~True = False → 'ipsi'; np.signbit(0.0) = False → 'contra'.
+    df['side'] = np.where(~np.signbit(df['relative_contrast'].values), 'contra', 'ipsi')
     return df
 
 
-def plot_response_magnitude(df_events, response_col, figures_dir):
-    """Plot response magnitude by contrast, feedback, and hemisphere.
+def plot_response_magnitude_figures(df_events, response_col, figures_dir):
+    """Orchestrate response magnitude plots for all target-NM × event groups.
 
-    One figure per target-NM × event. Each figure has two panels (contra, ipsi)
-    with errorbar plots showing mean-of-subject-means ± SEM across subjects.
+    Filters data, computes subject-demeaned responses, calls
+    ``vis.plot_relative_contrast`` for each group, and saves SVG files.
 
     Parameters
     ----------
     df_events : pd.DataFrame
-        Events table with laterality columns added.
+        Events table with laterality columns (side, contrast, relative_contrast).
     response_col : str
         Column name for the response magnitude ('response_early' or 'response_late').
     figures_dir : Path
@@ -210,63 +200,20 @@ def plot_response_magnitude(df_events, response_col, figures_dir):
         if n_subjects < 2:
             continue
 
+        df_group = df_group.copy()
+
+        # Subject-demean: subtract each subject's mean, add back the grand mean
+        grand_mean = df_group[response_col].mean()
+        df_group['centered_mean'] = (
+            df_group.groupby('subject')[response_col]
+            .transform(lambda x: x - x.mean())
+        ) + grand_mean
+
         event_label = event.replace('_times', '')
-        color = TARGETNM_COLORS.get(target_nm, 'black')
-
-        fig, axs = plt.subplots(1, 2, sharey=True,
-                                gridspec_kw={'wspace': 0.05})
-        fig.suptitle(
-            f'{target_nm} — {event_label} ({window_label})\n'
-            f'{df_group["eid"].nunique()} sessions, {n_subjects} subjects',
-            fontsize=10,
-        )
-
-        for ax, side in zip(axs, ['contra', 'ipsi']):
-            df_side = df_group.query('side == @side')
-            if len(df_side) == 0:
-                continue
-            contrasts = sorted(df_side['contrast'].unique())
-
-            for feedback, ls in [(1, '-'), (-1, '--')]:
-                df_fb = df_side.query('feedbackType == @feedback')
-                if len(df_fb) == 0:
-                    continue
-
-                # Mean-of-subject-means ± SEM across subjects
-                means, sems = [], []
-                for c in contrasts:
-                    df_c = df_fb[df_fb['contrast'] == c]
-                    subj_means = df_c.groupby('subject')[response_col].mean()
-                    means.append(subj_means.mean())
-                    sems.append(scipy_sem(subj_means) if len(subj_means) > 1
-                                else np.nan)
-
-                label = 'correct' if feedback == 1 else 'incorrect'
-                ax.errorbar(
-                    np.arange(len(contrasts)), means, yerr=sems,
-                    marker='o', color=color, linestyle=ls, label=label,
-                )
-
-            ax.set_xticks(np.arange(len(contrasts)))
-            ax.set_xticklabels([f'{c:.0f}' for c in contrasts])
-            ax.set_xlabel('Contrast (%)')
-            ax.axhline(0, ls='--', color='gray', lw=0.5)
-            ax.text(0.5, 0.02, side.capitalize(),
-                    ha='center', transform=ax.transAxes, fontsize=9)
-
-            if side == 'contra':
-                ax.set_ylabel('Response (z-score)')
-            else:
-                ax.tick_params(left=False)
-                ax.spines['left'].set_visible(False)
-                ax.legend(frameon=False, loc='upper left',
-                          bbox_to_anchor=(1, 1), fontsize=8)
-
-        ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-        fig.tight_layout()
+        fig = plot_relative_contrast(df_group, 'centered_mean', target_nm, event,
+                                      window_label=window_label)
         fname = f'{target_nm}_{event_label}_{window_label}.svg'
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
 
 
 if __name__ == '__main__':
@@ -285,29 +232,66 @@ if __name__ == '__main__':
 
     # Filter to analyzable sessions
     df_sessions = df_sessions[
-        df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE)
+        df_sessions['session_type'].isin(['biased', 'ephys'])
         & ~df_sessions['subject'].isin(SUBJECTS_TO_EXCLUDE)
     ]
+    print(f"  After filtering: {len(df_sessions)}")
 
-    # Derive QC flag (same logic as dataset_overview.py)
+    # Derive QC flag
     _qc_blockers = {
-        'MissingResponses', 'InsufficientTrials',
-        'TrialsNotInPhotometryTime', 'QCValidationError', 'FewUniqueSamples',
+        'MissingExtractedData', 'InsufficientTrials', 'TrialsNotInPhotometryTime',
+        'QCValidationError', 'FewUniqueSamples', 'AmbiguousRegionMapping'
     }
     df_sessions = df_sessions[
         df_sessions['logged_errors'].apply(
             lambda e: not any(err in _qc_blockers for err in e)
         )
     ].copy()
-    print(f"  After filtering & QC: {len(df_sessions)}")
+    print(f"  After QC: {len(df_sessions)}")
 
     # =========================================================================
     # Explode to one row per recording
     # =========================================================================
+    # TEMPFIX: normalize brain_region naming errors from Alyx metadata
+    # Fill empty brain_region/hemisphere from other sessions of the same subject
+    df_sessions = fill_empty_lists_from_group(df_sessions, 'brain_region')
+    df_sessions = fill_empty_lists_from_group(df_sessions, 'hemisphere')
+    n_filled = df_sessions['brain_region'].apply(lambda x: len(x) > 0 if isinstance(x, (list, np.ndarray)) else False).sum()
+    print(f"  After filling from subject group: {n_filled} sessions with brain_region")
+
+    _REGION_FIXES = {'DRN': 'DR', 'SNC': 'SNc'}
+
+    def _fix_regions(regions):
+        if not isinstance(regions, (list, np.ndarray)):
+            return regions
+        fixed = []
+        for r in regions:
+            bare = r.rsplit('-', 1)[0] if r.endswith(('-l', '-r')) else r
+            suffix = r[len(bare):]
+            fixed.append(_REGION_FIXES.get(bare, bare) + suffix)
+        return fixed
+
+    df_sessions['brain_region'] = df_sessions['brain_region'].apply(_fix_regions)
+
+    # Rebuild NM and target_NM from corrected brain_region
+    def _target_nm_from_region(region):
+        bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
+        nm = TARGET2NM.get(bare)
+        return f'{bare}-{nm}' if nm else None
+
+    df_sessions['target_NM'] = df_sessions['brain_region'].apply(
+        lambda rs: [_target_nm_from_region(r) for r in rs]
+        if isinstance(rs, (list, np.ndarray)) else rs
+    )
+    df_sessions['NM'] = df_sessions['target_NM'].apply(
+        lambda ts: ts[0].split('-')[-1]
+        if isinstance(ts, (list, np.ndarray)) and len(ts) > 0 and ts[0] else None
+    )
+
     df_recordings = (
         df_sessions
         .explode(['target_NM', 'brain_region', 'hemisphere'])
-        .loc[lambda df: df['target_NM'].isin(VALID_TARGETNMS)]
+        .loc[lambda df: df['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
         .copy()
     )
     print(f"  Recordings (session × region): {len(df_recordings)}")
@@ -316,8 +300,7 @@ if __name__ == '__main__':
     # Run pipeline
     # =========================================================================
     one = _get_default_connection()
-    error_log = []
-    df_events = run_events_pipeline(df_recordings, one=one, error_log=error_log)
+    df_events = run_events_pipeline(df_recordings, one=one)
 
     if len(df_events) == 0:
         print("No events extracted. Check H5 files exist.")
@@ -328,9 +311,6 @@ if __name__ == '__main__':
     # =========================================================================
     EVENTS_FPATH.parent.mkdir(parents=True, exist_ok=True)
     df_events.to_parquet(EVENTS_FPATH, index=False)
-
-    if error_log:
-        pd.DataFrame(error_log).to_parquet(EVENTS_LOG_FPATH, index=False)
 
     # =========================================================================
     # Summary
@@ -365,11 +345,11 @@ if __name__ == '__main__':
     df_unbiased = df_events.query('probabilityLeft == 0.5')
 
     print("\nGenerating response magnitude plots...")
-    plot_response_magnitude(df_unbiased, 'response_early', figures_dir)
+    plot_response_magnitude_figures(df_unbiased, 'response_early', figures_dir)
 
     # Late window only meaningful for feedback_times
     df_feedback = df_unbiased.query('event == "feedback_times"')
     if df_feedback['response_late'].notna().any():
-        plot_response_magnitude(df_feedback, 'response_late', figures_dir)
+        plot_response_magnitude_figures(df_feedback, 'response_late', figures_dir)
 
     print(f"Figures saved to {figures_dir}")
