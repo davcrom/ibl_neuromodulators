@@ -1,10 +1,12 @@
 import argparse
+import json
 
+import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from iblatlas.atlas import AllenAtlas
 
-from iblnm.config import SESSIONS_FPATH, QCPHOTOMETRY_FPATH
+from iblnm.config import SESSIONS_FPATH, QCPHOTOMETRY_FPATH, TRAJECTORIES_FPATH
 from iblnm.io import _get_default_connection, get_fiber_coordinates
 
 
@@ -15,12 +17,23 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--subject', '-s')
 parser.add_argument('--fiber', '-f')
 parser.add_argument('--qc_metric', '-q')
+parser.add_argument('--redownload', action='store_true',
+                    help='Re-download trajectories from Alyx, ignoring cache')
 args = parser.parse_args()
 
 one = _get_default_connection()
 
-print("Getting all trajectories...")
-all_trajectories = list(one.alyx.rest('trajectories', 'list'))
+if not args.redownload and TRAJECTORIES_FPATH.exists():
+    print(f"Loading trajectories from {TRAJECTORIES_FPATH}...")
+    with open(TRAJECTORIES_FPATH) as f:
+        all_trajectories = json.load(f)
+else:
+    print("Downloading all trajectories from Alyx...")
+    all_trajectories = list(one.alyx.rest('trajectories', 'list'))
+    TRAJECTORIES_FPATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(TRAJECTORIES_FPATH, 'w') as f:
+        json.dump(all_trajectories, f)
+    print(f"Saved to {TRAJECTORIES_FPATH}")
 
 print(f"Getting trajectory for {args.subject}...")
 coords = get_fiber_coordinates(args.subject, all_trajectories, one)
@@ -28,6 +41,7 @@ coords = get_fiber_coordinates(args.subject, all_trajectories, one)
 # FIXME: QC val is curently aggregate over all recordings x fibers for the subject
 # Once probe_names in Alyx can be mapped on to photometry columns we need to fix
 if args.qc_metric and QCPHOTOMETRY_FPATH.exists() and SESSIONS_FPATH.exists():
+    print(f"Getting average {args.qc_metric} QC value for {args.subject}...")
     df_qc = pd.read_parquet(QCPHOTOMETRY_FPATH)
     df_sessions = pd.read_parquet(SESSIONS_FPATH)
     eids = df_sessions[df_sessions['subject'] == args.subject]['eid']
@@ -52,6 +66,8 @@ slice_coord_idx = {'coronal': 1, 'sagittal': 0, 'horizontal': 2}
 
 views = ['sagittal', 'coronal', 'horizontal']
 fig, axs = plt.subplots(len(coords), 3, figsize=(10, 10))
+if axs.ndim == 1:
+    axs = axs[np.newaxis, :]
 for (fiber, coord), ax_row in zip(coords.items(), axs):
     for view, ax in zip(views, ax_row):
         ax.set_title(fiber)

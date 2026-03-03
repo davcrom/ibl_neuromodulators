@@ -11,6 +11,7 @@ SESSIONS_FPATH = PROJECT_ROOT / 'metadata/sessions.pqt'
 SESSIONS_QC_FPATH = PROJECT_ROOT / 'metadata/sessions_qc.pqt'
 INSERTIONS_FPATH = PROJECT_ROOT / 'metadata/insertions.csv'  # file with subject to brain region mapping
 FIBERS_FPATH = PROJECT_ROOT / 'metadata/fibers.csv'
+TRAJECTORIES_FPATH = PROJECT_ROOT / 'metadata/trajectories.json'
 QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
 PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
 EVENTS_FPATH = PROJECT_ROOT / 'data/events.pqt'
