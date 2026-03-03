@@ -22,7 +22,7 @@ cmap = plt.cm.Reds
 parser = argparse.ArgumentParser(
     description='Get a fiber insertion trajectory and plot on a brain slice.'
     )
-parser.add_argument('--subject', '-s')
+parser.add_argument('subject')
 parser.add_argument('--fiber', '-f')
 parser.add_argument('--qc_metric', '-q')
 parser.add_argument('--redownload', action='store_true',
