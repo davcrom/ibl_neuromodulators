@@ -44,6 +44,9 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.RawDescriptionHelpFormatter,
 )
 parser.add_argument('subject', help='Alyx subject name (e.g. SWC_054)')
+parser.add_argument('--fiber', '-f', metavar='FIBER',
+                    help='Fiber name to plot (e.g. G0). If omitted, all fibers are plotted.')
+# FIXME: use --fiber to restrict coords to the specified fiber only
 parser.add_argument('--qc_metric', '-q', metavar='METRIC',
                     help='Photometry QC column to use for marker color '
                          '(e.g. n_unique_samples). Requires qc_photometry.pqt.')
