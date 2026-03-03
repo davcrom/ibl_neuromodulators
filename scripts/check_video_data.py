@@ -34,8 +34,8 @@ VIDEO_BATCHES_FPATH = PROJECT_ROOT / 'metadata/iblnm_video_lp_batches.csv'
 
 DATA_CATEGORIES = [
     'raw_video',
-    'extracted_task',
-    'extracted_photometry_signal'
+    # ~'extracted_task',
+    # ~'extracted_photometry_signal'
 # TODO: add video timestamps
 ]
 
@@ -103,13 +103,25 @@ if __name__ == "__main__":
     print(f"  After session type / subject filter: {n_after_type} (-{n_total - n_after_type})")
     print(f"  After deduplication: {n_after_dedup} (-{n_after_type - n_after_dedup})")
 
+    _errs = df_sessions['logged_errors']
+    _qc_blockers = {
+        'MissingRawData', 'MissingExtractedData', 'InsufficientTrials',
+        'TrialsNotInPhotometryTime', 'QCValidationError'
+    }
+    df_sessions['passes_qc'] = _errs.apply(
+        lambda errs: not any(err in _qc_blockers for err in errs)
+    )
+    df_sessions = df_sessions[df_sessions['passes_qc']].copy()
+    n_after_errs = len(df_sessions)
+    print(f"  After QC: {n_after_dedup} (-{n_after_dedup - n_after_errs})")
+
     # Keep only sessions with required video datasets
-    valid_data = df_sessions.apply(
-        lambda x: all(has_dataset_category(x, c) for c in DATA_CATEGORIES),
+    has_video = df_sessions.apply(
+        lambda x: has_dataset_category(x, 'raw_video'),
         axis='columns',
     )
-    df = df_sessions[valid_data].copy()
-    print(f"  With required datasets: {len(df)} (-{n_after_dedup - len(df)})")
+    df = df_sessions[has_video].copy()
+    print(f"  With raw video: {len(df)} (-{n_after_errs - len(df)})")
 
     # Merge with QC data
     print(f"\nLoading QC from {SESSIONS_QC_FPATH}")
