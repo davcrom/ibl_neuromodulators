@@ -1,6 +1,5 @@
 """Tests for dataset overview helper functions."""
 import pandas as pd
-import pytest
 
 from iblnm.util import aggregate_qc_per_session, concat_logs, make_log_entry, LOG_COLUMNS
 
@@ -19,8 +18,8 @@ class TestAggregateQcPerSession:
         result = aggregate_qc_per_session(df_qc)
 
         assert len(result) == 2
-        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0] == True
-        assert result.loc[result['eid'] == 'b', 'passes_basic_qc'].iloc[0] == False
+        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0]
+        assert not result.loc[result['eid'] == 'b', 'passes_basic_qc'].iloc[0]
 
     def test_any_signal_can_pass(self):
         """With require_all=False, any signal passing is sufficient."""
@@ -32,8 +31,8 @@ class TestAggregateQcPerSession:
         })
         result = aggregate_qc_per_session(df_qc, require_all=False)
 
-        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0] == True
-        assert result.loc[result['eid'] == 'b', 'passes_basic_qc'].iloc[0] == False
+        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0]
+        assert not result.loc[result['eid'] == 'b', 'passes_basic_qc'].iloc[0]
 
     def test_band_inversions_fail_session(self):
         """Any band inversion fails the session (require_all=True)."""
@@ -45,7 +44,7 @@ class TestAggregateQcPerSession:
         })
         result = aggregate_qc_per_session(df_qc, require_all=True)
 
-        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0] == False
+        assert not result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0]
 
     def test_band_inversions_any_mode(self):
         """With require_all=False, session passes if any signal has no inversions."""
@@ -57,7 +56,7 @@ class TestAggregateQcPerSession:
         })
         result = aggregate_qc_per_session(df_qc, require_all=False)
 
-        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0] == True
+        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0]
 
     def test_empty_dataframe(self):
         """Empty input returns empty output."""

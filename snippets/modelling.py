@@ -6,7 +6,6 @@ import pynapple as nap
 from sklearn import linear_model
 
 from iblphotometry.loaders import KceniaLoader
-from iblphotometry import processing as fpp
 from iblphotometry import pipelines
 
 import matplotlib.pyplot as plt

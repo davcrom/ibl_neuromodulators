@@ -274,7 +274,6 @@ class TestValidateTrialsInPhotometryTime:
 
     def test_uses_preprocessed_band_when_no_raw(self, mock_photometry_session):
         """Should fall back to GCaMP_preprocessed when GCaMP is not available."""
-        from iblnm.validation import TrialsNotInPhotometryTime
         session = mock_photometry_session
         session.preprocess()
         del session.photometry['GCaMP']
@@ -384,7 +383,7 @@ class TestPreprocess:
         """Preprocess should add preprocessed signal as new band in photometry dict."""
         session = mock_photometry_session
 
-        result = session.preprocess()
+        session.preprocess()
 
         assert 'GCaMP_preprocessed' in session.photometry
         assert isinstance(session.photometry['GCaMP_preprocessed'], pd.DataFrame)
@@ -423,7 +422,7 @@ class TestPreprocess:
 
         session = mock_photometry_session
 
-        result = session.preprocess(
+        session.preprocess(
             pipeline=sliding_mad_pipeline,
             reference_band=None
         )
@@ -957,7 +956,6 @@ class TestSubtractBaseline:
 
     def test_does_not_modify_self_responses(self, mock_session_series):
         """Returns new DataArray; self.responses unchanged."""
-        import xarray as xr
         session = self._session(mock_session_series)
         tpts = np.array([-1.0, -0.5, 0.5, 1.0])
         vals = np.array([1., 2., 3., 4.])

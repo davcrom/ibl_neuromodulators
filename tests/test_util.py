@@ -5,7 +5,6 @@ import pytest
 
 from iblnm.util import (
     has_dataset,
-    has_dataset_category,
     add_dataset_flags,
     resolve_duplicate_group,
     exception_logger,
@@ -181,11 +180,11 @@ class TestAddDatasetFlags:
         assert 'has_extracted_task' in result.columns
         assert 'has_extracted_photometry_signal' in result.columns
         assert 'has_raw_photometry_signals' in result.columns
-        assert result.iloc[0]['has_extracted_task'] == True
-        assert result.iloc[0]['has_extracted_photometry_signal'] == True
-        assert result.iloc[0]['has_raw_photometry_signals'] == False
-        assert result.iloc[1]['has_extracted_task'] == False
-        assert result.iloc[1]['has_raw_photometry_signals'] == True
+        assert result.iloc[0]['has_extracted_task']
+        assert result.iloc[0]['has_extracted_photometry_signal']
+        assert not result.iloc[0]['has_raw_photometry_signals']
+        assert not result.iloc[1]['has_extracted_task']
+        assert result.iloc[1]['has_raw_photometry_signals']
 
 
 # TODO: add tests for validate_hemisphere once it's fixed
@@ -481,7 +480,7 @@ class TestGetSessionType:
             'task_protocol': 'nonsense_protocol',
         })
         exlog = []
-        result = get_session_type(session, exlog=exlog)
+        get_session_type(session, exlog=exlog)
         assert len(exlog) == 1
         assert exlog[0]['error_type'] == 'InvalidSessionType'
 
@@ -609,7 +608,8 @@ class TestCollectSessionErrors:
             {'eid': 'eid-2', 'error_type': 'TypeB', 'error_message': '', 'traceback': None},
         ])
         p1, p2 = tmp_path / 'a.pqt', tmp_path / 'b.pqt'
-        log1.to_parquet(p1); log2.to_parquet(p2)
+        log1.to_parquet(p1)
+        log2.to_parquet(p2)
         result = collect_session_errors(df_sessions, [p1, p2])
         assert 'TypeA' in result[result['eid'] == 'eid-1'].iloc[0]['logged_errors']
         assert 'TypeB' in result[result['eid'] == 'eid-2'].iloc[0]['logged_errors']

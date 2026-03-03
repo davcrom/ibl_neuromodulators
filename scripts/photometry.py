@@ -18,11 +18,11 @@ from tqdm import tqdm
 
 from iblnm.config import (
     SESSIONS_FPATH, QCPHOTOMETRY_FPATH, PHOTOMETRY_LOG_FPATH,
-    QUERY_DATABASE_LOG_FPATH, SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE,
+    SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE,
     RESPONSE_EVENTS,
 )
 from iblnm.io import _get_default_connection
-from iblnm.util import make_log_entry, LOG_COLUMNS, collect_session_errors
+from iblnm.util import make_log_entry, LOG_COLUMNS
 from iblnm.data import PhotometrySession
 
 

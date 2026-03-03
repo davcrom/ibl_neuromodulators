@@ -2,14 +2,12 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-from one.api import ONE
-from brainbox.io.one import SessionLoader
 
 from iblnm.config import (
     VALID_TARGETNMS, DATASET_CATEGORIES, EXCLUDE_SESSION_TYPES,
-    PROTOCOL_RED_FLAGS, SESSION_TYPES
+    PROTOCOL_RED_FLAGS, SESSION_TYPES, SUBJECTS_TO_EXCLUDE,
 )
-from iblnm.validation import (
+from iblnm.validation import (  # noqa: F401 (make_log_entry re-exported for backward compat)
     exception_logger, make_log_entry,
     InvalidSessionType, InvalidTargetNM, InvalidSessionLength, TrueDuplicateSession,
 )
@@ -356,19 +354,24 @@ def fill_empty_lists_from_group(df, col, group_col='subject'):
 
     def fill_group(group):
         # Find non-empty lists
-        non_empty = group[group[col].apply(lambda x: isinstance(x, list) and len(x) > 0)]
+        non_empty = group[
+            group[col].apply(
+                # FIXME: too cumbersome to always check lists and arrays, fix at source
+                lambda x: isinstance(x, (list, np.ndarray)) and len(x) > 0
+            )
+        ]
 
         if len(non_empty) == 0:
             return group  # No non-empty lists to use
 
         # Check consistency
         first_list = non_empty[col].iloc[0]
-        assert all(x == first_list for x in non_empty[col]), \
-            "Inconsistent lists in group"
+        if not all(np.array_equal(x, first_list) for x in non_empty[col]):
+            return group  # Cannot fill from inconsistent lists
 
         # Fill empty lists
         group[col] = group[col].apply(
-            lambda x: first_list if isinstance(x, list) and len(x) == 0 else x
+            lambda x: first_list if isinstance(x, (list, np.ndarray)) and len(x) == 0 else x
         )
         return group
 
@@ -461,4 +464,39 @@ def aggregate_qc_per_session(df_qc: pd.DataFrame, require_all: bool = True) -> p
 
     return agg[['eid', 'passes_basic_qc']]
 
+
+def traj2coord(x, y, z, depth, theta, phi, **kwargs):
+    """
+    Calculate tip coordinates from insertion trajectory in IBL-Allen coordinate
+    system.
+
+    Parameters
+    ----------
+    x, y, z : float
+        Brain surface entry coordinates in µm, relative to bregma
+    depth : float
+        Insertion depth in µm, measured from brain surface
+    theta : float
+        Polar angle from vertical in degrees [0-180]
+    phi : float
+        Azimuth from right, anti-clockwise in degrees [0-360]
+        phi=0 means tilted toward right, so tip moves in -ML direction
+
+    Returns
+    -------
+    tip_ml, tip_ap, tip_dv : float
+        Fiber tip coordinates in µm, relative to bregma
+    """
+    theta_rad = np.radians(theta)
+    phi_rad = np.radians(phi)
+
+    delta_ml = -depth * np.sin(theta_rad) * np.cos(phi_rad)
+    delta_ap = -depth * np.sin(theta_rad) * np.sin(phi_rad)
+    delta_dv = -depth * np.cos(theta_rad)
+
+    tip_ml = x + delta_ml
+    tip_ap = y + delta_ap
+    tip_dv = z + delta_dv
+
+    return np.array([tip_ml, tip_ap, tip_dv])
 

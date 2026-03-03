@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 from scipy.stats import sem as scipy_sem
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
@@ -66,11 +65,15 @@ class PhotometrySessionViewer:
         """
         types, ratios = [], []
         if self._has_raw():
-            types.append('raw');       ratios.append(RATIO_SIGNAL)
-        types.append('preprocessed'); ratios.append(RATIO_SIGNAL)
+            types.append('raw')
+            ratios.append(RATIO_SIGNAL)
+        types.append('preprocessed')
+        ratios.append(RATIO_SIGNAL)
         if self._has_responses():
-            types.append('heatmap');   ratios.append(RATIO_HEATMAP)
-            types.append('mean');      ratios.append(RATIO_MEAN)
+            types.append('heatmap')
+            ratios.append(RATIO_HEATMAP)
+            types.append('mean')
+            ratios.append(RATIO_MEAN)
         return types, ratios
 
     # ------------------------------------------------------------------ #

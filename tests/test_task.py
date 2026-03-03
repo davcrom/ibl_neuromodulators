@@ -109,7 +109,6 @@ def mock_trials_invalid_blocks():
     probability_left = []
     current_prob = 0.5
     probs = [0.2, 0.5, 0.8]
-    i = 0
     while len(probability_left) < n_trials:
         block_len = np.random.randint(2, 6)  # 2-5 trials per block (too short)
         probability_left.extend([current_prob] * block_len)

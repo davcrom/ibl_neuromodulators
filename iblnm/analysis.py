@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from iblnm.config import *
+from iblnm.config import TARGET_FS
 
 
 def get_responses(photometry, events, t0=-1.0, t1=1.0):

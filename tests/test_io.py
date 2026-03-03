@@ -1,7 +1,7 @@
 """Tests for iblnm.io module."""
 import pandas as pd
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from one.alf.exceptions import ALFObjectNotFound
 
@@ -47,7 +47,7 @@ class TestGetSessionDict:
         """Alyx failure logs to exlog instead of raising."""
         mock_one.alyx.rest.side_effect = Exception("connection error")
         exlog = []
-        result = get_session_dict(mock_session, one=mock_one, exlog=exlog)
+        get_session_dict(mock_session, one=mock_one, exlog=exlog)
         assert len(exlog) == 1
         assert exlog[0]['error_type'] == 'Exception'
 
@@ -87,7 +87,7 @@ class TestGetBrainRegion:
         """Both sources missing with exlog → logs descriptive error."""
         mock_one.load_dataset.side_effect = ALFObjectNotFound("not found")
         exlog = []
-        result = get_brain_region(mock_session, one=mock_one, exlog=exlog)
+        get_brain_region(mock_session, one=mock_one, exlog=exlog)
         assert len(exlog) == 1
         assert exlog[0]['error_type'] == 'ALFObjectNotFound'
         assert 'brain_region' in exlog[0]['error_message']

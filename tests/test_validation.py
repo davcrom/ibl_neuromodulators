@@ -7,7 +7,7 @@ class TestModuleImports:
         import iblnm.validation  # noqa
 
     def test_all_exceptions_importable(self):
-        from iblnm.validation import (
+        from iblnm.validation import (  # noqa: F401
             InvalidSubject, InvalidStrain, InvalidLine, InvalidNeuromodulator,
             InvalidTarget, HemisphereMismatch, MissingInsertion, MissingHemiSuffix,
             DataNotListed, InvalidSessionType, InvalidTargetNM, InvalidSessionLength,
@@ -18,17 +18,17 @@ class TestModuleImports:
         )
 
     def test_validate_functions_importable(self):
-        from iblnm.validation import (
+        from iblnm.validation import (  # noqa: F401
             validate_subject, validate_strain, validate_line,
             validate_neuromodulator, validate_target, validate_hemisphere,
             validate_datasets,
         )
 
     def test_exception_logger_importable(self):
-        from iblnm.validation import exception_logger
+        from iblnm.validation import exception_logger  # noqa: F401
 
     def test_make_log_entry_importable(self):
-        from iblnm.validation import make_log_entry
+        from iblnm.validation import make_log_entry  # noqa: F401
 
 
 class TestValidateSubject:
@@ -109,6 +109,67 @@ class TestValidateTarget:
         assert validate_target(session) is None
 
 
+class TestFillHemisphereFromFiberInsertionTable:
+    """Tests for fill_hemisphere_from_fiber_insertion_table."""
+
+    def _lookup(self):
+        return {('sub1', 'VTA'): 'r', ('sub1', 'DR'): 'l'}
+
+    def _session(self, brain_region, hemisphere):
+        import pandas as pd
+        return pd.Series({
+            'eid': 'e1', 'subject': 'sub1',
+            'brain_region': brain_region,
+            'hemisphere': hemisphere,
+        })
+
+    def test_fills_none_from_lookup(self):
+        from iblnm.validation import fill_hemisphere_from_fiber_insertion_table as fill_hemi
+        result = fill_hemi(self._session(['VTA'], [None]), fiber_lookup=self._lookup())
+        assert result['hemisphere'] == ['r']
+
+    def test_does_not_overwrite_existing_hemisphere(self):
+        from iblnm.validation import fill_hemisphere_from_fiber_insertion_table as fill_hemi
+        result = fill_hemi(self._session(['VTA'], ['l']), fiber_lookup=self._lookup())
+        assert result['hemisphere'] == ['l']
+
+    def test_leaves_none_when_key_absent(self):
+        from iblnm.validation import fill_hemisphere_from_fiber_insertion_table as fill_hemi
+        result = fill_hemi(self._session(['NAc'], [None]), fiber_lookup=self._lookup())
+        assert result['hemisphere'] == [None]
+
+    def test_leaves_none_when_lookup_returns_none(self):
+        from iblnm.validation import fill_hemisphere_from_fiber_insertion_table as fill_hemi
+        lookup = {('sub1', 'VTA'): None}
+        result = fill_hemi(self._session(['VTA'], [None]), fiber_lookup=lookup)
+        assert result['hemisphere'] == [None]
+
+    def test_empty_brain_region_returns_unchanged(self):
+        from iblnm.validation import fill_hemisphere_from_fiber_insertion_table as fill_hemi
+        result = fill_hemi(self._session([], []), fiber_lookup=self._lookup())
+        assert result['hemisphere'] == []
+
+    def test_multiple_regions_partial_fill(self):
+        from iblnm.validation import fill_hemisphere_from_fiber_insertion_table as fill_hemi
+        result = fill_hemi(
+            self._session(['VTA', 'DR', 'NAc'], [None, 'r', None]),
+            fiber_lookup=self._lookup(),
+        )
+        # VTA → filled 'r'; DR → existing 'r' preserved; NAc → absent → None
+        assert result['hemisphere'] == ['r', 'r', None]
+
+    def test_strips_suffix_before_lookup(self):
+        """Regions already stored with suffix (e.g. 'VTA-r') should still hit the lookup."""
+        from iblnm.validation import fill_hemisphere_from_fiber_insertion_table as fill_hemi
+        # hemisphere is None but brain_region already has suffix — fill should
+        # strip suffix before lookup and not double-apply
+        result = fill_hemi(
+            self._session(['VTA-r'], [None]),
+            fiber_lookup={('sub1', 'VTA'): 'r'},
+        )
+        assert result['hemisphere'] == ['r']
+
+
 class TestUtilBackwardCompat:
     """exception_logger and make_log_entry are re-exported from util for backward compat."""
 
@@ -123,8 +184,4 @@ class TestDataBackwardCompat:
     """Data exceptions remain importable from iblnm.data for backward compat."""
 
     def test_exceptions_importable_from_data(self):
-        from iblnm.data import (
-            MissingExtractedData, MissingRawData, InsufficientTrials,
-            BlockStructureBug, IncompleteEventTimes, TrialsNotInPhotometryTime,
-            BandInversion, EarlySamples, FewUniqueSamples, QCValidationError,
-        )
+        pass

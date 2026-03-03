@@ -14,7 +14,6 @@ from brainbox.io.one import PhotometrySessionLoader
 
 from iblphotometry import processing, metrics
 from iblphotometry.pipelines import run_pipeline
-from iblphotometry.processing import z
 
 
 #### SET PARAMETERS ############################################################

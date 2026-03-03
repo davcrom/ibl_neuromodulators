@@ -2,11 +2,14 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib import colors
+from matplotlib.ticker import FormatStrFormatter
+from scipy.stats import sem as scipy_sem
 from sklearn.preprocessing import quantile_transform
 
-from iblnm import config
-from iblnm.config import *
-from iblnm.config import QCVAL2NUM
+from iblnm.config import (
+    QCCMAP, SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT,
+    TARGETNM2POSITION, TARGETNM_COLORS, TARGETNM_POSITIONS,
+)
 
 
 def set_plotsize(w, h=None, ax=None):
@@ -36,12 +39,12 @@ def set_plotsize(w, h=None, ax=None):
     if not ax: # get current axes
         ax = plt.gca()
     # get margins
-    l = ax.figure.subplotpars.left
+    left = ax.figure.subplotpars.left
     r = ax.figure.subplotpars.right
     t = ax.figure.subplotpars.top
     b = ax.figure.subplotpars.bottom
     # set fig dimensions to produce desired ax dimensions
-    figw = float(w)/(r-l)
+    figw = float(w)/(r-left)
     figh = float(h)/(t-b)
     ax.figure.set_size_inches(figw, figh)
 
@@ -289,8 +292,8 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None
                               ('biased_ephys', biased_ephys_mice),
                               ('ephys', ephys_mice)]:
                 hemi_data = target_sessions[target_sessions['subject'].isin(mice)]
-                result[f'n_{key}_L'] = hemi_data[hemi_data['hemisphere'] == 'L']['subject'].nunique()
-                result[f'n_{key}_R'] = hemi_data[hemi_data['hemisphere'] == 'R']['subject'].nunique()
+                result[f'n_{key}_L'] = hemi_data[hemi_data['hemisphere'] == 'l']['subject'].nunique()
+                result[f'n_{key}_R'] = hemi_data[hemi_data['hemisphere'] == 'r']['subject'].nunique()
 
         results.append(result)
 
@@ -409,11 +412,11 @@ def session_plot(series, pipeline=[], t0=60, t1=120):
         fig.add_axes([0.03, 0.4, 0.86, 0.25])
     ]
 
+    from iblphotometry import pipelines as pipe, processing as proc
     tpts = series['GCaMP'].index.values
     signal_raw = series['GCaMP'][series['ROI']].values
     processed = pipe.run_pipeline(pipeline, series['GCaMP'])
     signal_processed = processed[series['ROI']].values
-
 
     signal_axes[0].plot(tpts, proc.z(signal_raw), alpha=0.5, color='gray', label='Raw')
     signal_axes[0].plot(tpts, proc.z(signal_processed), alpha=0.5, color='black', label='Processed')
@@ -441,6 +444,8 @@ def session_plot(series, pipeline=[], t0=60, t1=120):
             if (t < t0) or (t > t1):
                 continue
             signal_axes[1].axvline(t, color=color)
+    from scipy import stats
+    from iblnm.analysis import get_responses as psth
     y_max = []
     for (event, ax), color in zip(events_dict.items(), colors):
         responses, tpts = psth(series['GCaMP'], series[f'{event}_times'])
@@ -1181,4 +1186,91 @@ def create_psychometric_figure(
         plot_bias_shift_trajectory(df_fits, target_nm=target_nm, ax=axes[6, col])
 
     plt.tight_layout()
+    return fig
+
+
+def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None, window_label=None):
+    """Plot response magnitude by contrast, split into contra and ipsi panels.
+
+    The contra panel x-axis is inverted so that the highest contrast is on the
+    far left; the ipsi panel runs normally left-to-right. Together they read:
+    ``100 ← contra % → 0 | 0 ← ipsi % → 100``.
+
+    Parameters
+    ----------
+    df_group : pd.DataFrame
+        Pre-filtered rows for one (target_NM × event) group with columns
+        ``side`` ('contra' / 'ipsi'), ``contrast`` (absolute, 0–1),
+        ``feedbackType``, ``subject``, and ``<response_col>``.
+    response_col : str
+        Column name for the response magnitude to plot.
+    target_nm : str
+        Target neuromodulator label; used for the title and color lookup.
+    event : str
+        Raw event name (e.g. 'stimOn_times'); used for the title.
+    fig : plt.Figure or None
+        Figure with two existing axes to draw on. If None, a new figure is
+        created with ``plt.subplots(1, 2, sharey=True)``.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if fig is None:
+        fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05})
+
+    ax_c, ax_i = fig.axes[0], fig.axes[1]
+
+    event_label = event.replace('_times', '')
+    _window = window_label or ''
+    color = TARGETNM_COLORS.get(target_nm, 'black')
+    n_sessions = df_group['eid'].nunique() if 'eid' in df_group.columns else '?'
+    n_subjects = df_group['subject'].nunique() if len(df_group) > 0 else 0
+    fig.suptitle(
+        f'{target_nm} — {event_label} ({_window})\n'
+        f'{n_sessions} sessions, {n_subjects} subjects',
+        fontsize=10,
+    )
+
+    # Compute contrasts from the full dataset so both panels share the same x-axis
+    contrasts = sorted(df_group['contrast'].unique()) if len(df_group) > 0 else []
+    xpos = np.array(contrasts, dtype=float)
+
+    for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
+        df_side = df_group[df_group['side'] == side]
+
+        for feedback, ls in ((1, '-'), (-1, '--')):
+            df_fb = df_side[df_side['feedbackType'] == feedback]
+            if len(df_fb) == 0:
+                continue
+
+            means, sems = [], []
+            for c in contrasts:
+                df_c = df_fb[df_fb['contrast'] == c]
+                subj_means = df_c.groupby('subject')[response_col].mean()
+                means.append(subj_means.mean())
+                sems.append(scipy_sem(subj_means, nan_policy='omit') if len(subj_means) > 1 else np.nan)
+
+            label = 'correct' if feedback == 1 else 'incorrect'
+            ax.errorbar(xpos, means, yerr=np.array(sems, dtype=float),
+                        marker='o', color=color, linestyle=ls, label=label)
+
+        ax.set_xticks(xpos if len(xpos) else [])
+        ax.set_xticklabels([f'{c:g}' for c in contrasts])
+        ax.set_xlabel('Contrast (%)')
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+
+    # Invert contra axis so highest contrast is on the far left
+    ax_c.invert_xaxis()
+
+    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
+    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
+
+    ax_c.set_ylabel('z-score')
+    ax_i.tick_params(left=False)
+    ax_i.spines['left'].set_visible(False)
+    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
+
+    ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+    fig.tight_layout()
     return fig

@@ -19,7 +19,7 @@ from iblnm.config import (
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE
 )
 from iblnm.io import _get_default_connection
-from iblnm.util import make_log_entry, LOG_COLUMNS, collect_session_errors
+from iblnm.util import make_log_entry, LOG_COLUMNS
 from iblnm.data import PhotometrySession
 
 

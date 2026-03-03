@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta
 
 from iblnm.config import SESSIONS_FPATH, QCPHOTOMETRY_FPATH, VALID_TARGETS
 from iblnm.task import count_sessions_to_stage
-from iblnm.util import clean_sessions, drop_junk_duplicates, process_regions, aggregate_qc_per_session
+from iblnm.util import process_regions, aggregate_qc_per_session
 
 
 def get_subject_target_mapping(df_sessions):

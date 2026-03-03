@@ -12,7 +12,6 @@ import pandas as pd
 import psychofit as psy
 
 from brainbox.behavior.training import (
-    get_signed_contrast,
     compute_psychometric,
 )
 

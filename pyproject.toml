@@ -1,0 +1,10 @@
+[tool.ruff]
+exclude = ["notebooks/"]
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy scripts with late imports (tqdm.pandas() / plt.ion() split) and other pre-existing issues
+"scripts/SfN2025.py" = ["E402", "E701", "E741", "F821", "F541"]
+"scripts/task_performance_overview.py" = ["E402", "F401"]
+"scripts/plot_fiber_locations.py" = ["F821"]
+"snippets/*" = ["E402", "F401"]
+"scripts/wheel.py" = ["F401"]

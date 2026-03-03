@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
-from one.api import ONE
 from brainbox.io.one import PhotometrySessionLoader
 from iblphotometry.fpio import from_neurophotometrics_df_to_photometry_df
 from iblphotometry import metrics
@@ -10,13 +9,18 @@ from iblphotometry.qc import qc_signals
 
 from one.alf.exceptions import ALFObjectNotFound
 
-from iblnm.config import *
+from iblnm.config import (
+    EVENT_COMPLETENESS_THRESHOLD, MIN_NTRIALS, N_UNIQUE_SAMPLES_THRESHOLD,
+    PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
+    QC_SLIDING_KWARGS, QC_SLIDING_METRICS, RESPONSE_EVENTS, RESPONSE_WINDOW,
+    SESSIONS_H5_DIR, TARGET_FS, TRIAL_COLUMNS, WHEEL_FS,
+)
 from iblnm.analysis import get_responses
 from iblnm import task
 from iblnm.task import _get_signed_contrast
 from iblnm.validation import (
     MissingExtractedData, MissingRawData, InsufficientTrials, BlockStructureBug,
-    IncompleteEventTimes, TrialsNotInPhotometryTime, BandInversion, EarlySamples,
+    IncompleteEventTimes, TrialsNotInPhotometryTime,
     FewUniqueSamples, QCValidationError, AmbiguousRegionMapping,
 )
 

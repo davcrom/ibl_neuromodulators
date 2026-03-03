@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
@@ -163,6 +162,17 @@ TARGET2NM = {
     'PPT': 'ACh'
 }
 
+
+TARGETNMS_TO_ANALYZE = [
+    'VTA-DA',
+    'SNc-DA',
+    'DR-5HT',
+    # ~'MR-5HT',
+    'LC-NE',
+    'NBM-ACh',
+    # ~'SI-ACh',
+    # ~'PPT-ACh'
+]
 
 # Dataset categories for checking data presence
 DATASET_CATEGORIES = {

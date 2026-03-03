@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler, QuantileTransformer
+from sklearn.preprocessing import QuantileTransformer
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, QCPHOTOMETRY_FPATH, VALID_TARGETS, FIGURE_DPI,
