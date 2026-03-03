@@ -93,14 +93,17 @@ _errs = df_sessions['logged_errors']
 df_sessions['has_raw_data'] = _errs.apply(
     lambda e: 'MissingRawData' not in e)
 
-# Matrix 3: complete data (extracted + sufficient trials + trials in photometry time)
-_complete_blockers = {'MissingExtractedData', 'InsufficientTrials', 'TrialsNotInPhotometryTime'}
+# Matrix 3: complete data (raw data present + extracted + sufficient trials + TIPT)
+# MissingRawData must be included: photometry.py exits early when raw data is absent,
+# so MissingExtractedData / InsufficientTrials / TrialsNotInPhotometryTime are never
+# logged for those sessions — omitting it causes complete_data > raw_data (wrong).
+_complete_blockers = {'MissingRawData', 'MissingExtractedData', 'InsufficientTrials',
+                      'TrialsNotInPhotometryTime'}
 df_sessions['has_complete_data'] = _errs.apply(
     lambda e: not any(err in _complete_blockers for err in e))
 
 # Matrix 4: passes basic photometry QC
-_qc_blockers = {'MissingExtractedData', 'InsufficientTrials', 'TrialsNotInPhotometryTime',
-                'QCValidationError', 'FewUniqueSamples'}
+_qc_blockers = _complete_blockers | {'QCValidationError', 'FewUniqueSamples'}
 df_sessions['passes_basic_qc'] = _errs.apply(
     lambda e: not any(err in _qc_blockers for err in e))
 
