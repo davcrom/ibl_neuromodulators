@@ -8,7 +8,6 @@ from iblnm.util import (
     add_dataset_flags,
     resolve_duplicate_group,
     exception_logger,
-    make_log_entry,
     concat_logs,
     deduplicate_log,
     enforce_schema,
@@ -18,6 +17,7 @@ from iblnm.util import (
     LOG_COLUMNS,
 )
 from iblnm.validation import (
+    make_log_entry,
     InvalidSessionType,
     InvalidTargetNM,
     TrueDuplicateSession,

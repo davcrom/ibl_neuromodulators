@@ -1,7 +1,8 @@
 """Tests for dataset overview helper functions."""
 import pandas as pd
 
-from iblnm.util import aggregate_qc_per_session, concat_logs, make_log_entry, LOG_COLUMNS
+from iblnm.util import aggregate_qc_per_session, concat_logs, LOG_COLUMNS
+from iblnm.validation import make_log_entry
 
 
 class TestAggregateQcPerSession:

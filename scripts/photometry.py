@@ -22,7 +22,8 @@ from iblnm.config import (
     RESPONSE_EVENTS,
 )
 from iblnm.io import _get_default_connection
-from iblnm.util import make_log_entry, LOG_COLUMNS
+from iblnm.util import LOG_COLUMNS
+from iblnm.validation import make_log_entry
 from iblnm.data import PhotometrySession
 
 

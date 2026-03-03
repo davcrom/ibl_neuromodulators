@@ -7,8 +7,8 @@ from iblnm.config import (
     VALID_TARGETNMS, DATASET_CATEGORIES, EXCLUDE_SESSION_TYPES,
     PROTOCOL_RED_FLAGS, SESSION_TYPES, SUBJECTS_TO_EXCLUDE,
 )
-from iblnm.validation import (  # noqa: F401 (make_log_entry re-exported for backward compat)
-    exception_logger, make_log_entry,
+from iblnm.validation import (
+    exception_logger,
     InvalidSessionType, InvalidTargetNM, InvalidSessionLength, TrueDuplicateSession,
 )
 

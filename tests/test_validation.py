@@ -170,18 +170,3 @@ class TestFillHemisphereFromFiberInsertionTable:
         assert result['hemisphere'] == ['r']
 
 
-class TestUtilBackwardCompat:
-    """exception_logger and make_log_entry are re-exported from util for backward compat."""
-
-    def test_exception_logger_importable_from_util(self):
-        from iblnm.util import exception_logger  # noqa
-
-    def test_make_log_entry_importable_from_util(self):
-        from iblnm.util import make_log_entry  # noqa
-
-
-class TestDataBackwardCompat:
-    """Data exceptions remain importable from iblnm.data for backward compat."""
-
-    def test_exceptions_importable_from_data(self):
-        pass

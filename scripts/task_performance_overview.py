@@ -17,9 +17,6 @@ from iblnm.config import (
     PROJECT_ROOT,
     TARGETNM2POSITION,
 )
-
-# Targets to include in overview (exclude MR, SI, PPT)
-OVERVIEW_TARGETS = ['VTA-DA', 'SNc-DA', 'DR-5HT', 'LC-NE', 'NBM-ACh']
 from iblnm.task import count_sessions_to_stage
 from iblnm.util import clean_sessions, drop_junk_duplicates, add_target_nm
 from iblnm.vis import (
@@ -33,6 +30,9 @@ from iblnm.vis import (
 
 
 plt.ion()
+
+# Targets to include in overview (exclude MR, SI, PPT)
+OVERVIEW_TARGETS = ['VTA-DA', 'SNc-DA', 'DR-5HT', 'LC-NE', 'NBM-ACh']
 
 
 def create_learning_figure(df_stage_counts, df_training_fits, target_nms=None):
