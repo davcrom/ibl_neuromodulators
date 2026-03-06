@@ -24,7 +24,11 @@ TASK_LOG_FPATH = PROJECT_ROOT / 'metadata/task_log.pqt'
 WHEEL_LOG_FPATH = PROJECT_ROOT / 'metadata/wheel_log.pqt'
 EVENTS_LOG_FPATH = PROJECT_ROOT / 'metadata/events_log.pqt'
 ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
+VIDEO_LOG_FPATH = PROJECT_ROOT / 'metadata/video_log.pqt'
+VIDEO_SESSIONS_FPATH = PROJECT_ROOT / 'metadata/iblnm_video_sessions.csv'
 
+# Video QC parameters
+LENGTH_MISMATCH_THRESHOLD = 120  # seconds
 
 # Schema for sessions DataFrame: column -> (type, default)
 # Used by enforce_schema() to fill missing columns and coerce NaN in list columns

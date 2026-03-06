@@ -9,6 +9,7 @@ from iblnm.config import (
     VALID_STRAINS, VALID_LINES, VALID_NEUROMODULATORS, VALID_TARGETS,
     DATASET_CATEGORIES,
     SUBJECTS_TO_EXCLUDE, FIBERS_FPATH,
+    LENGTH_MISMATCH_THRESHOLD,
 )
 
 
@@ -104,6 +105,26 @@ class QCValidationError(Exception):
 
 class AmbiguousRegionMapping(Exception):
     """Photometry columns cannot be unambiguously mapped to session brain_region metadata."""
+
+
+# =============================================================================
+# Exceptions — video QC / data
+# =============================================================================
+
+class MissingVideoTimestamps(Exception):
+    """leftCamera.times could not be loaded."""
+
+class VideoLengthError(Exception):
+    """Video length differs from session length beyond threshold."""
+
+class VideoTimestampsQCError(Exception):
+    """qc_videoLeft_timestamps is not PASS."""
+
+class VideoDroppedFramesQCError(Exception):
+    """qc_videoLeft_dropped_frames is not PASS."""
+
+class VideoPinStateQCError(Exception):
+    """qc_videoLeft_pin_state is not PASS."""
 
 
 # =============================================================================
@@ -291,4 +312,53 @@ def validate_datasets(session):
     ]
     if missing:
         raise DataNotListed(f"Missing dataset categories: {', '.join(missing)}")
+    return None
+
+
+# =============================================================================
+# Video validate functions
+# =============================================================================
+
+@exception_logger
+def validate_video_length(session):
+    """Raise VideoLengthError if video–session length discrepancy exceeds threshold."""
+    discrepancy = session.get('length_discrepancy', np.nan)
+    if not np.isnan(discrepancy) and discrepancy >= LENGTH_MISMATCH_THRESHOLD:
+        raise VideoLengthError(
+            f"Video–session length discrepancy {discrepancy:.0f}s "
+            f"exceeds {LENGTH_MISMATCH_THRESHOLD}s threshold"
+        )
+    return None
+
+
+@exception_logger
+def validate_video_timestamps_qc(session):
+    """Raise VideoTimestampsQCError if qc_videoLeft_timestamps is not PASS."""
+    val = session.get('qc_videoLeft_timestamps')
+    if val != 'PASS':
+        raise VideoTimestampsQCError(
+            f"qc_videoLeft_timestamps is {val!r}, expected PASS"
+        )
+    return None
+
+
+@exception_logger
+def validate_video_dropped_frames_qc(session):
+    """Raise VideoDroppedFramesQCError if qc_videoLeft_dropped_frames is not PASS."""
+    val = session.get('qc_videoLeft_dropped_frames')
+    if val != 'PASS':
+        raise VideoDroppedFramesQCError(
+            f"qc_videoLeft_dropped_frames is {val!r}, expected PASS"
+        )
+    return None
+
+
+@exception_logger
+def validate_video_pin_state_qc(session):
+    """Raise VideoPinStateQCError if qc_videoLeft_pin_state is not PASS."""
+    val = session.get('qc_videoLeft_pin_state')
+    if val != 'PASS':
+        raise VideoPinStateQCError(
+            f"qc_videoLeft_pin_state is {val!r}, expected PASS"
+        )
     return None
