@@ -5,39 +5,42 @@ Assess video data quality across sessions using pre-computed QC from
 sessions_qc.pqt and session metadata from sessions.pqt.
 
 Pipeline:
-1. Filter to analyzable sessions with required datasets
-2. Download leftCamera.times per session, compare with session_length
-3. Split into df_problems / df_good based on QC flags
-4. Score df_good on 5 QC metrics, sort, batch into ~100-200 session chunks
+1. Filter to analyzable sessions (type, subject, dedup, upstream QC)
+2. Merge video QC columns from sessions_qc.pqt
+3. Download leftCamera.times per session, compare with session_length
+4. Validate video QC problem columns and length discrepancy
+5. Score all sessions, batch good ones, sort unified output
+6. Merge LightningPose metadata if available
 
-Outputs: data/video_problems.pqt, data/video_batches.pqt
+Outputs:
+- metadata/iblnm_video_sessions.csv — all sessions, sorted by video_qc_score
+- metadata/video_log.pqt — error log
 """
 import numpy as np
 import pandas as pd
-from sklearn.cluster import KMeans
+# from sklearn.cluster import KMeans
 from tqdm import tqdm
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_QC_FPATH,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
+    VIDEO_LOG_FPATH, VIDEO_SESSIONS_FPATH,
 )
 from iblnm.io import _get_default_connection
 from iblnm.util import (
-    has_dataset_category, collect_session_errors,
-    resolve_duplicate_group,
+    collect_session_errors, resolve_duplicate_group, LOG_COLUMNS,
+)
+from iblnm.validation import (
+    make_log_entry,
+    validate_video_length,
+    validate_video_timestamps_qc,
+    validate_video_dropped_frames_qc,
+    validate_video_pin_state_qc,
 )
 
 # --- Parameters ---
-VIDEO_PROBLEMS_FPATH = PROJECT_ROOT / 'metadata/iblnm_video_problems.csv'
-VIDEO_BATCHES_FPATH = PROJECT_ROOT / 'metadata/iblnm_video_lp_batches.csv'
-
-DATA_CATEGORIES = [
-    'raw_video',
-    # ~'extracted_task',
-    # ~'extracted_photometry_signal'
-# TODO: add video timestamps
-]
+LP_SESSIONS_FPATH = PROJECT_ROOT / 'metadata/LightningPoseSessions.csv'
 
 VIDEO_QC_QUALITY_COLS = [
     'qc_videoLeft_focus',
@@ -53,12 +56,8 @@ VIDEO_QC_PROBLEM_COLS = [
     'qc_videoLeft_pin_state',
 ]
 
-LENGTH_MISMATCH_THRESHOLD = 120  # seconds
-
 QCVAL2NUM = {
     np.nan: np.nan,
-    # ~'nan': np.nan,  # string 'nan' from parquet files
-    # ~'NOT SET': 0.01,
     'NOT_SET': np.nan,
     'PASS': 1.,
     'WARNING': 0.66,
@@ -66,11 +65,15 @@ QCVAL2NUM = {
     'FAIL': 0.
 }
 
+SESSION_TYPE_ORDER = {'ephys': 0, 'biased': 1, 'training': 2}
+
 
 if __name__ == "__main__":
 
+    error_log = []
+
     # =========================================================================
-    # Step 1: Load and filter (matches dataset_overview.py pipeline)
+    # Step 1: Load and filter
     # =========================================================================
 
     print(f"Loading sessions from {SESSIONS_FPATH}")
@@ -111,30 +114,22 @@ if __name__ == "__main__":
     df_sessions['passes_qc'] = _errs.apply(
         lambda errs: not any(err in _qc_blockers for err in errs)
     )
-    df_sessions = df_sessions[df_sessions['passes_qc']].copy()
-    n_after_errs = len(df_sessions)
-    print(f"  After QC: {n_after_dedup} (-{n_after_dedup - n_after_errs})")
+    df = df_sessions[df_sessions['passes_qc']].copy()
+    n_after_errs = len(df)
+    print(f"  After QC: {n_after_errs} (-{n_after_dedup - n_after_errs})")
 
-    # Keep only sessions with required video datasets
-    has_video = df_sessions.apply(
-        lambda x: has_dataset_category(x, 'raw_video'),
-        axis='columns',
-    )
-    df = df_sessions[has_video].copy()
-    print(f"  With raw video: {len(df)} (-{n_after_errs - len(df)})")
+    # =========================================================================
+    # Step 2: Merge video QC columns
+    # =========================================================================
 
-    # Merge with QC data
     print(f"\nLoading QC from {SESSIONS_QC_FPATH}")
     df_qc = pd.read_parquet(SESSIONS_QC_FPATH)
     qc_cols = ['eid'] + VIDEO_QC_QUALITY_COLS + VIDEO_QC_PROBLEM_COLS
     df = df.merge(df_qc[qc_cols], on='eid', how='left')
     print(f"  Merged QC data ({len(qc_cols) - 1} QC columns)")
 
-    # Save dataframe indicating missing qc flags
-    df_qc[qc_cols].isnull().drop(columns='eid').set_index(df_qc['eid']).to_csv('iblnm_video_missing_qc_flags.csv')
-
     # =========================================================================
-    # Step 2: Download camera timestamps and compare with session_length
+    # Step 3: Download camera timestamps
     # =========================================================================
 
     print(f"\nDownloading leftCamera.times for {len(df)} sessions...")
@@ -145,14 +140,21 @@ if __name__ == "__main__":
     df['framerate_from_tpts'] = np.nan
     df['n_tpts'] = np.nan
     for idx, row in tqdm(df.iterrows(), total=len(df)):
+        times = None
         try:
             times = one.load_dataset(row['eid'], '*leftCamera.times*')
+        except Exception as e:
+            error_log.append(make_log_entry(
+                row['eid'],
+                error_type='MissingVideoTimestamps',
+                error_message=str(e),
+            ))
+        if times is not None:
             df.at[idx, 'video_t0'] = times[0]
             df.at[idx, 'video_t1'] = times[-1]
             df.at[idx, 'framerate_from_tpts'] = np.median(np.diff(times))
             df.at[idx, 'n_tpts'] = len(times)
-        except Exception:
-            pass
+
 
     df['video_length'] = df['video_t1'] - df['video_t0']
     df['length_discrepancy'] = df['video_length'] - df['session_length']
@@ -162,80 +164,111 @@ if __name__ == "__main__":
     print(f"  Downloaded: {n_valid_video} successful, {n_download_errors} errors")
 
     # =========================================================================
-    # Step 3: Flag problem sessions
+    # Step 4: Validate video QC and length
     # =========================================================================
 
-    print("\nFlagging problem sessions...")
+    print("\nValidating video data...")
+    df.apply(validate_video_length, axis='columns', exlog=error_log)
+    df.apply(validate_video_timestamps_qc, axis='columns', exlog=error_log)
+    df.apply(validate_video_dropped_frames_qc, axis='columns', exlog=error_log)
+    df.apply(validate_video_pin_state_qc, axis='columns', exlog=error_log)
 
-    valid_qc = (df[VIDEO_QC_PROBLEM_COLS] == 'PASS').all(axis=1)
-    valid_length = df['length_discrepancy'] < LENGTH_MISMATCH_THRESHOLD
+    # Collect eids with errors
+    error_eids = {entry['eid'] for entry in error_log}
+    n_errors = len(error_eids)
+    print(f"  Sessions with errors: {n_errors}")
 
-    df_problems = df[~(valid_qc & valid_length)].copy()
-    df_good = df[valid_qc & valid_length].copy()
-
-    # Problem breakdown
-    n_qc_fail = (~valid_qc).sum()
-    n_length_fail = (~valid_length).sum()
-    n_both_fail = (~valid_qc & ~valid_length).sum()
-    print(f"  Problem sessions: {len(df_problems)}")
-    print(f"    QC fail: {n_qc_fail}")
-    for col in VIDEO_QC_PROBLEM_COLS:
-        n_fail = (df[col] != 'PASS').sum()
-        n_missing = df[col].isna().sum()
-        print(f"      {col}: {n_fail} fail ({n_missing} missing)")
-    print(f"    Length mismatch (>{LENGTH_MISMATCH_THRESHOLD}s): {n_length_fail}")
-    print(f"    Both: {n_both_fail}")
-    print(f"  Good sessions: {len(df_good)}")
+    # Print error breakdown
+    from collections import Counter
+    error_counts = Counter(entry['error_type'] for entry in error_log)
+    for err_type, count in error_counts.most_common():
+        print(f"    {err_type}: {count}")
 
     # =========================================================================
-    # Step 4: Score and batch good sessions
+    # Step 5: Score and batch
     # =========================================================================
 
-    print("\nScoring and batching good sessions...")
+    print("\nScoring and batching sessions...")
 
+    # Compute video_qc_score for all sessions
     for col in VIDEO_QC_QUALITY_COLS:
-        df_good[col + '_num'] = df_good[col].map(QCVAL2NUM)
+        df[col + '_num'] = df[col].map(QCVAL2NUM)
 
     num_cols = [col + '_num' for col in VIDEO_QC_QUALITY_COLS]
-    df_good['video_qc_score'] = np.nanmean(df_good[num_cols], axis=1)
+    df['video_qc_score'] = np.nanmean(df[num_cols], axis=1)
 
-    # Sort by score descending (best first)
-    df_good = df_good.sort_values('video_qc_score', ascending=False).reset_index(drop=True)
+    # Sessions with errors get score = -1
+    df.loc[df['eid'].isin(error_eids), 'video_qc_score'] = -1
 
-    # Cluster by video_qc_score, then order batches best-first
-    n_good = len(df_good)
-    if n_good > 0:
-        k = max(1, n_good // 250)
-        km = KMeans(n_clusters=k, n_init='auto', random_state=42)
-        labels = km.fit_predict(df_good[['video_qc_score']])
-        # Rank clusters by centroid score descending (batch 0 = best)
-        centroids = km.cluster_centers_.flatten()
-        rank = np.argsort(-centroids)
-        label_to_batch = {label: batch for batch, label in enumerate(rank)}
-        df_good['batch'] = pd.Series(labels, index=df_good.index).map(label_to_batch)
+    n_good = (df['video_qc_score'] > 0).sum()
+    print(f"  Good sessions (score > 0): {n_good}")
+
+    # # Batch good sessions (score > 0) with KMeans
+    # good_mask = df['video_qc_score'] > 0
+    # df['batch'] = np.nan
+    # df_good = df[good_mask]
+    #
+    # if n_good > 0:
+    #     k = max(1, n_good // 250)
+    #     km = KMeans(n_clusters=k, n_init='auto', random_state=42)
+    #     labels = km.fit_predict(df_good[['video_qc_score']])
+    #     centroids = km.cluster_centers_.flatten()
+    #     rank = np.argsort(-centroids)
+    #     label_to_batch = {label: batch for batch, label in enumerate(rank)}
+    #     df.loc[good_mask, 'batch'] = pd.Series(
+    #         labels, index=df_good.index,
+    #     ).map(label_to_batch)
+
+    # Sort: video_qc_score descending, then session_type order
+    df['_sort_type'] = df['session_type'].map(SESSION_TYPE_ORDER)
+    df = df.sort_values(
+        ['video_qc_score', '_sort_type'], ascending=[False, True],
+    ).reset_index(drop=True)
+    df = df.drop(columns='_sort_type')
+
+    # Drop intermediate numeric columns
+    df = df.drop(columns=num_cols)
+
+    # =========================================================================
+    # Step 6: Merge LightningPose metadata
+    # =========================================================================
+
+    lp_cols = []
+    if LP_SESSIONS_FPATH.exists():
+        print(f"\nMerging LightningPose metadata from {LP_SESSIONS_FPATH}")
+        df_lp = pd.read_csv(LP_SESSIONS_FPATH)
+        # Only keep columns not already in df (plus eid for merge key)
+        lp_cols = [c for c in df_lp.columns if c not in df.columns]
+        if lp_cols:
+            df = df.merge(df_lp[['eid'] + lp_cols], on='eid', how='left')
+            print(f"  Merged {len(lp_cols)} LP columns: {lp_cols}")
+        else:
+            print("  No new columns to merge from LightningPose")
     else:
-        df_good['batch'] = pd.Series(dtype=int)
+        print(f"\nNo LightningPose file at {LP_SESSIONS_FPATH}, skipping merge")
 
-    batch_cols = (
-        ['eid', 'subject', 'session_type', 'batch', 'video_qc_score']
+    # =========================================================================
+    # Step 7: Save and summarize
+    # =========================================================================
+
+    output_cols = (
+        ['eid', 'subject', 'session_type', 'video_qc_score']
         + VIDEO_QC_QUALITY_COLS
+        + VIDEO_QC_PROBLEM_COLS
+        + ['session_length', 'video_length', 'length_discrepancy',
+           'framerate_from_tpts']
+        + lp_cols
     )
-    df_batches = df_good[batch_cols].copy()
 
-    n_batches = df_batches['batch'].nunique() if len(df_batches) > 0 else 0
-    print(f"  Good sessions: {n_good}, batches: {n_batches}")
-    if n_batches > 0:
-        for batch_id, grp in df_batches.groupby('batch'):
-            print(f"    Batch {batch_id}: {len(grp)} sessions, "
-                  f"score {grp['video_qc_score'].min():.2f}-{grp['video_qc_score'].max():.2f}")
+    df_out = df[output_cols].copy()
 
-    # =========================================================================
-    # Step 5: Save and summarize
-    # =========================================================================
+    VIDEO_SESSIONS_FPATH.parent.mkdir(parents=True, exist_ok=True)
+    df_out.to_csv(VIDEO_SESSIONS_FPATH, index=False)
 
-    VIDEO_PROBLEMS_FPATH.parent.mkdir(parents=True, exist_ok=True)
-    df_problems.to_csv(VIDEO_PROBLEMS_FPATH)
-    df_batches.to_csv(VIDEO_BATCHES_FPATH)
+    # Save error log
+    df_log = (pd.DataFrame(error_log) if error_log
+              else pd.DataFrame(columns=LOG_COLUMNS))
+    df_log.to_parquet(VIDEO_LOG_FPATH, index=False)
 
     # Final summary
     print(f"\n{'='*50}")
@@ -244,9 +277,10 @@ if __name__ == "__main__":
     print(f"Total sessions: {n_total}")
     print(f"  After type/subject filter: {n_after_type}")
     print(f"  After deduplication: {n_after_dedup}")
-    print(f"  With required datasets: {len(df)}")
+    print(f"  After upstream QC: {n_after_errs}")
     print(f"  Video times downloaded: {n_valid_video}, failed: {n_download_errors}")
-    print(f"  Problems: {len(df_problems)}")
-    print(f"  Good: {n_good} ({n_batches} batches)")
-    print(f"\nSaved: {VIDEO_PROBLEMS_FPATH}")
-    print(f"Saved: {VIDEO_BATCHES_FPATH}")
+    print(f"  Sessions with video errors: {n_errors}")
+    print(f"  Good (score > 0): {n_good}")
+    print(f"  Total output: {len(df_out)} sessions")
+    print(f"\nSaved: {VIDEO_SESSIONS_FPATH}")
+    print(f"Saved: {VIDEO_LOG_FPATH}")
