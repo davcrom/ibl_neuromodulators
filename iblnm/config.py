@@ -15,6 +15,7 @@ TRAJECTORIES_FPATH = PROJECT_ROOT / 'metadata/trajectories.json'
 QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
 PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
 EVENTS_FPATH = PROJECT_ROOT / 'data/events.pqt'
+RESPONSE_MATRIX_FPATH = PROJECT_ROOT / 'data/response_matrix.pqt'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 
 # Per-script error logs (unified schema: eid, error_type, error_message, traceback)
@@ -25,7 +26,8 @@ WHEEL_LOG_FPATH = PROJECT_ROOT / 'metadata/wheel_log.pqt'
 EVENTS_LOG_FPATH = PROJECT_ROOT / 'metadata/events_log.pqt'
 ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
 VIDEO_LOG_FPATH = PROJECT_ROOT / 'metadata/video_log.pqt'
-VIDEO_SESSIONS_FPATH = PROJECT_ROOT / 'metadata/iblnm_video_sessions.csv'
+VIDEO_FPATH = PROJECT_ROOT / 'metadata/video.pqt'
+LP_SESSIONS_FPATH = PROJECT_ROOT / 'metadata/LightningPoseSessions.csv'
 
 # Video QC parameters
 LENGTH_MISMATCH_THRESHOLD = 120  # seconds
@@ -235,6 +237,7 @@ TRIAL_COLUMNS = [
     'stimOn_times', 'response_times',
     'firstMovement_times', 'feedback_times',
     'choice', 'feedbackType', 'probabilityLeft',
+    'stim_side',
 ]
 
 # Events for response extraction (NOT goCue — too close to stimOn, variable latency)

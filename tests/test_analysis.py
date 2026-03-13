@@ -185,3 +185,372 @@ class TestResampleSignal:
         resampled = resample_signal(signal, target_fs=30)
         assert resampled.index[0] >= t[0]
         assert resampled.index[-1] <= t[-1]
+
+
+# =============================================================================
+# Response Vector Analysis Tests
+# =============================================================================
+
+import pytest
+
+
+def _make_response_matrix(n_recordings=4, n_features=10, seed=42):
+    """Helper: DataFrame with known response vectors."""
+    rng = np.random.default_rng(seed)
+    index = pd.MultiIndex.from_tuples(
+        [(f'eid-{i}', f'region-{i}') for i in range(n_recordings)],
+        names=['eid', 'brain_region'],
+    )
+    cols = [f'feat_{i}' for i in range(n_features)]
+    return pd.DataFrame(rng.standard_normal((n_recordings, n_features)),
+                        index=index, columns=cols)
+
+
+class TestCosineSimilarityMatrix:
+
+    def test_identical_vectors_similarity_one(self):
+        from iblnm.analysis import cosine_similarity_matrix
+        df = pd.DataFrame(
+            [[1, 0, 0], [1, 0, 0]],
+            index=pd.MultiIndex.from_tuples([('a', 'r1'), ('b', 'r2')]),
+            columns=['f0', 'f1', 'f2'],
+        )
+        sim = cosine_similarity_matrix(df)
+        np.testing.assert_allclose(sim.values, [[1, 1], [1, 1]], atol=1e-10)
+
+    def test_orthogonal_vectors_similarity_zero(self):
+        from iblnm.analysis import cosine_similarity_matrix
+        df = pd.DataFrame(
+            [[1, 0], [0, 1]],
+            index=pd.MultiIndex.from_tuples([('a', 'r1'), ('b', 'r2')]),
+            columns=['f0', 'f1'],
+        )
+        sim = cosine_similarity_matrix(df)
+        assert np.isclose(sim.iloc[0, 1], 0.0, atol=1e-10)
+
+    def test_drops_nan_rows(self):
+        from iblnm.analysis import cosine_similarity_matrix
+        df = pd.DataFrame(
+            [[1, 0], [np.nan, 1], [0, 1]],
+            index=pd.MultiIndex.from_tuples([('a', 'r1'), ('b', 'r2'), ('c', 'r3')]),
+            columns=['f0', 'f1'],
+        )
+        sim = cosine_similarity_matrix(df)
+        assert sim.shape == (2, 2)  # row with NaN excluded
+
+    def test_symmetric(self):
+        from iblnm.analysis import cosine_similarity_matrix
+        mat = _make_response_matrix(n_recordings=5)
+        sim = cosine_similarity_matrix(mat)
+        np.testing.assert_allclose(sim.values, sim.values.T, atol=1e-10)
+
+
+class TestWithinBetweenSimilarity:
+
+    def test_correct_pair_counts(self):
+        from iblnm.analysis import cosine_similarity_matrix, within_between_similarity
+        df = pd.DataFrame(
+            [[1, 0], [1, 0.1], [0, 1]],
+            index=pd.MultiIndex.from_tuples([('a', 'r1'), ('b', 'r2'), ('c', 'r3')]),
+            columns=['f0', 'f1'],
+        )
+        sim = cosine_similarity_matrix(df)
+        labels = pd.Series(['A', 'A', 'B'], index=sim.index)
+        result = within_between_similarity(sim, labels)
+        within = result[result['comparison'] == 'within']
+        between = result[result['comparison'] == 'between']
+        assert len(within) == 1   # A-A pair
+        assert len(between) == 2  # A-B pairs
+
+
+class TestDecodeTargetNM:
+
+    def test_perfectly_separable(self):
+        from iblnm.analysis import decode_target_nm
+        # 6 recordings: class A has feat_0=5, class B has feat_1=5
+        # 3 subjects per class for leave-one-subject-out
+        n_feat = 5
+        n = 6
+        data = np.zeros((n, n_feat))
+        data[:3, 0] = 5.0   # class A
+        data[3:, 1] = 5.0   # class B
+        index = pd.MultiIndex.from_tuples(
+            [(f'e{i}', f'r{i}') for i in range(n)],
+            names=['eid', 'brain_region'],
+        )
+        mat = pd.DataFrame(data, index=index, columns=[f'f{i}' for i in range(n_feat)])
+        labels = pd.Series(['A'] * 3 + ['B'] * 3, index=index)
+        subjects = pd.Series(['s0', 's1', 's2', 's0', 's1', 's2'], index=index)
+
+        result = decode_target_nm(mat, labels, subjects)
+        assert result['accuracy'] == 1.0
+
+    def test_returns_expected_keys(self):
+        from iblnm.analysis import decode_target_nm
+        mat = _make_response_matrix(n_recordings=6, n_features=3)
+        labels = pd.Series(['A', 'A', 'A', 'B', 'B', 'B'], index=mat.index)
+        subjects = pd.Series(['s0', 's1', 's2', 's0', 's1', 's2'], index=mat.index)
+        result = decode_target_nm(mat, labels, subjects)
+        assert set(result.keys()) == {
+            'accuracy', 'balanced_accuracy', 'per_class_accuracy',
+            'confusion', 'coefficients', 'predictions', 'best_C', 'n_valid',
+        }
+
+    def test_normalizes_features(self):
+        """With normalize=True, features should be z-scored per fold so
+        scale differences don't affect decoding."""
+        from iblnm.analysis import decode_target_nm
+        n, n_feat = 6, 3
+        # Class A: feat_0 = 1000 (large scale), Class B: feat_0 = -1000
+        data = np.zeros((n, n_feat))
+        data[:3, 0] = 1000.0
+        data[3:, 0] = -1000.0
+        index = pd.MultiIndex.from_tuples(
+            [(f'e{i}', f'r{i}') for i in range(n)],
+            names=['eid', 'brain_region'],
+        )
+        mat = pd.DataFrame(data, index=index, columns=[f'f{i}' for i in range(n_feat)])
+        labels = pd.Series(['A'] * 3 + ['B'] * 3, index=index)
+        subjects = pd.Series(['s0', 's1', 's2', 's0', 's1', 's2'], index=index)
+
+        result = decode_target_nm(mat, labels, subjects, normalize=True)
+        assert result['accuracy'] == 1.0
+
+    def test_requires_two_classes(self):
+        from iblnm.analysis import decode_target_nm
+        mat = _make_response_matrix(n_recordings=3, n_features=3)
+        labels = pd.Series(['A', 'A', 'A'], index=mat.index)
+        subjects = pd.Series(['s0', 's1', 's2'], index=mat.index)
+        with pytest.raises(ValueError, match='2'):
+            decode_target_nm(mat, labels, subjects)
+
+
+class TestFeatureUniqueContribution:
+
+    def test_shape_and_columns(self):
+        from iblnm.analysis import feature_unique_contribution
+        n_feat = 4
+        mat = _make_response_matrix(n_recordings=6, n_features=n_feat)
+        labels = pd.Series(['A', 'A', 'A', 'B', 'B', 'B'], index=mat.index)
+        subjects = pd.Series(['s0', 's1', 's2', 's0', 's1', 's2'], index=mat.index)
+        result = feature_unique_contribution(mat, labels, subjects)
+        assert len(result) == n_feat
+        assert set(result.columns) == {'feature', 'full_accuracy', 'reduced_accuracy', 'delta'}
+
+    def test_informative_feature_has_positive_delta(self):
+        from iblnm.analysis import feature_unique_contribution
+        # Class A: feat_0 high, Class B: feat_0 low. Other features are noise.
+        # Use enough samples that removing f0 hurts full-data accuracy.
+        rng = np.random.default_rng(0)
+        n_per_class = 20
+        n = 2 * n_per_class
+        n_feat = 5
+        data = rng.standard_normal((n, n_feat))
+        data[:n_per_class, 0] += 3.0   # class A: f0 shifted up
+        data[n_per_class:, 0] -= 3.0   # class B: f0 shifted down
+        index = pd.MultiIndex.from_tuples(
+            [(f'e{i}', f'r{i}') for i in range(n)],
+            names=['eid', 'brain_region'],
+        )
+        mat = pd.DataFrame(data, index=index, columns=[f'f{i}' for i in range(n_feat)])
+        labels = pd.Series(['A'] * n_per_class + ['B'] * n_per_class, index=index)
+        subjects = pd.Series([f's{i % 5}' for i in range(n)], index=index)
+        result = feature_unique_contribution(mat, labels, subjects, C=1.0)
+        f0_delta = result[result['feature'] == 'f0']['delta'].iloc[0]
+        assert f0_delta > 0, f"Informative feature f0 should have positive delta, got {f0_delta}"
+
+
+# =============================================================================
+# TargetNMDecoder Tests
+# =============================================================================
+
+def _make_separable_data(n_per_class=3, n_feat=5):
+    """Helper: perfectly separable two-class data with 3 subjects per class."""
+    n = n_per_class * 2
+    data = np.zeros((n, n_feat))
+    data[:n_per_class, 0] = 5.0   # class A
+    data[n_per_class:, 1] = 5.0   # class B
+    index = pd.MultiIndex.from_tuples(
+        [(f'e{i}', f'r{i}') for i in range(n)],
+        names=['eid', 'brain_region'],
+    )
+    mat = pd.DataFrame(data, index=index, columns=[f'f{i}' for i in range(n_feat)])
+    labels = pd.Series(['A'] * n_per_class + ['B'] * n_per_class, index=index)
+    subjects = pd.Series(
+        [f's{i}' for i in range(n_per_class)] * 2, index=index,
+    )
+    return mat, labels, subjects
+
+
+class TestTargetNMDecoder:
+
+    def test_fit_stores_attributes(self):
+        from iblnm.analysis import TargetNMDecoder
+        mat, labels, subjects = _make_separable_data()
+        decoder = TargetNMDecoder(mat, labels, subjects)
+        decoder.fit()
+        assert hasattr(decoder, 'accuracy')
+        assert hasattr(decoder, 'balanced_accuracy')
+        assert hasattr(decoder, 'per_class_accuracy')
+        assert hasattr(decoder, 'confusion')
+        assert hasattr(decoder, 'coefficients')
+        assert hasattr(decoder, 'predictions')
+
+    def test_fit_perfect_accuracy(self):
+        from iblnm.analysis import TargetNMDecoder
+        mat, labels, subjects = _make_separable_data()
+        decoder = TargetNMDecoder(mat, labels, subjects)
+        decoder.fit()
+        assert decoder.accuracy == 1.0
+
+    def test_unique_contribution_returns_dataframe(self):
+        from iblnm.analysis import TargetNMDecoder
+        mat, labels, subjects = _make_separable_data()
+        decoder = TargetNMDecoder(mat, labels, subjects)
+        decoder.fit()
+        contrib = decoder.unique_contribution()
+        assert isinstance(contrib, pd.DataFrame)
+        assert len(contrib) == mat.shape[1]
+        assert 'delta' in contrib.columns
+
+    def test_unique_contribution_stored_as_attribute(self):
+        from iblnm.analysis import TargetNMDecoder
+        mat, labels, subjects = _make_separable_data()
+        decoder = TargetNMDecoder(mat, labels, subjects)
+        decoder.fit()
+        decoder.unique_contribution()
+        assert hasattr(decoder, 'contributions')
+        assert isinstance(decoder.contributions, pd.DataFrame)
+
+
+class TestFullDataCoefficients:
+    """Coefficients should come from a single full-data refit, not fold averages."""
+
+    def test_coefficients_from_full_data_not_fold_average(self):
+        """Coefficients should differ from fold-averaged coefficients.
+
+        We verify this indirectly: coefficients from decode_target_nm should
+        match a manual full-data refit with the same C, not the fold average.
+        """
+        from iblnm.analysis import decode_target_nm
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.preprocessing import LabelEncoder, StandardScaler
+
+        mat, labels, subjects = _make_separable_data()
+        result = decode_target_nm(mat, labels, subjects)
+
+        # Manually refit on all data with best_C
+        X = mat.values
+        le = LabelEncoder()
+        y_enc = le.fit_transform(labels)
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        clf = LogisticRegression(
+            penalty='l1', solver='saga', max_iter=5000,
+            class_weight='balanced', C=result['best_C'],
+        )
+        clf.fit(X_scaled, y_enc)
+
+        # Result coefficients should match full-data refit
+        coef_df = result['coefficients']
+        assert coef_df.shape == (len(le.classes_), X.shape[1])
+        # Binary case: sklearn returns (1, n_features), expanded to (2, n_features)
+        expected = clf.coef_
+        if expected.shape[0] == 1 and len(le.classes_) == 2:
+            expected = np.vstack([expected, -expected])
+        np.testing.assert_allclose(coef_df.values, expected, atol=1e-3)
+
+    def test_unique_contribution_uses_full_data_accuracy(self):
+        """Unique contribution's full_accuracy should be full-data accuracy,
+        not CV accuracy."""
+        from iblnm.analysis import feature_unique_contribution
+        mat, labels, subjects = _make_separable_data()
+        contrib = feature_unique_contribution(mat, labels, subjects, C=1.0)
+        # full_accuracy should be from a full-data fit (generally >= CV accuracy)
+        assert contrib['full_accuracy'].iloc[0] >= 0.0
+        # All rows should have the same full_accuracy
+        assert contrib['full_accuracy'].nunique() == 1
+
+
+class TestCTuning:
+    """Tests for C (regularization) tuning in decode_target_nm."""
+
+    def test_decode_returns_best_C(self):
+        """decode_target_nm should return a 'best_C' key."""
+        from iblnm.analysis import decode_target_nm
+        mat, labels, subjects = _make_separable_data()
+        result = decode_target_nm(mat, labels, subjects)
+        assert 'best_C' in result
+        assert isinstance(result['best_C'], float)
+        assert result['best_C'] > 0
+
+    def test_decoder_stores_best_C(self):
+        """TargetNMDecoder.fit() should store best_C_ attribute."""
+        from iblnm.analysis import TargetNMDecoder
+        mat, labels, subjects = _make_separable_data()
+        decoder = TargetNMDecoder(mat, labels, subjects)
+        decoder.fit()
+        assert hasattr(decoder, 'best_C_')
+        assert decoder.best_C_ > 0
+
+    def test_unique_contribution_uses_best_C(self):
+        """unique_contribution should use best_C_ from fit, not retune."""
+        from iblnm.analysis import TargetNMDecoder
+        mat, labels, subjects = _make_separable_data()
+        decoder = TargetNMDecoder(mat, labels, subjects)
+        decoder.fit()
+        best_c = decoder.best_C_
+        decoder.unique_contribution()
+        # full_accuracy in contributions should match decoder.accuracy
+        # (same C used, same data)
+        assert decoder.contributions['full_accuracy'].iloc[0] == decoder.accuracy
+
+    def test_fixed_C_skips_tuning(self):
+        """When C is passed explicitly, decode_target_nm should use it."""
+        from iblnm.analysis import decode_target_nm
+        mat, labels, subjects = _make_separable_data()
+        result = decode_target_nm(mat, labels, subjects, C=1.0)
+        assert result['best_C'] == 1.0
+
+    def test_custom_Cs_grid(self):
+        """Custom Cs grid should be searched."""
+        from iblnm.analysis import decode_target_nm
+        mat, labels, subjects = _make_separable_data()
+        result = decode_target_nm(mat, labels, subjects, Cs=[0.01, 100.0])
+        assert result['best_C'] in [0.01, 100.0]
+
+
+class TestSubjectTargetGrouping:
+    """LOSO should group by subject-target, not bare subject."""
+
+    def test_subject_target_grouping_keeps_other_fiber(self):
+        """Holding out s0-A should keep s0-B in training.
+
+        s0 is the only subject with class B data. With bare-subject LOSO,
+        holding out s0 removes all class B from training → fold skipped,
+        s0-A is unpredicted. With subject-target grouping, holding out
+        s0-A keeps s0-B in training → s0-A gets a valid prediction.
+
+        We detect this via n_valid_predictions: subject-target gives 3
+        valid folds (s0-A, s1-A, s2-A) vs bare-subject's 2 (s1, s2).
+        """
+        from iblnm.analysis import decode_target_nm
+        # 4 recordings: class A = [s0, s1, s2], class B = [s0]
+        n_feat = 3
+        data = np.zeros((4, n_feat))
+        data[:3, 0] = 5.0   # class A
+        data[3:, 1] = 5.0   # class B
+        index = pd.MultiIndex.from_tuples(
+            [(f'e{i}', f'r{i}') for i in range(4)],
+            names=['eid', 'target_NM'],
+        )
+        mat = pd.DataFrame(data, index=index, columns=[f'f{i}' for i in range(n_feat)])
+        labels = pd.Series(['A', 'A', 'A', 'B'], index=index)
+        subjects = pd.Series(['s0', 's1', 's2', 's0'], index=index)
+
+        result = decode_target_nm(mat, labels, subjects)
+
+        # With subject-target grouping: s0-A fold has s0-B in training →
+        # valid prediction. n_valid = 3 (s0-A, s1-A, s2-A; s0-B skipped).
+        # With bare-subject: s0 fold removes both → n_valid = 2.
+        assert result['n_valid'] == 3
