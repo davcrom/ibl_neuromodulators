@@ -13,11 +13,11 @@ from iblnm.config import (
     EVENT_COMPLETENESS_THRESHOLD, MIN_NTRIALS, N_UNIQUE_SAMPLES_THRESHOLD,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, RESPONSE_EVENTS, RESPONSE_WINDOW,
-    SESSIONS_H5_DIR, TARGET_FS, TRIAL_COLUMNS, WHEEL_FS,
+    RESPONSE_WINDOWS, SESSIONS_H5_DIR, TARGET_FS, TRIAL_COLUMNS, WHEEL_FS,
 )
-from iblnm.analysis import get_responses
+from iblnm.analysis import get_responses, compute_response_magnitude
 from iblnm import task
-from iblnm.task import _get_signed_contrast
+from iblnm.task import compute_trial_contrasts
 from iblnm.validation import (
     MissingExtractedData, MissingRawData, InsufficientTrials, BlockStructureBug,
     IncompleteEventTimes, TrialsNotInPhotometryTime,
@@ -114,8 +114,10 @@ class PhotometrySession(PhotometrySessionLoader):
             except ALFObjectNotFound:
                 raise MissingRawData("_iblrig_taskData.raw.jsonable")
             raise MissingExtractedData("_ibl_trials.table.pqt")
-        self.trials['signed_contrast'] = _get_signed_contrast(self.trials)
-        self.trials['contrast'] = np.abs(self.trials['signed_contrast'])
+        contrasts = compute_trial_contrasts(self.trials)
+        self.trials['stim_side'] = contrasts['stim_side']
+        self.trials['signed_contrast'] = contrasts['signed_contrast']
+        self.trials['contrast'] = contrasts['contrast']
 
     def load_photometry(
         self,
@@ -351,11 +353,14 @@ class PhotometrySession(PhotometrySessionLoader):
             if 'trials' in groups and hasattr(self, 'trials') and self.trials is not None:
                 if 'trials' in f:
                     del f['trials']
-                cols = TRIAL_COLUMNS + ['signed_contrast', 'contrast']
+                cols = TRIAL_COLUMNS + ['contrast', 'signed_contrast']
                 available = [c for c in cols if c in self.trials.columns]
                 grp = f.create_group('trials')
                 for col in available:
-                    grp.create_dataset(col, data=self.trials[col].values)
+                    vals = self.trials[col].values
+                    if vals.dtype == object:
+                        vals = vals.astype('S')
+                    grp.create_dataset(col, data=vals)
 
             if 'responses' in groups and hasattr(self, 'responses') and self.responses is not None:
                 if 'responses' in f:
@@ -413,9 +418,13 @@ class PhotometrySession(PhotometrySessionLoader):
                 self.photometry['GCaMP_preprocessed'] = pd.DataFrame(preprocessed)
 
             if (groups is None or 'trials' in groups) and 'trials' in f:
-                self.trials = pd.DataFrame(
-                    {col: f[f'trials/{col}'][:] for col in f['trials']}
-                )
+                data = {}
+                for col in f['trials']:
+                    vals = f[f'trials/{col}'][:]
+                    if vals.dtype.kind == 'S':
+                        vals = vals.astype(str)
+                    data[col] = vals
+                self.trials = pd.DataFrame(data)
 
             if (groups is None or 'responses' in groups) and 'responses' in f:
                 resp_grp = f['responses']
@@ -738,4 +747,286 @@ class PhotometrySession(PhotometrySessionLoader):
         self._wheel_t0_event = t0_event
         self._wheel_t1_event = t1_event
         return self.wheel_velocity
+
+    # =========================================================================
+    # Response Vector
+    # =========================================================================
+
+    _DEFAULT_FEATURE_EVENTS = ('stimOn_times', 'feedback_times')
+
+    def get_response_vector(self, brain_region, hemisphere,
+                            min_trials=5, normalize=None, events=None):
+        """Compute a response vector: one scalar per trial-type condition.
+
+        Each condition is defined by event × contrast × side × feedback.
+
+        Parameters
+        ----------
+        brain_region : str
+            Region to extract (must be in responses coords).
+        hemisphere : str or None
+            'l', 'r', or None (midline). Used to lateralize contrasts.
+        events : sequence of str, optional
+            Event names to include. Defaults to stimOn_times and
+            feedback_times.
+        min_trials : int
+            Minimum trials per condition cell; fewer → NaN.
+        normalize : str or None
+            None (default) or 'minmax'.
+
+        Returns
+        -------
+        pd.Series
+            Index = condition labels, values = mean response magnitudes.
+        """
+        if normalize not in (None, 'minmax'):
+            raise ValueError(f"normalize must be None or 'minmax', got {normalize!r}")
+
+        responses = self.mask_subsequent_events(self.responses)
+        responses = self.subtract_baseline(responses)
+        tpts = responses.coords['time'].values
+
+        # Lateralize using stim_side column
+        contra_side = {'l': 'right', 'r': 'left'}.get(hemisphere, 'right')
+        stim_side = self.trials['stim_side'].values
+        contrast = self.trials['contrast'].values
+        feedback = self.trials['feedbackType'].values
+
+        contrasts = sorted(self.trials['contrast'].unique())
+        if events is None:
+            events = list(self._DEFAULT_FEATURE_EVENTS)
+        # Filter to events present in the data
+        available = set(responses.coords['event'].values)
+        events = [e for e in events if e in available]
+
+        is_contra = (stim_side == contra_side)
+
+        # Build conditions: event × contrast × side × feedback
+        win = RESPONSE_WINDOWS['early']
+        condition_specs = []
+        for event in events:
+            for c in contrasts:
+                for side, side_contra in [('contra', True), ('ipsi', False)]:
+                    for fb, fb_label in [(1, 'correct'), (-1, 'incorrect')]:
+                        cfmt = int(c) if c == int(c) else c
+                        label = f"{event.replace('_times', '')}_c{cfmt}_{side}_{fb_label}"
+                        condition_specs.append((event, c, side_contra, fb, label))
+
+        result = {}
+        for event, c, side_contra, fb, label in condition_specs:
+            trial_mask = (
+                np.isclose(contrast, c)
+                & (is_contra == side_contra)
+                & (feedback == fb)
+            )
+            n = trial_mask.sum()
+            if n < min_trials:
+                result[label] = np.nan
+                continue
+            resp = responses.sel(region=brain_region, event=event).values[trial_mask]
+            magnitudes = compute_response_magnitude(resp, tpts, win)
+            result[label] = np.nanmean(magnitudes)
+
+        vec = pd.Series(result)
+
+        if normalize == 'minmax':
+            vmin, vmax = vec.min(), vec.max()
+            if vmax > vmin:
+                vec = (vec - vmin) / (vmax - vmin)
+
+        return vec
+
+
+class PhotometrySessionGroup:
+    """Collection of recordings spanning multiple sessions.
+
+    Parameters
+    ----------
+    recordings : pd.DataFrame
+        One row per recording (session × region).
+    one : one.api.One
+        ONE connection instance.
+    h5_dir : Path, optional
+        Directory containing {eid}.h5 files.
+    """
+
+    def __init__(self, recordings, one, h5_dir=None):
+        self.recordings = recordings.reset_index(drop=True)
+        self.one = one
+        self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
+        self._sessions = {}  # eid → PhotometrySession
+        self.response_features = None
+        self.similarity_matrix = None
+        self.decoder = None
+
+    def __len__(self):
+        return len(self.recordings)
+
+    def _get_session(self, rec):
+        """Get or create a PhotometrySession for a recording row."""
+        eid = rec['eid']
+        if eid not in self._sessions:
+            self._sessions[eid] = PhotometrySession(rec, one=self.one, load_data=False)
+        return self._sessions[eid]
+
+    def __iter__(self):
+        for _, rec in self.recordings.iterrows():
+            yield rec, self._get_session(rec)
+
+    def __getitem__(self, idx):
+        rec = self.recordings.iloc[idx]
+        return rec, self._get_session(rec)
+
+    def filter(self, mask):
+        """Return a new group with recordings selected by boolean mask."""
+        filtered = self.recordings[mask].copy()
+        new_group = PhotometrySessionGroup(filtered, one=self.one, h5_dir=self.h5_dir)
+        # Share already-loaded sessions
+        for eid, ps in self._sessions.items():
+            if eid in filtered['eid'].values:
+                new_group._sessions[eid] = ps
+        return new_group
+
+    def get_response_features(self, nan_handling='drop_sessions',
+                              nan_threshold=0.3, **kwargs):
+        """Build response feature vectors for all recordings.
+
+        Loads H5 files one at a time, extracts response vectors, then
+        discards raw data to keep memory usage low.
+
+        Parameters
+        ----------
+        nan_handling : str
+            How to handle NaN in the feature matrix:
+            - ``'drop_sessions'``: drop recordings with any NaN feature.
+            - ``'drop_features'``: drop feature columns whose NaN rate
+              exceeds ``nan_threshold``.
+        nan_threshold : float
+            Fraction of recordings allowed to be NaN before a feature
+            column is dropped. Only used when ``nan_handling='drop_features'``.
+        **kwargs
+            Forwarded to ``PhotometrySession.get_response_vector``.
+            ``min_trials`` defaults to 1.
+
+        Returns
+        -------
+        pd.DataFrame
+            Rows indexed by (eid, target_NM), columns = condition labels.
+        """
+        _valid = ('drop_sessions', 'drop_features')
+        if nan_handling not in _valid:
+            raise ValueError(
+                f"nan_handling must be one of {_valid}, got {nan_handling!r}"
+            )
+
+        kwargs.setdefault('min_trials', 1)
+
+        from pathlib import Path
+        import logging
+
+        rows = {}
+        for _, rec in self.recordings.iterrows():
+            eid = rec['eid']
+            brain_region = rec['brain_region']
+            hemisphere = rec['hemisphere']
+            target_nm = rec['target_NM']
+
+            ps = self._get_session(rec)
+
+            # Load H5 if responses not yet available
+            if not hasattr(ps, 'responses') or not hasattr(ps, 'trials'):
+                h5_path = Path(self.h5_dir) / f'{eid}.h5'
+                if not h5_path.exists():
+                    logging.warning(f"H5 file not found: {h5_path}")
+                    continue
+                ps.load_h5(h5_path, groups=['trials', 'responses'])
+
+            if not hasattr(ps, 'responses') or not hasattr(ps, 'trials'):
+                continue
+            if brain_region not in ps.responses.coords['region'].values:
+                continue
+
+            vec = ps.get_response_vector(
+                brain_region=brain_region, hemisphere=hemisphere, **kwargs,
+            )
+            rows[(eid, target_nm)] = vec
+
+            # Discard raw data to free memory
+            del ps.responses
+            del ps.trials
+
+        if not rows:
+            self.response_features = pd.DataFrame()
+            return self.response_features
+
+        df = pd.DataFrame(rows).T
+        df.index = pd.MultiIndex.from_tuples(df.index, names=['eid', 'target_NM'])
+
+        if nan_handling == 'drop_sessions':
+            df = df.dropna()
+        elif nan_handling == 'drop_features':
+            nan_rate = df.isna().mean()
+            df = df.loc[:, nan_rate <= nan_threshold]
+
+        self.response_features = df
+        return df
+
+    def response_similarity_matrix(self, **kwargs):
+        """Pairwise cosine similarity of response feature vectors.
+
+        Calls ``get_response_features`` if not already computed.
+
+        Parameters
+        ----------
+        **kwargs
+            Forwarded to ``get_response_features`` if needed.
+
+        Returns
+        -------
+        pd.DataFrame
+            Symmetric similarity matrix.
+        """
+        from iblnm.analysis import cosine_similarity_matrix
+
+        if self.response_features is None:
+            self.get_response_features(**kwargs)
+
+        self.similarity_matrix = cosine_similarity_matrix(self.response_features)
+        return self.similarity_matrix
+
+    def decode_target(self, **kwargs):
+        """Decode target-NM from response features.
+
+        Creates a ``TargetNMDecoder``, fits it with leave-one-subject-target-out CV,
+        and computes feature unique contributions. Stores the decoder as
+        ``self.decoder``.
+
+        Calls ``get_response_features`` if not already computed.
+
+        Parameters
+        ----------
+        **kwargs
+            Forwarded to ``get_response_features`` if needed.
+
+        Returns
+        -------
+        TargetNMDecoder
+            Fitted decoder with results as attributes.
+        """
+        from iblnm.analysis import TargetNMDecoder
+
+        if self.response_features is None:
+            self.get_response_features(**kwargs)
+
+        # Labels from the index; subjects looked up from recordings
+        labels = self.response_features.index.get_level_values('target_NM')
+        labels = pd.Series(labels.values, index=self.response_features.index)
+
+        rec_indexed = self.recordings.set_index(['eid', 'target_NM'])
+        subjects = rec_indexed['subject'].reindex(self.response_features.index)
+
+        self.decoder = TargetNMDecoder(self.response_features, labels, subjects)
+        self.decoder.fit()
+        self.decoder.unique_contribution()
+        return self.decoder
 

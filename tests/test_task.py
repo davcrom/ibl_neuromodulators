@@ -356,6 +356,85 @@ class TestBiasShift:
 
 
 # =============================================================================
+# Trial Contrast Computation
+# =============================================================================
+
+class TestComputeTrialContrasts:
+    """Tests for compute_trial_contrasts: stim_side, contrast, signed_contrast."""
+
+    def _make_trials(self, left, right):
+        return pd.DataFrame({'contrastLeft': left, 'contrastRight': right})
+
+    def test_right_stimulus(self):
+        """Right stimulus: contrastLeft=NaN, contrastRight=0.25."""
+        from iblnm.task import compute_trial_contrasts
+        trials = self._make_trials([np.nan], [0.25])
+        result = compute_trial_contrasts(trials)
+        assert result['stim_side'].iloc[0] == 'right'
+        assert result['contrast'].iloc[0] == 25.0
+        assert result['signed_contrast'].iloc[0] == 25.0
+
+    def test_left_stimulus(self):
+        """Left stimulus: contrastLeft=0.5, contrastRight=NaN."""
+        from iblnm.task import compute_trial_contrasts
+        trials = self._make_trials([0.5], [np.nan])
+        result = compute_trial_contrasts(trials)
+        assert result['stim_side'].iloc[0] == 'left'
+        assert result['contrast'].iloc[0] == 50.0
+        assert result['signed_contrast'].iloc[0] == -50.0
+
+    def test_zero_contrast_left(self):
+        """Zero contrast on left: contrastLeft=0, contrastRight=NaN."""
+        from iblnm.task import compute_trial_contrasts
+        trials = self._make_trials([0.0], [np.nan])
+        result = compute_trial_contrasts(trials)
+        assert result['stim_side'].iloc[0] == 'left'
+        assert result['contrast'].iloc[0] == 0.0
+        assert result['signed_contrast'].iloc[0] == 0.0  # -1 * 0.0 = 0.0
+
+    def test_zero_contrast_right(self):
+        """Zero contrast on right: contrastLeft=NaN, contrastRight=0."""
+        from iblnm.task import compute_trial_contrasts
+        trials = self._make_trials([np.nan], [0.0])
+        result = compute_trial_contrasts(trials)
+        assert result['stim_side'].iloc[0] == 'right'
+        assert result['contrast'].iloc[0] == 0.0
+        assert result['signed_contrast'].iloc[0] == 0.0
+
+    def test_mixed_trials(self):
+        """Multiple trials with different sides and contrasts."""
+        from iblnm.task import compute_trial_contrasts
+        trials = self._make_trials(
+            [np.nan, 0.25, 0.0,    np.nan],
+            [1.0,    np.nan, np.nan, 0.0],
+        )
+        result = compute_trial_contrasts(trials)
+        np.testing.assert_array_equal(
+            result['stim_side'].values, ['right', 'left', 'left', 'right']
+        )
+        np.testing.assert_allclose(
+            result['contrast'].values, [100.0, 25.0, 0.0, 0.0]
+        )
+        np.testing.assert_allclose(
+            result['signed_contrast'].values, [100.0, -25.0, 0.0, 0.0]
+        )
+
+    def test_returns_dataframe_with_correct_columns(self):
+        from iblnm.task import compute_trial_contrasts
+        trials = self._make_trials([np.nan, 0.5], [0.25, np.nan])
+        result = compute_trial_contrasts(trials)
+        assert isinstance(result, pd.DataFrame)
+        assert set(result.columns) == {'stim_side', 'contrast', 'signed_contrast'}
+
+    def test_preserves_index(self):
+        from iblnm.task import compute_trial_contrasts
+        trials = self._make_trials([np.nan, 0.5], [0.25, np.nan])
+        trials.index = [10, 20]
+        result = compute_trial_contrasts(trials)
+        assert list(result.index) == [10, 20]
+
+
+# =============================================================================
 # I/O Tests
 # =============================================================================
 

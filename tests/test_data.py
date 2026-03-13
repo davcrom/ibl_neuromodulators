@@ -1238,3 +1238,488 @@ class TestBlockPerformance:
         session.trials = _make_training_trials()
         result = session.block_performance()
         assert 'bias_shift' not in result  # no 20/80 blocks present
+
+
+# =============================================================================
+# PhotometrySessionGroup Tests
+# =============================================================================
+
+def _make_recordings_df(n_eids=2, regions_per=2):
+    """Helper to build a recordings DataFrame."""
+    rows = []
+    region_names = ['VTA-r', 'DR-l', 'SNc-r', 'LC-l']
+    for i in range(n_eids):
+        for j in range(regions_per):
+            rows.append({
+                'eid': f'eid-{i}',
+                'subject': f'subj-{i % 2}',
+                'brain_region': region_names[j],
+                'hemisphere': region_names[j][-1],
+                'target_NM': f'target-{j}',
+                'NM': f'NM-{j}',
+                'session_type': 'biased',
+                'start_time': '2024-01-01T10:00:00',
+                'number': 1,
+                'task_protocol': 'biased_protocol',
+            })
+    return pd.DataFrame(rows)
+
+
+class TestPhotometrySessionGroup:
+
+    def test_len_matches_recordings(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=2)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        assert len(group) == 4
+
+    def test_iter_yields_series_and_session(self):
+        from iblnm.data import PhotometrySessionGroup, PhotometrySession
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        for rec, ps in group:
+            assert isinstance(rec, pd.Series)
+            assert isinstance(ps, PhotometrySession)
+
+    def test_getitem_returns_tuple(self):
+        from iblnm.data import PhotometrySessionGroup, PhotometrySession
+        recs = _make_recordings_df(n_eids=1, regions_per=2)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        rec, ps = group[0]
+        assert isinstance(rec, pd.Series)
+        assert isinstance(ps, PhotometrySession)
+        assert rec['eid'] == 'eid-0'
+
+    def test_iter_deduplicates_sessions_by_eid(self):
+        """Two recordings from the same eid should share one PhotometrySession."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=2)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        sessions = [ps for _, ps in group]
+        assert sessions[0] is sessions[1]
+
+    def test_filter_returns_subset(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=2)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        mask = group.recordings['eid'] == 'eid-0'
+        subset = group.filter(mask)
+        assert len(subset) == 2
+        assert all(r['eid'] == 'eid-0' for r, _ in subset)
+
+
+
+# =============================================================================
+# get_response_vector Tests
+# =============================================================================
+
+def _make_session_with_responses(mock_one, n_trials=100, post_event_value=1.0):
+    """Create a PhotometrySession with synthetic responses and trials.
+
+    Baseline (t<0) is 0; post-event (t>=0) is post_event_value.
+    After baseline subtraction, post-event response = post_event_value.
+    """
+    import xarray as xr
+    from iblnm.data import PhotometrySession
+
+    series = pd.Series({
+        'eid': 'test-eid', 'subject': 'mouse1',
+        'start_time': '2024-01-01T10:00:00', 'number': 1,
+        'task_protocol': 'biased', 'session_type': 'biased',
+        'brain_region': ['VTA-r'], 'hemisphere': ['r'],
+    })
+    ps = PhotometrySession(series, one=mock_one, load_data=False)
+
+    rng = np.random.default_rng(42)
+    n_time = 61
+    tpts = np.linspace(-1, 1, n_time)
+    events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+
+    # Baseline = 0, post-event = post_event_value
+    data = np.zeros((1, 3, n_trials, n_time))
+    post_mask = tpts >= 0
+    data[:, :, :, post_mask] = post_event_value
+
+    ps.responses = xr.DataArray(
+        data, dims=['region', 'event', 'trial', 'time'],
+        coords={'region': ['VTA-r'], 'event': events,
+                'trial': np.arange(n_trials), 'time': tpts},
+    )
+
+    contrasts = np.array([0.0, 0.0625, 0.125, 0.25, 1.0])
+    sides = rng.choice(['left', 'right'], n_trials)
+    contrast_vals = rng.choice(contrasts, n_trials)
+    signed = np.where(sides == 'left', -1, 1) * contrast_vals
+    ps.trials = pd.DataFrame({
+        'stimOn_times': np.linspace(10, 10 + n_trials, n_trials),
+        'firstMovement_times': np.linspace(10.2, 10.2 + n_trials, n_trials),
+        'feedback_times': np.linspace(11, 11 + n_trials, n_trials),
+        'signed_contrast': signed,
+        'contrast': contrast_vals,
+        'stim_side': sides,
+        'feedbackType': rng.choice([1, -1], n_trials),
+        'choice': rng.choice([-1, 1], n_trials),
+        'probabilityLeft': np.full(n_trials, 0.5),
+    })
+    return ps
+
+
+class TestGetResponseVector:
+
+    def test_returns_series(self):
+        ps = _make_session_with_responses(MagicMock())
+        vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r')
+        assert isinstance(vec, pd.Series)
+
+    def test_uses_default_events_only(self):
+        """Default events exclude firstMovement."""
+        ps = _make_session_with_responses(MagicMock())
+        vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r')
+        assert len(vec) > 0
+        assert not any('firstMovement' in label for label in vec.index)
+
+    def test_ipsi_contra_labels(self):
+        """All contrasts (including zero) have ipsi and contra labels."""
+        ps = _make_session_with_responses(MagicMock(), n_trials=200)
+        vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r',
+                                     min_trials=1)
+        # Non-zero contrasts
+        assert 'stimOn_c0.0625_contra_correct' in vec.index
+        assert 'stimOn_c0.0625_ipsi_correct' in vec.index
+        assert 'feedback_c1_contra_incorrect' in vec.index
+        assert 'feedback_c1_ipsi_incorrect' in vec.index
+        # Zero contrast retains ipsi/contra (side matters for action contingencies)
+        assert 'stimOn_c0_contra_correct' in vec.index
+        assert 'stimOn_c0_ipsi_correct' in vec.index
+
+    def test_custom_events_includes_firstMovement(self):
+        """Passing events explicitly can include firstMovement."""
+        ps = _make_session_with_responses(MagicMock(), n_trials=200)
+        vec = ps.get_response_vector(
+            brain_region='VTA-r', hemisphere='r',
+            events=['stimOn_times', 'firstMovement_times', 'feedback_times'],
+            min_trials=1,
+        )
+        assert any('firstMovement' in label for label in vec.index)
+        # More features than default (which excludes firstMovement)
+        default_vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r',
+                                              min_trials=1)
+        assert len(vec) > len(default_vec)
+
+    def test_constant_signal_all_ones(self):
+        """Post-event response of 1.0 → all condition means should be 1.0 (ignoring NaN)."""
+        ps = _make_session_with_responses(MagicMock(), n_trials=200, post_event_value=1.0)
+        vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r',
+                                     min_trials=1)
+        finite = vec.dropna()
+        assert len(finite) > 0
+        np.testing.assert_allclose(finite.values, 1.0, atol=1e-10)
+
+    def test_min_trials_produces_nan(self):
+        """Condition with fewer than min_trials should be NaN."""
+        # Only 10 trials total → many cells will have < 5 trials
+        ps = _make_session_with_responses(MagicMock(), n_trials=10, post_event_value=2.0)
+        vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r',
+                                     min_trials=5)
+        assert vec.isna().any(), "Some conditions should be NaN with only 10 trials"
+
+    def test_minmax_normalize(self):
+        """Min-max normalization should produce values in [0, 1]."""
+        import xarray as xr
+        from iblnm.data import PhotometrySession
+
+        series = pd.Series({
+            'eid': 'test-eid', 'subject': 'mouse1',
+            'start_time': '2024-01-01T10:00:00', 'number': 1,
+            'task_protocol': 'biased', 'session_type': 'biased',
+            'brain_region': ['VTA-r'], 'hemisphere': ['r'],
+        })
+        ps = PhotometrySession(series, one=MagicMock(), load_data=False)
+
+        n_trials, n_time = 200, 61
+        tpts = np.linspace(-1, 1, n_time)
+        events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+
+        # Baseline (t<0) = 0, post-event varies by event
+        rng = np.random.default_rng(0)
+        data = np.zeros((1, 3, n_trials, n_time))
+        post_mask = tpts >= 0
+        data[0, 0, :, :][:, post_mask] = 1.0   # stimOn post-event = 1
+        data[0, 1, :, :][:, post_mask] = 2.0   # firstMov post-event = 2
+        data[0, 2, :, :][:, post_mask] = 3.0   # feedback post-event = 3
+
+        ps.responses = xr.DataArray(
+            data, dims=['region', 'event', 'trial', 'time'],
+            coords={'region': ['VTA-r'], 'event': events,
+                    'trial': np.arange(n_trials), 'time': tpts},
+        )
+
+        contrasts = np.array([0.0, 0.0625, 0.125, 0.25, 1.0])
+        sides = rng.choice(['left', 'right'], n_trials)
+        contrast_vals = rng.choice(contrasts, n_trials)
+        signed = np.where(sides == 'left', -1, 1) * contrast_vals
+        ps.trials = pd.DataFrame({
+            'stimOn_times': np.linspace(10, 10 + n_trials, n_trials),
+            'firstMovement_times': np.linspace(10.2, 10.2 + n_trials, n_trials),
+            'feedback_times': np.linspace(11, 11 + n_trials, n_trials),
+            'signed_contrast': signed,
+            'contrast': contrast_vals,
+            'stim_side': sides,
+            'feedbackType': rng.choice([1, -1], n_trials),
+            'choice': rng.choice([-1, 1], n_trials),
+            'probabilityLeft': np.full(n_trials, 0.5),
+        })
+
+        vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r',
+                                     normalize='minmax', min_trials=1)
+        finite = vec.dropna()
+        assert finite.min() >= -1e-10
+        assert finite.max() <= 1.0 + 1e-10
+        assert np.isclose(finite.min(), 0.0, atol=1e-10)
+        assert np.isclose(finite.max(), 1.0, atol=1e-10)
+
+    def test_invalid_normalize_raises(self):
+        ps = _make_session_with_responses(MagicMock())
+        with pytest.raises(ValueError, match='normalize'):
+            ps.get_response_vector(brain_region='VTA-r', hemisphere='r',
+                                   normalize='invalid')
+
+    def test_condition_label_format(self):
+        """Labels follow event_cContrast_side_feedback."""
+        ps = _make_session_with_responses(MagicMock())
+        vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r')
+        assert 'stimOn_c0_contra_correct' in vec.index
+        assert 'stimOn_c1_ipsi_incorrect' in vec.index
+        assert 'feedback_c0.25_contra_correct' in vec.index
+
+
+# =============================================================================
+# PhotometrySessionGroup Analysis Method Tests
+# =============================================================================
+
+def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42):
+    """Write a minimal H5 file with trials and responses."""
+    import h5py
+
+    rng = np.random.default_rng(seed)
+    n_time = 61
+    tpts = np.linspace(-1, 1, n_time)
+    events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+    contrasts = np.array([0.0, 0.0625, 0.125, 0.25, 1.0])
+
+    # Baseline = 0, post-event = 1.0
+    post_mask = tpts >= 0
+
+    with h5py.File(path, 'w') as f:
+        grp = f.create_group('trials')
+        grp.create_dataset('stimOn_times', data=np.linspace(10, 10 + n_trials, n_trials))
+        grp.create_dataset('firstMovement_times',
+                           data=np.linspace(10.2, 10.2 + n_trials, n_trials))
+        grp.create_dataset('feedback_times',
+                           data=np.linspace(11, 11 + n_trials, n_trials))
+        sides = rng.choice(['left', 'right'], n_trials)
+        contrast_vals = rng.choice(contrasts, n_trials)
+        signed = np.where(sides == 'left', -1, 1).astype(float) * contrast_vals
+        grp.create_dataset('signed_contrast', data=signed)
+        grp.create_dataset('contrast', data=contrast_vals)
+        # Store stim_side as fixed-length bytes for HDF5 compatibility
+        grp.create_dataset('stim_side', data=np.array(sides, dtype='S5'))
+        grp.create_dataset('feedbackType', data=rng.choice([1, -1], n_trials))
+        grp.create_dataset('choice', data=rng.choice([-1, 1], n_trials))
+        grp.create_dataset('probabilityLeft', data=np.full(n_trials, 0.5))
+
+        resp_grp = f.create_group('responses')
+        resp_grp.create_dataset('time', data=tpts)
+        for region in regions:
+            region_grp = resp_grp.create_group(region)
+            for event in events:
+                data = np.zeros((n_trials, n_time))
+                data[:, post_mask] = 1.0
+                region_grp.create_dataset(event, data=data)
+
+
+class TestGetResponseFeatures:
+
+    def test_returns_dataframe_with_correct_index(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df = group.get_response_features(min_trials=1)
+        assert isinstance(df, pd.DataFrame)
+        assert df.index.names == ['eid', 'target_NM']
+
+    def test_stores_response_features(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.get_response_features(min_trials=1)
+        assert group.response_features is not None
+        assert isinstance(group.response_features, pd.DataFrame)
+
+    def test_multiple_recordings(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200, seed=0)
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=200, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df = group.get_response_features(min_trials=1)
+        assert len(df) == 2
+
+    def test_skips_missing_h5(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        # Only create H5 for eid-0
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df = group.get_response_features(min_trials=1)
+        assert len(df) == 1
+
+    def test_discards_raw_data_after_extraction(self, tmp_path):
+        """Raw responses should not persist in memory after extraction."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.get_response_features(min_trials=1)
+        _, ps = group[0]
+        assert not hasattr(ps, 'responses')
+
+    def test_default_min_trials_is_one(self, tmp_path):
+        """Default min_trials=1 allows sparse conditions through."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        # 200 trials: enough to fill most cells, session survives drop_sessions
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df = group.get_response_features()
+        # Session should survive default drop_sessions with 200 trials
+        assert len(df) == 1
+        assert df.notna().sum(axis=1).iloc[0] > 0
+
+    def test_drop_sessions_removes_rows_with_nan(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        # eid-0: 20 trials → likely has NaN features
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=20, seed=0)
+        # eid-1: 500 trials → all features populated
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=500, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df = group.get_response_features(nan_handling='drop_sessions')
+        # The sparse session should be dropped
+        assert df.isna().sum().sum() == 0
+        assert len(df) <= 2
+
+    def test_drop_features_removes_sparse_columns(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=3, regions_per=1)
+        # Use few trials so some features are frequently NaN
+        for i in range(3):
+            _write_h5(tmp_path / f'eid-{i}.h5', n_trials=30, seed=i)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        # First pass: keep all columns (threshold=1.0) to count them
+        df_all = group.get_response_features(nan_handling='drop_features',
+                                              nan_threshold=1.0)
+        n_cols_before = df_all.shape[1]
+        nan_rates = df_all.isna().mean()
+
+        # Reset and re-extract with stricter threshold
+        group.response_features = None
+        df_drop = group.get_response_features(nan_handling='drop_features',
+                                               nan_threshold=0.3)
+        # Should have fewer columns if any had >30% NaN
+        n_expected_drop = (nan_rates > 0.3).sum()
+        if n_expected_drop > 0:
+            assert df_drop.shape[1] < n_cols_before
+        # Remaining columns should have NaN rate <= threshold
+        assert (df_drop.isna().mean() <= 0.3 + 1e-10).all()
+
+    def test_invalid_nan_handling_raises(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        with pytest.raises(ValueError, match='nan_handling'):
+            group.get_response_features(nan_handling='invalid')
+
+
+class TestResponseSimilarityMatrix:
+
+    def test_returns_symmetric_dataframe(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200, seed=0)
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=200, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        sim = group.response_similarity_matrix(min_trials=1)
+        assert isinstance(sim, pd.DataFrame)
+        np.testing.assert_allclose(sim.values, sim.values.T, atol=1e-10)
+
+    def test_auto_calls_get_response_features(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200, seed=0)
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=200, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        assert group.response_features is None
+        group.response_similarity_matrix(min_trials=1)
+        assert group.response_features is not None
+
+    def test_stores_similarity_matrix(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=200, seed=0)
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=200, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        sim = group.response_similarity_matrix(min_trials=1)
+        assert group.similarity_matrix is not None
+        pd.testing.assert_frame_equal(sim, group.similarity_matrix)
+
+
+def _make_decode_recordings(n_per_class=2):
+    """Helper: recordings with 2 target_NMs, each with n_per_class subjects."""
+    rows = []
+    for i in range(n_per_class):
+        rows.append({
+            'eid': f'eid-A{i}', 'subject': f'subj-A{i}',
+            'brain_region': 'VTA-r', 'hemisphere': 'r',
+            'target_NM': 'VTA-DA', 'NM': 'DA',
+            'session_type': 'biased',
+            'start_time': '2024-01-01T10:00:00', 'number': 1,
+            'task_protocol': 'biased_protocol',
+        })
+        rows.append({
+            'eid': f'eid-B{i}', 'subject': f'subj-B{i}',
+            'brain_region': 'VTA-r', 'hemisphere': 'r',
+            'target_NM': 'DR-5HT', 'NM': '5HT',
+            'session_type': 'biased',
+            'start_time': '2024-01-01T10:00:00', 'number': 1,
+            'task_protocol': 'biased_protocol',
+        })
+    return pd.DataFrame(rows)
+
+
+class TestDecodeTarget:
+
+    def test_creates_decoder_attribute(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.analysis import TargetNMDecoder
+        recs = _make_decode_recordings(n_per_class=3)
+        for _, rec in recs.iterrows():
+            _write_h5(tmp_path / f'{rec["eid"]}.h5', n_trials=200,
+                       seed=hash(rec['eid']) % 1000)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.decode_target(min_trials=1)
+        assert isinstance(group.decoder, TargetNMDecoder)
+
+    def test_decoder_has_contributions(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_decode_recordings(n_per_class=3)
+        for _, rec in recs.iterrows():
+            _write_h5(tmp_path / f'{rec["eid"]}.h5', n_trials=200,
+                       seed=hash(rec['eid']) % 1000)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.decode_target(min_trials=1)
+        assert hasattr(group.decoder, 'contributions')
+        assert isinstance(group.decoder.contributions, pd.DataFrame)

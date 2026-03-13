@@ -200,11 +200,52 @@ def get_subjects_by_stage(df_sessions: pd.DataFrame) -> dict:
 # Performance Metrics
 # =============================================================================
 
-def _get_signed_contrast(trials: pd.DataFrame) -> np.ndarray:
-    """Convert trials DataFrame to signed contrast array."""
-    contrast_left = trials['contrastLeft'].fillna(0).values
-    contrast_right = trials['contrastRight'].fillna(0).values
-    return (contrast_right - contrast_left) * 100  # in percent, right positive
+def compute_trial_contrasts(trials: pd.DataFrame) -> pd.DataFrame:
+    """Derive stimulus side, contrast, and signed contrast from raw trial data.
+
+    Parameters
+    ----------
+    trials : pd.DataFrame
+        Must contain 'contrastLeft' and 'contrastRight' columns, where one is
+        NaN on each trial to indicate which side the stimulus appeared.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: 'stim_side' ('left'/'right'), 'contrast' (percent),
+        'signed_contrast' (percent, negative for left).
+    """
+    left = trials['contrastLeft']
+    right = trials['contrastRight']
+
+    stim_side = np.where(left.isna(), 'right', 'left')
+    contrast = right.fillna(left).fillna(0).values * 100
+    sign = np.where(stim_side == 'left', -1, 1)
+    signed_contrast = contrast * sign
+
+    return pd.DataFrame({
+        'stim_side': stim_side,
+        'contrast': contrast,
+        'signed_contrast': signed_contrast,
+    }, index=trials.index)
+
+
+def add_relative_contrast(df):
+    """Add hemisphere-relative contrast and side columns.
+
+    Uses ``stim_side`` (from contrastLeft/contrastRight NaN pattern) to assign
+    contra/ipsi. Zero-contrast trials retain their true stimulus side.
+
+    Columns added:
+      relative_contrast : signed_contrast * hemi_sign (positive = contra)
+      side              : 'contra' or 'ipsi'
+    """
+    df = df.copy()
+    contra_side = df['hemisphere'].map({'l': 'right', 'r': 'left'}).fillna('right')
+    df['side'] = np.where(df['stim_side'] == contra_side, 'contra', 'ipsi')
+    hemi_sign = df['hemisphere'].map({'l': 1, 'r': -1}).fillna(1)
+    df['relative_contrast'] = df['signed_contrast'] * hemi_sign
+    return df
 
 
 def compute_fraction_correct(
@@ -359,7 +400,7 @@ def fit_psychometric(
     # Compute R-squared if requested
     r_sq = np.nan
     if compute_r_squared:
-        signed_contrast = _get_signed_contrast(df)
+        signed_contrast = compute_trial_contrasts(df)['signed_contrast'].values
         r_sq = _compute_r_squared(signed_contrast, df['choice'].values, psych_params)
 
     return {
