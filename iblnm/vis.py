@@ -1189,7 +1189,8 @@ def create_psychometric_figure(
     return fig
 
 
-def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None, window_label=None):
+def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
+                           window_label=None, aggregation='pool'):
     """Plot response magnitude by contrast, split into contra and ipsi panels.
 
     The contra panel x-axis is inverted so that the highest contrast is on the
@@ -1211,11 +1212,18 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None, w
     fig : plt.Figure or None
         Figure with two existing axes to draw on. If None, a new figure is
         created with ``plt.subplots(1, 2, sharey=True)``.
+    window_label : str or None
+        Label for the response window (e.g. 'early', 'late').
+    aggregation : str
+        'pool' (default): grand mean ± SEM across all trials.
+        'subject': mean of subject means ± SEM of subject means.
 
     Returns
     -------
     plt.Figure
     """
+    if aggregation not in ('pool', 'subject'):
+        raise ValueError(f"aggregation must be 'pool' or 'subject', got {aggregation!r}")
     if fig is None:
         fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05})
 
@@ -1247,9 +1255,14 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None, w
             means, sems = [], []
             for c in contrasts:
                 df_c = df_fb[df_fb['contrast'] == c]
-                subj_means = df_c.groupby('subject')[response_col].mean()
-                means.append(subj_means.mean())
-                sems.append(scipy_sem(subj_means, nan_policy='omit') if len(subj_means) > 1 else np.nan)
+                if aggregation == 'pool':
+                    vals = df_c[response_col].dropna()
+                    means.append(vals.mean())
+                    sems.append(scipy_sem(vals, nan_policy='omit') if len(vals) > 1 else np.nan)
+                else:
+                    subj_means = df_c.groupby('subject')[response_col].mean()
+                    means.append(subj_means.mean())
+                    sems.append(scipy_sem(subj_means, nan_policy='omit') if len(subj_means) > 1 else np.nan)
 
             label = 'correct' if feedback == 1 else 'incorrect'
             ax.errorbar(xpos, means, yerr=np.array(sems, dtype=float),
@@ -1273,4 +1286,270 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None, w
 
     ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     fig.tight_layout()
+    return fig
+
+
+def plot_confusion_matrix(confusion, fig=None):
+    """Plot a confusion matrix as an annotated heatmap.
+
+    Parameters
+    ----------
+    confusion : pd.DataFrame
+        Square confusion matrix (rows = true, columns = predicted).
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if fig is None:
+        n = len(confusion)
+        fig, ax = plt.subplots(1, 1, figsize=(max(4, n * 1.2), max(3.5, n * 1.0)))
+    else:
+        ax = fig.axes[0]
+
+    im = ax.imshow(confusion.values, cmap='Blues', aspect='equal')
+    fig.colorbar(im, ax=ax, label='Count')
+
+    # Annotate cells
+    for i in range(len(confusion)):
+        for j in range(len(confusion.columns)):
+            val = confusion.iloc[i, j]
+            ax.text(j, i, str(int(val)), ha='center', va='center',
+                    color='white' if val > confusion.values.max() / 2 else 'black')
+
+    ax.set_xticks(range(len(confusion.columns)))
+    ax.set_xticklabels(confusion.columns)
+    ax.set_yticks(range(len(confusion.index)))
+    ax.set_yticklabels(confusion.index)
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('True')
+
+    total = confusion.values.sum()
+    correct = np.trace(confusion.values)
+    accuracy = correct / total if total > 0 else 0
+    ax.set_title(f'Confusion matrix (accuracy: {accuracy:.0%})')
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_similarity_matrix(sim_matrix, labels, subjects=None, fig=None):
+    """Plot a cosine similarity matrix as a heatmap, sorted by target-NM label.
+
+    Parameters
+    ----------
+    sim_matrix : pd.DataFrame
+        Symmetric similarity matrix from ``cosine_similarity_matrix``.
+    labels : pd.Series
+        Target-NM label per recording, aligned to sim_matrix index.
+    subjects : pd.Series, optional
+        Subject per recording. If provided, recordings are sorted by subject
+        within each target-NM group.
+    fig : plt.Figure, optional
+        Existing figure to draw on.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    # Sort: primary by target-NM label, secondary by subject if provided
+    sort_df = pd.DataFrame({'label': labels})
+    if subjects is not None:
+        sort_df['subject'] = subjects
+        sort_df = sort_df.sort_values(['label', 'subject'])
+    else:
+        sort_df = sort_df.sort_values('label')
+    order = sort_df.index
+    sim_sorted = sim_matrix.loc[order, order]
+
+    if fig is None:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+    else:
+        ax = fig.axes[0]
+
+    im = ax.imshow(sim_sorted.values, cmap='RdBu_r', vmin=-1, vmax=1, aspect='equal')
+    fig.colorbar(im, ax=ax, label='Cosine similarity')
+
+    # Draw group boundaries and label each target
+    sorted_labels = labels.loc[order]
+    boundaries = np.where(sorted_labels.values[:-1] != sorted_labels.values[1:])[0] + 0.5
+    for b in boundaries:
+        ax.axhline(b, color='k', linewidth=1.5)
+        ax.axvline(b, color='k', linewidth=1.5)
+
+    # Compute group midpoints for tick labels
+    group_edges = np.concatenate([[-0.5], boundaries, [len(sorted_labels) - 0.5]])
+    group_mids = [(group_edges[i] + group_edges[i + 1]) / 2
+                  for i in range(len(group_edges) - 1)]
+    unique_labels = sorted_labels.values[
+        np.concatenate([[0], (boundaries + 0.5).astype(int)])
+    ]
+
+    ax.set_yticks(group_mids)
+    ax.set_yticklabels(unique_labels)
+    ax.set_xticks(group_mids)
+    ax.set_xticklabels(unique_labels, rotation=45, ha='right')
+
+    ax.set_title('Response vector similarity')
+    fig.tight_layout()
+    return fig
+
+
+def plot_decoding_coefficients(coefficients, fig=None):
+    """Plot L1 logistic regression coefficients as a heatmap.
+
+    Parameters
+    ----------
+    coefficients : pd.DataFrame
+        Shape (n_classes, n_features) from ``decode_target_nm``.
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if fig is None:
+        n_classes, n_features = coefficients.shape
+        fig, ax = plt.subplots(1, 1, figsize=(max(8, n_features * 0.3), max(3, n_classes * 0.8)))
+    else:
+        ax = fig.axes[0]
+
+    vmax = np.abs(coefficients.values).max()
+    im = ax.imshow(coefficients.values, cmap='RdBu_r', vmin=-vmax, vmax=vmax, aspect='auto')
+    fig.colorbar(im, ax=ax, label='Coefficient')
+
+    ax.set_yticks(range(len(coefficients.index)))
+    ax.set_yticklabels(coefficients.index)
+    ax.set_xticks(range(len(coefficients.columns)))
+    ax.set_xticklabels(coefficients.columns, rotation=90, fontsize=7)
+    ax.set_title('Decoding coefficients (L1 logistic)')
+    fig.tight_layout()
+    return fig
+
+
+def plot_feature_contributions(contributions, fig=None):
+    """Horizontal bar plot of each feature's unique contribution to decoding.
+
+    Parameters
+    ----------
+    contributions : pd.DataFrame
+        Columns: feature, full_accuracy, reduced_accuracy, delta.
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    df = contributions.sort_values('delta', ascending=True)  # bottom-to-top
+
+    if fig is None:
+        n = len(df)
+        fig, ax = plt.subplots(1, 1, figsize=(6, max(3, n * 0.3)))
+    else:
+        ax = fig.axes[0]
+
+    ax.barh(range(len(df)), df['delta'].values)
+    ax.set_yticks(range(len(df)))
+    ax.set_yticklabels(df['feature'].values, fontsize=7)
+    ax.set_xlabel(r'$\Delta$ accuracy')
+    ax.set_title('Feature unique contribution')
+    ax.axvline(0, color='k', linewidth=0.5)
+    fig.tight_layout()
+    return fig
+
+
+def plot_mean_response_vectors(response_matrix, fig=None):
+    """Plot mean response vector per target-NM.
+
+    Parameters
+    ----------
+    response_matrix : pd.DataFrame
+        Rows indexed by (eid, target_NM), columns = feature labels.
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    labels = response_matrix.index.get_level_values('target_NM')
+    targets = sorted(labels.unique())
+
+    if fig is None:
+        n_features = response_matrix.shape[1]
+        fig, ax = plt.subplots(1, 1, figsize=(max(8, n_features * 0.25), 4))
+    else:
+        ax = fig.axes[0]
+
+    for target in targets:
+        mask = labels == target
+        mean_vec = response_matrix.loc[mask].mean(axis=0)
+        sem_vec = response_matrix.loc[mask].sem(axis=0)
+        x = np.arange(len(mean_vec))
+        ax.plot(x, mean_vec.values, label=target)
+        ax.fill_between(x, (mean_vec - sem_vec).values, (mean_vec + sem_vec).values,
+                        alpha=0.2)
+
+    ax.set_xticks(np.arange(len(response_matrix.columns)))
+    ax.set_xticklabels(response_matrix.columns, rotation=90, fontsize=7)
+    ax.set_ylabel('Response magnitude')
+    ax.set_title('Mean response vectors by target-NM')
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    return fig
+
+
+def plot_decoding_summary(coefficients, contributions, fig=None):
+    """Coefficients and unique contributions stacked with shared x-axis.
+
+    Features are sorted by descending unique contribution (delta).
+
+    Parameters
+    ----------
+    coefficients : pd.DataFrame
+        Shape (n_classes, n_features).
+    contributions : pd.DataFrame
+        Columns: feature, delta, etc.
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    # Sort features by descending delta
+    contrib_sorted = contributions.sort_values('delta', ascending=False)
+    feature_order = contrib_sorted['feature'].values
+
+    # Reorder coefficients columns
+    coefs_sorted = coefficients[feature_order]
+
+    n_classes, n_features = coefs_sorted.shape
+    if fig is None:
+        fig = plt.figure(figsize=(max(8, n_features * 0.3), 5),
+                         layout='constrained')
+        gs = fig.add_gridspec(2, 2, height_ratios=[n_classes, 1],
+                              width_ratios=[1, 0.02], wspace=0.03)
+        ax_coef = fig.add_subplot(gs[0, 0])
+        ax_delta = fig.add_subplot(gs[1, 0], sharex=ax_coef)
+        ax_cbar = fig.add_subplot(gs[0, 1])
+    else:
+        ax_coef, ax_delta, ax_cbar = fig.axes[0], fig.axes[1], fig.axes[2]
+
+    # Top: coefficients heatmap
+    vmax = np.abs(coefs_sorted.values).max()
+    im = ax_coef.imshow(coefs_sorted.values, cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+                        aspect='auto')
+    fig.colorbar(im, cax=ax_cbar, label='Coefficient')
+    ax_coef.set_yticks(range(n_classes))
+    ax_coef.set_yticklabels(coefs_sorted.index)
+    ax_coef.set_title('Decoding coefficients (L1 logistic)')
+
+    # Bottom: contribution bars
+    x = np.arange(n_features)
+    ax_delta.bar(x, contrib_sorted['delta'].values)
+    ax_delta.set_xticks(x)
+    ax_delta.set_xticklabels(feature_order, rotation=90, fontsize=7)
+    ax_delta.set_ylabel(r'$\Delta$ acc.')
+    ax_delta.axhline(0, color='k', linewidth=0.5)
+
     return fig

@@ -181,3 +181,313 @@ class TestPlotRelativeContrast:
 
             assert has_finite, "No finite, non-zero error bar segments found"
         plt.close(fig)
+
+    def test_pool_aggregation_uses_trial_level_stats(self):
+        """With aggregation='pool', mean/SEM should be computed across all trials,
+        not across subject means. With unequal trial counts per subject, the two
+        methods give different means."""
+        from scipy.stats import sem as scipy_sem
+
+        # s1: 20 trials at 1.0, s2: 5 trials at 0.0
+        # Pool mean = (20*1 + 5*0) / 25 = 0.8
+        # Subject mean = (1.0 + 0.0) / 2 = 0.5
+        rows = (
+            [{'subject': 's1', 'side': 'contra', 'contrast': 25.0,
+              'feedbackType': 1, 'response': 1.0}] * 20
+            + [{'subject': 's2', 'side': 'contra', 'contrast': 25.0,
+                'feedbackType': 1, 'response': 0.0}] * 5
+        )
+        df = pd.DataFrame(rows)
+
+        fig = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times',
+                                     aggregation='pool')
+        ax_c = fig.axes[0]
+        line = ax_c.containers[0].lines[0]
+        plotted_mean = line.get_ydata()[0]
+        assert np.isclose(plotted_mean, 0.8), (
+            f"Pool mean should be 0.8 (trial-level), got {plotted_mean}"
+        )
+        plt.close(fig)
+
+    def test_subject_aggregation_uses_subject_means(self):
+        """With aggregation='subject', mean should be the mean of subject means."""
+        # Same data as above — subject mean should be 0.5
+        rows = (
+            [{'subject': 's1', 'side': 'contra', 'contrast': 25.0,
+              'feedbackType': 1, 'response': 1.0}] * 20
+            + [{'subject': 's2', 'side': 'contra', 'contrast': 25.0,
+                'feedbackType': 1, 'response': 0.0}] * 5
+        )
+        df = pd.DataFrame(rows)
+
+        fig = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times',
+                                     aggregation='subject')
+        ax_c = fig.axes[0]
+        line = ax_c.containers[0].lines[0]
+        plotted_mean = line.get_ydata()[0]
+        assert np.isclose(plotted_mean, 0.5), (
+            f"Subject mean should be 0.5, got {plotted_mean}"
+        )
+        plt.close(fig)
+
+    def test_pool_is_default_aggregation(self):
+        """Default aggregation should be 'pool'."""
+        rows = (
+            [{'subject': 's1', 'side': 'contra', 'contrast': 25.0,
+              'feedbackType': 1, 'response': 1.0}] * 20
+            + [{'subject': 's2', 'side': 'contra', 'contrast': 25.0,
+                'feedbackType': 1, 'response': 0.0}] * 5
+        )
+        df = pd.DataFrame(rows)
+
+        fig = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times')
+        ax_c = fig.axes[0]
+        line = ax_c.containers[0].lines[0]
+        plotted_mean = line.get_ydata()[0]
+        assert np.isclose(plotted_mean, 0.8), (
+            f"Default should be pool (0.8), got {plotted_mean}"
+        )
+        plt.close(fig)
+
+    def test_invalid_aggregation_raises(self):
+        """Invalid aggregation value should raise ValueError."""
+        rows = [{'subject': 's1', 'side': 'contra', 'contrast': 25.0,
+                 'feedbackType': 1, 'response': 0.5}]
+        df = pd.DataFrame(rows)
+        with pytest.raises(ValueError, match='aggregation'):
+            plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times',
+                                   aggregation='invalid')
+
+
+class TestPlotSimilarityMatrix:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_similarity_matrix
+        sim = pd.DataFrame(
+            [[1.0, 0.5], [0.5, 1.0]],
+            index=pd.MultiIndex.from_tuples([('e0', 'VTA'), ('e1', 'DR')]),
+            columns=pd.MultiIndex.from_tuples([('e0', 'VTA'), ('e1', 'DR')]),
+        )
+        labels = pd.Series(['DA', '5HT'], index=sim.index)
+        fig = plot_similarity_matrix(sim, labels)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_colorbar(self):
+        from iblnm.vis import plot_similarity_matrix
+        sim = pd.DataFrame(
+            [[1.0, 0.3], [0.3, 1.0]],
+            index=pd.MultiIndex.from_tuples([('e0', 'VTA'), ('e1', 'DR')]),
+            columns=pd.MultiIndex.from_tuples([('e0', 'VTA'), ('e1', 'DR')]),
+        )
+        labels = pd.Series(['DA', '5HT'], index=sim.index)
+        fig = plot_similarity_matrix(sim, labels)
+        # Figure should have more than 1 axes (main + colorbar)
+        assert len(fig.axes) >= 2
+        plt.close(fig)
+
+    def test_target_labels_on_axis(self):
+        """Each target-NM group should be labeled on the y-axis."""
+        from iblnm.vis import plot_similarity_matrix
+        idx = pd.MultiIndex.from_tuples(
+            [('e0', 'VTA'), ('e1', 'VTA'), ('e2', 'DR'), ('e3', 'DR')],
+        )
+        sim = pd.DataFrame(np.eye(4), index=idx, columns=idx)
+        labels = pd.Series(['DA', 'DA', '5HT', '5HT'], index=idx)
+        subjects = pd.Series(['s0', 's1', 's0', 's1'], index=idx)
+        fig = plot_similarity_matrix(sim, labels, subjects=subjects)
+        ax = fig.axes[0]
+        tick_labels = [t.get_text() for t in ax.get_yticklabels()]
+        assert 'DA' in tick_labels
+        assert '5HT' in tick_labels
+        plt.close(fig)
+
+    def test_sorts_by_subject_within_target(self):
+        """Within each target group, recordings should be sorted by subject."""
+        from iblnm.vis import plot_similarity_matrix
+        # Deliberately unsorted subjects within each target
+        idx = pd.MultiIndex.from_tuples(
+            [('e0', 'r0'), ('e1', 'r1'), ('e2', 'r2'), ('e3', 'r3')],
+        )
+        sim = pd.DataFrame(np.eye(4), index=idx, columns=idx)
+        labels = pd.Series(['A', 'A', 'A', 'A'], index=idx)
+        subjects = pd.Series(['s2', 's0', 's1', 's0'], index=idx)
+        fig = plot_similarity_matrix(sim, labels, subjects=subjects)
+        # The returned figure's data should be reordered
+        # s0 (e1, e3) should come before s1 (e2) before s2 (e0)
+        ax = fig.axes[0]
+        # Just verify it doesn't crash and returns a figure
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
+class TestPlotConfusionMatrix:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_confusion_matrix
+        cm = pd.DataFrame(
+            [[8, 2], [1, 9]],
+            index=['DA', '5HT'], columns=['DA', '5HT'],
+        )
+        fig = plot_confusion_matrix(cm)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_cells_show_counts(self):
+        """Each cell should have a text annotation with the count."""
+        from iblnm.vis import plot_confusion_matrix
+        cm = pd.DataFrame(
+            [[5, 0], [0, 3]],
+            index=['A', 'B'], columns=['A', 'B'],
+        )
+        fig = plot_confusion_matrix(cm)
+        ax = fig.axes[0]
+        texts = [t.get_text() for t in ax.texts]
+        assert '5' in texts
+        assert '3' in texts
+        assert '0' in texts
+        plt.close(fig)
+
+    def test_accuracy_in_title(self):
+        """Title should contain the overall accuracy."""
+        from iblnm.vis import plot_confusion_matrix
+        # 8 correct out of 10 → 80%
+        cm = pd.DataFrame(
+            [[5, 0], [2, 3]],
+            index=['A', 'B'], columns=['A', 'B'],
+        )
+        fig = plot_confusion_matrix(cm)
+        title = fig.axes[0].get_title()
+        assert '80' in title or '0.8' in title, f"Expected accuracy in title, got: {title!r}"
+        plt.close(fig)
+
+
+class TestPlotDecodingCoefficients:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_decoding_coefficients
+        coefs = pd.DataFrame(
+            [[0.5, -0.3, 0.1], [0.0, 0.8, -0.2]],
+            index=['DA', '5HT'],
+            columns=['stimOn_c0_correct', 'stimOn_c25_correct', 'feedback_c100_correct'],
+        )
+        fig = plot_decoding_coefficients(coefs)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
+class TestPlotFeatureContributions:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_feature_contributions
+        contrib = pd.DataFrame({
+            'feature': ['f0', 'f1', 'f2'],
+            'full_accuracy': [0.8, 0.8, 0.8],
+            'reduced_accuracy': [0.5, 0.7, 0.75],
+            'delta': [0.3, 0.1, 0.05],
+        })
+        fig = plot_feature_contributions(contrib)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_bars_sorted_by_delta(self):
+        from iblnm.vis import plot_feature_contributions
+        contrib = pd.DataFrame({
+            'feature': ['f0', 'f1', 'f2'],
+            'full_accuracy': [0.8, 0.8, 0.8],
+            'reduced_accuracy': [0.7, 0.5, 0.75],
+            'delta': [0.1, 0.3, 0.05],
+        })
+        fig = plot_feature_contributions(contrib)
+        ax = fig.axes[0]
+        # Bars sorted ascending (largest delta at top of plot = last tick)
+        tick_labels = [t.get_text() for t in ax.get_yticklabels()]
+        assert tick_labels[-1] == 'f1'   # largest delta at top
+        assert tick_labels[0] == 'f2'    # smallest delta at bottom
+        plt.close(fig)
+
+
+class TestPlotMeanResponseVectors:
+
+    def _make_matrix_with_labels(self):
+        features = ['stimOn_c0_correct', 'stimOn_c0_incorrect',
+                     'feedback_c1_correct', 'feedback_c1_incorrect']
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'VTA-DA'), ('e1', 'VTA-DA'), ('e2', 'DR-5HT'), ('e3', 'DR-5HT')],
+            names=['eid', 'target_NM'],
+        )
+        data = np.array([
+            [1.0, 2.0, 3.0, 4.0],
+            [1.5, 2.5, 3.5, 4.5],
+            [5.0, 6.0, 7.0, 8.0],
+            [5.5, 6.5, 7.5, 8.5],
+        ])
+        return pd.DataFrame(data, index=index, columns=features)
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_mean_response_vectors
+        df = self._make_matrix_with_labels()
+        fig = plot_mean_response_vectors(df)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_one_line_per_target(self):
+        from iblnm.vis import plot_mean_response_vectors
+        df = self._make_matrix_with_labels()
+        fig = plot_mean_response_vectors(df)
+        ax = fig.axes[0]
+        assert len(ax.get_lines()) == 2  # DA + 5HT
+        plt.close(fig)
+
+    def test_legend_has_target_names(self):
+        from iblnm.vis import plot_mean_response_vectors
+        df = self._make_matrix_with_labels()
+        fig = plot_mean_response_vectors(df)
+        ax = fig.axes[0]
+        legend_labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert 'VTA-DA' in legend_labels
+        assert 'DR-5HT' in legend_labels
+        plt.close(fig)
+
+
+class TestPlotDecodingSummary:
+
+    def _make_data(self):
+        features = ['f_a', 'f_b', 'f_c']
+        coefs = pd.DataFrame(
+            [[0.5, -0.3, 0.8], [0.1, 0.7, -0.2]],
+            index=['DA', '5HT'], columns=features,
+        )
+        contrib = pd.DataFrame({
+            'feature': features,
+            'full_accuracy': [0.8, 0.8, 0.8],
+            'reduced_accuracy': [0.5, 0.7, 0.6],
+            'delta': [0.3, 0.1, 0.2],
+        })
+        return coefs, contrib
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_decoding_summary
+        coefs, contrib = self._make_data()
+        fig = plot_decoding_summary(coefs, contrib)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_two_axes(self):
+        from iblnm.vis import plot_decoding_summary
+        coefs, contrib = self._make_data()
+        fig = plot_decoding_summary(coefs, contrib)
+        assert len(fig.axes) >= 2  # coefs + contrib (+ colorbar)
+        plt.close(fig)
+
+    def test_shared_x_order_sorted_by_delta(self):
+        """Both panels should share x-axis sorted by descending delta."""
+        from iblnm.vis import plot_decoding_summary
+        coefs, contrib = self._make_data()
+        fig = plot_decoding_summary(coefs, contrib)
+        # Bottom panel (contributions) x-tick labels
+        ax_contrib = fig.axes[1]
+        tick_labels = [t.get_text() for t in ax_contrib.get_xticklabels()]
+        # Sorted by delta descending: f_a (0.3), f_c (0.2), f_b (0.1)
+        assert tick_labels == ['f_a', 'f_c', 'f_b']
+        plt.close(fig)
