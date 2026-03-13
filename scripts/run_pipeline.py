@@ -6,7 +6,8 @@ Executes each stage in order:
 2. photometry      — QC + preprocess + responses → HDF5 files + qc_photometry.pqt
 3. task            — compute task performance → performance.pqt
 4. wheel           — extract per-trial wheel velocity → HDF5 files
-5. dataset_overview — aggregate errors + generate figures → errors.pqt
+5. video           — download camera timestamps + validate video QC → video.pqt
+6. dataset_overview — aggregate errors + generate figures → errors.pqt
 
 Each stage is run as a subprocess so that argparse, top-level code, and
 matplotlib state don't leak between scripts.
@@ -29,6 +30,7 @@ STAGES = [
     'photometry',
     'task',
     'wheel',
+    'video',
     'dataset_overview',
 ]
 

@@ -9,11 +9,10 @@ Pipeline:
 2. Merge video QC columns from sessions_qc.pqt
 3. Download leftCamera.times per session, compare with session_length
 4. Validate video QC problem columns and length discrepancy
-5. Score all sessions, batch good ones, sort unified output
-6. Merge LightningPose metadata if available
+5. Score all sessions, sort unified output
 
 Outputs:
-- metadata/iblnm_video_sessions.csv — all sessions, sorted by video_qc_score
+- metadata/video.pqt — all sessions, sorted by video_qc_score
 - metadata/video_log.pqt — error log
 """
 import numpy as np
@@ -22,10 +21,10 @@ import pandas as pd
 from tqdm import tqdm
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_QC_FPATH,
+    SESSIONS_FPATH, SESSIONS_QC_FPATH,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
-    VIDEO_LOG_FPATH, VIDEO_SESSIONS_FPATH,
+    VIDEO_LOG_FPATH, VIDEO_FPATH,
 )
 from iblnm.io import _get_default_connection
 from iblnm.util import (
@@ -38,9 +37,6 @@ from iblnm.validation import (
     validate_video_dropped_frames_qc,
     validate_video_pin_state_qc,
 )
-
-# --- Parameters ---
-LP_SESSIONS_FPATH = PROJECT_ROOT / 'metadata/LightningPoseSessions.csv'
 
 VIDEO_QC_QUALITY_COLS = [
     'qc_videoLeft_focus',
@@ -230,25 +226,7 @@ if __name__ == "__main__":
     df = df.drop(columns=num_cols)
 
     # =========================================================================
-    # Step 6: Merge LightningPose metadata
-    # =========================================================================
-
-    lp_cols = []
-    if LP_SESSIONS_FPATH.exists():
-        print(f"\nMerging LightningPose metadata from {LP_SESSIONS_FPATH}")
-        df_lp = pd.read_csv(LP_SESSIONS_FPATH)
-        # Only keep columns not already in df (plus eid for merge key)
-        lp_cols = [c for c in df_lp.columns if c not in df.columns]
-        if lp_cols:
-            df = df.merge(df_lp[['eid'] + lp_cols], on='eid', how='left')
-            print(f"  Merged {len(lp_cols)} LP columns: {lp_cols}")
-        else:
-            print("  No new columns to merge from LightningPose")
-    else:
-        print(f"\nNo LightningPose file at {LP_SESSIONS_FPATH}, skipping merge")
-
-    # =========================================================================
-    # Step 7: Save and summarize
+    # Step 6: Save and summarize
     # =========================================================================
 
     output_cols = (
@@ -257,13 +235,12 @@ if __name__ == "__main__":
         + VIDEO_QC_PROBLEM_COLS
         + ['session_length', 'video_length', 'length_discrepancy',
            'framerate_from_tpts']
-        + lp_cols
     )
 
     df_out = df[output_cols].copy()
 
-    VIDEO_SESSIONS_FPATH.parent.mkdir(parents=True, exist_ok=True)
-    df_out.to_csv(VIDEO_SESSIONS_FPATH, index=False)
+    VIDEO_FPATH.parent.mkdir(parents=True, exist_ok=True)
+    df_out.to_parquet(VIDEO_FPATH, index=False)
 
     # Save error log
     df_log = (pd.DataFrame(error_log) if error_log
@@ -282,5 +259,5 @@ if __name__ == "__main__":
     print(f"  Sessions with video errors: {n_errors}")
     print(f"  Good (score > 0): {n_good}")
     print(f"  Total output: {len(df_out)} sessions")
-    print(f"\nSaved: {VIDEO_SESSIONS_FPATH}")
+    print(f"\nSaved: {VIDEO_FPATH}")
     print(f"Saved: {VIDEO_LOG_FPATH}")

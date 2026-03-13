@@ -1,13 +1,14 @@
 """
 Dataset Overview
 
-Produces four session overview matrices:
+Produces five session overview matrices:
 1. All registered sessions (post-metadata and session-type filtering)
 2. Sessions with raw data (task + photometry)
 3. Sessions with complete data (extracted + sufficient trials + TIPT)
 4. Sessions passing basic photometry QC
+5. Video-ready sessions (extracted task data + video QC pass)
 
-All flags are derived from upstream error logs — no QC parquet is loaded.
+All flags are derived from upstream error logs and video.pqt.
 No write-back to any upstream file.
 """
 import numpy as np
@@ -20,7 +21,7 @@ from iblnm.config import (
     TASK_LOG_FPATH,
     ERRORS_FPATH, FIGURE_DPI,
     SUBJECTS_TO_EXCLUDE, SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
-    TARGET2NM,
+    TARGET2NM, VIDEO_FPATH,
 )
 from iblnm.util import (
     resolve_duplicate_group,
@@ -107,6 +108,25 @@ _qc_blockers = _complete_blockers | {'QCValidationError', 'FewUniqueSamples'}
 df_sessions['passes_basic_qc'] = _errs.apply(
     lambda e: not any(err in _qc_blockers for err in e))
 
+# Matrix 5: video-ready (extracted task data + video QC pass)
+_extraction_blockers = {'MissingRawData', 'MissingExtractedData'}
+df_sessions['has_extracted_task'] = _errs.apply(
+    lambda e: not any(err in _extraction_blockers for err in e))
+
+_VIDEO_QC_PROBLEM_COLS = [
+    'qc_videoLeft_timestamps',
+    'qc_videoLeft_dropped_frames',
+    'qc_videoLeft_pin_state',
+]
+df_video = pd.read_parquet(VIDEO_FPATH, columns=['eid'] + _VIDEO_QC_PROBLEM_COLS)
+df_sessions = df_sessions.merge(df_video, on='eid', how='left')
+df_sessions['passes_video_qc'] = (
+    df_sessions['qc_videoLeft_timestamps'].eq('PASS')
+    & df_sessions['qc_videoLeft_dropped_frames'].eq('PASS')
+    & df_sessions['qc_videoLeft_pin_state'].isin(['PASS', 'WARNING'])
+)
+df_sessions['video_ready'] = df_sessions['has_extracted_task'] & df_sessions['passes_video_qc']
+
 
 # =============================================================================
 # Session Overview Matrices
@@ -117,6 +137,7 @@ print("\nGenerating session matrices...")
 n_raw = df_sessions['has_raw_data'].sum()
 n_complete = df_sessions['has_complete_data'].sum()
 n_qc = df_sessions['passes_basic_qc'].sum()
+n_video = df_sessions['video_ready'].sum()
 
 
 def _save_matrix(df, highlight, title, filename):
@@ -143,6 +164,10 @@ _save_matrix(df_sessions, lambda df: df['passes_basic_qc'],
              f'Sessions passing basic QC (n={n_qc})',
              '4_passes_qc.svg')
 
+_save_matrix(df_sessions, lambda df: df['video_ready'],
+             f'Video-ready sessions (n={n_video})',
+             '5_video_ready.svg')
+
 
 # =============================================================================
 # Dataset Summary
@@ -155,6 +180,7 @@ print(f"Total sessions (after filtering): {n_after_dedup}")
 print(f"  Has raw data: {n_raw}")
 print(f"  Has complete data: {n_complete}")
 print(f"  Passes basic QC: {n_qc}")
+print(f"  Video-ready: {n_video}")
 
 
 # =============================================================================
@@ -212,13 +238,13 @@ if len(df_recordings) > 0:
     ax = target_overview_barplot(df_recordings)
     ax.set_title(f'Complete recordings by target ({n_rec} recordings, {n_ses} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
-    ax.get_figure().savefig(figures_dir / '5_target_overview.svg',
+    ax.get_figure().savefig(figures_dir / '6_target_overview.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
 
     ax = mouse_overview_barplot(df_recordings)
     ax.set_title(f'Mice by target ({n_rec} recordings, {n_ses} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
-    ax.get_figure().savefig(figures_dir / '6_mouse_overview.svg',
+    ax.get_figure().savefig(figures_dir / '7_mouse_overview.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
 else:
     print("No complete recordings to plot.")
