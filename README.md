@@ -2,47 +2,43 @@
 
 Fiber photometry analysis pipeline for the IBL neuromodulators project. Ingests session metadata and raw signals from Alyx/ONE, applies QC, preprocesses photometry signals, and extracts peri-event neural responses.
 
----
+## Setup
 
-## Project Structure
-
+```bash
+uv pip install -e .        # editable install (venv: ~/.venv/ibl)
+pytest                     # run tests
+ruff check .               # lint
 ```
-iblnm/                      # Core package
-  config.py                 # Paths, constants, QC thresholds, color mappings
-  data.py                   # PhotometrySession class
-  io.py                     # Alyx/ONE queries (subject info, session info, datasets)
-  task.py                   # Task performance computation (psychometrics, block validation)
-  analysis.py               # Signal processing (response extraction, preprocessing utilities)
-  validation.py             # Custom exceptions, exception_logger, validate_* functions
-  util.py                   # Logging, pandas utilities, parquet I/O
-  vis.py                    # Plotting functions
 
-scripts/                    # Analysis scripts (run in order)
-  query_database.py         # 1. Download and cache session metadata
-  photometry.py             # 2. QC, preprocess, extract responses
-  task.py                   # 3. Compute task performance metrics
-  dataset_overview.py       # 4. Session coverage figures
-  qc_overview.py            # 5. QC metric distributions
-  task_performance_overview.py  # 6. Learning curves and psychometric figures
-  wheel.py                  # 7. Extract per-trial wheel velocity → HDF5
+**Dependencies**: `one-api`, `brainbox`, `iblphotometry` (IBL ecosystem); `pandas`, `xarray`, `numpy`, `scipy`, `matplotlib`, `h5py`.
 
-tests/                      # pytest
-specs/                      # Design docs for non-trivial features
-metadata/                   # sessions.pqt, error logs, fibers.csv
-data/
-  qc_photometry.pqt         # QC metrics per (eid, brain_region, band)
-  performance.pqt           # Task performance metrics per session
-  sessions/                 # HDF5 files, one per eid
-figures/                    # Output plots
-```
+**Docs**: [IBL](https://docs.internationalbrainlab.org/) · [ONE API](https://int-brain-lab.github.io/ONE/)
 
 ---
 
-## Scripts
+## Pipeline
 
-### `query_database.py` — Download session metadata
+Scripts run in order. Each produces a parquet error log alongside its outputs.
 
-Queries the `ibl_fibrephotometry` project on Alyx and enriches each session with subject info (strain, line, neuromodulator), session info (lab, brain regions, users), and dataset availability. Validates all metadata fields and saves results to `metadata/sessions.pqt`. Errors are captured per session in `metadata/query_database_log.pqt`.
+```
+query_database.py → photometry.py → task.py → wheel.py → dataset_overview.py
+       ↓                  ↓             ↓          ↓              ↓
+  sessions.pqt      {eid}.h5 +    performance  {eid}.h5      figures +
+                  qc_photometry      .pqt     (wheel group)  errors.pqt
+```
+
+Run the full pipeline or resume from a specific stage:
+
+```bash
+python scripts/run_pipeline.py                    # all stages
+python scripts/run_pipeline.py --from photometry  # resume from photometry
+python scripts/run_pipeline.py --only task        # single stage
+python scripts/run_pipeline.py --skip-errors      # continue past failures
+```
+
+### Stage 1: `query_database.py` — Session metadata
+
+Queries the `ibl_fibrephotometry` project on Alyx, enriches each session with subject info (strain, line, neuromodulator), brain regions, hemisphere, and dataset availability. Validates all metadata fields.
 
 ```bash
 python scripts/query_database.py                 # incremental update
@@ -50,7 +46,9 @@ python scripts/query_database.py --redownload    # re-download everything
 python scripts/query_database.py --extended-qc   # also fetch Alyx extended QC
 ```
 
-### `photometry.py` — QC, preprocessing, response extraction
+**Output**: `metadata/sessions.pqt`, `metadata/query_database_log.pqt`
+
+### Stage 2: `photometry.py` — QC, preprocessing, response extraction
 
 Processes each session through a tiered pipeline:
 
@@ -58,65 +56,83 @@ Processes each session through a tiered pipeline:
 2. Validate that trials fall within the photometry recording window (fatal)
 3. Raw QC: check for band inversions and early samples (fatal)
 4. Sliding QC: compute signal quality metrics (fatal)
-5. Preprocess: bleach correction → isosbestic regression → z-score → resample to 30 Hz; save signal to HDF5
-6. Extract peri-event responses for `stimOn_times`, `firstMovement_times`, `feedback_times`; save to HDF5
+5. Preprocess: bleach correction → isosbestic regression → z-score → resample to 30 Hz
+6. Extract peri-event responses for `stimOn_times`, `firstMovement_times`, `feedback_times`
+7. Save signal and responses to HDF5
 
-Outputs: `data/sessions/{eid}.h5`, `data/qc_photometry.pqt`, `metadata/photometry_log.pqt`.
+**Output**: `data/sessions/{eid}.h5`, `data/qc_photometry.pqt`, `metadata/photometry_log.pqt`
 
-### `task.py` — Task performance metrics
+### Stage 3: `task.py` — Task performance
 
-Loads trials from ONE and computes per-session performance metrics: fraction correct, no-go fraction, psychometric function parameters (bias, threshold, lapses) for the 50/50 block, and — for biased and ephys sessions — per-block psychometrics and bias shift.
+Computes per-session metrics: fraction correct, no-go fraction, psychometric function parameters (bias, threshold, lapses) for the 50/50 block, and per-block psychometrics and bias shift for biased/ephys sessions.
 
-Outputs: `data/performance.pqt`, `metadata/task_log.pqt`.
+**Output**: `data/performance.pqt`, `metadata/task_log.pqt`
 
-### `dataset_overview.py` — Session coverage figures
+### Stage 4: `wheel.py` — Per-trial wheel velocity
 
-Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and all error logs to produce session-by-session overview matrices at each processing stage (registered → raw data → extracted → passing QC). Also generates barplots of complete recordings per brain target and per mouse.
+Extracts wheel velocity for each trial (stimOn → feedback), NaN-padded to the longest trial. Appends a `wheel/` group to existing HDF5 files.
 
-Outputs: `figures/dataset_overview/`.
+**Output**: appended `data/sessions/{eid}.h5`, `metadata/wheel_log.pqt`
 
-### `qc_overview.py` — QC metric distributions
+### Stage 5: `dataset_overview.py` — Session coverage figures
 
-Visualizes photometry signal quality across the dataset: histograms of the binary QC metrics with pass/fail cutoffs, violin plots of continuous metrics per target (quantile-transformed), pairwise joint distributions, PCA scatter (colored by target, date, and session type), QC failure rates over time, and photobleaching tau trajectories.
+Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and all error logs. Produces session-by-session overview matrices at each processing stage, plus barplots of complete recordings per brain target and per mouse.
 
-Outputs: `figures/qc_overview/`.
+**Output**: `figures/dataset_overview/`
 
-### `task_performance_overview.py` — Learning curves and psychometrics
+### Additional scripts
 
-Generates figures from pre-computed `performance.pqt`: training stage barplots, CDFs of sessions to reach biased/ephys stage, performance trajectories over training, psychometric parameter trajectories, and grand-mean psychometric curves per block type — organized by neuromodulator target.
-
-Outputs: `figures/task_performance/`.
+| Script | Purpose |
+|---|---|
+| `events.py` | Extract trial-level response magnitudes for mixed-model analysis |
+| `qc_overview.py` | QC metric distributions (histograms, violins, PCA, temporal trends) |
+| `task_performance_overview.py` | Learning curves, psychometric trajectories per target |
+| `session_viewer.py` | Interactive single-session viewer (raw + preprocessed + PSTHs) |
+| `plot_fiber_locations.py` | Fiber tip coordinates on brain atlas slices |
+| `check_video_data.py` | Video QC pipeline (timestamps, dropped frames, pin state) |
+| `recording_capacity.py` | Estimate recording-ready mice by a target date |
+| `demo_load_session.py` | Annotated example of loading and plotting a session |
 
 ---
 
 ## PhotometrySession
 
-`PhotometrySession` extends `PhotometrySessionLoader` from `brainbox.io.one` and wraps a row from `sessions.pqt`. It provides methods for loading, validating, QC, preprocessing, and response extraction.
+`PhotometrySession` wraps a row from `sessions.pqt` and provides methods for loading, validating, preprocessing, and extracting responses. It extends `PhotometrySessionLoader` from `brainbox.io.one`.
 
-### Instantiation
+Data attributes are lazy-loaded: `trials`, `photometry`, `responses`, `qc`, and `wheel_velocity` start empty and are populated by explicit method calls.
+
+### Loading from ONE
 
 ```python
 import pandas as pd
 from one.api import ONE
+from iblnm.config import SESSIONS_FPATH
 from iblnm.data import PhotometrySession
 
 one = ONE()
-df_sessions = pd.read_parquet('metadata/sessions.pqt')
-session_series = df_sessions.iloc[0]
+df_sessions = pd.read_parquet(SESSIONS_FPATH)
+session_row = df_sessions.iloc[0]
 
-ps = PhotometrySession(session_series, one=one)
+ps = PhotometrySession(session_row, one=one)
+ps.load_trials()      # → ps.trials (DataFrame with signed_contrast, contrast added)
+ps.load_photometry()  # → ps.photometry dict: {'GCaMP': ..., 'Isosbestic': ...}
 ```
 
-### Loading data from ONE
+### Loading from HDF5
+
+If the pipeline has already run, load preprocessed data from disk:
 
 ```python
-ps.load_trials()      # downloads trials from ONE → ps.trials (DataFrame)
-ps.load_photometry()  # downloads GCaMP + Isosbestic signals from ONE → ps.photometry dict
+from iblnm.config import SESSIONS_H5_DIR
+
+ps = PhotometrySession(session_row, one=one)
+ps.load_h5(SESSIONS_H5_DIR / f'{ps.eid}.h5')
+# → ps.photometry['GCaMP_preprocessed'], ps.trials, ps.responses, ps.wheel_velocity
 ```
 
 ### Validation
 
-Each method raises a typed exception on failure, so pipelines can catch and log errors at the right granularity.
+Each method raises a typed exception on failure. In scripts, pass an `exlog` list to log errors instead of raising (see Error Handling below).
 
 ```python
 ps.validate_trials_in_photometry_time()  # raises TrialsNotInPhotometryTime
@@ -128,52 +144,40 @@ ps.validate_block_structure()            # raises BlockStructureBug
 ### QC
 
 ```python
-ps.run_raw_qc()              # computes n_band_inversions, n_early_samples → ps.qc
-ps.validate_qc()             # raises BandInversion or EarlySamples if checks fail
-ps.run_sliding_qc()          # computes sliding-window metrics → ps.qc
-ps.validate_few_unique_samples()  # raises FewUniqueSamples (non-fatal, log only)
+ps.run_raw_qc()                    # n_band_inversions, n_early_samples → ps.qc
+ps.validate_qc()                   # raises BandInversion or EarlySamples
+ps.run_sliding_qc()                # sliding-window signal quality metrics → ps.qc
+ps.validate_few_unique_samples()   # raises FewUniqueSamples (non-fatal)
 ```
 
-After QC runs, `ps.qc` is a DataFrame with one row per `(brain_region, band)`.
+After QC, `ps.qc` is a DataFrame with one row per `(brain_region, band)`.
 
-### Preprocessing and saving
-
-```python
-ps.preprocess()        # bleach → isosbestic → zscore → resample; adds 'GCaMP_preprocessed' band
-ps.save_h5(mode='w')  # write session attributes + preprocessed signal to HDF5
-```
-
-### Response extraction
+### Preprocessing and response extraction
 
 ```python
-from iblnm.config import RESPONSE_EVENTS  # ('stimOn_times', 'firstMovement_times', 'feedback_times')
+from iblnm.config import RESPONSE_EVENTS
+
+ps.preprocess()  # bleach → isosbestic → zscore → resample to 30 Hz
+                 # → ps.photometry['GCaMP_preprocessed']
 
 ps.extract_responses(events=RESPONSE_EVENTS)
-# ps.responses is an xarray DataArray with dims (region, event, trial, time)
+# → ps.responses: xarray DataArray with dims (region, event, trial, time)
 
-ps.save_h5(mode='a')  # append trials + responses to existing HDF5
+ps.save_h5(mode='w')  # write signal
+ps.save_h5(mode='a')  # append trials + responses
 ```
 
 ### Working with responses
 
 ```python
-# Baseline subtraction (subtracts mean of [-0.1, 0] window by default)
-responses_bl = ps.subtract_baseline(ps.responses)
+# Baseline subtraction (mean of [-0.1, 0] window)
+responses = ps.subtract_baseline(ps.responses)
 
-# Mask time points that fall after the next event in a sequence
-responses_masked = ps.mask_subsequent_events(
+# Mask time points after the next event in a trial sequence
+responses = ps.mask_subsequent_events(
     ps.responses,
     event_order=['stimOn_times', 'firstMovement_times', 'feedback_times']
 )
-```
-
-### Loading preprocessed data from HDF5
-
-```python
-from iblnm.config import SESSIONS_H5_DIR
-
-ps.load_h5(SESSIONS_H5_DIR / f'{ps.eid}.h5')
-# populates ps.photometry['GCaMP_preprocessed'], ps.trials, ps.responses
 ```
 
 ### Task performance
@@ -183,72 +187,95 @@ perf = ps.basic_performance()
 # {'fraction_correct': 0.81, 'fraction_correct_easy': 0.94, 'nogo_fraction': 0.02,
 #  'psych_50_bias': -1.2, 'psych_50_threshold': 8.4, ...}
 
-block_perf = ps.block_performance()
-# {'psych_20_bias': ..., 'psych_80_bias': ..., 'bias_shift': ..., ...}
-
-fit = ps.fit_psychometric()
-# {'bias': ..., 'threshold': ..., 'lapse_left': ..., 'lapse_right': ..., 'r_squared': ..., 'n_trials': ...}
+block_perf = ps.block_performance()   # per-block psychometrics (biased/ephys only)
+fit = ps.fit_psychometric()           # {bias, threshold, lapse_left, lapse_right, r_squared, n_trials}
 ```
 
 ---
 
-## DataFrames
+## Error Handling
+
+The `@exception_logger` decorator is the central pattern for batch processing. Functions decorated with it accept an optional `exlog` parameter:
+
+- **Without `exlog`**: exceptions propagate normally (used in tests)
+- **With `exlog=[]`**: exceptions are caught, logged as dicts, and the original row is returned so the pipeline continues
+
+```python
+from iblnm.validation import exception_logger, InvalidTargetNM
+
+@exception_logger
+def get_targetNM(session):
+    ...
+    raise InvalidTargetNM(...)
+
+# In scripts — errors logged, pipeline continues:
+error_log = []
+df = df.apply(get_targetNM, axis='columns', exlog=error_log)
+
+# In tests — errors raised:
+with pytest.raises(InvalidTargetNM):
+    get_targetNM(bad_session)
+```
+
+Error log entries follow the schema: `['eid', 'error_type', 'error_message', 'traceback']`.
+
+Downstream scripts read upstream error logs via `collect_session_errors()` and filter sessions based on which error types are present, rather than re-validating.
+
+---
+
+## Data Files
 
 ### `metadata/sessions.pqt` — one row per session
 
-| column | type | description |
+| Column | Type | Description |
 |---|---|---|
 | `eid` | str | Alyx session UUID |
-| `subject` | str | mouse name |
-| `start_time` | str | ISO8601 session start |
+| `subject` | str | Mouse name |
+| `start_time` | str | ISO 8601 session start |
 | `session_type` | str | training / biased / ephys / habituation / histology |
-| `NM` | str | neuromodulator: DA, 5HT, NE, ACh |
-| `brain_region` | list[str] | recording targets, e.g. `['VTA', 'SNc']` |
-| `hemisphere` | list[str] | hemisphere per region, e.g. `['l', 'r']` |
-| `target_NM` | list[str] | combined labels, e.g. `['VTA-DA', 'SNc-DA']` |
-| `lab` | str | recording lab |
-| `day_n` | int | days since subject's first session |
-| `session_n` | float | session index (dense rank within subject) |
-| `session_length` | float | duration in seconds |
-| `strain`, `line`, `genotype` | str | mouse genetics |
+| `NM` | str | Neuromodulator: DA, 5HT, NE, ACh |
+| `brain_region` | list[str] | Recording targets, e.g. `['VTA', 'SNc']` |
+| `hemisphere` | list[str] | Hemisphere per region, e.g. `['l', 'r']` |
+| `target_NM` | list[str] | Combined labels, e.g. `['VTA-DA', 'SNc-DA']` |
+| `lab` | str | Recording lab |
+| `day_n` | int | Days since subject's first session |
+| `session_n` | float | Session index (dense rank within subject) |
+| `session_length` | float | Duration in seconds |
+| `strain`, `line`, `genotype` | str | Mouse genetics |
 | `datasets` | list[str] | ALF dataset paths available on ONE |
 
 ### `data/qc_photometry.pqt` — one row per (session, brain region, band)
 
-| column | type | description |
+| Column | Type | Description |
 |---|---|---|
-| `eid` | str | session UUID |
-| `brain_region` | str | single recording target |
+| `eid` | str | Session UUID |
+| `brain_region` | str | Single recording target |
 | `band` | str | GCaMP or Isosbestic |
-| `n_unique_samples` | float | fraction of unique signal values (< 0.1 → flat/clipped) |
-| `n_band_inversions` | int | samples where GCaMP < Isosbestic (> 0 → fatal) |
-| `n_early_samples` | int | samples before recording officially started (> 0 → fatal) |
+| `n_unique_samples` | float | Fraction of unique values (< 0.05 flagged) |
+| `n_band_inversions` | int | Samples where GCaMP < Isosbestic (> 0 fatal) |
+| `n_early_samples` | int | Samples before recording start (> 0 fatal) |
 | `ar_score` | float | AR(1) autocorrelation coefficient |
 | `median_absolute_deviance` | float | MAD of signal |
-| `percentile_asymmetry` | float | (p75−p50) / (p50−p25) — skewness proxy |
-| `percentile_distance` | float | (p75−p25) / median — spread proxy |
-| `bleaching_tau` | float | photobleaching time constant in seconds (GCaMP only) |
-| `iso_correlation` | float | Pearson r between GCaMP and Isosbestic (GCaMP only) |
+| `percentile_asymmetry` | float | (p75-p50) / (p50-p25) skewness proxy |
+| `percentile_distance` | float | (p75-p25) / median spread proxy |
+| `bleaching_tau` | float | Photobleaching time constant in seconds (GCaMP only) |
+| `iso_correlation` | float | R² between GCaMP and Isosbestic (GCaMP only) |
 
 ### `data/performance.pqt` — one row per session
 
-| column | type | description |
+| Column | Type | Description |
 |---|---|---|
-| `eid` | str | session UUID |
-| `n_trials` | int | total trial count |
-| `fraction_correct` | float | overall fraction correct |
-| `fraction_correct_easy` | float | fraction correct on 100% contrast trials |
-| `nogo_fraction` | float | fraction of no-go trials |
-| `psych_50_{param}` | float | psychometric fit on 50/50 block; params: bias, threshold, lapse_left, lapse_right, r_squared |
-| `psych_80_{param}` | float | psychometric fit on 80% left block (biased/ephys only) |
-| `psych_20_{param}` | float | psychometric fit on 20% left block (biased/ephys only) |
-| `bias_shift` | float | psych_80_bias − psych_20_bias (biased/ephys only) |
+| `eid` | str | Session UUID |
+| `n_trials` | int | Total trial count |
+| `fraction_correct` | float | Overall fraction correct |
+| `fraction_correct_easy` | float | Fraction correct on 100% contrast |
+| `nogo_fraction` | float | Fraction of no-go trials |
+| `psych_50_{param}` | float | Psychometric fit on 50/50 block (bias, threshold, lapse_left, lapse_right, r_squared) |
+| `psych_80_{param}` | float | 80% left block fit (biased/ephys only) |
+| `psych_20_{param}` | float | 20% left block fit (biased/ephys only) |
+| `bias_shift` | float | psych_80_bias - psych_20_bias |
 
----
-
-## HDF5 file structure
-
-One file per session: `data/sessions/{eid}.h5`.
+### HDF5: `data/sessions/{eid}.h5`
 
 ```
 {eid}.h5
@@ -263,30 +290,53 @@ One file per session: `data/sessions/{eid}.h5`.
 ├── times              float64 (N,)    sample times at 30 Hz
 │
 ├── preprocessed/
-│   └── {brain_region} float64 (N,)   z-scored, isosbestic-corrected GCaMP signal
-│                                      one dataset per recorded region
+│   └── {brain_region} float64 (N,)   z-scored, isosbestic-corrected GCaMP
 │
 ├── trials/
 │   ├── stimOn_times          float64 (T,)
 │   ├── firstMovement_times   float64 (T,)
 │   ├── feedback_times        float64 (T,)
 │   ├── response_times        float64 (T,)
-│   ├── choice                float64 (T,)   -1 = CCW, 0 = no-go, 1 = CW
-│   ├── feedbackType          float64 (T,)   1 = reward, -1 = punishment
+│   ├── choice                float64 (T,)   -1 left, 0 no-go, 1 right
+│   ├── feedbackType          float64 (T,)   1 reward, -1 punishment
 │   ├── probabilityLeft       float64 (T,)   0.2, 0.5, or 0.8
-│   ├── signed_contrast       float64 (T,)   negative = right stimulus
-│   └── contrast              float64 (T,)   unsigned contrast
+│   ├── signed_contrast       float64 (T,)   negative = left stimulus
+│   └── contrast              float64 (T,)   unsigned
 │
 ├── responses/
-│   ├── time           float64 (W,)    time axis relative to event (e.g. 60 pts for [-1, 1] s)
+│   ├── time           float64 (W,)    time relative to event
 │   └── {brain_region}/
-│       ├── stimOn_times          float64 (T, W)   attrs: window_t0, window_t1
+│       ├── stimOn_times          float64 (T, W)
 │       ├── firstMovement_times   float64 (T, W)
 │       └── feedback_times        float64 (T, W)
 │
 └── wheel/
-    ├── velocity       float32 (T, W)  per-trial wheel velocity (rad/s); NaN-padded to longest trial
-    └── attrs: fs=1000 (Hz), t0_event='stimOn_times', t1_event='feedback_times'
+    ├── velocity       float32 (T, W)  per-trial wheel velocity; NaN-padded
+    └── attrs: fs=1000, t0_event='stimOn_times', t1_event='feedback_times'
 ```
 
-`N` = samples at 30 Hz, `T` = trial count, `W` = response window samples (60 for a [−1, 1] s window at 30 Hz).
+`N` = samples at 30 Hz, `T` = trial count, `W` = response window samples (60 for [-1, 1] s at 30 Hz).
+
+---
+
+## Project Structure
+
+```
+iblnm/                      # Core package (generic, reusable)
+  config.py                 # Paths, constants, QC thresholds, color mappings
+  data.py                   # PhotometrySession class
+  io.py                     # Alyx/ONE queries
+  task.py                   # Task performance (psychometrics, block validation)
+  analysis.py               # Signal processing (response extraction, resampling)
+  validation.py             # Custom exceptions, @exception_logger, validate_* functions
+  util.py                   # Pandas utilities, parquet I/O, schema enforcement
+  vis.py                    # Plotting functions
+  gui.py                    # Interactive session viewer widget
+
+scripts/                    # Analysis scripts
+tests/                      # pytest (synthetic fixtures, no Alyx calls)
+specs/                      # Design docs
+metadata/                   # sessions.pqt, error logs, fibers.csv, trajectories.json
+data/                       # qc_photometry.pqt, performance.pqt, events.pqt, sessions/*.h5
+figures/                    # Output plots
+```
