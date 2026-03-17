@@ -407,11 +407,45 @@ class TestPlotFeatureContributions:
         plt.close(fig)
 
 
+class TestFeatureSortKey:
+
+    def test_sort_order_side_event_feedback_contrast(self):
+        from iblnm.vis import feature_sort_key
+        features = [
+            'stimOn_c0_ipsi_correct',
+            'feedback_c1_contra_incorrect',
+            'stimOn_c1_contra_correct',
+            'stimOn_c0_contra_incorrect',
+            'stimOn_c0_contra_correct',
+            'feedback_c0_contra_correct',
+        ]
+        sorted_features = sorted(features, key=feature_sort_key)
+        # contra before ipsi, stimOn before feedback, correct before incorrect,
+        # then ascending contrast
+        assert sorted_features == [
+            'stimOn_c0_contra_correct',
+            'stimOn_c1_contra_correct',
+            'stimOn_c0_contra_incorrect',
+            'feedback_c0_contra_correct',
+            'feedback_c1_contra_incorrect',
+            'stimOn_c0_ipsi_correct',
+        ]
+
+    def test_unparseable_labels_sort_last(self):
+        from iblnm.vis import feature_sort_key
+        features = ['stimOn_c0_contra_correct', 'unknown_feature']
+        sorted_features = sorted(features, key=feature_sort_key)
+        assert sorted_features[0] == 'stimOn_c0_contra_correct'
+        assert sorted_features[1] == 'unknown_feature'
+
+
 class TestPlotMeanResponseVectors:
 
     def _make_matrix_with_labels(self):
-        features = ['stimOn_c0_correct', 'stimOn_c0_incorrect',
-                     'feedback_c1_correct', 'feedback_c1_incorrect']
+        features = [
+            'stimOn_c0_contra_correct', 'stimOn_c0_contra_incorrect',
+            'feedback_c1_contra_correct', 'feedback_c1_contra_incorrect',
+        ]
         index = pd.MultiIndex.from_tuples(
             [('e0', 'VTA-DA'), ('e1', 'VTA-DA'), ('e2', 'DR-5HT'), ('e3', 'DR-5HT')],
             names=['eid', 'target_NM'],
@@ -431,12 +465,12 @@ class TestPlotMeanResponseVectors:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_one_line_per_target(self):
+    def test_one_errorbar_per_target(self):
         from iblnm.vis import plot_mean_response_vectors
         df = self._make_matrix_with_labels()
         fig = plot_mean_response_vectors(df)
         ax = fig.axes[0]
-        assert len(ax.get_lines()) == 2  # DA + 5HT
+        assert len(ax.containers) == 2  # DA + 5HT
         plt.close(fig)
 
     def test_legend_has_target_names(self):
@@ -449,11 +483,63 @@ class TestPlotMeanResponseVectors:
         assert 'DR-5HT' in legend_labels
         plt.close(fig)
 
+    def test_has_two_axes(self):
+        """Stacked: raw on top, normalized on bottom."""
+        from iblnm.vis import plot_mean_response_vectors
+        df = self._make_matrix_with_labels()
+        fig = plot_mean_response_vectors(df)
+        assert len(fig.axes) == 2
+        plt.close(fig)
+
+    def test_features_sorted_by_side_event_feedback_contrast(self):
+        from iblnm.vis import plot_mean_response_vectors
+        # Columns in wrong order — should be sorted in the plot
+        features = [
+            'feedback_c1_ipsi_correct',
+            'stimOn_c0_contra_correct',
+            'stimOn_c1_contra_incorrect',
+            'stimOn_c0_ipsi_correct',
+        ]
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'VTA-DA'), ('e1', 'DR-5HT')],
+            names=['eid', 'target_NM'],
+        )
+        data = np.array([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+        df = pd.DataFrame(data, index=index, columns=features)
+        fig = plot_mean_response_vectors(df)
+        ax = fig.axes[-1]  # bottom axis has tick labels
+        tick_labels = [t.get_text() for t in ax.get_xticklabels()]
+        assert tick_labels == [
+            'stimOn_c0_contra_correct',
+            'stimOn_c1_contra_incorrect',
+            'stimOn_c0_ipsi_correct',
+            'feedback_c1_ipsi_correct',
+        ]
+        plt.close(fig)
+
+    def test_top_axis_shows_raw_ylabel(self):
+        from iblnm.vis import plot_mean_response_vectors
+        df = self._make_matrix_with_labels()
+        fig = plot_mean_response_vectors(df)
+        assert 'raw' in fig.axes[0].get_ylabel().lower()
+        plt.close(fig)
+
+    def test_bottom_axis_shows_normalized_ylabel(self):
+        from iblnm.vis import plot_mean_response_vectors
+        df = self._make_matrix_with_labels()
+        fig = plot_mean_response_vectors(df)
+        assert 'normalized' in fig.axes[1].get_ylabel().lower()
+        plt.close(fig)
+
 
 class TestPlotDecodingSummary:
 
     def _make_data(self):
-        features = ['f_a', 'f_b', 'f_c']
+        features = [
+            'stimOn_c1_contra_correct',
+            'stimOn_c0_contra_correct',
+            'feedback_c0_ipsi_incorrect',
+        ]
         coefs = pd.DataFrame(
             [[0.5, -0.3, 0.8], [0.1, 0.7, -0.2]],
             index=['DA', '5HT'], columns=features,
@@ -480,14 +566,183 @@ class TestPlotDecodingSummary:
         assert len(fig.axes) >= 2  # coefs + contrib (+ colorbar)
         plt.close(fig)
 
-    def test_shared_x_order_sorted_by_delta(self):
-        """Both panels should share x-axis sorted by descending delta."""
+    def test_shared_x_order_sorted_by_feature(self):
+        """Both panels should share x-axis sorted by side > event > fb > contrast."""
         from iblnm.vis import plot_decoding_summary
         coefs, contrib = self._make_data()
         fig = plot_decoding_summary(coefs, contrib)
-        # Bottom panel (contributions) x-tick labels
         ax_contrib = fig.axes[1]
         tick_labels = [t.get_text() for t in ax_contrib.get_xticklabels()]
-        # Sorted by delta descending: f_a (0.3), f_c (0.2), f_b (0.1)
-        assert tick_labels == ['f_a', 'f_c', 'f_b']
+        # side>event>fb>contrast: contra stimOn c0 first, then c1, then ipsi feedback
+        assert tick_labels == [
+            'stimOn_c0_contra_correct',
+            'stimOn_c1_contra_correct',
+            'feedback_c0_ipsi_incorrect',
+        ]
+        plt.close(fig)
+
+
+class TestPlotEmpiricalSimilarity:
+
+    def _make_target_sim(self):
+        targets = ['A', 'B']
+        return pd.DataFrame(
+            [[0.9, 0.3], [0.3, 0.85]],
+            index=targets, columns=targets,
+        )
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_empirical_similarity
+        fig = plot_empirical_similarity(self._make_target_sim())
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_cells_show_values(self):
+        from iblnm.vis import plot_empirical_similarity
+        target_sim = self._make_target_sim()
+        fig = plot_empirical_similarity(target_sim)
+        ax = fig.axes[0]
+        texts = [t.get_text() for t in ax.texts]
+        assert '0.90' in texts
+        assert '0.30' in texts
+        plt.close(fig)
+
+    def test_axis_labels_are_targets(self):
+        from iblnm.vis import plot_empirical_similarity
+        fig = plot_empirical_similarity(self._make_target_sim())
+        ax = fig.axes[0]
+        xlabels = [t.get_text() for t in ax.get_xticklabels()]
+        ylabels = [t.get_text() for t in ax.get_yticklabels()]
+        assert xlabels == ['A', 'B']
+        assert ylabels == ['A', 'B']
+        plt.close(fig)
+
+    def test_side_by_side_with_loso(self):
+        """Passing loso_matrix produces two axes side by side."""
+        from iblnm.vis import plot_empirical_similarity
+        full = self._make_target_sim()
+        loso = pd.DataFrame(
+            [[0.8, 0.2], [0.2, 0.75]],
+            index=['A', 'B'], columns=['A', 'B'],
+        )
+        fig = plot_empirical_similarity(full, loso_matrix=loso)
+        # Two heatmap axes (plus colorbars)
+        heatmap_axes = [ax for ax in fig.axes if ax.images]
+        assert len(heatmap_axes) == 2
+        plt.close(fig)
+
+    def test_side_by_side_titles(self):
+        from iblnm.vis import plot_empirical_similarity
+        full = self._make_target_sim()
+        loso = self._make_target_sim()
+        fig = plot_empirical_similarity(full, loso_matrix=loso)
+        heatmap_axes = [ax for ax in fig.axes if ax.images]
+        titles = [ax.get_title() for ax in heatmap_axes]
+        assert 'all' in titles[0].lower()
+        assert 'cross' in titles[1].lower() or 'loso' in titles[1].lower()
+        plt.close(fig)
+
+    def test_single_matrix_still_works(self):
+        """Without loso_matrix, behaves as before (one axis)."""
+        from iblnm.vis import plot_empirical_similarity
+        fig = plot_empirical_similarity(self._make_target_sim())
+        heatmap_axes = [ax for ax in fig.axes if ax.images]
+        assert len(heatmap_axes) == 1
+        plt.close(fig)
+
+
+# =============================================================================
+# LMM Plot Tests
+# =============================================================================
+
+
+def _make_lmm_predictions():
+    """Synthetic LMM predictions DataFrame for testing."""
+    contrasts = [0.0, 0.0625, 0.125, 0.25, 1.0]
+    rows = []
+    for side in ['contra', 'ipsi']:
+        for reward in [0, 1]:
+            for c in contrasts:
+                rows.append({
+                    'contrast': c,
+                    'side': side,
+                    'reward': reward,
+                    'predicted': np.log(c + 0.01) * 0.5 + 0.3 * (reward == 1),
+                    'ci_lower': np.log(c + 0.01) * 0.5 - 0.2,
+                    'ci_upper': np.log(c + 0.01) * 0.5 + 0.2,
+                })
+    return pd.DataFrame(rows)
+
+
+class TestPlotLMMResponse:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_lmm_response
+        predictions = _make_lmm_predictions()
+        fig = plot_lmm_response(predictions, 'VTA-DA', 'stimOn_times')
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_two_panels(self):
+        from iblnm.vis import plot_lmm_response
+        predictions = _make_lmm_predictions()
+        fig = plot_lmm_response(predictions, 'VTA-DA', 'stimOn_times')
+        assert len(fig.axes) == 2
+        plt.close(fig)
+
+    def test_correct_incorrect_lines(self):
+        """Each panel should have 2 lines (correct + incorrect)."""
+        from iblnm.vis import plot_lmm_response
+        predictions = _make_lmm_predictions()
+        fig = plot_lmm_response(predictions, 'VTA-DA', 'stimOn_times')
+        for ax in fig.axes:
+            lines = ax.get_lines()
+            assert len(lines) >= 2
+        plt.close(fig)
+
+    def test_with_raw_data_overlay(self):
+        """When raw data is provided, it should be overlaid."""
+        from iblnm.vis import plot_lmm_response
+        rng = np.random.default_rng(0)
+        n = 100
+        raw = pd.DataFrame({
+            'contrast': rng.choice([0.0, 0.0625, 0.125, 0.25, 1.0], n),
+            'side': rng.choice(['contra', 'ipsi'], n),
+            'feedbackType': rng.choice([1, -1], n),
+            'response': rng.normal(0, 1, n),
+        })
+        predictions = _make_lmm_predictions()
+        fig = plot_lmm_response(predictions, 'VTA-DA', 'stimOn_times',
+                                df_raw=raw, response_col='response')
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
+class TestPlotLMMVarianceExplained:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_lmm_variance_explained
+        ve_dict = {
+            ('VTA-DA', 'stimOn'): {'marginal': 0.15, 'conditional': 0.35},
+            ('DR-5HT', 'feedback'): {'marginal': 0.08, 'conditional': 0.22},
+        }
+        fig = plot_lmm_variance_explained(ve_dict)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_bars(self):
+        from iblnm.vis import plot_lmm_variance_explained
+        ve_dict = {
+            ('VTA-DA', 'stimOn'): {'marginal': 0.15, 'conditional': 0.35},
+        }
+        fig = plot_lmm_variance_explained(ve_dict)
+        ax = fig.axes[0]
+        # Should have bar containers
+        assert len(ax.containers) >= 2  # marginal + conditional
+        plt.close(fig)
+
+    def test_empty_dict(self):
+        from iblnm.vis import plot_lmm_variance_explained
+        fig = plot_lmm_variance_explained({})
+        assert isinstance(fig, plt.Figure)
         plt.close(fig)

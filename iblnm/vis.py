@@ -1225,7 +1225,8 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     if aggregation not in ('pool', 'subject'):
         raise ValueError(f"aggregation must be 'pool' or 'subject', got {aggregation!r}")
     if fig is None:
-        fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05})
+        fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05},
+                              layout='constrained')
 
     ax_c, ax_i = fig.axes[0], fig.axes[1]
 
@@ -1285,7 +1286,6 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
 
     ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-    fig.tight_layout()
     return fig
 
 
@@ -1459,8 +1459,39 @@ def plot_feature_contributions(contributions, fig=None):
     return fig
 
 
+import re as _re
+
+_SIDE_ORDER = {'contra': 0, 'ipsi': 1}
+_EVENT_ORDER = {'stimOn': 0, 'firstMovement': 1, 'feedback': 2}
+_FB_ORDER = {'correct': 0, 'incorrect': 1}
+_FEATURE_RE = _re.compile(
+    r'^(?P<event>[a-zA-Z]+)_c(?P<contrast>[\d.]+)_(?P<side>contra|ipsi)_(?P<fb>correct|incorrect)$'
+)
+
+
+def feature_sort_key(label):
+    """Sort key for feature labels: side > event > feedback > contrast.
+
+    Labels follow the format ``{event}_c{contrast}_{side}_{feedback}``.
+    Unparseable labels sort after all valid ones.
+    """
+    m = _FEATURE_RE.match(label)
+    if m is None:
+        return (999, 999, 999, 999, label)
+    return (
+        _SIDE_ORDER.get(m['side'], 99),
+        _EVENT_ORDER.get(m['event'], 99),
+        _FB_ORDER.get(m['fb'], 99),
+        float(m['contrast']),
+        label,
+    )
+
+
 def plot_mean_response_vectors(response_matrix, fig=None):
-    """Plot mean response vector per target-NM.
+    """Plot mean response vector per target-NM: raw and min-max normalized.
+
+    Creates two stacked axes sharing the x-axis. Top: raw magnitudes.
+    Bottom: each recording min-max normalized to [0, 1] independently.
 
     Parameters
     ----------
@@ -1472,30 +1503,247 @@ def plot_mean_response_vectors(response_matrix, fig=None):
     -------
     plt.Figure
     """
+    # Sort features by side > event > feedback > contrast
+    col_order = sorted(response_matrix.columns, key=feature_sort_key)
+    response_matrix = response_matrix[col_order]
+
     labels = response_matrix.index.get_level_values('target_NM')
     targets = sorted(labels.unique())
 
+    # Min-max normalize each recording independently
+    row_min = response_matrix.min(axis=1)
+    row_max = response_matrix.max(axis=1)
+    row_range = row_max - row_min
+    row_range = row_range.replace(0, np.nan)
+    normalized = response_matrix[col_order].sub(row_min, axis=0).div(row_range, axis=0)
+
+    # Identify group boundaries (side × event × feedback, ignoring contrast)
+    groups = []
+    for col in col_order:
+        m = _FEATURE_RE.match(col)
+        groups.append((m['side'], m['event'], m['fb']) if m else None)
+
     if fig is None:
         n_features = response_matrix.shape[1]
-        fig, ax = plt.subplots(1, 1, figsize=(max(8, n_features * 0.25), 4))
+        fig, axes = plt.subplots(2, 1, figsize=(max(8, n_features * 0.25), 7),
+                                 sharex=True)
+    else:
+        axes = fig.axes[:2]
+
+    for ax, data, ylabel in zip(
+        axes,
+        [response_matrix, normalized],
+        ['Raw response magnitude', 'Normalized response magnitude'],
+    ):
+        # Alternating background shading per group
+        current_group = None
+        shade_idx = 0
+        block_start = 0
+        for i, g in enumerate(groups + [None]):
+            if g != current_group:
+                if current_group is not None and shade_idx % 2 == 1:
+                    ax.axvspan(block_start - 0.5, i - 0.5,
+                               color='0.93', zorder=0)
+                current_group = g
+                block_start = i
+                shade_idx += 1
+
+        for target in targets:
+            mask = labels == target
+            mean_vec = data.loc[mask].mean(axis=0)
+            sem_vec = data.loc[mask].sem(axis=0)
+            x = np.arange(len(mean_vec))
+            ax.errorbar(x, mean_vec.values, yerr=sem_vec.values,
+                        fmt='o', markersize=3, capsize=2, label=target)
+        ax.set_ylabel(ylabel)
+        ax.legend(frameon=False)
+
+    axes[-1].set_xticks(np.arange(len(response_matrix.columns)))
+    axes[-1].set_xticklabels(response_matrix.columns, rotation=90, fontsize=7)
+    axes[0].set_title('Mean response vectors by target-NM')
+    fig.tight_layout()
+    return fig
+
+
+def _plot_similarity_heatmap(ax, target_sim, title):
+    """Render an annotated similarity heatmap on a single axis."""
+    im = ax.imshow(target_sim.values, cmap='RdYlBu_r', aspect='equal',
+                   vmin=0, vmax=1)
+    for i in range(len(target_sim)):
+        for j in range(len(target_sim.columns)):
+            val = target_sim.iloc[i, j]
+            text = f'{val:.2f}' if np.isfinite(val) else ''
+            ax.text(j, i, text, ha='center', va='center',
+                    color='white' if val > 0.5 else 'black')
+    ax.set_xticks(range(len(target_sim.columns)))
+    ax.set_xticklabels(target_sim.columns)
+    ax.set_yticks(range(len(target_sim.index)))
+    ax.set_yticklabels(target_sim.index)
+    ax.set_title(title)
+    return im
+
+
+def plot_empirical_similarity(target_sim, loso_matrix=None, fig=None):
+    """Plot target x target mean similarity as an annotated heatmap.
+
+    When ``loso_matrix`` is provided, plots two side-by-side heatmaps:
+    all pairs (left) and cross-subject pairs only (right).
+
+    Parameters
+    ----------
+    target_sim : pd.DataFrame
+        Square matrix of mean pairwise similarities (all pairs).
+    loso_matrix : pd.DataFrame, optional
+        Same structure but computed excluding same-subject pairs.
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    n = len(target_sim)
+    if loso_matrix is not None:
+        if fig is None:
+            fig, axes = plt.subplots(1, 2, figsize=(max(8, n * 2.4), max(3.5, n * 1.0)))
+        else:
+            axes = fig.axes[:2]
+        _plot_similarity_heatmap(axes[0], target_sim, 'All pairs')
+        im = _plot_similarity_heatmap(axes[1], loso_matrix, 'Cross-subject pairs')
+        fig.colorbar(im, ax=axes, label='Mean cosine similarity', shrink=0.8)
+    else:
+        if fig is None:
+            fig, ax = plt.subplots(1, 1, figsize=(max(4, n * 1.2), max(3.5, n * 1.0)))
+        else:
+            ax = fig.axes[0]
+        im = _plot_similarity_heatmap(ax, target_sim, 'Mean pairwise similarity by target')
+        fig.colorbar(im, ax=ax, label='Mean cosine similarity')
+    fig.tight_layout()
+    return fig
+
+
+def plot_lmm_response(predictions, target_nm, event, fig=None,
+                      window_label=None, df_raw=None, response_col=None):
+    """Plot modeled response curves with 95% CI from an LMM fit.
+
+    Layout mirrors ``plot_relative_contrast``: contra (left) and ipsi (right)
+    panels, with correct/incorrect lines from the model predictions.
+
+    Parameters
+    ----------
+    predictions : pd.DataFrame
+        Output from ``fit_events_lmm().predictions`` with columns:
+        contrast, side, reward, predicted, ci_lower, ci_upper.
+    target_nm : str
+        Target neuromodulator label (for title and color).
+    event : str
+        Event name (e.g. 'stimOn_times').
+    fig : plt.Figure, optional
+    window_label : str, optional
+    df_raw : pd.DataFrame, optional
+        Raw trial data for overlay. Must have contrast, side, feedbackType,
+        and ``response_col``.
+    response_col : str, optional
+        Column in df_raw for raw data overlay.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if fig is None:
+        fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05},
+                              layout='constrained')
+
+    ax_c, ax_i = fig.axes[0], fig.axes[1]
+
+    event_label = event.replace('_times', '')
+    _window = window_label or ''
+    color = TARGETNM_COLORS.get(target_nm, 'black')
+    fig.suptitle(f'{target_nm} — {event_label} ({_window}) [LMM]', fontsize=10)
+
+    contrasts = sorted(predictions['contrast'].unique())
+    xpos = np.array(contrasts, dtype=float)
+
+    for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
+        df_side = predictions[predictions['side'] == side]
+
+        for reward, ls, label in ((1, '-', 'correct'), (0, '--', 'incorrect')):
+            df_r = df_side[df_side['reward'] == reward].sort_values('contrast')
+            if len(df_r) == 0:
+                continue
+            ax.plot(df_r['contrast'].values, df_r['predicted'].values,
+                    color=color, linestyle=ls, label=label, marker='o',
+                    markersize=3)
+            ax.fill_between(df_r['contrast'].values,
+                            df_r['ci_lower'].values, df_r['ci_upper'].values,
+                            color=color, alpha=0.15)
+
+        # Raw data overlay
+        if df_raw is not None and response_col is not None:
+            raw_side = df_raw[df_raw['side'] == side]
+            for fb, marker in ((1, 'o'), (-1, 's')):
+                raw_fb = raw_side[raw_side['feedbackType'] == fb]
+                if len(raw_fb) == 0:
+                    continue
+                means = raw_fb.groupby('contrast')[response_col].mean()
+                ax.scatter(means.index, means.values, color=color,
+                           marker=marker, alpha=0.3, s=15, zorder=0)
+
+        ax.set_xticks(xpos if len(xpos) else [])
+        ax.set_xticklabels([f'{c:g}' for c in contrasts])
+        ax.set_xlabel('Contrast')
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+
+    ax_c.invert_xaxis()
+    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
+    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
+    ax_c.set_ylabel('z-score (modeled)')
+    ax_i.tick_params(left=False)
+    ax_i.spines['left'].set_visible(False)
+    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
+    ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+    return fig
+
+
+def plot_lmm_variance_explained(ve_dict, fig=None):
+    """Grouped bar chart of marginal and conditional R² per (target, event).
+
+    Parameters
+    ----------
+    ve_dict : dict
+        Keys are (target_nm, event) tuples, values are dicts with
+        'marginal' and 'conditional' R² values.
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if fig is None:
+        fig, ax = plt.subplots(1, 1, figsize=(max(4, len(ve_dict) * 1.5), 4),
+                               layout='constrained')
     else:
         ax = fig.axes[0]
 
-    for target in targets:
-        mask = labels == target
-        mean_vec = response_matrix.loc[mask].mean(axis=0)
-        sem_vec = response_matrix.loc[mask].sem(axis=0)
-        x = np.arange(len(mean_vec))
-        ax.plot(x, mean_vec.values, label=target)
-        ax.fill_between(x, (mean_vec - sem_vec).values, (mean_vec + sem_vec).values,
-                        alpha=0.2)
+    if not ve_dict:
+        ax.set_title('Variance explained (R²)')
+        return fig
 
-    ax.set_xticks(np.arange(len(response_matrix.columns)))
-    ax.set_xticklabels(response_matrix.columns, rotation=90, fontsize=7)
-    ax.set_ylabel('Response magnitude')
-    ax.set_title('Mean response vectors by target-NM')
+    labels = [f'{t}\n{e}' for t, e in ve_dict.keys()]
+    marginal = [v['marginal'] for v in ve_dict.values()]
+    conditional = [v['conditional'] for v in ve_dict.values()]
+
+    x = np.arange(len(labels))
+    width = 0.35
+    ax.bar(x - width / 2, marginal, width, label='Marginal R²', color='steelblue')
+    ax.bar(x + width / 2, conditional, width, label='Conditional R²', color='coral')
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=8)
+    ax.set_ylabel('R²')
+    ax.set_ylim(0, 1)
     ax.legend(frameon=False)
-    fig.tight_layout()
+    ax.set_title('Variance explained by LMM')
+
     return fig
 
 
@@ -1516,9 +1764,9 @@ def plot_decoding_summary(coefficients, contributions, fig=None):
     -------
     plt.Figure
     """
-    # Sort features by descending delta
-    contrib_sorted = contributions.sort_values('delta', ascending=False)
-    feature_order = contrib_sorted['feature'].values
+    # Sort features by side > event > feedback > contrast
+    feature_order = sorted(contributions['feature'], key=feature_sort_key)
+    contrib_sorted = contributions.set_index('feature').loc[feature_order].reset_index()
 
     # Reorder coefficients columns
     coefs_sorted = coefficients[feature_order]
@@ -1542,6 +1790,7 @@ def plot_decoding_summary(coefficients, contributions, fig=None):
     fig.colorbar(im, cax=ax_cbar, label='Coefficient')
     ax_coef.set_yticks(range(n_classes))
     ax_coef.set_yticklabels(coefs_sorted.index)
+    ax_coef.tick_params(axis='x', labelbottom=False)
     ax_coef.set_title('Decoding coefficients (L1 logistic)')
 
     # Bottom: contribution bars
