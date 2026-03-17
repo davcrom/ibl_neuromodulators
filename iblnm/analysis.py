@@ -191,6 +191,53 @@ def within_between_similarity(sim_matrix, labels):
     return pd.DataFrame(rows)
 
 
+def mean_similarity_by_target(sim_matrix, labels, subjects=None):
+    """Mean pairwise cosine similarity between targets.
+
+    Parameters
+    ----------
+    sim_matrix : pd.DataFrame
+        Symmetric pairwise similarity matrix.
+    labels : pd.Series
+        Target-NM label per recording, aligned to sim_matrix index.
+    subjects : pd.Series, optional
+        Subject label per recording. When provided, pairs from the same
+        subject are excluded (leave-one-subject-out structure).
+
+    Returns
+    -------
+    pd.DataFrame
+        Square target × target matrix of mean pairwise similarities.
+        Diagonal entries are within-target means (NaN if fewer than 2
+        recordings for a target, or no cross-subject pairs when
+        subjects is provided).
+    """
+    targets = sorted(labels.unique())
+    result = pd.DataFrame(np.nan, index=targets, columns=targets)
+    for i, t1 in enumerate(targets):
+        mask1 = labels == t1
+        idx1 = labels.index[mask1]
+        for j, t2 in enumerate(targets):
+            mask2 = labels == t2
+            idx2 = labels.index[mask2]
+            sub = sim_matrix.loc[idx1, idx2]
+            if t1 == t2:
+                # Within-target: upper triangle (exclude self-similarity)
+                rows, cols = np.triu_indices(len(sub), k=1)
+            else:
+                rows, cols = np.indices(sub.shape)
+                rows, cols = rows.ravel(), cols.ravel()
+            # Exclude same-subject pairs when subjects provided
+            if subjects is not None:
+                subj1 = subjects.loc[idx1].values
+                subj2 = subjects.loc[idx2].values
+                cross = subj1[rows] != subj2[cols]
+                rows, cols = rows[cross], cols[cross]
+            vals = sub.values[rows, cols]
+            result.iloc[i, j] = np.nanmean(vals) if len(vals) > 0 else np.nan
+    return result
+
+
 def decode_target_nm(response_matrix, labels, subjects, normalize=True,
                      C=None, Cs=None):
     """Decode target-NM from response vectors using L1 logistic regression.
@@ -417,6 +464,162 @@ def _fit_full_data(X, y_enc, C, normalize):
     clf.fit(X, y_enc)
     preds = clf.predict(X)
     return balanced_accuracy_score(y_enc, preds)
+
+
+# =============================================================================
+# Linear Mixed-Effects Models
+# =============================================================================
+
+from collections import namedtuple
+import warnings
+
+LMMResult = namedtuple('LMMResult', [
+    'model', 'result', 'summary_df', 'variance_explained', 'predictions',
+])
+
+
+def fit_events_lmm(df, response_col, formula=None):
+    """Fit a linear mixed-effects model to trial-level response data.
+
+    Model: ``response ~ log_contrast * C(side) * C(reward)`` with subject
+    as random effect. Tries random intercept + slope for log_contrast first,
+    falls back to random intercept only if convergence fails.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data with columns: contrast, side, feedbackType,
+        subject, and ``response_col``.
+    response_col : str
+        Column name for the response magnitude.
+    formula : str, optional
+        Wilkinson formula for fixed effects. Default:
+        ``'{response_col} ~ log_contrast * C(side) * C(reward)'``.
+
+    Returns
+    -------
+    LMMResult or None
+        None if the model fails to converge or data is degenerate.
+    """
+    import statsmodels.formula.api as smf
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
+    df = df.copy()
+    df['log_contrast'] = np.log(df['contrast'] + 0.01)
+    df['reward'] = (df['feedbackType'] == 1).astype(int)
+
+    # Check minimum requirements
+    if df['subject'].nunique() < 2:
+        return None
+    if df['side'].nunique() < 2 or df['reward'].nunique() < 2:
+        return None
+    if df[response_col].std() == 0:
+        return None
+
+    if formula is None:
+        formula = f'{response_col} ~ log_contrast * C(side) * C(reward)'
+
+    # Try random intercept + slope for log_contrast, fall back to intercept only
+    result = None
+    for re_formula in ['log_contrast', '1']:
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                model = smf.mixedlm(
+                    formula, df, groups=df['subject'],
+                    re_formula=re_formula,
+                )
+                result = model.fit(reml=True)
+            # Check for "failed to converge" (fatal), ignore "boundary" (benign)
+            fatal = any(
+                issubclass(w.category, ConvergenceWarning)
+                and 'failed to converge' in str(w.message).lower()
+                for w in caught
+            )
+            if fatal:
+                result = None
+                if re_formula == '1':
+                    return None
+                continue
+            break
+        except (np.linalg.LinAlgError, ValueError):
+            if re_formula == '1':
+                return None
+            continue
+        except Exception:
+            return None
+
+    if result is None:
+        return None
+
+    # Summary table — use fixed-effects params only
+    fe_names = list(result.fe_params.index)
+    summary_df = pd.DataFrame({
+        'Coef.': result.fe_params,
+        'Std.Err.': result.bse_fe,
+        'z': result.tvalues[fe_names],
+        'P>|z|': result.pvalues[fe_names],
+    })
+
+    # Variance explained (Nakagawa & Schielzeth R²)
+    y = df[response_col].values
+    var_y = np.var(y)
+    if var_y == 0:
+        return None
+
+    # Fixed-effects-only predictions
+    fe_params = result.fe_params.values
+    exog = result.model.exog
+    y_pred_fe = exog @ fe_params
+
+    # Full predictions (fixed + random)
+    y_pred_full = result.fittedvalues.values
+
+    var_fixed = np.var(y_pred_fe)
+    var_random = np.var(y_pred_full - y_pred_fe)
+
+    r2_marginal = float(np.clip(var_fixed / var_y, 0, 1))
+    r2_conditional = float(np.clip((var_fixed + var_random) / var_y, 0, 1))
+
+    # Predictions on contrast grid (fixed effects only)
+    contrasts = sorted(df['contrast'].unique())
+    pred_rows = []
+    # Build design matrix for the grid using the model's formula
+    fe_cov = result.cov_params().loc[fe_names, fe_names].values
+    for side in ['contra', 'ipsi']:
+        for reward in [0, 1]:
+            grid = pd.DataFrame({
+                'contrast': contrasts,
+                'log_contrast': np.log(np.array(contrasts) + 0.01),
+                'side': side,
+                'reward': reward,
+                'subject': df['subject'].iloc[0],  # dummy
+                response_col: 0.0,
+            })
+            # Get design matrix for fixed effects
+            from patsy import dmatrix
+            design_info = result.model.data.orig_exog.design_info
+            X_grid = np.asarray(dmatrix(design_info, grid))
+            pred = X_grid @ fe_params
+            se_pred = np.sqrt(np.diag(X_grid @ fe_cov @ X_grid.T))
+            for i, c in enumerate(contrasts):
+                pred_rows.append({
+                    'contrast': c,
+                    'side': side,
+                    'reward': reward,
+                    'predicted': float(pred[i]),
+                    'ci_lower': float(pred[i] - 1.96 * se_pred[i]),
+                    'ci_upper': float(pred[i] + 1.96 * se_pred[i]),
+                })
+    predictions = pd.DataFrame(pred_rows)
+
+    return LMMResult(
+        model=model,
+        result=result,
+        summary_df=summary_df,
+        variance_explained={'marginal': r2_marginal, 'conditional': r2_conditional},
+        predictions=predictions,
+    )
 
 
 def feature_unique_contribution(response_matrix, labels, subjects,

@@ -554,3 +554,234 @@ class TestSubjectTargetGrouping:
         # valid prediction. n_valid = 3 (s0-A, s1-A, s2-A; s0-B skipped).
         # With bare-subject: s0 fold removes both → n_valid = 2.
         assert result['n_valid'] == 3
+
+
+class TestMeanSimilarityByTarget:
+
+    def _make_sim_and_labels(self):
+        """4 recordings: 2×A, 2×B with known pairwise similarities."""
+        from iblnm.analysis import cosine_similarity_matrix
+        # A recordings are [1,0], B recordings are [0,1] → orthogonal
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'A'), ('e1', 'A'), ('e2', 'B'), ('e3', 'B')],
+            names=['eid', 'target_NM'],
+        )
+        df = pd.DataFrame(
+            [[1, 0], [1, 0.1], [0, 1], [0.1, 1]],
+            index=index, columns=['f0', 'f1'],
+        )
+        sim = cosine_similarity_matrix(df)
+        labels = pd.Series(['A', 'A', 'B', 'B'], index=sim.index)
+        return sim, labels
+
+    def test_returns_square_dataframe(self):
+        from iblnm.analysis import mean_similarity_by_target
+        sim, labels = self._make_sim_and_labels()
+        result = mean_similarity_by_target(sim, labels)
+        assert result.shape == (2, 2)
+        assert list(result.index) == ['A', 'B']
+        assert list(result.columns) == ['A', 'B']
+
+    def test_symmetric(self):
+        from iblnm.analysis import mean_similarity_by_target
+        sim, labels = self._make_sim_and_labels()
+        result = mean_similarity_by_target(sim, labels)
+        np.testing.assert_allclose(result.values, result.values.T, atol=1e-10)
+
+    def test_within_greater_than_between(self):
+        """Within-target similarity should exceed between-target."""
+        from iblnm.analysis import mean_similarity_by_target
+        sim, labels = self._make_sim_and_labels()
+        result = mean_similarity_by_target(sim, labels)
+        assert result.loc['A', 'A'] > result.loc['A', 'B']
+        assert result.loc['B', 'B'] > result.loc['A', 'B']
+
+    def test_single_recording_per_target_gives_nan_diagonal(self):
+        """One recording per target → no within-target pairs → NaN on diagonal."""
+        from iblnm.analysis import mean_similarity_by_target, cosine_similarity_matrix
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'A'), ('e1', 'B')], names=['eid', 'target_NM'],
+        )
+        df = pd.DataFrame([[1, 0], [0, 1]], index=index, columns=['f0', 'f1'])
+        sim = cosine_similarity_matrix(df)
+        labels = pd.Series(['A', 'B'], index=sim.index)
+        result = mean_similarity_by_target(sim, labels)
+        assert np.isnan(result.loc['A', 'A'])
+        assert np.isnan(result.loc['B', 'B'])
+
+    def test_loso_excludes_same_subject_pairs(self):
+        """With subjects, same-subject pairs are excluded."""
+        from iblnm.analysis import mean_similarity_by_target, cosine_similarity_matrix
+        # 4 recordings, 2 subjects, 2 targets
+        # s0 has one A and one B, s1 has one A and one B
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'A'), ('e1', 'A'), ('e2', 'B'), ('e3', 'B')],
+            names=['eid', 'target_NM'],
+        )
+        df = pd.DataFrame(
+            [[1, 0], [1, 0.1], [0, 1], [0.1, 1]],
+            index=index, columns=['f0', 'f1'],
+        )
+        sim = cosine_similarity_matrix(df)
+        labels = pd.Series(['A', 'A', 'B', 'B'], index=sim.index)
+        subjects = pd.Series(['s0', 's1', 's0', 's1'], index=sim.index)
+
+        full = mean_similarity_by_target(sim, labels)
+        loso = mean_similarity_by_target(sim, labels, subjects=subjects)
+
+        # Within-target: full uses 1 pair (e0-e1), loso also uses 1 pair
+        # (e0-e1 are different subjects) → same for A-A
+        # Between-target: full uses all 4 pairs, loso excludes
+        # (e0,e2)=same subject and (e1,e3)=same subject → only 2 cross-subject pairs
+        # The cross-subject between pairs (e0,e3) and (e1,e2) should differ
+        # from the full set
+        assert not np.isclose(full.loc['A', 'B'], loso.loc['A', 'B'])
+
+    def test_loso_all_same_subject_gives_nan(self):
+        """If all recordings of a target pair share a subject, result is NaN."""
+        from iblnm.analysis import mean_similarity_by_target, cosine_similarity_matrix
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'A'), ('e1', 'B')], names=['eid', 'target_NM'],
+        )
+        df = pd.DataFrame([[1, 0], [0, 1]], index=index, columns=['f0', 'f1'])
+        sim = cosine_similarity_matrix(df)
+        labels = pd.Series(['A', 'B'], index=sim.index)
+        subjects = pd.Series(['s0', 's0'], index=sim.index)
+        result = mean_similarity_by_target(sim, labels, subjects=subjects)
+        # Only between pair is (e0, e1) which are same subject → excluded → NaN
+        assert np.isnan(result.loc['A', 'B'])
+
+    def test_loso_symmetric(self):
+        from iblnm.analysis import mean_similarity_by_target, cosine_similarity_matrix
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'A'), ('e1', 'A'), ('e2', 'B'), ('e3', 'B')],
+            names=['eid', 'target_NM'],
+        )
+        df = pd.DataFrame(
+            [[1, 0], [1, 0.1], [0, 1], [0.1, 1]],
+            index=index, columns=['f0', 'f1'],
+        )
+        sim = cosine_similarity_matrix(df)
+        labels = pd.Series(['A', 'A', 'B', 'B'], index=sim.index)
+        subjects = pd.Series(['s0', 's1', 's0', 's1'], index=sim.index)
+        result = mean_similarity_by_target(sim, labels, subjects=subjects)
+        np.testing.assert_allclose(result.values, result.values.T, atol=1e-10)
+
+
+# =============================================================================
+# LMM Tests
+# =============================================================================
+
+
+def _make_lmm_data(n_per_cell=20, seed=42):
+    """Synthetic trial data with known contrast effect for LMM testing.
+
+    3 subjects, 2 sides, 2 rewards, 5 contrasts. Response has a known
+    linear relationship with log(contrast).
+    """
+    rng = np.random.default_rng(seed)
+    subjects = ['s0', 's1', 's2']
+    sides = ['contra', 'ipsi']
+    rewards = [1, -1]
+    contrasts = [0.0, 0.0625, 0.125, 0.25, 1.0]
+
+    rows = []
+    for subj in subjects:
+        subj_intercept = rng.normal(0, 0.3)
+        for side in sides:
+            for reward in rewards:
+                for contrast in contrasts:
+                    for _ in range(n_per_cell):
+                        log_c = np.log(contrast + 0.01)
+                        response = (
+                            1.0                              # intercept
+                            + 0.5 * log_c                    # contrast effect
+                            + 0.3 * (1 if side == 'ipsi' else 0)  # side effect
+                            + 0.2 * (1 if reward == 1 else 0)     # reward effect
+                            + subj_intercept
+                            + rng.normal(0, 0.5)
+                        )
+                        rows.append({
+                            'contrast': contrast,
+                            'side': side,
+                            'feedbackType': reward,
+                            'subject': subj,
+                            'response': response,
+                        })
+    return pd.DataFrame(rows)
+
+
+class TestFitEventsLMM:
+
+    def test_returns_lmm_result(self):
+        from iblnm.analysis import fit_events_lmm
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        assert result is not None
+
+    def test_result_has_expected_fields(self):
+        from iblnm.analysis import fit_events_lmm
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        assert hasattr(result, 'result')
+        assert hasattr(result, 'summary_df')
+        assert hasattr(result, 'variance_explained')
+
+    def test_variance_explained_keys(self):
+        from iblnm.analysis import fit_events_lmm
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        ve = result.variance_explained
+        assert 'marginal' in ve
+        assert 'conditional' in ve
+        assert 0 <= ve['marginal'] <= 1
+        assert 0 <= ve['conditional'] <= 1
+        assert ve['conditional'] >= ve['marginal']
+
+    def test_summary_df_has_coefficients(self):
+        from iblnm.analysis import fit_events_lmm
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        assert isinstance(result.summary_df, pd.DataFrame)
+        assert 'Coef.' in result.summary_df.columns
+        assert 'P>|z|' in result.summary_df.columns
+        assert len(result.summary_df) > 0
+
+    def test_detects_contrast_effect(self):
+        """With known contrast slope of 0.5, the model should detect it."""
+        from iblnm.analysis import fit_events_lmm
+        df = _make_lmm_data(n_per_cell=30, seed=0)
+        result = fit_events_lmm(df, 'response')
+        # log_contrast coefficient should be significantly positive
+        coef = result.summary_df.loc['log_contrast', 'Coef.']
+        pval = result.summary_df.loc['log_contrast', 'P>|z|']
+        assert coef > 0.2, f"Expected positive contrast effect, got {coef}"
+        assert pval < 0.05, f"Expected significant contrast effect, got p={pval}"
+
+    def test_convergence_failure_returns_none(self):
+        """Degenerate data should return None, not raise."""
+        from iblnm.analysis import fit_events_lmm
+        # Single subject, single side — model can't fit random effect or side
+        df = pd.DataFrame({
+            'contrast': [0.25] * 10,
+            'side': ['contra'] * 10,
+            'feedbackType': [1] * 10,
+            'subject': ['s0'] * 10,
+            'response': np.zeros(10),
+        })
+        result = fit_events_lmm(df, 'response')
+        assert result is None
+
+    def test_predictions_on_grid(self):
+        """Result should include predicted values on a contrast grid."""
+        from iblnm.analysis import fit_events_lmm
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        assert hasattr(result, 'predictions')
+        assert isinstance(result.predictions, pd.DataFrame)
+        assert 'contrast' in result.predictions.columns
+        assert 'predicted' in result.predictions.columns
+        assert 'ci_lower' in result.predictions.columns
+        assert 'ci_upper' in result.predictions.columns
+        assert 'side' in result.predictions.columns
+        assert 'reward' in result.predictions.columns
