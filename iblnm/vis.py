@@ -1661,7 +1661,7 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
     fig.suptitle(f'{target_nm} — {event_label} ({_window}) [LMM]', fontsize=10)
 
     contrasts = sorted(predictions['contrast'].unique())
-    xpos = np.array(contrasts, dtype=float)
+    log_contrasts = np.log(np.array(contrasts) + 0.01)
 
     for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
         df_side = predictions[predictions['side'] == side]
@@ -1670,10 +1670,11 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
             df_r = df_side[df_side['reward'] == reward].sort_values('contrast')
             if len(df_r) == 0:
                 continue
-            ax.plot(df_r['contrast'].values, df_r['predicted'].values,
+            xvals = np.log(df_r['contrast'].values + 0.01)
+            ax.plot(xvals, df_r['predicted'].values,
                     color=color, linestyle=ls, label=label, marker='o',
                     markersize=3)
-            ax.fill_between(df_r['contrast'].values,
+            ax.fill_between(xvals,
                             df_r['ci_lower'].values, df_r['ci_upper'].values,
                             color=color, alpha=0.15)
 
@@ -1685,12 +1686,13 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
                 if len(raw_fb) == 0:
                     continue
                 means = raw_fb.groupby('contrast')[response_col].mean()
-                ax.scatter(means.index, means.values, color=color,
-                           marker=marker, alpha=0.3, s=15, zorder=0)
+                ax.scatter(np.log(means.index + 0.01), means.values,
+                           color=color, marker=marker, alpha=0.3, s=15,
+                           zorder=0)
 
-        ax.set_xticks(xpos if len(xpos) else [])
+        ax.set_xticks(log_contrasts if len(log_contrasts) else [])
         ax.set_xticklabels([f'{c:g}' for c in contrasts])
-        ax.set_xlabel('Contrast')
+        ax.set_xlabel('log(contrast + 0.01)')
         ax.axhline(0, ls='--', color='gray', lw=0.5)
 
     ax_c.invert_xaxis()
