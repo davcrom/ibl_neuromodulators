@@ -179,6 +179,135 @@ contrast sensitivity, and failing to model this can inflate Type I error rates
 for the fixed effect of contrast.
 
 
+## Interpreting the Confidence Bands
+
+The shaded CI around each model line (e.g., correct trials on the contra
+side) reflects uncertainty in **all eight fixed-effect coefficients jointly**,
+not just the intercept or just the slope. At a given point on the x-axis,
+the prediction is a weighted sum of all beta terms:
+
+```
+y_hat = beta_0 + beta_1 * log(c) + beta_2 * side + beta_3 * reward + ...
+```
+
+The CI at that point propagates uncertainty from every coefficient in that
+sum. At extreme values of log(contrast) — far from the data mean — the
+slope uncertainty dominates and the band fans out.
+
+### Why overlapping CIs do not contradict significant effects
+
+Each band answers: "where could the true population mean for **this
+condition** be?" It does **not** answer: "is there a difference between
+conditions?" These are different questions. The correct-vs-incorrect
+comparison depends on the uncertainty of beta_3 (the reward coefficient)
+alone, which is much smaller than the total uncertainty in each individual
+band. Each band carries uncertainty from all 8 coefficients; the difference
+between the bands cancels out most of that shared uncertainty.
+
+Analogy: measuring two people's heights with a wobbly ruler gives large
+individual uncertainty, but the **difference** is precise because the wobble
+affects both measurements equally.
+
+### How to extract the CI in code
+
+The CI is computed from the fixed-effects covariance matrix:
+
+```python
+# X_grid: design matrix for the prediction points (n_points x n_coefficients)
+# fe_cov: fixed-effects covariance matrix (n_coefficients x n_coefficients)
+# fe_params: fixed-effect coefficient vector (n_coefficients,)
+
+predicted = X_grid @ fe_params                            # point estimate
+se = np.sqrt(np.diag(X_grid @ fe_cov @ X_grid.T))        # standard error
+ci_lower = predicted - 1.96 * se
+ci_upper = predicted + 1.96 * se
+```
+
+`X_grid` is built from the Wilkinson formula's design info, which handles
+the dummy coding of categorical variables and the interaction terms. The
+covariance matrix `fe_cov` is the (X'V^{-1}X)^{-1} submatrix for the fixed
+effects, obtained from `result.cov_params()`.
+
+### Alternative: visualizing contrasts directly
+
+To directly answer "is correct different from incorrect?", one can compute the
+**difference** in predicted values between conditions and plot that with its
+own CI. For example, the difference at each contrast level between reward=1
+and reward=0 (holding side constant) depends only on beta_3 + beta_5*log(c) +
+beta_6*side + beta_7*log(c)*side — a subset of the coefficients. The CI on
+this difference is narrower because the shared uncertainty cancels.
+
+This is the approach taken by estimated marginal means (see below).
+
+
+## Comparison with emmeans and Estimated Marginal Means
+
+### What emmeans does
+
+The R package `emmeans` (Lenth, 2024) computes **estimated marginal means**
+(EMMs): model predictions averaged over the levels of specified factors,
+evaluated at a reference grid. For example, the EMM for "correct trials"
+averages the model prediction over all contrast levels and both sides, yielding
+a single number for the population-mean response on correct trials, marginalized
+over the other predictors.
+
+Key capabilities:
+- **Marginal averaging**: predictions are averaged over factors not of
+  interest, using equal weights (by default) regardless of how balanced the
+  data actually are.
+- **Pairwise contrasts**: direct comparisons between conditions (e.g.,
+  correct vs. incorrect) with CIs that reflect only the uncertainty in the
+  difference, not in each individual mean. This is why emmeans contrasts often
+  show significant differences even when individual EMM CIs overlap.
+- **Multiplicity correction**: Tukey, Bonferroni, or other adjustments for
+  multiple comparisons are built in.
+- **Kenward-Roger / Satterthwaite df**: emmeans can use these
+  approximations for more accurate small-sample inference (see the caveat
+  about Wald z-tests above).
+
+### What our implementation does
+
+We compute **conditional predictions**: the model's estimated response at
+each observed contrast level, for each specific side x reward combination.
+No averaging over other factors. This is closer to `emmeans::emmip()` (the
+interaction plot) than to `emmeans::emmeans()` (the marginal means).
+
+Our CIs are based on the Wald approximation with the full fixed-effects
+covariance matrix, equivalent to what emmeans calls `summary(, infer=TRUE)`
+with `lmerTest::lmer()` df = Inf (i.e., z-based rather than t-based).
+
+### Key differences
+
+| Aspect | Our approach | emmeans |
+|--------|-------------|---------|
+| What is plotted | Prediction at each contrast x side x reward | Marginal means averaged over specified factors |
+| CI reflects | Uncertainty in all fixed effects jointly | Uncertainty in the (possibly marginal) mean |
+| Contrasts | Not directly shown; bands may overlap despite significance | Explicit pairwise differences with own CIs |
+| df approximation | Wald z (normal) | Kenward-Roger or Satterthwaite (t) |
+| Multiplicity | Not applicable | Built-in corrections |
+
+### Practical implications
+
+Our plots are best for **visualizing the shape of the response function** —
+how does the population-mean response vary with contrast, and does that shape
+differ by side and feedback? The emmeans approach is better for **testing
+specific hypotheses** — is there a main effect of reward, averaged over
+contrast and side?
+
+Both approaches extract information from the same model. They are
+complementary, not competing.
+
+### Python alternatives
+
+- The `marginaleffects` package (Arel-Bundock, Greifer & Heiss, 2024) provides
+  EMM-like functionality in Python, supporting statsmodels and other model
+  classes. It can compute predictions, comparisons, and marginal means with a
+  consistent API.
+- EMMs can also be computed manually from the design matrix and coefficient
+  covariance, as we do for conditional predictions — the only difference is
+  constructing the reference grid and averaging over factor levels.
+
+
 ## Implementation Notes
 
 - `statsmodels.regression.mixed_linear_model.MixedLM` with REML estimation.
@@ -192,6 +321,11 @@ for the fixed effect of contrast.
 
 ## References
 
+- Arel-Bundock, V., Greifer, N. & Heiss, A. (2024). How to interpret
+  statistical models using marginaleffects for R and Python. *Journal of
+  Statistical Software*, 111(9), 1-32.
+  https://doi.org/10.18637/jss.v111.i09
+
 - Barr, D.J., Levy, R., Scheepers, C. & Tily, H.J. (2013). Random effects
   structure for confirmatory hypothesis testing: Keep it maximal. *Journal of
   Memory and Language*, 68(3), 255-278.
@@ -203,6 +337,9 @@ for the fixed effect of contrast.
 
 - Laird, N.M. & Ware, J.H. (1982). Random-effects models for longitudinal
   data. *Biometrics*, 38(4), 963-974. https://doi.org/10.2307/2529876
+
+- Lenth, R.V. (2024). emmeans: Estimated marginal means, aka least-squares
+  means. R package. https://CRAN.R-project.org/package=emmeans
 
 - Luke, S.G. (2017). Evaluating significance in linear mixed-effects models
   in R. *Behavior Research Methods*, 49(4), 1494-1502.
