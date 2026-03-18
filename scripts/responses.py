@@ -122,6 +122,7 @@ def plot_events_figures(group, figures_dir, response_col='response_early',
                                      aggregation=aggregation)
         fname = f'{target_nm}_{event_label}_{window_label}.svg'
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
 
 
 # =========================================================================
@@ -188,7 +189,7 @@ def fit_and_plot_lmm(group, figures_dir, response_col='response_early'):
             'reward': emm_reward, 'side': emm_side,
         }
 
-        # Modeled response plot
+        # Modeled response plot (per target — save and close)
         fig = plot_lmm_response(
             result.predictions, target_nm, event,
             window_label=window_label,
@@ -196,6 +197,7 @@ def fit_and_plot_lmm(group, figures_dir, response_col='response_early'):
         )
         fname = f'{target_nm}_{event_label}_{window_label}_lmm.svg'
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
 
     # Save all coefficients to one CSV
     if all_summaries:
