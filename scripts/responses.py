@@ -27,6 +27,7 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, EVENTS_FPATH, RESPONSE_MATRIX_FPATH,
+    SIMILARITY_MATRIX_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI,
 )
 from iblnm.data import PhotometrySessionGroup
@@ -36,10 +37,11 @@ from iblnm.util import derive_target_nm
 from iblnm.vis import (
     plot_relative_contrast, plot_similarity_matrix, plot_confusion_matrix,
     plot_mean_response_vectors, plot_decoding_summary, plot_empirical_similarity,
-    plot_lmm_response, plot_lmm_variance_explained,
+    plot_lmm_response, plot_lmm_variance_explained, plot_marginal_means,
 )
 from iblnm.analysis import (
     within_between_similarity, mean_similarity_by_target, fit_events_lmm,
+    compute_marginal_means,
 )
 
 plt.ion()
@@ -150,6 +152,7 @@ def fit_and_plot_lmm(group, figures_dir, response_col='response_early'):
     df = df.query('choice != 0 and reaction_time > 0.05')
 
     ve_dict = {}
+    emm_dict = {}
     all_summaries = []
 
     for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
@@ -178,6 +181,13 @@ def fit_and_plot_lmm(group, figures_dir, response_col='response_early'):
         summary.index.name = 'term'
         all_summaries.append(summary.reset_index())
 
+        # Estimated marginal means
+        emm_reward = compute_marginal_means(result, 'reward')
+        emm_side = compute_marginal_means(result, 'side')
+        emm_dict[(target_nm, event_label)] = {
+            'reward': emm_reward, 'side': emm_side,
+        }
+
         # Modeled response plot
         fig = plot_lmm_response(
             result.predictions, target_nm, event,
@@ -200,6 +210,15 @@ def fit_and_plot_lmm(group, figures_dir, response_col='response_early'):
         fig.savefig(figures_dir / f'lmm_variance_explained_{window_label}.svg',
                     dpi=FIGURE_DPI, bbox_inches='tight')
         print(f"  Variance explained plot saved")
+
+    # Marginal means plots — one figure per event
+    if emm_dict:
+        events_seen = sorted(set(ev for _, ev in emm_dict.keys()))
+        for event_label in events_seen:
+            fig = plot_marginal_means(emm_dict, event_label)
+            fig.savefig(figures_dir / f'marginal_means_{event_label}_{window_label}.svg',
+                        dpi=FIGURE_DPI, bbox_inches='tight')
+        print(f"  Marginal means plots saved")
 
 
 # =========================================================================
@@ -404,13 +423,25 @@ if __name__ == '__main__':
     fit_and_plot_lmm(group, events_figures_dir)
 
     # =====================================================================
-    # Response vectors: similarity + decoding + plots
+    # Response vectors: similarity + decoding
     # =====================================================================
     print("\nComputing cosine similarity matrix...")
     group.response_similarity_matrix()
 
+    group.similarity_matrix.to_parquet(SIMILARITY_MATRIX_FPATH)
+    print(f"Saved similarity matrix to {SIMILARITY_MATRIX_FPATH}")
+
     print("Decoding target-NM from response vectors...")
     group.decode_target()
+
+    # Save decoding results
+    data_dir = PROJECT_ROOT / 'data'
+    decoder = group.decoder
+    decoder.confusion.to_parquet(data_dir / 'confusion_matrix.pqt')
+    decoder.coefficients.to_parquet(data_dir / 'decoding_coefficients.pqt')
+    decoder.contributions.to_parquet(
+        data_dir / 'feature_contributions.pqt', index=False)
+    print(f"Saved decoding results to {data_dir}")
 
     plot_vectors_figures(group, vectors_figures_dir)
     print(f"Response vector figures saved to {vectors_figures_dir}")

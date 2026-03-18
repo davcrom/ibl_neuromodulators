@@ -1567,7 +1567,7 @@ def plot_mean_response_vectors(response_matrix, fig=None):
 
 def _plot_similarity_heatmap(ax, target_sim, title):
     """Render an annotated similarity heatmap on a single axis."""
-    im = ax.imshow(target_sim.values, cmap='RdYlBu_r', aspect='equal',
+    im = ax.imshow(target_sim.values, cmap='YlOrRd', aspect='equal',
                    vmin=0, vmax=1)
     for i in range(len(target_sim)):
         for j in range(len(target_sim.columns)):

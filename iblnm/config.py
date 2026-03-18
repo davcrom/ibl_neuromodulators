@@ -16,6 +16,7 @@ QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
 PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
 EVENTS_FPATH = PROJECT_ROOT / 'data/events.pqt'
 RESPONSE_MATRIX_FPATH = PROJECT_ROOT / 'data/response_matrix.pqt'
+SIMILARITY_MATRIX_FPATH = PROJECT_ROOT / 'data/similarity_matrix.pqt'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 
 # Per-script error logs (unified schema: eid, error_type, error_message, traceback)
