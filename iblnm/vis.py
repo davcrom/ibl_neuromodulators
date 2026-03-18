@@ -1749,6 +1749,74 @@ def plot_lmm_variance_explained(ve_dict, fig=None):
     return fig
 
 
+def plot_marginal_means(emm_dict, event, fig=None):
+    """Plot estimated marginal means for reward and side, per target-NM.
+
+    Parameters
+    ----------
+    emm_dict : dict
+        Keys are (target_NM, event_label) tuples. Values are dicts with
+        'reward' and 'side' keys mapping to DataFrames from
+        ``compute_marginal_means`` (columns: level, mean, ci_lower, ci_upper).
+    event : str
+        Event label to filter from emm_dict (e.g. 'stimOn').
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    # Filter to the requested event
+    targets = []
+    for (tnm, ev), emms in emm_dict.items():
+        if ev == event:
+            targets.append((tnm, emms))
+    targets.sort(key=lambda x: x[0])
+
+    if fig is None:
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4), layout='constrained')
+    else:
+        axes = fig.axes[:2]
+
+    for ax, factor, level_labels in zip(
+        axes,
+        ['reward', 'side'],
+        [{'0': 'incorrect', '1': 'correct', 0: 'incorrect', 1: 'correct'},
+         {'contra': 'contra', 'ipsi': 'ipsi'}],
+    ):
+        for i, (tnm, emms) in enumerate(targets):
+            emm = emms[factor]
+            color = TARGETNM_COLORS.get(tnm, f'C{i}')
+            levels = emm['level'].values
+            means = emm['mean'].values
+            ci_lo = emm['ci_lower'].values
+            ci_hi = emm['ci_upper'].values
+            yerr = np.array([means - ci_lo, ci_hi - means])
+
+            x = np.arange(len(levels))
+            ax.errorbar(x + i * 0.05 - 0.025 * len(targets),
+                        means, yerr=yerr,
+                        fmt='o', capsize=4, color=color, label=tnm,
+                        markersize=5)
+
+        # X-axis labels
+        if len(targets) > 0:
+            sample_emm = targets[0][1][factor]
+            levels = sample_emm['level'].values
+            x = np.arange(len(levels))
+            ax.set_xticks(x)
+            ax.set_xticklabels([level_labels.get(l, str(l)) for l in levels])
+
+        ax.set_ylabel('z-score (EMM)')
+        ax.set_title(f'Effect of {factor}')
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+
+    axes[-1].legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
+                    fontsize=8)
+    fig.suptitle(f'Estimated marginal means — {event}', fontsize=10)
+    return fig
+
+
 def plot_decoding_summary(coefficients, contributions, fig=None):
     """Coefficients and unique contributions stacked with shared x-axis.
 

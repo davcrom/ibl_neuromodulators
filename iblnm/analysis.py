@@ -622,6 +622,71 @@ def fit_events_lmm(df, response_col, formula=None):
     )
 
 
+def compute_marginal_means(lmm_result, factor):
+    """Compute estimated marginal means for a factor from an LMM fit.
+
+    Averages model predictions over the levels of all other factors in the
+    design, yielding the marginal mean response at each level of ``factor``.
+
+    Parameters
+    ----------
+    lmm_result : LMMResult
+        Output from ``fit_events_lmm``.
+    factor : str
+        Factor to compute EMMs for: 'reward' or 'side'.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: level, mean, ci_lower, ci_upper.
+    """
+    predictions = lmm_result.predictions
+    other = 'side' if factor == 'reward' else 'reward'
+
+    rows = []
+    for level, df_level in predictions.groupby(factor):
+        # Average over levels of the other factor and contrast
+        # (equal weighting = balanced EMM)
+        mean_pred = df_level['predicted'].mean()
+
+        # CI: average the design-matrix rows, propagate through covariance
+        # We need to reconstruct design matrix rows for proper CI
+        # For a linear model, mean of predictions = prediction at mean of inputs
+        # and SE of the mean prediction = sqrt(x_bar' Cov x_bar)
+        result = lmm_result.result
+        fe_names = list(result.fe_params.index)
+        fe_params = result.fe_params.values
+        fe_cov = result.cov_params().loc[fe_names, fe_names].values
+
+        # Build design matrix for all rows of this factor level
+        from patsy import dmatrix
+        design_info = result.model.data.orig_exog.design_info
+        # Need a DataFrame with all the right columns
+        grid = df_level.copy()
+        grid['log_contrast'] = np.log(grid['contrast'] + 0.01)
+        # Add dummy columns needed by the formula
+        response_col = result.model.endog_names
+        if response_col not in grid.columns:
+            grid[response_col] = 0.0
+        if 'subject' not in grid.columns:
+            grid['subject'] = 'dummy'
+
+        X_grid = np.asarray(dmatrix(design_info, grid))
+        # Average the design matrix rows (equal weighting)
+        x_bar = X_grid.mean(axis=0)
+        mean_pred_exact = float(x_bar @ fe_params)
+        se = float(np.sqrt(x_bar @ fe_cov @ x_bar))
+
+        rows.append({
+            'level': level,
+            'mean': mean_pred_exact,
+            'ci_lower': mean_pred_exact - 1.96 * se,
+            'ci_upper': mean_pred_exact + 1.96 * se,
+        })
+
+    return pd.DataFrame(rows)
+
+
 def feature_unique_contribution(response_matrix, labels, subjects,
                                 normalize=True, C=None):
     """Measure each feature's unique contribution to decoding accuracy.

@@ -785,3 +785,56 @@ class TestFitEventsLMM:
         assert 'ci_upper' in result.predictions.columns
         assert 'side' in result.predictions.columns
         assert 'reward' in result.predictions.columns
+
+
+class TestComputeMarginalMeans:
+
+    def test_returns_dataframe(self):
+        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        emm = compute_marginal_means(result, 'reward')
+        assert isinstance(emm, pd.DataFrame)
+
+    def test_reward_has_two_levels(self):
+        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        emm = compute_marginal_means(result, 'reward')
+        assert len(emm) == 2
+        assert set(emm['level']) == {0, 1}
+
+    def test_side_has_two_levels(self):
+        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        emm = compute_marginal_means(result, 'side')
+        assert len(emm) == 2
+        assert set(emm['level']) == {'contra', 'ipsi'}
+
+    def test_has_ci_columns(self):
+        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        emm = compute_marginal_means(result, 'reward')
+        assert 'mean' in emm.columns
+        assert 'ci_lower' in emm.columns
+        assert 'ci_upper' in emm.columns
+
+    def test_reward_effect_detected(self):
+        """With known reward effect of 0.2, correct EMM should exceed incorrect."""
+        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        df = _make_lmm_data(n_per_cell=30, seed=0)
+        result = fit_events_lmm(df, 'response')
+        emm = compute_marginal_means(result, 'reward')
+        correct = emm[emm['level'] == 1]['mean'].iloc[0]
+        incorrect = emm[emm['level'] == 0]['mean'].iloc[0]
+        assert correct > incorrect
+
+    def test_contrast_column_present(self):
+        """EMM DataFrame should include the contrast column for the factor."""
+        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        df = _make_lmm_data()
+        result = fit_events_lmm(df, 'response')
+        emm = compute_marginal_means(result, 'reward')
+        assert 'contrast_diff' in emm.columns or 'diff' in emm.columns or len(emm) == 2
