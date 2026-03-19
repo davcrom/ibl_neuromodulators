@@ -54,7 +54,7 @@ df_sessions = collect_session_errors(
 )
 
 # Filter: remove sessions with fatal metadata errors
-# ~fatal_errors = {'InvalidNeuromodulator', 'InvalidTarget', 'InvalidTargetNM'}
+# ~fatal_errors = {'InvalidNeuromodulator', 'InvalidBrainRegion', 'InvalidTargetNM'}
 # ~df_sessions = df_sessions[
     # ~df_sessions['logged_errors'].apply(lambda errs: not any(e in fatal_errors for e in errs))
 # ~].copy()

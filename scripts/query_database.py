@@ -16,7 +16,7 @@ from iblnm.util import (
 )
 from iblnm.validation import (
     validate_subject, validate_strain, validate_line,
-    validate_neuromodulator, validate_target, validate_hemisphere,
+    validate_neuromodulator, validate_brain_region, validate_hemisphere,
     validate_datasets, fill_hemisphere_from_fiber_insertion_table,
 )
 
@@ -92,7 +92,7 @@ df_sessions = df_sessions.progress_apply(
 df_sessions = df_sessions.progress_apply(
     fill_hemisphere_from_fiber_insertion_table, axis='columns', exlog=error_log
 ).copy()
-df_sessions.apply(validate_target, axis='columns', exlog=error_log)
+df_sessions.apply(validate_brain_region, axis='columns', exlog=error_log)
 df_sessions.apply(validate_hemisphere, axis='columns', exlog=error_log)
 
 

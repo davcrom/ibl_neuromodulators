@@ -37,11 +37,10 @@ from iblnm.util import derive_target_nm
 from iblnm.vis import (
     plot_relative_contrast, plot_similarity_matrix, plot_confusion_matrix,
     plot_mean_response_vectors, plot_decoding_summary, plot_empirical_similarity,
-    plot_lmm_response, plot_lmm_variance_explained, plot_marginal_means,
+    plot_lmm_response, plot_lmm_summary,
 )
 from iblnm.analysis import (
-    within_between_similarity, mean_similarity_by_target, fit_events_lmm,
-    compute_marginal_means,
+    within_between_similarity, mean_similarity_by_target,
 )
 
 plt.ion()
@@ -129,67 +128,38 @@ def plot_events_figures(group, figures_dir, response_col='response_early',
 # LMM statistical analysis
 # =========================================================================
 
-def fit_and_plot_lmm(group, figures_dir, response_col='response_early'):
-    """Fit LMMs per (target_NM, event) and generate modeled response + R² plots.
+def plot_lmm_figures(group, figures_dir, response_col='response_early'):
+    """Generate per-target LMM response plots and consolidated summaries.
 
-    For each group, fits: response ~ log(contrast) * side * reward | subject.
-    Saves coefficient tables to CSV and generates modeled response plots and
-    a variance explained summary.
+    Requires ``group.fit_lmm()`` to have been called already.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have group.events populated.
+        Must have lmm_results populated.
     figures_dir : Path
         Output directory for SVG and CSV files.
     response_col : str
-        Column name for the response magnitude.
+        Column name for the response magnitude (used for raw data overlay).
     """
-    df_events = add_relative_contrast(group.events.copy())
-    df_unbiased = df_events.query('probabilityLeft == 0.5')
-
     window_label = response_col.replace('response_', '')
-    df = df_unbiased.dropna(subset=[response_col]).copy()
-    df = df.query('choice != 0 and reaction_time > 0.05')
 
-    ve_dict = {}
-    emm_dict = {}
-    all_summaries = []
+    if not group.lmm_results:
+        print("  No LMM results to plot.")
+        return
 
-    for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
-        n_subjects = df_group['subject'].nunique()
-        if n_subjects < 2:
-            continue
+    # Prepare raw data for overlay
+    df_raw = add_relative_contrast(group.events.copy())
+    df_raw = df_raw.query('probabilityLeft == 0.5')
+    df_raw = df_raw.dropna(subset=[response_col])
+    df_raw = df_raw.query('choice != 0 and reaction_time > 0.05')
 
-        event_label = event.replace('_times', '')
-        print(f"  Fitting LMM: {target_nm} × {event_label} "
-              f"({len(df_group)} trials, {n_subjects} subjects)...")
-
-        result = fit_events_lmm(df_group, response_col)
-        if result is None:
-            print(f"    Convergence failed — skipping")
-            continue
-
-        ve = result.variance_explained
-        ve_dict[(target_nm, event_label)] = ve
-        print(f"    R² marginal={ve['marginal']:.3f}, "
-              f"conditional={ve['conditional']:.3f}")
-
-        # Save coefficient table
-        summary = result.summary_df.copy()
-        summary.insert(0, 'target_NM', target_nm)
-        summary.insert(1, 'event', event_label)
-        summary.index.name = 'term'
-        all_summaries.append(summary.reset_index())
-
-        # Estimated marginal means
-        emm_reward = compute_marginal_means(result, 'reward')
-        emm_side = compute_marginal_means(result, 'side')
-        emm_dict[(target_nm, event_label)] = {
-            'reward': emm_reward, 'side': emm_side,
-        }
-
-        # Modeled response plot (per target — save and close)
+    # Per-target modeled response plots (save and close)
+    for (target_nm, event_label), result in group.lmm_results.items():
+        event = event_label + '_times'
+        df_group = df_raw[
+            (df_raw['target_NM'] == target_nm) & (df_raw['event'] == event)
+        ]
         fig = plot_lmm_response(
             result.predictions, target_nm, event,
             window_label=window_label,
@@ -199,28 +169,20 @@ def fit_and_plot_lmm(group, figures_dir, response_col='response_early'):
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
 
-    # Save all coefficients to one CSV
-    if all_summaries:
-        coefs_df = pd.concat(all_summaries, ignore_index=True)
+    # Save coefficients
+    if len(group.lmm_coefficients) > 0:
         csv_path = figures_dir / f'lmm_coefficients_{window_label}.csv'
-        coefs_df.to_csv(csv_path, index=False)
+        group.lmm_coefficients.to_csv(csv_path, index=False)
         print(f"  LMM coefficients saved to {csv_path}")
 
-    # Variance explained summary plot
-    if ve_dict:
-        fig = plot_lmm_variance_explained(ve_dict)
-        fig.savefig(figures_dir / f'lmm_variance_explained_{window_label}.svg',
-                    dpi=FIGURE_DPI, bbox_inches='tight')
-        print(f"  Variance explained plot saved")
-
-    # Marginal means plots — one figure per event
-    if emm_dict:
-        events_seen = sorted(set(ev for _, ev in emm_dict.keys()))
-        for event_label in events_seen:
-            fig = plot_marginal_means(emm_dict, event_label)
-            fig.savefig(figures_dir / f'marginal_means_{event_label}_{window_label}.svg',
-                        dpi=FIGURE_DPI, bbox_inches='tight')
-        print(f"  Marginal means plots saved")
+    # Consolidated summary — one figure per event
+    events_seen = sorted(set(ev for _, ev in group.lmm_results.keys()))
+    for event_label in events_seen:
+        fig = plot_lmm_summary(group, event_label)
+        fig.savefig(
+            figures_dir / f'lmm_summary_{event_label}_{window_label}.svg',
+            dpi=FIGURE_DPI, bbox_inches='tight')
+    print(f"  LMM summary plots saved")
 
 
 # =========================================================================
@@ -422,7 +384,12 @@ if __name__ == '__main__':
     # LMM statistical analysis
     # =====================================================================
     print("\nFitting linear mixed-effects models...")
-    fit_and_plot_lmm(group, events_figures_dir)
+    group.fit_lmm()
+    for (tnm, ev), result in group.lmm_results.items():
+        ve = result.variance_explained
+        print(f"  {tnm} × {ev}: R² marginal={ve['marginal']:.3f}, "
+              f"conditional={ve['conditional']:.3f}")
+    plot_lmm_figures(group, events_figures_dir)
 
     # =====================================================================
     # Response vectors: similarity + decoding
