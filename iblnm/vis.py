@@ -1817,6 +1817,220 @@ def plot_marginal_means(emm_dict, event, fig=None):
     return fig
 
 
+def plot_lmm_summary(group, event, fig=None):
+    """Consolidated 4-panel LMM summary for one event.
+
+    Reads all data from ``group.lmm_results``.
+
+    Panels:
+    1. R² (marginal and conditional) as paired dots per target-NM.
+    2. Estimated marginal means for reward.
+    3. Estimated marginal means for side.
+    4. Contrast × reward slopes with subject-level random slopes.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        Must have ``lmm_results`` populated (via ``fit_lmm``).
+    event : str
+        Event label to plot (e.g. 'stimOn').
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    lmm_results = group.lmm_results
+
+    if fig is None:
+        fig, axes = plt.subplots(1, 5, figsize=(16, 4), layout='constrained')
+    else:
+        axes = fig.axes[:5]
+
+    ax_r2, ax_reward, ax_side, ax_contrast, ax_interaction = axes
+
+    # Collect targets for this event
+    targets = sorted(set(
+        tnm for (tnm, ev) in lmm_results if ev == event
+    ))
+
+    # --- Panel 1: R² dots ---
+    for i, tnm in enumerate(targets):
+        key = (tnm, event)
+        if key not in lmm_results:
+            continue
+        ve = lmm_results[key].variance_explained
+        color = TARGETNM_COLORS.get(tnm, f'C{i}')
+        ax_r2.scatter(i, ve['marginal'], color=color, marker='o', s=50,
+                      zorder=3)
+        ax_r2.scatter(i, ve['conditional'], color=color, marker='s', s=50,
+                      zorder=3)
+        ax_r2.plot([i, i], [ve['marginal'], ve['conditional']],
+                   color=color, lw=1.5, zorder=2)
+
+    ax_r2.set_xticks(range(len(targets)))
+    ax_r2.set_xticklabels(targets, rotation=45, ha='right', fontsize=7)
+    ax_r2.set_ylabel('R²')
+    ax_r2.set_ylim(0, min(1, ax_r2.get_ylim()[1] * 1.2))
+    ax_r2.set_title('Variance explained')
+    from matplotlib.lines import Line2D
+    ax_r2.legend(
+        [Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6),
+         Line2D([0], [0], marker='s', color='gray', ls='none', markersize=6)],
+        ['Marginal', 'Conditional'],
+        frameon=False, fontsize=7, loc='upper left',
+    )
+
+    # Coefficient names for significance lookup
+    _factor_coef = {
+        'reward': 'C(reward)[T.1]',
+        'side': 'C(side)[T.ipsi]',
+    }
+
+    # --- Panels 2 & 3: EMMs ---
+    for ax, factor, emm_attr, level_labels in [
+        (ax_reward, 'reward', 'emm_reward',
+         {0: 'incorrect', 1: 'correct'}),
+        (ax_side, 'side', 'emm_side',
+         {'contra': 'contra', 'ipsi': 'ipsi'}),
+    ]:
+        for i, tnm in enumerate(targets):
+            key = (tnm, event)
+            if key not in lmm_results:
+                continue
+            lmm = lmm_results[key]
+            emm = getattr(lmm, emm_attr)
+            if emm is None:
+                continue
+            color = TARGETNM_COLORS.get(tnm, f'C{i}')
+            levels = emm['level'].values
+            means = emm['mean'].values
+            ci_lo = emm['ci_lower'].values
+            ci_hi = emm['ci_upper'].values
+            yerr = np.array([means - ci_lo, ci_hi - means])
+            x = np.arange(len(levels))
+            offset = i * 0.06 - 0.03 * len(targets)
+
+            # Filled if significant, open if not
+            coef_name = _factor_coef.get(factor)
+            sig = False
+            if (coef_name is not None
+                    and coef_name in lmm.summary_df.index):
+                sig = lmm.summary_df.loc[coef_name, 'P>|z|'] < 0.05
+            fs = 'full' if sig else 'none'
+
+            ax.errorbar(x + offset, means, yerr=yerr,
+                        fmt='o', capsize=3, color=color, label=tnm,
+                        markersize=5, fillstyle=fs)
+
+        if targets:
+            key0 = (targets[0], event)
+            if key0 in lmm_results:
+                emm = getattr(lmm_results[key0], emm_attr)
+                if emm is not None:
+                    levels = emm['level'].values
+                    x = np.arange(len(levels))
+                    ax.set_xticks(x)
+                    ax.set_xticklabels(
+                        [level_labels.get(l, str(l)) for l in levels],
+                        fontsize=8)
+
+        ax.set_ylabel('z-score (EMM)')
+        ax.set_title(f'Effect of {factor}')
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+
+    # --- Panel 4: Contrast EMM (main effect) ---
+    for i, tnm in enumerate(targets):
+        key = (tnm, event)
+        if key not in lmm_results:
+            continue
+        lmm = lmm_results[key]
+        emm_c = getattr(lmm, 'emm_contrast', None)
+        if emm_c is None:
+            continue
+        color = TARGETNM_COLORS.get(tnm, f'C{i}')
+        contrasts = emm_c['level'].values
+        means = emm_c['mean'].values
+        ci_lo = emm_c['ci_lower'].values
+        ci_hi = emm_c['ci_upper'].values
+        log_c = np.log(np.array(contrasts, dtype=float) + 0.01)
+
+        # Filled if log_contrast main effect is significant
+        sig = False
+        if 'log_contrast' in lmm.summary_df.index:
+            sig = lmm.summary_df.loc['log_contrast', 'P>|z|'] < 0.05
+        fs = 'full' if sig else 'none'
+
+        ax_contrast.errorbar(log_c, means,
+                             yerr=[means - ci_lo, ci_hi - means],
+                             fmt='o-', capsize=3, color=color, label=tnm,
+                             markersize=4, fillstyle=fs, lw=1)
+
+    contrasts_all = [0.0, 0.0625, 0.125, 0.25, 1.0]
+    log_ticks = np.log(np.array(contrasts_all) + 0.01)
+    ax_contrast.set_xticks(log_ticks)
+    ax_contrast.set_xticklabels([f'{c:g}' for c in contrasts_all], fontsize=7)
+    ax_contrast.set_xlabel('Contrast')
+    ax_contrast.set_ylabel('z-score (EMM)')
+    ax_contrast.set_title('Effect of contrast')
+    ax_contrast.axhline(0, ls='--', color='gray', lw=0.5)
+
+    # --- Panel 5: Contrast × reward interaction ---
+    for i, tnm in enumerate(targets):
+        key = (tnm, event)
+        if key not in lmm_results:
+            continue
+        lmm = lmm_results[key]
+        slopes = lmm.contrast_slopes
+        if slopes is None:
+            continue
+        color = TARGETNM_COLORS.get(tnm, f'C{i}')
+        pop = slopes[slopes['type'] == 'population']
+        subj = slopes[slopes['type'] == 'subject']
+
+        # Filled if interaction is significant
+        interaction_name = 'log_contrast:C(reward)[T.1]'
+        sig = False
+        if interaction_name in lmm.summary_df.index:
+            sig = lmm.summary_df.loc[interaction_name, 'P>|z|'] < 0.05
+        fs = 'full' if sig else 'none'
+
+        for _, row in pop.iterrows():
+            reward = row['reward']
+            x_pos = reward + i * 0.08 - 0.04 * len(targets)
+            ax_interaction.errorbar(
+                x_pos, row['slope'],
+                yerr=[[row['slope'] - row['ci_lower']],
+                      [row['ci_upper'] - row['slope']]],
+                fmt='o', capsize=4, color=color, markersize=6, zorder=3,
+                fillstyle=fs,
+            )
+
+        if len(subj) > 0:
+            for _, row in subj.iterrows():
+                reward = row['reward']
+                x_pos = reward + i * 0.08 - 0.04 * len(targets) + 0.04
+                ax_interaction.scatter(
+                    x_pos, row['slope'],
+                    color=color, alpha=0.4, s=15, zorder=2,
+                )
+
+    ax_interaction.set_xticks([0, 1])
+    ax_interaction.set_xticklabels(['incorrect', 'correct'], fontsize=8)
+    ax_interaction.set_ylabel('Contrast slope')
+    ax_interaction.set_title('Contrast × reward')
+    ax_interaction.axhline(0, ls='--', color='gray', lw=0.5)
+
+    from matplotlib.lines import Line2D
+    handles = [Line2D([0], [0], marker='o', color=TARGETNM_COLORS.get(t, f'C{i}'),
+                       ls='none', markersize=5) for i, t in enumerate(targets)]
+    ax_interaction.legend(handles, targets, frameon=False, fontsize=6,
+                          loc='upper left', bbox_to_anchor=(1, 1))
+
+    fig.suptitle(f'LMM summary — {event}', fontsize=11)
+    return fig
+
+
 def plot_decoding_summary(coefficients, contributions, fig=None):
     """Coefficients and unique contributions stacked with shared x-axis.
 

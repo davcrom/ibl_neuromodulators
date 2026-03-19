@@ -114,6 +114,10 @@ class PhotometrySession(PhotometrySessionLoader):
             except ALFObjectNotFound:
                 raise MissingRawData("_iblrig_taskData.raw.jsonable")
             raise MissingExtractedData("_ibl_trials.table.pqt")
+        except Exception as e:
+            raise MissingExtractedData(
+                f"_ibl_trials.table.pqt ({type(e).__name__}: {e})"
+            ) from e
         contrasts = compute_trial_contrasts(self.trials)
         self.trials['stim_side'] = contrasts['stim_side']
         self.trials['signed_contrast'] = contrasts['signed_contrast']
@@ -786,7 +790,12 @@ class PhotometrySession(PhotometrySessionLoader):
         responses = self.subtract_baseline(responses)
         tpts = responses.coords['time'].values
 
-        # Lateralize using stim_side column
+        # Lateralize using stim_side column (set by compute_trial_contrasts in load_trials)
+        if 'stim_side' not in self.trials.columns:
+            raise KeyError(
+                "'stim_side' column missing from trials. "
+                "Regenerate H5 files by re-running photometry.py."
+            )
         contra_side = {'l': 'right', 'r': 'left'}.get(hemisphere, 'right')
         stim_side = self.trials['stim_side'].values
         contrast = self.trials['contrast'].values
@@ -855,9 +864,88 @@ class PhotometrySessionGroup:
         self.one = one
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
         self._sessions = {}  # eid → PhotometrySession
+        self.events = None
         self.response_features = None
         self.similarity_matrix = None
         self.decoder = None
+        self.lmm_results = None
+        self.lmm_coefficients = None
+
+    def filter_recordings(self, session_types=None, exclude_subjects=None,
+                          qc_blockers=None, targetnms=None,
+                          log_fpaths=None):
+        """Filter recordings by session type, QC, subjects, and target-NM.
+
+        Attaches upstream error logs (if log_fpaths provided), then removes
+        recordings that fail any filter. Modifies ``self.recordings`` in place.
+
+        Parameters
+        ----------
+        session_types : tuple of str, optional
+            Session types to keep. Defaults to config values.
+        exclude_subjects : list of str, optional
+            Subjects to exclude. Defaults to config.SUBJECTS_TO_EXCLUDE.
+        qc_blockers : set of str, optional
+            Error types that block a recording. Defaults to standard set.
+        targetnms : list of str, optional
+            Target-NM values to retain. Defaults to config.TARGETNMS_TO_ANALYZE.
+        log_fpaths : list of Path or pd.DataFrame, optional
+            Error log sources for collect_session_errors. Defaults to
+            [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH].
+
+        Returns
+        -------
+        self
+        """
+        from iblnm.config import (
+            SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
+            QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
+        )
+        from iblnm.util import collect_session_errors
+
+        if session_types is None:
+            session_types = ('biased', 'ephys')
+        if exclude_subjects is None:
+            exclude_subjects = SUBJECTS_TO_EXCLUDE
+        if targetnms is None:
+            targetnms = TARGETNMS_TO_ANALYZE
+        if log_fpaths is None:
+            log_fpaths = [
+                QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH,
+                TASK_LOG_FPATH,
+            ]
+        if qc_blockers is None:
+            qc_blockers = {
+                'MissingExtractedData', 'MissingRawData',
+                'InsufficientTrials', 'IncompleteEventTimes',
+                'TrialsNotInPhotometryTime', 'QCValidationError',
+                'AmbiguousRegionMapping',
+            }
+
+        df = self.recordings
+
+        # Attach upstream error logs
+        df = collect_session_errors(df, log_fpaths)
+
+        # Filter by session type and excluded subjects
+        df = df[
+            df['session_type'].isin(session_types)
+            & ~df['subject'].isin(exclude_subjects)
+        ]
+
+        # Filter by QC blockers
+        df = df[
+            df['logged_errors'].apply(
+                lambda e: not any(err in qc_blockers for err in e)
+            )
+        ]
+
+        # Filter by target-NM
+        if 'target_NM' in df.columns:
+            df = df.loc[df['target_NM'].isin(targetnms)]
+
+        self.recordings = df.copy().reset_index(drop=True)
+        return self
 
     def __len__(self):
         return len(self.recordings)
@@ -886,6 +974,104 @@ class PhotometrySessionGroup:
             if eid in filtered['eid'].values:
                 new_group._sessions[eid] = ps
         return new_group
+
+    def get_events(self):
+        """Extract trial-level response magnitudes from pre-computed H5 files.
+
+        For each recording and event, computes per-trial response magnitudes
+        in the early response window after masking subsequent events and
+        subtracting baseline.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per (recording × event × trial) with scalar response
+            magnitudes and trial metadata.
+        """
+        from pathlib import Path
+        from tqdm import tqdm
+
+        rows = []
+        for rec, ps in tqdm(self, total=len(self),
+                            desc="Extracting response magnitudes"):
+            eid = rec['eid']
+            brain_region = rec['brain_region']
+            hemisphere = rec['hemisphere']
+            h5_path = Path(self.h5_dir) / f'{eid}.h5'
+
+            if not h5_path.exists():
+                continue
+
+            ps.load_h5(h5_path, groups=['trials', 'responses'])
+
+            if (getattr(ps, 'responses', None) is None
+                    or getattr(ps, 'trials', None) is None):
+                continue
+
+            available_regions = list(ps.responses.coords['region'].values)
+            if brain_region not in available_regions:
+                continue
+
+            responses = ps.mask_subsequent_events(ps.responses)
+            responses = ps.subtract_baseline(responses)
+
+            tpts = responses.coords['time'].values
+            n_trials = len(ps.trials)
+
+            if ('firstMovement_times' in ps.trials.columns
+                    and 'stimOn_times' in ps.trials.columns):
+                reaction_time = (
+                    ps.trials['firstMovement_times'].values
+                    - ps.trials['stimOn_times'].values
+                )
+            else:
+                reaction_time = np.full(n_trials, np.nan)
+
+            meta = {
+                'eid': eid,
+                'subject': rec['subject'],
+                'session_type': rec['session_type'],
+                'NM': rec['NM'],
+                'target_NM': rec['target_NM'],
+                'brain_region': brain_region,
+                'hemisphere': hemisphere,
+            }
+
+            for event in RESPONSE_EVENTS:
+                if event not in responses.coords['event'].values:
+                    continue
+
+                resp = responses.sel(
+                    region=brain_region, event=event,
+                ).values  # (n_trials, n_time)
+
+                early = compute_response_magnitude(
+                    resp, tpts, RESPONSE_WINDOWS['early'],
+                )
+
+                for t in range(n_trials):
+                    rows.append({
+                        **meta,
+                        'event': event,
+                        'trial': t,
+                        'stim_side': ps.trials['stim_side'].iloc[t],
+                        'signed_contrast':
+                            ps.trials['signed_contrast'].iloc[t],
+                        'contrast': ps.trials['contrast'].iloc[t],
+                        'choice': ps.trials['choice'].iloc[t],
+                        'feedbackType': ps.trials['feedbackType'].iloc[t],
+                        'probabilityLeft':
+                            ps.trials['probabilityLeft'].iloc[t],
+                        'reaction_time': reaction_time[t],
+                        'response_early': early[t],
+                    })
+
+        if not rows:
+            self.events = pd.DataFrame()
+            return self.events
+
+        self.events = pd.DataFrame(rows)
+        return self.events
 
     def get_response_features(self, nan_handling='drop_sessions',
                               nan_threshold=0.3, **kwargs):
@@ -925,13 +1111,11 @@ class PhotometrySessionGroup:
         import logging
 
         rows = {}
-        for _, rec in self.recordings.iterrows():
+        for rec, ps in self:
             eid = rec['eid']
             brain_region = rec['brain_region']
             hemisphere = rec['hemisphere']
             target_nm = rec['target_NM']
-
-            ps = self._get_session(rec)
 
             # Load H5 if responses not yet available
             if not hasattr(ps, 'responses') or not hasattr(ps, 'trials'):
@@ -1029,4 +1213,118 @@ class PhotometrySessionGroup:
         self.decoder.fit()
         self.decoder.unique_contribution()
         return self.decoder
+
+    def fit_lmm(self, response_col='response_early',
+                 min_subjects=2, re_formulas=None):
+        """Fit LMMs per (target_NM, event) on trial-level events data.
+
+        For each group, fits: response ~ log(contrast) * side * reward | subject.
+        Computes estimated marginal means and contrast slopes for each fit.
+
+        When ``re_formulas`` contains multiple entries (ordered most complex to
+        simplest), the method selects the most complex formula that converges
+        for **all** groups and refits everyone with that formula.
+
+        Requires ``self.events`` to be populated (via ``get_events()`` or
+        direct assignment).
+
+        Parameters
+        ----------
+        response_col : str
+            Column name for the response magnitude.
+        min_subjects : int
+            Minimum subjects per group to attempt fitting.
+        re_formulas : list of str, optional
+            Random-effects formulas to try, ordered from most complex to
+            simplest. Default ``['1']`` (random intercept only).
+
+        Returns
+        -------
+        dict
+            Keys: (target_NM, event_label) tuples.
+            Values: LMMResult objects with emm_reward, emm_side,
+            emm_contrast, and contrast_slopes populated.
+        """
+        from iblnm.analysis import (
+            fit_events_lmm, compute_marginal_means, compute_contrast_slopes,
+        )
+        from iblnm.task import add_relative_contrast
+
+        if re_formulas is None:
+            re_formulas = ['1']
+
+        if self.events is None:
+            raise ValueError(
+                "events not populated. Call get_events() first."
+            )
+
+        df = add_relative_contrast(self.events.copy())
+        df = df.query('probabilityLeft == 0.5')
+        df = df.dropna(subset=[response_col])
+        df = df.query('choice != 0 and reaction_time > 0.05')
+
+        # Identify valid groups
+        groups = {}
+        for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
+            if df_group['subject'].nunique() < min_subjects:
+                continue
+            event_label = event.replace('_times', '')
+            groups[(target_nm, event_label)] = df_group
+
+        if not groups:
+            self.lmm_results = {}
+            self.lmm_coefficients = pd.DataFrame()
+            self.lmm_re_formula = re_formulas[-1]
+            return self.lmm_results
+
+        # Select the most complex RE formula that converges for all groups.
+        # Cache fits to avoid refitting with the selected formula.
+        selected_re = None
+        cached_fits = None
+        for re_formula in re_formulas:
+            fits = {
+                key: fit_events_lmm(df_g, response_col, re_formula=re_formula)
+                for key, df_g in groups.items()
+            }
+            if all(lmm is not None for lmm in fits.values()):
+                selected_re = re_formula
+                cached_fits = fits
+                break
+
+        if selected_re is None:
+            self.lmm_results = {}
+            self.lmm_coefficients = pd.DataFrame()
+            self.lmm_re_formula = None
+            return self.lmm_results
+
+        self.lmm_re_formula = selected_re
+
+        results = {}
+        all_summaries = []
+
+        for (target_nm, event_label), lmm in cached_fits.items():
+            if lmm is None:
+                continue
+
+            lmm.emm_reward = compute_marginal_means(lmm, 'reward')
+            lmm.emm_side = compute_marginal_means(lmm, 'side')
+            lmm.emm_contrast = compute_marginal_means(lmm, 'contrast')
+            lmm.contrast_slopes = compute_contrast_slopes(lmm)
+
+            results[(target_nm, event_label)] = lmm
+
+            summary = lmm.summary_df.copy()
+            summary.insert(0, 'target_NM', target_nm)
+            summary.insert(1, 'event', event_label)
+            summary.index.name = 'term'
+            all_summaries.append(summary.reset_index())
+
+        self.lmm_results = results
+
+        if all_summaries:
+            self.lmm_coefficients = pd.concat(all_summaries, ignore_index=True)
+        else:
+            self.lmm_coefficients = pd.DataFrame()
+
+        return results
 

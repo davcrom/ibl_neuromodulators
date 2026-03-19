@@ -29,8 +29,14 @@ class InvalidLine(Exception):
 class InvalidNeuromodulator(Exception):
     """Neuromodulator could not be determined."""
 
-class InvalidTarget(Exception):
-    """Target brain region not recognized."""
+class InvalidBrainRegion(Exception):
+    """Brain region not recognized."""
+
+class MissingBrainRegion(Exception):
+    """Session has no brain region metadata."""
+
+class MissingHemisphere(Exception):
+    """Session has no hemisphere metadata."""
 
 class HemisphereMismatch(Exception):
     """Region name and fiber coordinates disagree on hemisphere."""
@@ -219,11 +225,17 @@ def validate_neuromodulator(session):
 
 
 @exception_logger
-def validate_target(session):
-    for target in session['brain_region']:
-        bare = target.rsplit('-', 1)[0] if target.endswith(('-l', '-r')) else target
+def validate_brain_region(session):
+    regions = session['brain_region']
+    if not isinstance(regions, (list, np.ndarray)) or len(regions) == 0:
+        raise MissingBrainRegion(
+            f"{session.get('subject', '')} {session.get('eid', '')}: "
+            f"empty brain_region"
+        )
+    for region in regions:
+        bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
         if bare not in VALID_TARGETS:
-            raise InvalidTarget(f"Target {target} not in {VALID_TARGETS}")
+            raise InvalidBrainRegion(f"Region {region} not in {VALID_TARGETS}")
     return None
 
 
@@ -282,6 +294,12 @@ def fill_hemisphere_from_fiber_insertion_table(session, fiber_lookup=None):
 def validate_hemisphere(session, fiber_lookup=None):
     if fiber_lookup is None:
         fiber_lookup = _get_fiber_hemisphere_lookup()
+    hemis = session['hemisphere']
+    if not isinstance(hemis, (list, np.ndarray)) or len(hemis) == 0:
+        raise MissingHemisphere(
+            f"{session.get('subject', '')} {session.get('eid', '')}: "
+            f"empty hemisphere"
+        )
     subject = session['subject']
     for region, hemi_name in zip(session['brain_region'], session['hemisphere']):
         bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region

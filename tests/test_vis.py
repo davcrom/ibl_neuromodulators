@@ -808,3 +808,154 @@ class TestPlotMarginalMeans:
         for ax in fig.axes:
             assert len(ax.containers) >= 2 or len(ax.lines) >= 2
         plt.close(fig)
+
+
+# =============================================================================
+# Consolidated LMM Summary Plot Tests
+# =============================================================================
+
+class TestPlotLMMSummary:
+
+    @staticmethod
+    def _make_mock_group():
+        """Mock group with lmm_results for testing."""
+        from types import SimpleNamespace
+        from iblnm.analysis import LMMResult
+
+        def _make_summary(reward_p, side_p, contrast_p, interaction_p):
+            """Minimal summary_df with p-values for significance markers."""
+            terms = [
+                'Intercept', 'C(reward)[T.1]', 'C(side)[T.ipsi]',
+                'log_contrast', 'log_contrast:C(reward)[T.1]',
+            ]
+            return pd.DataFrame({
+                'Coef.': [1.0, 0.3, 0.2, 0.5, 0.1],
+                'P>|z|': [0.001, reward_p, side_p, contrast_p, interaction_p],
+            }, index=terms)
+
+        def _make_result(ve_m, ve_c, reward_means, side_means, slopes_data,
+                         contrast_means=None,
+                         reward_p=0.01, side_p=0.01,
+                         contrast_p=0.001, interaction_p=0.5):
+            r = LMMResult(
+                model=None, result=None,
+                summary_df=_make_summary(reward_p, side_p,
+                                         contrast_p, interaction_p),
+                variance_explained={'marginal': ve_m, 'conditional': ve_c},
+                predictions=pd.DataFrame(),
+                random_effects={},
+            )
+            r.emm_reward = pd.DataFrame({
+                'level': [0, 1],
+                'mean': reward_means,
+                'ci_lower': [m - 0.2 for m in reward_means],
+                'ci_upper': [m + 0.2 for m in reward_means],
+            })
+            r.emm_side = pd.DataFrame({
+                'level': ['contra', 'ipsi'],
+                'mean': side_means,
+                'ci_lower': [m - 0.2 for m in side_means],
+                'ci_upper': [m + 0.2 for m in side_means],
+            })
+            if contrast_means is None:
+                contrast_means = [-0.5, -0.2, 0.0, 0.2, 0.5]
+            r.emm_contrast = pd.DataFrame({
+                'level': [0.0, 0.0625, 0.125, 0.25, 1.0],
+                'mean': contrast_means,
+                'ci_lower': [m - 0.3 for m in contrast_means],
+                'ci_upper': [m + 0.3 for m in contrast_means],
+            })
+            r.contrast_slopes = pd.DataFrame(slopes_data)
+            return r
+
+        group = SimpleNamespace()
+        group.lmm_results = {
+            # VTA-DA: reward sig, side sig, contrast sig, interaction not sig
+            ('VTA-DA', 'stimOn'): _make_result(
+                0.15, 0.35, [0.5, 0.8], [0.7, 0.6],
+                {'reward': [0, 1, 0, 1], 'slope': [0.3, 0.5, 0.28, 0.48],
+                 'ci_lower': [0.1, 0.3, np.nan, np.nan],
+                 'ci_upper': [0.5, 0.7, np.nan, np.nan],
+                 'type': ['population', 'population', 'subject', 'subject'],
+                 'subject': [None, None, 's0', 's0']},
+                reward_p=0.001, side_p=0.03, contrast_p=1e-10,
+                interaction_p=0.2,
+            ),
+            # DR-5HT: reward not sig, side not sig
+            ('DR-5HT', 'stimOn'): _make_result(
+                0.08, 0.22, [0.2, 0.4], [0.3, 0.3],
+                {'reward': [0, 1], 'slope': [0.1, 0.2],
+                 'ci_lower': [-0.1, 0.0], 'ci_upper': [0.3, 0.4],
+                 'type': ['population', 'population'],
+                 'subject': [None, None]},
+                reward_p=0.15, side_p=0.8, contrast_p=0.06,
+                interaction_p=0.9,
+            ),
+        }
+        return group
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_lmm_summary
+        group = self._make_mock_group()
+        fig = plot_lmm_summary(group, 'stimOn')
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_five_panels(self):
+        from iblnm.vis import plot_lmm_summary
+        group = self._make_mock_group()
+        fig = plot_lmm_summary(group, 'stimOn')
+        assert len(fig.axes) == 5
+        plt.close(fig)
+
+    def test_r2_panel_has_dots(self):
+        """First panel should have scatter points for R²."""
+        from iblnm.vis import plot_lmm_summary
+        group = self._make_mock_group()
+        fig = plot_lmm_summary(group, 'stimOn')
+        ax_r2 = fig.axes[0]
+        assert len(ax_r2.collections) > 0 or len(ax_r2.lines) > 0
+        plt.close(fig)
+
+    def test_slope_panel_has_errorbars(self):
+        """Fifth panel should have errorbars for population slopes."""
+        from iblnm.vis import plot_lmm_summary
+        group = self._make_mock_group()
+        fig = plot_lmm_summary(group, 'stimOn')
+        ax_slope = fig.axes[4]
+        assert len(ax_slope.containers) > 0 or len(ax_slope.collections) > 0
+        plt.close(fig)
+
+    def test_nonsig_emm_markers_are_open(self):
+        """Non-significant effects should use open (unfilled) markers."""
+        from iblnm.vis import plot_lmm_summary
+        group = self._make_mock_group()
+        fig = plot_lmm_summary(group, 'stimOn')
+        # DR-5HT has reward_p=0.15 (not sig) — its reward EMM markers
+        # should be open (fillstyle='none')
+        ax_reward = fig.axes[1]
+        has_open = False
+        has_filled = False
+        for container in ax_reward.containers:
+            marker_line = container[0]
+            if marker_line.get_fillstyle() == 'none':
+                has_open = True
+            else:
+                has_filled = True
+        assert has_open, "Expected open markers for non-significant effects"
+        assert has_filled, "Expected filled markers for significant effects"
+        plt.close(fig)
+
+    def test_nonsig_interaction_markers_are_open(self):
+        """Interaction panel: filled iff interaction p < 0.05."""
+        from iblnm.vis import plot_lmm_summary
+        group = self._make_mock_group()
+        fig = plot_lmm_summary(group, 'stimOn')
+        ax_slope = fig.axes[4]
+        # Both targets have interaction_p > 0.05 → all should be open
+        for container in ax_slope.containers:
+            marker_line = container[0]
+            assert marker_line.get_fillstyle() == 'none', (
+                "Expected open markers when interaction is not significant"
+            )
+        plt.close(fig)

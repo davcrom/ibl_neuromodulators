@@ -1723,3 +1723,335 @@ class TestDecodeTarget:
         group.decode_target(min_trials=1)
         assert hasattr(group.decoder, 'contributions')
         assert isinstance(group.decoder.contributions, pd.DataFrame)
+
+
+# =============================================================================
+# filter_recordings Tests
+# =============================================================================
+
+class TestFilterRecordings:
+
+    def test_filters_session_types(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        recs.loc[0, 'session_type'] = 'habituation'
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        group.filter_recordings(
+            session_types=('biased',),
+            log_fpaths=[],
+            targetnms=['target-0', 'target-1'],
+        )
+        assert 'eid-0' not in group.recordings['eid'].values
+
+    def test_excludes_subjects(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        group.filter_recordings(
+            exclude_subjects=['subj-0'],
+            log_fpaths=[],
+            targetnms=['target-0', 'target-1'],
+        )
+        assert 'subj-0' not in group.recordings['subject'].values
+
+    def test_filters_qc_blockers(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        error_log = pd.DataFrame([{
+            'eid': 'eid-0',
+            'error_type': 'MissingExtractedData',
+            'error_message': 'test',
+            'traceback': '',
+        }])
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        group.filter_recordings(
+            log_fpaths=[error_log],
+            targetnms=['target-0', 'target-1'],
+        )
+        assert 'eid-0' not in group.recordings['eid'].values
+
+    def test_filters_targetnms(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=2)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        group.filter_recordings(
+            log_fpaths=[],
+            targetnms=['target-0'],
+        )
+        assert all(group.recordings['target_NM'] == 'target-0')
+
+    def test_empty_after_filtering(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        group.filter_recordings(
+            session_types=('ephys',),  # none match
+            log_fpaths=[],
+            targetnms=['target-0'],
+        )
+        assert len(group) == 0
+
+    def test_returns_self(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        result = group.filter_recordings(
+            log_fpaths=[],
+            targetnms=['target-0'],
+        )
+        assert result is group
+
+
+# =============================================================================
+# get_events Tests
+# =============================================================================
+
+class TestGetEvents:
+
+    def test_returns_dataframe(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df_events = group.get_events()
+        assert isinstance(df_events, pd.DataFrame)
+        assert len(df_events) > 0
+
+    def test_stores_events_attribute(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.get_events()
+        assert group.events is not None
+        assert isinstance(group.events, pd.DataFrame)
+
+    def test_has_expected_columns(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df_events = group.get_events()
+        expected_cols = {
+            'eid', 'subject', 'session_type', 'NM', 'target_NM',
+            'brain_region', 'hemisphere', 'event', 'trial',
+            'stim_side', 'signed_contrast', 'contrast', 'choice',
+            'feedbackType', 'probabilityLeft', 'reaction_time',
+            'response_early',
+        }
+        assert expected_cols.issubset(set(df_events.columns))
+
+    def test_one_row_per_trial_per_event(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        n_trials = 50
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=n_trials)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df_events = group.get_events()
+        n_events = df_events['event'].nunique()
+        assert len(df_events) == n_trials * n_events
+
+    def test_response_magnitude_known_signal(self, tmp_path):
+        """Post-event = 1.0, baseline = 0 → response_early should be ~1.0."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df_events = group.get_events()
+        # After baseline subtraction, post-event signal = 1.0
+        # Response magnitude in early window should be ~1.0
+        magnitudes = df_events['response_early'].dropna()
+        np.testing.assert_allclose(magnitudes.values, 1.0, atol=0.1)
+
+    def test_skips_missing_h5(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        # Only write H5 for eid-0
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df_events = group.get_events()
+        assert df_events['eid'].nunique() == 1
+        assert 'eid-0' in df_events['eid'].values
+
+    def test_multiple_recordings(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=50, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df_events = group.get_events()
+        assert df_events['eid'].nunique() == 2
+
+    def test_empty_when_no_h5(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df_events = group.get_events()
+        assert isinstance(df_events, pd.DataFrame)
+        assert len(df_events) == 0
+
+
+# =============================================================================
+# fit_lmm Tests
+# =============================================================================
+
+
+def _make_group_with_events():
+    """Create a PhotometrySessionGroup with synthetic events for LMM testing.
+
+    3 subjects, 2 target_NMs, 3 events. Events have a known contrast effect.
+    """
+    from iblnm.data import PhotometrySessionGroup
+
+    rng = np.random.default_rng(0)
+    subjects = ['s0', 's1', 's2']
+    target_nms = ['VTA-DA', 'DR-5HT']
+    events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+    contrasts = [0.0, 0.0625, 0.125, 0.25, 1.0]
+    n_per_cell = 15
+
+    rows = []
+    for target_nm in target_nms:
+        for subj in subjects:
+            subj_intercept = rng.normal(0, 0.3)
+            for event in events:
+                for side_val in ['left', 'right']:
+                    for fb in [1, -1]:
+                        for contrast in contrasts:
+                            for _ in range(n_per_cell):
+                                log_c = np.log(contrast + 0.01)
+                                response = (
+                                    1.0 + 0.5 * log_c
+                                    + 0.2 * (1 if fb == 1 else 0)
+                                    + subj_intercept
+                                    + rng.normal(0, 0.5)
+                                )
+                                rows.append({
+                                    'eid': f'eid-{subj}-{target_nm}',
+                                    'subject': subj,
+                                    'target_NM': target_nm,
+                                    'NM': target_nm.split('-')[1],
+                                    'brain_region': target_nm.split('-')[0],
+                                    'hemisphere': 'r',
+                                    'event': event,
+                                    'trial': len(rows),
+                                    'stim_side': side_val,
+                                    'signed_contrast': (
+                                        contrast if side_val == 'right'
+                                        else -contrast
+                                    ),
+                                    'contrast': contrast,
+                                    'choice': rng.choice([-1, 1]),
+                                    'feedbackType': fb,
+                                    'probabilityLeft': 0.5,
+                                    'reaction_time': 0.2,
+                                    'response_early': response,
+                                    'session_type': 'biased',
+                                })
+
+    df_events = pd.DataFrame(rows)
+
+    # Build minimal recordings DataFrame
+    rec_rows = []
+    for target_nm in target_nms:
+        for subj in subjects:
+            rec_rows.append({
+                'eid': f'eid-{subj}-{target_nm}',
+                'subject': subj,
+                'brain_region': target_nm.split('-')[0],
+                'hemisphere': 'r',
+                'target_NM': target_nm,
+                'NM': target_nm.split('-')[1],
+                'session_type': 'biased',
+                'start_time': '2024-01-01T10:00:00',
+                'number': 1,
+                'task_protocol': 'biased_protocol',
+            })
+    recs = pd.DataFrame(rec_rows)
+
+    group = PhotometrySessionGroup(recs, one=MagicMock())
+    group.events = df_events
+    return group
+
+
+class TestFitLMM:
+
+    def test_stores_lmm_results(self):
+        group = _make_group_with_events()
+        group.fit_lmm()
+        assert group.lmm_results is not None
+        assert isinstance(group.lmm_results, dict)
+
+    def test_keys_are_target_event_tuples(self):
+        group = _make_group_with_events()
+        group.fit_lmm()
+        for key in group.lmm_results:
+            assert isinstance(key, tuple)
+            assert len(key) == 2
+
+    def test_values_are_lmm_results(self):
+        from iblnm.analysis import LMMResult
+        group = _make_group_with_events()
+        group.fit_lmm()
+        for result in group.lmm_results.values():
+            assert isinstance(result, LMMResult)
+
+    def test_results_have_emms(self):
+        """Each result should have emm_reward and emm_side attributes."""
+        group = _make_group_with_events()
+        group.fit_lmm()
+        for result in group.lmm_results.values():
+            assert hasattr(result, 'emm_reward')
+            assert hasattr(result, 'emm_side')
+            assert isinstance(result.emm_reward, pd.DataFrame)
+            assert isinstance(result.emm_side, pd.DataFrame)
+
+    def test_results_have_contrast_slopes(self):
+        group = _make_group_with_events()
+        group.fit_lmm()
+        for result in group.lmm_results.values():
+            assert hasattr(result, 'contrast_slopes')
+            assert isinstance(result.contrast_slopes, pd.DataFrame)
+
+    def test_saves_coefficients(self):
+        """All coefficient summaries should be aggregated."""
+        group = _make_group_with_events()
+        group.fit_lmm()
+        assert group.lmm_coefficients is not None
+        assert isinstance(group.lmm_coefficients, pd.DataFrame)
+        assert 'target_NM' in group.lmm_coefficients.columns
+        assert 'event' in group.lmm_coefficients.columns
+
+    def test_requires_events(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        with pytest.raises(ValueError, match='events'):
+            group.fit_lmm()
+
+    def test_re_formulas_default_intercept_only(self):
+        """Default re_formulas=['1'] should produce intercept-only models."""
+        group = _make_group_with_events()
+        group.fit_lmm()
+        for result in group.lmm_results.values():
+            for effects in result.random_effects.values():
+                assert 'log_contrast' not in effects.index
+
+    def test_re_formulas_selects_maximal_converging(self):
+        """When given multiple re_formulas, selects the most complex
+        that converges for all groups."""
+        group = _make_group_with_events()
+        group.fit_lmm(re_formulas=['log_contrast', '1'])
+        # All results should use the same RE structure
+        re_structures = set()
+        for result in group.lmm_results.values():
+            effects = list(result.random_effects.values())[0]
+            re_structures.add(tuple(sorted(effects.index)))
+        assert len(re_structures) == 1
+
+    def test_re_formulas_stores_selected_formula(self):
+        """The selected RE formula should be stored on the group."""
+        group = _make_group_with_events()
+        group.fit_lmm(re_formulas=['log_contrast', '1'])
+        assert hasattr(group, 'lmm_re_formula')
+        assert group.lmm_re_formula in ('log_contrast', '1')

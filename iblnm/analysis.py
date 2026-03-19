@@ -470,20 +470,53 @@ def _fit_full_data(X, y_enc, C, normalize):
 # Linear Mixed-Effects Models
 # =============================================================================
 
-from collections import namedtuple
 import warnings
 
-LMMResult = namedtuple('LMMResult', [
-    'model', 'result', 'summary_df', 'variance_explained', 'predictions',
-])
+
+class LMMResult:
+    """Container for a single LMM fit result.
+
+    Attributes
+    ----------
+    model : statsmodels MixedLM
+    result : statsmodels MixedLMResults
+    summary_df : pd.DataFrame
+        Fixed-effects coefficient table.
+    variance_explained : dict
+        Keys: 'marginal', 'conditional'.
+    predictions : pd.DataFrame
+        Model predictions on a contrast grid.
+    random_effects : dict
+        Subject → pd.Series of BLUPs.
+    emm_reward : pd.DataFrame or None
+        Estimated marginal means for reward factor.
+    emm_side : pd.DataFrame or None
+        Estimated marginal means for side factor.
+    emm_contrast : pd.DataFrame or None
+        Estimated marginal means for contrast factor.
+    contrast_slopes : pd.DataFrame or None
+        Population and subject-level contrast slopes per reward condition.
+    """
+
+    def __init__(self, model, result, summary_df, variance_explained,
+                 predictions, random_effects):
+        self.model = model
+        self.result = result
+        self.summary_df = summary_df
+        self.variance_explained = variance_explained
+        self.predictions = predictions
+        self.random_effects = random_effects
+        self.emm_reward = None
+        self.emm_side = None
+        self.emm_contrast = None
+        self.contrast_slopes = None
 
 
-def fit_events_lmm(df, response_col, formula=None):
+def fit_events_lmm(df, response_col, formula=None, re_formula='1'):
     """Fit a linear mixed-effects model to trial-level response data.
 
     Model: ``response ~ log_contrast * C(side) * C(reward)`` with subject
-    as random effect. Tries random intercept + slope for log_contrast first,
-    falls back to random intercept only if convergence fails.
+    as random effect.
 
     Parameters
     ----------
@@ -495,6 +528,9 @@ def fit_events_lmm(df, response_col, formula=None):
     formula : str, optional
         Wilkinson formula for fixed effects. Default:
         ``'{response_col} ~ log_contrast * C(side) * C(reward)'``.
+    re_formula : str
+        Random effects formula passed to ``statsmodels.MixedLM``.
+        Default ``'1'`` (random intercept only).
 
     Returns
     -------
@@ -519,37 +555,24 @@ def fit_events_lmm(df, response_col, formula=None):
     if formula is None:
         formula = f'{response_col} ~ log_contrast * C(side) * C(reward)'
 
-    # Try random intercept + slope for log_contrast, fall back to intercept only
-    result = None
-    for re_formula in ['log_contrast', '1']:
-        try:
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter('always')
-                model = smf.mixedlm(
-                    formula, df, groups=df['subject'],
-                    re_formula=re_formula,
-                )
-                result = model.fit(reml=True)
-            # Check for "failed to converge" (fatal), ignore "boundary" (benign)
-            fatal = any(
-                issubclass(w.category, ConvergenceWarning)
-                and 'failed to converge' in str(w.message).lower()
-                for w in caught
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            model = smf.mixedlm(
+                formula, df, groups=df['subject'],
+                re_formula=re_formula,
             )
-            if fatal:
-                result = None
-                if re_formula == '1':
-                    return None
-                continue
-            break
-        except (np.linalg.LinAlgError, ValueError):
-            if re_formula == '1':
-                return None
-            continue
-        except Exception:
+            result = model.fit(reml=True)
+        fatal = any(
+            issubclass(w.category, ConvergenceWarning)
+            and 'failed to converge' in str(w.message).lower()
+            for w in caught
+        )
+        if fatal:
             return None
-
-    if result is None:
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+    except Exception:
         return None
 
     # Summary table — use fixed-effects params only
@@ -613,12 +636,19 @@ def fit_events_lmm(df, response_col, formula=None):
                 })
     predictions = pd.DataFrame(pred_rows)
 
+    # Extract random effects (BLUPs) per subject
+    re_dict = {
+        subj: pd.Series(effects)
+        for subj, effects in result.random_effects.items()
+    }
+
     return LMMResult(
         model=model,
         result=result,
         summary_df=summary_df,
         variance_explained={'marginal': r2_marginal, 'conditional': r2_conditional},
         predictions=predictions,
+        random_effects=re_dict,
     )
 
 
@@ -683,6 +713,93 @@ def compute_marginal_means(lmm_result, factor):
             'ci_lower': mean_pred_exact - 1.96 * se,
             'ci_upper': mean_pred_exact + 1.96 * se,
         })
+
+    return pd.DataFrame(rows)
+
+
+def compute_contrast_slopes(lmm_result):
+    """Compute contrast slopes per reward condition from an LMM fit.
+
+    The contrast slope for reward=0 (incorrect) is β_log_contrast.
+    For reward=1 (correct), it is β_log_contrast + β_log_contrast:C(reward)[T.1].
+
+    When the model includes random slopes for log_contrast, subject-level
+    slopes (population + BLUP deviation) are also returned.
+
+    Parameters
+    ----------
+    lmm_result : LMMResult
+        Output from ``fit_events_lmm``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: reward, slope, ci_lower, ci_upper, type, subject.
+        type is 'population' or 'subject'.
+    """
+    result = lmm_result.result
+    fe_params = result.fe_params
+    fe_names = list(fe_params.index)
+    fe_cov = result.cov_params().loc[fe_names, fe_names].values
+
+    # Base contrast slope (reward=0)
+    beta_contrast = fe_params['log_contrast']
+    idx_contrast = fe_names.index('log_contrast')
+
+    # Interaction term: log_contrast:C(reward)[T.1]
+    interaction_name = 'log_contrast:C(reward)[T.1]'
+    has_interaction = interaction_name in fe_names
+    if has_interaction:
+        beta_interaction = fe_params[interaction_name]
+        idx_interaction = fe_names.index(interaction_name)
+    else:
+        beta_interaction = 0.0
+
+    rows = []
+
+    # Population slopes
+    for reward in [0, 1]:
+        if reward == 0:
+            slope = beta_contrast
+            se = np.sqrt(fe_cov[idx_contrast, idx_contrast])
+        else:
+            slope = beta_contrast + beta_interaction
+            if has_interaction:
+                # Var(β1 + β5) = Var(β1) + Var(β5) + 2*Cov(β1, β5)
+                var = (fe_cov[idx_contrast, idx_contrast]
+                       + fe_cov[idx_interaction, idx_interaction]
+                       + 2 * fe_cov[idx_contrast, idx_interaction])
+                se = np.sqrt(max(var, 0))
+            else:
+                se = np.sqrt(fe_cov[idx_contrast, idx_contrast])
+
+        rows.append({
+            'reward': reward,
+            'slope': float(slope),
+            'ci_lower': float(slope - 1.96 * se),
+            'ci_upper': float(slope + 1.96 * se),
+            'type': 'population',
+            'subject': None,
+        })
+
+    # Subject-level slopes (population + BLUP)
+    re_dict = lmm_result.random_effects
+    has_random_slope = any(
+        'log_contrast' in effects.index for effects in re_dict.values()
+    )
+    if has_random_slope:
+        for subj, effects in re_dict.items():
+            u_slope = effects.get('log_contrast', 0.0)
+            for reward in [0, 1]:
+                pop_slope = rows[reward]['slope']  # 0=incorrect, 1=correct
+                rows.append({
+                    'reward': reward,
+                    'slope': float(pop_slope + u_slope),
+                    'ci_lower': np.nan,
+                    'ci_upper': np.nan,
+                    'type': 'subject',
+                    'subject': subj,
+                })
 
     return pd.DataFrame(rows)
 

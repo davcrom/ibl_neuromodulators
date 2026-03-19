@@ -14,6 +14,7 @@ from iblnm.util import (
     get_session_type,
     get_targetNM,
     collect_session_errors,
+    fill_brain_region_from_fibers,
     LOG_COLUMNS,
 )
 from iblnm.validation import (
@@ -675,3 +676,240 @@ class TestDeduplicateLog:
 
     def test_none_returns_none(self):
         assert deduplicate_log(None) is None
+
+
+class TestDeriveTargetNM:
+
+    def test_list_column(self):
+        from iblnm.util import derive_target_nm
+        df = pd.DataFrame({
+            'brain_region': [['VTA', 'DR'], ['LC']],
+        })
+        result = derive_target_nm(df)
+        assert result['target_NM'].iloc[0] == ['VTA-DA', 'DR-5HT']
+        assert result['target_NM'].iloc[1] == ['LC-NE']
+        assert result['NM'].iloc[0] == 'DA'
+        assert result['NM'].iloc[1] == 'NE'
+
+    def test_scalar_column(self):
+        from iblnm.util import derive_target_nm
+        df = pd.DataFrame({
+            'brain_region': ['VTA', 'DR', 'LC'],
+        })
+        result = derive_target_nm(df)
+        assert result['target_NM'].tolist() == ['VTA-DA', 'DR-5HT', 'LC-NE']
+        assert result['NM'].tolist() == ['DA', '5HT', 'NE']
+
+    def test_hemisphere_suffix_stripped(self):
+        from iblnm.util import derive_target_nm
+        df = pd.DataFrame({
+            'brain_region': ['VTA-r', 'DR-l'],
+        })
+        result = derive_target_nm(df)
+        assert result['target_NM'].tolist() == ['VTA-DA', 'DR-5HT']
+
+    def test_unknown_region_returns_none(self):
+        from iblnm.util import derive_target_nm
+        df = pd.DataFrame({
+            'brain_region': ['UnknownRegion'],
+        })
+        result = derive_target_nm(df)
+        assert result['target_NM'].iloc[0] is None
+        assert result['NM'].iloc[0] is None
+
+    def test_does_not_modify_input(self):
+        from iblnm.util import derive_target_nm
+        df = pd.DataFrame({'brain_region': ['VTA']})
+        derive_target_nm(df)
+        assert 'target_NM' not in df.columns
+
+
+class TestFillParallelListsFromGroup:
+
+    def test_fills_all_columns_from_same_source(self):
+        """Empty rows get all columns filled from the same source row."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['VTA', 'DR'], []],
+            'hemisphere': [['r', 'l'], []],
+        })
+        result = fill_parallel_lists_from_group(
+            df, ['brain_region', 'hemisphere'],
+        )
+        assert result['brain_region'].iloc[1] == ['VTA', 'DR']
+        assert result['hemisphere'].iloc[1] == ['r', 'l']
+
+    def test_does_not_fill_from_inconsistent_group(self):
+        """If sessions in a group disagree, don't fill."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1', 'mouse1'],
+            'brain_region': [['VTA'], ['VTA', 'DR'], []],
+            'hemisphere': [['r'], ['r', 'l'], []],
+        })
+        result = fill_parallel_lists_from_group(
+            df, ['brain_region', 'hemisphere'],
+        )
+        # Third row stays empty — sources disagree
+        assert result['brain_region'].iloc[2] == []
+        assert result['hemisphere'].iloc[2] == []
+
+    def test_fills_when_one_column_empty_other_populated(self):
+        """If brain_region is set but hemisphere is empty, fill both from source."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['VTA', 'DR'], ['VTA', 'DR']],
+            'hemisphere': [['r', 'l'], []],
+        })
+        result = fill_parallel_lists_from_group(
+            df, ['brain_region', 'hemisphere'],
+        )
+        assert result['hemisphere'].iloc[1] == ['r', 'l']
+
+    def test_no_fill_needed(self):
+        """All rows already populated — no change."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['VTA'], ['DR']],
+            'hemisphere': [['r'], ['l']],
+        })
+        result = fill_parallel_lists_from_group(
+            df, ['brain_region', 'hemisphere'],
+        )
+        assert result['brain_region'].iloc[0] == ['VTA']
+        assert result['brain_region'].iloc[1] == ['DR']
+
+    def test_multiple_groups(self):
+        """Each subject group fills independently."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1', 'mouse2', 'mouse2'],
+            'brain_region': [['VTA'], [], ['DR'], []],
+            'hemisphere': [['r'], [], ['l'], []],
+        })
+        result = fill_parallel_lists_from_group(
+            df, ['brain_region', 'hemisphere'],
+        )
+        assert result['brain_region'].iloc[1] == ['VTA']
+        assert result['hemisphere'].iloc[1] == ['r']
+        assert result['brain_region'].iloc[3] == ['DR']
+        assert result['hemisphere'].iloc[3] == ['l']
+
+    def test_does_not_modify_input(self):
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['VTA'], []],
+            'hemisphere': [['r'], []],
+        })
+        fill_parallel_lists_from_group(df, ['brain_region', 'hemisphere'])
+        assert df['brain_region'].iloc[1] == []
+
+    def test_mismatched_lengths_in_source_row_skipped(self):
+        """Source row where columns have different lengths is not used."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['VTA', 'DR'], []],
+            'hemisphere': [['r'], []],  # length mismatch in source
+        })
+        result = fill_parallel_lists_from_group(
+            df, ['brain_region', 'hemisphere'],
+        )
+        # Source row has mismatched lengths, so no fill
+        assert result['brain_region'].iloc[1] == []
+        assert result['hemisphere'].iloc[1] == []
+
+    def test_all_empty_no_change(self):
+        """Group where all rows are empty stays empty."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [[], []],
+            'hemisphere': [[], []],
+        })
+        result = fill_parallel_lists_from_group(
+            df, ['brain_region', 'hemisphere'],
+        )
+        assert result['brain_region'].iloc[0] == []
+        assert result['hemisphere'].iloc[0] == []
+
+
+class TestValidateParallelLists:
+
+    def test_matching_lengths_unchanged(self):
+        from iblnm.util import validate_parallel_lists
+        df = pd.DataFrame({
+            'brain_region': [['VTA', 'DR'], ['LC']],
+            'hemisphere': [['r', 'l'], ['r']],
+            'target_NM': [['VTA-DA', 'DR-5HT'], ['LC-NE']],
+        })
+        result = validate_parallel_lists(
+            df, ['brain_region', 'hemisphere', 'target_NM'],
+        )
+        assert len(result) == 2
+
+    def test_drops_mismatched_rows(self):
+        from iblnm.util import validate_parallel_lists
+        df = pd.DataFrame({
+            'eid': ['a', 'b'],
+            'brain_region': [['VTA', 'DR'], ['LC']],
+            'hemisphere': [['r'], ['r']],  # row 0: length 1 vs 2
+            'target_NM': [['VTA-DA', 'DR-5HT'], ['LC-NE']],
+        })
+        result = validate_parallel_lists(
+            df, ['brain_region', 'hemisphere', 'target_NM'],
+        )
+        assert len(result) == 1
+        assert result['eid'].iloc[0] == 'b'
+
+    def test_empty_lists_are_consistent(self):
+        """All-empty is consistent (length 0 == 0 == 0)."""
+        from iblnm.util import validate_parallel_lists
+        df = pd.DataFrame({
+            'brain_region': [[]],
+            'hemisphere': [[]],
+            'target_NM': [[]],
+        })
+        result = validate_parallel_lists(
+            df, ['brain_region', 'hemisphere', 'target_NM'],
+        )
+        assert len(result) == 1
+
+    def test_does_not_modify_input(self):
+        from iblnm.util import validate_parallel_lists
+        df = pd.DataFrame({
+            'brain_region': [['VTA', 'DR'], ['LC']],
+            'hemisphere': [['r'], ['r']],
+        })
+        validate_parallel_lists(df, ['brain_region', 'hemisphere'])
+        assert len(df) == 2  # original unchanged
+
+
+class TestFillBrainRegionFromFibers:
+
+    @pytest.fixture
+    def single_region_fibers(self, tmp_path):
+        """Fibers CSV with one subject having one fiber in DR."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse1,DR,0\n'
+        )
+        return fpath
+
+    def test_single_region_subject_filled(self, single_region_fibers):
+        """Session with empty brain_region for a single-region subject gets filled."""
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [[], ['DR']],
+            'hemisphere': [[], ['']],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=single_region_fibers)
+        assert result['brain_region'].iloc[0] == ['DR']
+        assert result['hemisphere'].iloc[0] == ['']
+        # Already-filled row unchanged
+        assert result['brain_region'].iloc[1] == ['DR']

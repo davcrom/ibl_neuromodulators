@@ -378,6 +378,116 @@ def fill_empty_lists_from_group(df, col, group_col='subject'):
     return df.groupby(group_col, group_keys=False).apply(fill_group)
 
 
+def fill_parallel_lists_from_group(df, columns, group_col='subject'):
+    """Fill empty parallel list columns from a consistent source within each group.
+
+    Unlike ``fill_empty_lists_from_group`` (which fills one column at a time),
+    this fills ALL specified columns together from the same source row,
+    guaranteeing they stay in sync.
+
+    A source row is valid only if all specified columns are non-empty AND have
+    the same length. A group is consistent if all valid source rows are identical
+    across the specified columns.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with list columns.
+    columns : list of str
+        Column names that must stay in parallel.
+    group_col : str
+        Column to group by (default 'subject').
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy with empty lists filled where a consistent source exists.
+    """
+    df = df.copy()
+
+    def _is_nonempty_list(x):
+        return isinstance(x, (list, np.ndarray)) and len(x) > 0
+
+    def _is_empty_list(x):
+        return isinstance(x, (list, np.ndarray)) and len(x) == 0
+
+    def fill_group(group):
+        # Find rows where ALL columns are non-empty and have matching lengths
+        def _is_valid_source(row):
+            lengths = []
+            for col in columns:
+                val = row[col]
+                if not _is_nonempty_list(val):
+                    return False
+                lengths.append(len(val))
+            return len(set(lengths)) == 1
+
+        valid_mask = group.apply(_is_valid_source, axis=1)
+        valid_rows = group[valid_mask]
+
+        if len(valid_rows) == 0:
+            return group
+
+        # Check consistency: all valid rows must have identical values
+        first = valid_rows.iloc[0]
+        for _, row in valid_rows.iloc[1:].iterrows():
+            for col in columns:
+                if not np.array_equal(row[col], first[col]):
+                    return group  # inconsistent sources
+
+        # Fill rows where ANY column is empty
+        source_vals = {col: first[col] for col in columns}
+
+        def _needs_fill(row):
+            return any(_is_empty_list(row[col]) for col in columns)
+
+        needs_fill = group.apply(_needs_fill, axis=1)
+        for col in columns:
+            group.loc[needs_fill, col] = group.loc[needs_fill, col].apply(
+                lambda _: source_vals[col]
+            )
+        return group
+
+    return df.groupby(group_col, group_keys=False).apply(fill_group)
+
+
+def validate_parallel_lists(df, columns):
+    """Drop rows where parallel list columns have mismatched lengths.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with list columns.
+    columns : list of str
+        Column names that must have matching lengths per row.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy with mismatched rows removed.
+    """
+    import logging
+
+    def _lengths_match(row):
+        lengths = set()
+        for col in columns:
+            val = row[col]
+            if isinstance(val, (list, np.ndarray)):
+                lengths.add(len(val))
+            else:
+                lengths.add(1)
+        return len(lengths) <= 1
+
+    mask = df.apply(_lengths_match, axis=1)
+    n_dropped = (~mask).sum()
+    if n_dropped > 0:
+        logging.warning(
+            f"Dropped {n_dropped} rows with mismatched parallel list lengths "
+            f"in columns {columns}"
+        )
+    return df[mask].copy()
+
+
 def _agg_sliding_metric(series, metric=None, agg_func=np.mean, window=300):
     assert metric is not None
     if series[f'_{metric}_values'] is None:
@@ -499,6 +609,56 @@ def traj2coord(x, y, z, depth, theta, phi, **kwargs):
     tip_dv = z + delta_dv
 
     return np.array([tip_ml, tip_ap, tip_dv])
+
+
+def derive_target_nm(df, brain_region_col='brain_region'):
+    """Derive target_NM and NM columns from brain_region.
+
+    Uses config.TARGET2NM to map bare region names (without hemisphere suffix)
+    to neuromodulator identity. Works on both list columns (sessions shape)
+    and scalar columns (recordings shape).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain ``brain_region_col``.
+    brain_region_col : str
+        Column name containing brain region(s).
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy with updated 'target_NM' and 'NM' columns.
+    """
+    from iblnm.config import TARGET2NM
+
+    df = df.copy()
+
+    def _target_nm_from_region(region):
+        bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
+        nm = TARGET2NM.get(bare)
+        return f'{bare}-{nm}' if nm else None
+
+    first_val = df[brain_region_col].iloc[0] if len(df) > 0 else None
+    is_list_col = isinstance(first_val, (list, np.ndarray))
+
+    if is_list_col:
+        df['target_NM'] = df[brain_region_col].apply(
+            lambda rs: [_target_nm_from_region(r) for r in rs]
+            if isinstance(rs, (list, np.ndarray)) else rs
+        )
+        df['NM'] = df['target_NM'].apply(
+            lambda ts: ts[0].split('-')[-1]
+            if isinstance(ts, (list, np.ndarray)) and len(ts) > 0 and ts[0]
+            else None
+        )
+    else:
+        df['target_NM'] = df[brain_region_col].apply(_target_nm_from_region)
+        df['NM'] = df['target_NM'].apply(
+            lambda t: t.split('-')[-1] if t else None
+        )
+
+    return df
 
 
 

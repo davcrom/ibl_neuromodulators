@@ -11,7 +11,8 @@ class TestModuleImports:
     def test_all_exceptions_importable(self):
         from iblnm.validation import (  # noqa: F401
             InvalidSubject, InvalidStrain, InvalidLine, InvalidNeuromodulator,
-            InvalidTarget, HemisphereMismatch, MissingInsertion, MissingHemiSuffix,
+            InvalidBrainRegion, MissingBrainRegion, MissingHemisphere,
+            HemisphereMismatch, MissingInsertion, MissingHemiSuffix,
             DataNotListed, InvalidSessionType, InvalidTargetNM, InvalidSessionLength,
             TrueDuplicateSession, MissingExtractedData, MissingRawData,
             InsufficientTrials, BlockStructureBug, IncompleteEventTimes,
@@ -29,7 +30,7 @@ class TestModuleImports:
     def test_validate_functions_importable(self):
         from iblnm.validation import (  # noqa: F401
             validate_subject, validate_strain, validate_line,
-            validate_neuromodulator, validate_target, validate_hemisphere,
+            validate_neuromodulator, validate_brain_region, validate_hemisphere,
             validate_datasets,
         )
 
@@ -110,20 +111,39 @@ class TestValidateNeuromodulator:
         assert validate_neuromodulator(session) is None
 
 
-class TestValidateTarget:
-    def test_raises_for_invalid_target(self):
+class TestValidateBrainRegion:
+    def test_raises_for_invalid_region(self):
         import pandas as pd
-        from iblnm.validation import validate_target, InvalidTarget
-        session = pd.Series({'eid': 'e', 'brain_region': ['__invalid_region__']})
-        with pytest.raises(InvalidTarget):
-            validate_target(session)
+        from iblnm.validation import validate_brain_region, InvalidBrainRegion
+        session = pd.Series({'eid': 'e', 'subject': 's',
+                             'brain_region': ['__invalid_region__']})
+        with pytest.raises(InvalidBrainRegion):
+            validate_brain_region(session)
 
-    def test_returns_none_for_valid_targets(self):
+    def test_returns_none_for_valid_regions(self):
         import pandas as pd
-        from iblnm.validation import validate_target
+        from iblnm.validation import validate_brain_region
         from iblnm.config import VALID_TARGETS
-        session = pd.Series({'eid': 'e', 'brain_region': [next(iter(VALID_TARGETS))]})
-        assert validate_target(session) is None
+        session = pd.Series({'eid': 'e', 'subject': 's',
+                             'brain_region': [next(iter(VALID_TARGETS))]})
+        assert validate_brain_region(session) is None
+
+    def test_raises_for_empty_brain_region(self):
+        import pandas as pd
+        from iblnm.validation import validate_brain_region, MissingBrainRegion
+        session = pd.Series({'eid': 'e', 'subject': 's', 'brain_region': []})
+        with pytest.raises(MissingBrainRegion):
+            validate_brain_region(session)
+
+
+class TestValidateHemisphere:
+    def test_raises_for_empty_hemisphere(self):
+        import pandas as pd
+        from iblnm.validation import validate_hemisphere, MissingHemisphere
+        session = pd.Series({'eid': 'e', 'subject': 's',
+                             'brain_region': ['VTA'], 'hemisphere': []})
+        with pytest.raises(MissingHemisphere):
+            validate_hemisphere(session)
 
 
 class TestFillHemisphereFromFiberInsertionTable:
