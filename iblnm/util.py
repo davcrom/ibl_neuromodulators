@@ -611,6 +611,71 @@ def traj2coord(x, y, z, depth, theta, phi, **kwargs):
     return np.array([tip_ml, tip_ap, tip_dv])
 
 
+def fill_brain_region_from_fibers(df, fibers_fpath=None):
+    """Fill empty brain_region/hemisphere from fiber insertion table.
+
+    For sessions where brain_region is still empty, look up the subject in
+    fibers.csv and fill brain_region and hemisphere from fiber insertions.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Sessions with brain_region and hemisphere list columns.
+    fibers_fpath : Path, optional
+        Path to fibers.csv. Defaults to config.FIBERS_FPATH.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy with filled brain_region and hemisphere.
+    """
+    from iblnm.config import FIBERS_FPATH
+
+    if fibers_fpath is None:
+        fibers_fpath = FIBERS_FPATH
+
+    df = df.copy()
+    fibers = pd.read_csv(fibers_fpath)
+
+    # Derive hemisphere from X-ml_um: >0 → 'l' (left), ≤0 → '' (midline/unknown)
+    fibers['hemi'] = fibers['X-ml_um'].apply(
+        lambda x: 'l' if x > 0 else ('r' if x < 0 else '')
+    )
+
+    # Build per-subject lookup: list of (targeted_region, hemisphere)
+    subject_fibers = {}
+    for subj, grp in fibers.groupby('subject'):
+        pairs = list(zip(grp['targeted_region'], grp['hemi']))
+        subject_fibers[subj] = pairs
+
+    def _is_empty(x):
+        return isinstance(x, (list, np.ndarray)) and len(x) == 0
+
+    for idx, row in df.iterrows():
+        if not _is_empty(row['brain_region']):
+            continue
+
+        subj = row['subject']
+        if subj not in subject_fibers:
+            continue
+
+        pairs = subject_fibers[subj]
+        regions = [r for r, _ in pairs]
+        hemis = [h for _, h in pairs]
+
+        # Check if bilateral same-target (same region, both hemispheres)
+        unique_regions = set(regions)
+        if len(unique_regions) == 1 and len(regions) > 1:
+            # Bilateral: we know the regions but can't map hemisphere to channel
+            df.at[idx, 'brain_region'] = regions
+            df.at[idx, 'hemisphere'] = [''] * len(regions)
+        else:
+            df.at[idx, 'brain_region'] = regions
+            df.at[idx, 'hemisphere'] = hemis
+
+    return df
+
+
 def derive_target_nm(df, brain_region_col='brain_region'):
     """Derive target_NM and NM columns from brain_region.
 

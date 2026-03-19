@@ -913,3 +913,86 @@ class TestFillBrainRegionFromFibers:
         assert result['hemisphere'].iloc[0] == ['']
         # Already-filled row unchanged
         assert result['brain_region'].iloc[1] == ['DR']
+
+    def test_dual_region_subject_filled(self, tmp_path):
+        """Dual-region subject (NBM + SI) gets both regions and correct hemispheres."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse2,NBM,-1500\n'
+            'mouse2,SI,1200\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse2'],
+            'brain_region': [[]],
+            'hemisphere': [[]],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert result['brain_region'].iloc[0] == ['NBM', 'SI']
+        assert result['hemisphere'].iloc[0] == ['r', 'l']
+
+    def test_bilateral_same_target_hemisphere_unknown(self, tmp_path):
+        """Bilateral subject (same region both hemispheres) gets hemisphere=['','']."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse3,NBM,-1500\n'
+            'mouse3,NBM,1500\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse3'],
+            'brain_region': [[]],
+            'hemisphere': [[]],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert result['brain_region'].iloc[0] == ['NBM', 'NBM']
+        assert result['hemisphere'].iloc[0] == ['', '']
+
+    def test_nonempty_rows_untouched(self, single_region_fibers):
+        """Rows with non-empty brain_region are not modified."""
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [['VTA']],
+            'hemisphere': [['r']],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=single_region_fibers)
+        assert result['brain_region'].iloc[0] == ['VTA']
+        assert result['hemisphere'].iloc[0] == ['r']
+
+    def test_subject_not_in_fibers_untouched(self, single_region_fibers):
+        """Subject not in fibers table stays empty."""
+        df = pd.DataFrame({
+            'subject': ['unknown_mouse'],
+            'brain_region': [[]],
+            'hemisphere': [[]],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=single_region_fibers)
+        assert result['brain_region'].iloc[0] == []
+        assert result['hemisphere'].iloc[0] == []
+
+    def test_does_not_modify_input(self, single_region_fibers):
+        """Input DataFrame is not modified."""
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [[]],
+            'hemisphere': [[]],
+        })
+        fill_brain_region_from_fibers(df, fibers_fpath=single_region_fibers)
+        assert df['brain_region'].iloc[0] == []
+
+    def test_hemisphere_length_matches_brain_region(self, tmp_path):
+        """hemisphere list always same length as brain_region list."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse4,VTA,-1000\n'
+            'mouse4,SNc,1200\n'
+            'mouse4,DR,0\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse4'],
+            'brain_region': [[]],
+            'hemisphere': [[]],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert len(result['brain_region'].iloc[0]) == len(result['hemisphere'].iloc[0])
