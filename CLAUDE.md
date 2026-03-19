@@ -141,6 +141,16 @@ When exploding sessions to one row per recording, explode all three together:
 and initializes list columns (replaces NaN with `[]`). Called when loading
 `sessions.pqt` to ensure downstream code can assume columns exist.
 
+## Development Principles
+
+- **No backward compatibility shims.** This is an active development project,
+  not a library with external consumers. When renaming, delete the old name
+  everywhere. No aliases, no re-exports, no deprecation wrappers.
+- **Run `ruff check` and the full test suite (`pytest`) only before pushing
+  code**, not after every small edit. Trust the code between pushes.
+- **Small, modular commits.** Each commit should do one thing. Prefer many
+  focused commits over one large commit.
+
 ## Code Conventions
 
 - **Naming**: bare nouns preferred for metrics (`fraction_correct`). Prefixes
@@ -175,6 +185,11 @@ Key fixtures in test files:
 
 Pattern: test exceptions via `pytest.raises(ExceptionType)` without `exlog`.
 Test `@exception_logger` behavior by passing `exlog=[]` and checking the list.
+
+**Visualization tests**: Only test things that affect plot interpretation and
+aren't trivially assigned — data transformations, rearrangements, correct
+mapping of values to visual encodings. Skip tests for things like panel
+count or figure size that are obvious from reading the code.
 
 ## Environment
 

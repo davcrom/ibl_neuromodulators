@@ -80,17 +80,18 @@ Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and all error logs
 
 **Output**: `figures/dataset_overview/`
 
-### Additional scripts
+### Analysis scripts
 
 | Script | Purpose |
 |---|---|
-| `events.py` | Extract trial-level response magnitudes for mixed-model analysis |
+| `responses.py` | Trial-level response magnitudes, response feature vectors, similarity, and decoding |
 | `qc_overview.py` | QC metric distributions (histograms, violins, PCA, temporal trends) |
 | `task_performance_overview.py` | Learning curves, psychometric trajectories per target |
+| `video.py` | Video QC pipeline (timestamps, dropped frames, pin state) |
 | `session_viewer.py` | Interactive single-session viewer (raw + preprocessed + PSTHs) |
 | `plot_fiber_locations.py` | Fiber tip coordinates on brain atlas slices |
-| `check_video_data.py` | Video QC pipeline (timestamps, dropped frames, pin state) |
 | `recording_capacity.py` | Estimate recording-ready mice by a target date |
+| `sync_lp_progress.py` | Lightning Pose progress sync |
 | `demo_load_session.py` | Annotated example of loading and plotting a session |
 
 ---
@@ -193,6 +194,91 @@ fit = ps.fit_psychometric()           # {bias, threshold, lapse_left, lapse_righ
 
 ---
 
+## PhotometrySessionGroup
+
+`PhotometrySessionGroup` is the central class for all multi-session analyses. It takes a DataFrame of recordings (one row per session x brain region, after exploding `sessions.pqt`) and provides methods for filtering, iterating, and running analyses across recordings.
+
+### Design principles
+
+- **Constructor takes already-exploded recordings.** The class does not handle session-to-recording expansion. Callers explode `brain_region`, `hemisphere`, `target_NM` before passing the DataFrame in.
+- **Ad-hoc data fixes live in scripts, not in the class.** Fixes for current dataset issues (region name typos, mismatched list lengths) are applied visibly in the script body before constructing the group. The class is for generic, reusable analysis logic.
+- **`filter_recordings` filters by analysis criteria**, not data quality. It filters by session type, excluded subjects, QC error types, and target-NM values. It does not repair data.
+- **Lazy analysis attributes.** `events`, `response_features`, `similarity_matrix`, and `decoder` start as `None` and are populated by explicit method calls.
+- **Iterable.** `for rec, ps in group` yields `(recording_row, PhotometrySession)` pairs. Sessions are cached by eid so loading an H5 once serves all regions.
+
+### Usage
+
+```python
+import pandas as pd
+from iblnm.config import SESSIONS_FPATH
+from iblnm.data import PhotometrySessionGroup
+from iblnm.io import _get_default_connection
+from iblnm.util import derive_target_nm
+
+one = _get_default_connection()
+df_sessions = pd.read_parquet(SESSIONS_FPATH)
+
+# Derive target_NM from brain_region (prerequisite for exploding)
+df_sessions = derive_target_nm(df_sessions)
+
+# Explode to one row per recording
+df_recordings = df_sessions.explode(['brain_region', 'hemisphere', 'target_NM'])
+
+# Create group and filter
+group = PhotometrySessionGroup(df_recordings, one=one)
+group.filter_recordings()
+```
+
+### Analysis methods
+
+```python
+# Trial-level response magnitudes (one row per recording × event × trial)
+group.get_events()
+# → group.events (DataFrame)
+
+# Response feature vectors (one row per recording, columns = condition labels)
+group.get_response_features(nan_handling='drop_features')
+# → group.response_features (DataFrame indexed by (eid, target_NM))
+
+# Pairwise cosine similarity between recordings
+group.response_similarity_matrix()
+# → group.similarity_matrix (DataFrame)
+
+# Decode target-NM from response vectors (logistic regression with LOSO CV)
+group.decode_target()
+# → group.decoder (TargetNMDecoder with .accuracy, .confusion, .coefficients, .contributions)
+```
+
+### Filtering and subsetting
+
+```python
+# Standard filters (all parameters optional, default to config values)
+group.filter_recordings(
+    session_types=('biased', 'ephys'),
+    exclude_subjects=['excluded_mouse'],
+    qc_blockers={'MissingRawData', 'QCValidationError'},
+    targetnms=['VTA-DA', 'DR-5HT'],
+)
+
+# Boolean mask
+group.filter(group.recordings['NM'] == 'DA')
+
+# Indexing
+rec, ps = group[0]  # first recording
+```
+
+### Iteration
+
+```python
+for rec, ps in group:
+    # rec: pd.Series (recording metadata)
+    # ps: PhotometrySession (cached by eid, loads H5 on first access)
+    ps.load_h5(h5_path)
+    ...
+```
+
+---
+
 ## Error Handling
 
 The `@exception_logger` decorator is the central pattern for batch processing. Functions decorated with it accept an optional `exlog` parameter:
@@ -201,20 +287,20 @@ The `@exception_logger` decorator is the central pattern for batch processing. F
 - **With `exlog=[]`**: exceptions are caught, logged as dicts, and the original row is returned so the pipeline continues
 
 ```python
-from iblnm.validation import exception_logger, InvalidTargetNM
+from iblnm.validation import exception_logger, InvalidBrainRegion
 
 @exception_logger
-def get_targetNM(session):
+def validate_brain_region(session):
     ...
-    raise InvalidTargetNM(...)
+    raise InvalidBrainRegion(...)
 
 # In scripts — errors logged, pipeline continues:
 error_log = []
-df = df.apply(get_targetNM, axis='columns', exlog=error_log)
+df = df.apply(validate_brain_region, axis='columns', exlog=error_log)
 
 # In tests — errors raised:
-with pytest.raises(InvalidTargetNM):
-    get_targetNM(bad_session)
+with pytest.raises(InvalidBrainRegion):
+    validate_brain_region(bad_session)
 ```
 
 Error log entries follow the schema: `['eid', 'error_type', 'error_message', 'traceback']`.
@@ -243,6 +329,34 @@ Downstream scripts read upstream error logs via `collect_session_errors()` and f
 | `session_length` | float | Duration in seconds |
 | `strain`, `line`, `genotype` | str | Mouse genetics |
 | `datasets` | list[str] | ALF dataset paths available on ONE |
+
+`brain_region`, `hemisphere`, and `target_NM` are parallel lists that must always have matching lengths. To get one row per recording, explode all three together: `df.explode(['brain_region', 'hemisphere', 'target_NM'])`.
+
+### `data/events.pqt` — one row per (recording x event x trial)
+
+| Column | Type | Description |
+|---|---|---|
+| `eid` | str | Session UUID |
+| `subject` | str | Mouse name |
+| `session_type` | str | biased / ephys |
+| `NM` | str | Neuromodulator |
+| `target_NM` | str | Target-NM label |
+| `brain_region` | str | Recording target |
+| `hemisphere` | str | l / r |
+| `event` | str | stimOn_times / firstMovement_times / feedback_times |
+| `trial` | int | Trial index |
+| `signed_contrast` | float | Signed stimulus contrast |
+| `contrast` | float | Unsigned stimulus contrast |
+| `choice` | float | -1 left / 0 no-go / 1 right |
+| `feedbackType` | float | 1 reward / -1 punishment |
+| `probabilityLeft` | float | Block probability |
+| `stim_side` | str | left / right |
+| `reaction_time` | float | firstMovement - stimOn (seconds) |
+| `response_early` | float | Mean response in early window (0.1-0.35s) |
+
+### `data/response_matrix.pqt` — one row per recording
+
+Response feature vectors indexed by `(eid, target_NM)`. Each column is a condition label encoding event x contrast x laterality x feedback (e.g. `stimOn_c1_contra_correct`). Values are mean response magnitudes in the early window.
 
 ### `data/qc_photometry.pqt` — one row per (session, brain region, band)
 
@@ -324,10 +438,10 @@ Downstream scripts read upstream error logs via `collect_session_errors()` and f
 ```
 iblnm/                      # Core package (generic, reusable)
   config.py                 # Paths, constants, QC thresholds, color mappings
-  data.py                   # PhotometrySession class
+  data.py                   # PhotometrySession, PhotometrySessionGroup
   io.py                     # Alyx/ONE queries
   task.py                   # Task performance (psychometrics, block validation)
-  analysis.py               # Signal processing (response extraction, resampling)
+  analysis.py               # Signal processing, similarity, decoding
   validation.py             # Custom exceptions, @exception_logger, validate_* functions
   util.py                   # Pandas utilities, parquet I/O, schema enforcement
   vis.py                    # Plotting functions
