@@ -23,7 +23,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, EVENTS_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, RESPONSES_FPATH,
     TARGETNM_COLORS, FIGURE_DPI,
 )
 from iblnm.data import PhotometrySessionGroup
@@ -118,12 +118,12 @@ if __name__ == '__main__':
     # =====================================================================
     # Load / compute GLM features
     # =====================================================================
-    if not EVENTS_FPATH.exists():
-        print(f"Error: {EVENTS_FPATH} not found. "
+    if not RESPONSES_FPATH.exists():
+        print(f"Error: {RESPONSES_FPATH} not found. "
               "Run scripts/responses.py first.")
         raise SystemExit(1)
-    print(f"Loading events from {EVENTS_FPATH}")
-    group.response_magnitudes = pd.read_parquet(EVENTS_FPATH)
+    print(f"Loading events from {RESPONSES_FPATH}")
+    group.response_magnitudes = pd.read_parquet(RESPONSES_FPATH)
     print(f"Computing GLM features (event={args.event}, "
           f"weight_by_se={args.weight_by_se})...")
     group.get_glm_response_features(

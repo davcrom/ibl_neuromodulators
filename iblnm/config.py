@@ -14,7 +14,9 @@ FIBERS_FPATH = PROJECT_ROOT / 'metadata/fibers.csv'
 TRAJECTORIES_FPATH = PROJECT_ROOT / 'metadata/trajectories.json'
 QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
 PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
-EVENTS_FPATH = PROJECT_ROOT / 'data/events.pqt'
+RESPONSES_FPATH = PROJECT_ROOT / 'data/responses.pqt'
+TRIAL_TIMING_FPATH = PROJECT_ROOT / 'data/trial_timing.pqt'
+PEAK_VELOCITY_FPATH = PROJECT_ROOT / 'data/peak_velocity.pqt'
 RESPONSE_MATRIX_FPATH = PROJECT_ROOT / 'data/response_matrix.pqt'
 SIMILARITY_MATRIX_FPATH = PROJECT_ROOT / 'data/similarity_matrix.pqt'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
@@ -136,6 +138,10 @@ VALID_NEUROMODULATORS = [
 ]
 
 
+# TEMPFIX: normalize brain_region naming errors from Alyx metadata
+# Remove once corrected upstream in Alyx
+REGION_NAME_FIXES = {'DRN': 'DR', 'SNC': 'SNc'}
+
 VALID_TARGETS = [
     'VTA',
     'SNc',
@@ -249,6 +255,8 @@ MIN_NTRIALS = 90
 MIN_SESSIONLENGTH = 20 * 60  # seconds
 
 # Task performance parameters
+MIN_TRAINING_PERFORMANCE = 0.7  # minimum fraction_correct for training sessions
+REQUIRED_CONTRASTS = {0, 6.25, 12.5, 25, 100}  # percent; must match biased/ephys
 MIN_BLOCK_LENGTH = 10  # minimum trials per bias block (flag sessions with shorter blocks)
 EVENT_TIMES = ['goCue_times', 'firstMovement_times', 'feedback_times']
 EVENT_COMPLETENESS_THRESHOLD = 0.9
@@ -369,6 +377,17 @@ PREPROCESSING_PIPELINES = {
 
 # Fraction of unique samples per window below which a channel is flagged as suspect
 N_UNIQUE_SAMPLES_THRESHOLD = 0.05
+
+# Contrast transform for LMM and plotting
+def contrast_transform(c):
+    """Map raw contrast to model scale: log(c + 1)."""
+    return np.log(np.asarray(c, dtype=float) + 1)
+
+
+def contrast_inverse(c_transformed):
+    """Inverse of contrast_transform: exp(x) - 1."""
+    return np.exp(np.asarray(c_transformed, dtype=float)) - 1
+
 
 # Analysis parameters
 # Event-based analyses

@@ -25,7 +25,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, EVENTS_FPATH, RESPONSE_MATRIX_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, RESPONSES_FPATH, RESPONSE_MATRIX_FPATH,
     SIMILARITY_MATRIX_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI,
     MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
@@ -368,15 +368,15 @@ if __name__ == '__main__':
         # =================================================================
         # Plot-only mode: load pre-existing parquet files
         # =================================================================
-        if not EVENTS_FPATH.exists():
-            print(f"Error: {EVENTS_FPATH} not found. Run without --plot first.")
+        if not RESPONSES_FPATH.exists():
+            print(f"Error: {RESPONSES_FPATH} not found. Run without --plot first.")
             raise SystemExit(1)
         if not RESPONSE_MATRIX_FPATH.exists():
             print(f"Error: {RESPONSE_MATRIX_FPATH} not found. Run without --plot first.")
             raise SystemExit(1)
 
-        print(f"Loading response magnitudes from {EVENTS_FPATH}")
-        group.response_magnitudes = pd.read_parquet(EVENTS_FPATH)
+        print(f"Loading response magnitudes from {RESPONSES_FPATH}")
+        group.response_magnitudes = pd.read_parquet(RESPONSES_FPATH)
 
         print(f"Loading response matrix from {RESPONSE_MATRIX_FPATH}")
         group.response_features = pd.read_parquet(RESPONSE_MATRIX_FPATH)
@@ -403,9 +403,9 @@ if __name__ == '__main__':
             print("No response magnitudes extracted. Check H5 files exist.")
             raise SystemExit(1)
 
-        EVENTS_FPATH.parent.mkdir(parents=True, exist_ok=True)
-        group.response_magnitudes.to_parquet(EVENTS_FPATH, index=False)
-        print(f"Saved response magnitudes to {EVENTS_FPATH}")
+        RESPONSES_FPATH.parent.mkdir(parents=True, exist_ok=True)
+        group.response_magnitudes.to_parquet(RESPONSES_FPATH, index=False)
+        print(f"Saved response magnitudes to {RESPONSES_FPATH}")
 
         # --- Mean traces ---
         print("Computing mean traces...")

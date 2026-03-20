@@ -868,6 +868,8 @@ class PhotometrySessionGroup:
         self.response_traces_tpts = None
         self.mean_traces = None
         self.response_magnitudes = None
+        self.trial_timing = None
+        self.peak_velocity = None
         self.response_features = None
         self.psychometric_features = None
         self.similarity_matrix = None
@@ -1125,7 +1127,8 @@ class PhotometrySessionGroup:
         if self.response_traces is None:
             self.load_response_traces()
 
-        rows = []
+        response_rows = []
+        timing_rows = []
         for (eid, brain_region, event), entry in tqdm(
                 self.response_traces.items(),
                 desc="Computing response magnitudes"):
@@ -1158,7 +1161,7 @@ class PhotometrySessionGroup:
                 movement_time = np.full(n_trials, np.nan)
 
             for t in range(n_trials):
-                rows.append({
+                response_rows.append({
                     'eid': meta['eid'],
                     'subject': meta['subject'],
                     'session_type': meta.get('session_type'),
@@ -1174,16 +1177,23 @@ class PhotometrySessionGroup:
                     'choice': trials['choice'].iloc[t],
                     'feedbackType': trials['feedbackType'].iloc[t],
                     'probabilityLeft': trials['probabilityLeft'].iloc[t],
-                    'reaction_time': reaction_time[t],
-                    'movement_time': movement_time[t],
                     'response_early': early[t],
                 })
+                timing_rows.append({
+                    'eid': meta['eid'],
+                    'trial': t,
+                    'event': event,
+                    'reaction_time': reaction_time[t],
+                    'movement_time': movement_time[t],
+                })
 
-        if not rows:
+        if not response_rows:
             self.response_magnitudes = pd.DataFrame()
+            self.trial_timing = pd.DataFrame()
             return self.response_magnitudes
 
-        self.response_magnitudes = pd.DataFrame(rows)
+        self.response_magnitudes = pd.DataFrame(response_rows)
+        self.trial_timing = pd.DataFrame(timing_rows)
         return self.response_magnitudes
 
     def get_mean_traces(self):

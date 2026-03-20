@@ -1838,10 +1838,38 @@ class TestGetResponseMagnitudes:
             'eid', 'subject', 'session_type', 'NM', 'target_NM',
             'brain_region', 'hemisphere', 'event', 'trial',
             'stim_side', 'signed_contrast', 'contrast', 'choice',
-            'feedbackType', 'probabilityLeft', 'reaction_time',
+            'feedbackType', 'probabilityLeft',
             'response_early',
         }
         assert expected_cols.issubset(set(df_events.columns))
+
+    def test_response_magnitudes_excludes_timing(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.get_response_magnitudes()
+        assert 'reaction_time' not in group.response_magnitudes.columns
+        assert 'movement_time' not in group.response_magnitudes.columns
+
+    def test_trial_timing_populated(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.get_response_magnitudes()
+        assert group.trial_timing is not None
+        assert {'eid', 'trial', 'event', 'reaction_time', 'movement_time'}.issubset(
+            group.trial_timing.columns)
+
+    def test_trial_timing_has_correct_length(self, tmp_path):
+        """trial_timing should have same number of rows as response_magnitudes."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.get_response_magnitudes()
+        assert len(group.trial_timing) == len(group.response_magnitudes)
 
     def test_one_row_per_trial_per_event(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
@@ -1892,15 +1920,15 @@ class TestGetResponseMagnitudes:
         assert isinstance(df_events, pd.DataFrame)
         assert len(df_events) == 0
 
-    def test_response_magnitudes_has_movement_time(self, tmp_path):
+    def test_trial_timing_has_movement_time(self, tmp_path):
         """movement_time should be computed from trial times."""
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.get_response_magnitudes()
-        assert 'movement_time' in group.response_magnitudes.columns
-        assert group.response_magnitudes['movement_time'].notna().any()
+        assert 'movement_time' in group.trial_timing.columns
+        assert group.trial_timing['movement_time'].notna().any()
 
 
 # =============================================================================
