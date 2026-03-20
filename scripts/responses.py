@@ -93,8 +93,8 @@ def plot_response_figures(group, figures_dir, response_col='response_early',
     df_responses = add_relative_contrast(group.response_magnitudes.copy())
     if group.trial_timing is not None:
         df_responses = df_responses.merge(
-            group.trial_timing[['eid', 'trial', 'event', 'reaction_time']],
-            on=['eid', 'trial', 'event'], how='left',
+            group.trial_timing[['eid', 'trial', 'reaction_time']],
+            on=['eid', 'trial'], how='left',
         )
     df_unbiased = df_responses.query('probabilityLeft == 0.5')
 
@@ -147,8 +147,8 @@ def plot_lmm_figures(group, figures_dir, response_col='response_early'):
     df_raw = add_relative_contrast(group.response_magnitudes.copy())
     if group.trial_timing is not None:
         df_raw = df_raw.merge(
-            group.trial_timing[['eid', 'trial', 'event', 'reaction_time']],
-            on=['eid', 'trial', 'event'], how='left',
+            group.trial_timing[['eid', 'trial', 'reaction_time']],
+            on=['eid', 'trial'], how='left',
         )
     df_raw = df_raw.query('probabilityLeft == 0.5')
     df_raw = df_raw.dropna(subset=[response_col])

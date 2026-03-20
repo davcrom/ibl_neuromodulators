@@ -1859,17 +1859,20 @@ class TestGetResponseMagnitudes:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.get_response_magnitudes()
         assert group.trial_timing is not None
-        assert {'eid', 'trial', 'event', 'reaction_time', 'movement_time'}.issubset(
+        assert {'eid', 'trial', 'reaction_time', 'movement_time'}.issubset(
             group.trial_timing.columns)
+        assert 'event' not in group.trial_timing.columns
 
-    def test_trial_timing_has_correct_length(self, tmp_path):
-        """trial_timing should have same number of rows as response_magnitudes."""
+    def test_trial_timing_keyed_by_eid_trial(self, tmp_path):
+        """trial_timing has one row per (eid, trial), not per event."""
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
+        n_trials = 50
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=n_trials)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.get_response_magnitudes()
-        assert len(group.trial_timing) == len(group.response_magnitudes)
+        assert len(group.trial_timing) == n_trials
+        assert group.trial_timing.duplicated(subset=['eid', 'trial']).sum() == 0
 
     def test_one_row_per_trial_per_event(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
@@ -1992,8 +1995,11 @@ def _make_group_with_events():
     df_events = pd.DataFrame(rows)
 
     # Separate trial_timing from response_magnitudes
-    timing_cols = ['eid', 'trial', 'event', 'reaction_time']
-    trial_timing = df_events[timing_cols].copy()
+    trial_timing = (
+        df_events[['eid', 'trial', 'reaction_time']]
+        .drop_duplicates(subset=['eid', 'trial'])
+        .copy()
+    )
     trial_timing['movement_time'] = 0.15
     df_events = df_events.drop(columns=['reaction_time'])
 

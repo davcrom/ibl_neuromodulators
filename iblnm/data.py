@@ -1128,6 +1128,7 @@ class PhotometrySessionGroup:
             self.load_response_traces()
 
         response_rows = []
+        timing_eids_seen = set()
         timing_rows = []
         for (eid, brain_region, event), entry in tqdm(
                 self.response_traces.items(),
@@ -1142,23 +1143,35 @@ class PhotometrySessionGroup:
                 traces, tpts, RESPONSE_WINDOWS['early'],
             )
 
-            if ('firstMovement_times' in trials.columns
-                    and 'stimOn_times' in trials.columns):
-                reaction_time = (
-                    trials['firstMovement_times'].values
-                    - trials['stimOn_times'].values
-                )
-            else:
-                reaction_time = np.full(n_trials, np.nan)
+            # Collect timing once per eid (same across regions and events)
+            if eid not in timing_eids_seen:
+                timing_eids_seen.add(eid)
 
-            if ('feedback_times' in trials.columns
-                    and 'firstMovement_times' in trials.columns):
-                movement_time = (
-                    trials['feedback_times'].values
-                    - trials['firstMovement_times'].values
-                )
-            else:
-                movement_time = np.full(n_trials, np.nan)
+                if ('firstMovement_times' in trials.columns
+                        and 'stimOn_times' in trials.columns):
+                    reaction_time = (
+                        trials['firstMovement_times'].values
+                        - trials['stimOn_times'].values
+                    )
+                else:
+                    reaction_time = np.full(n_trials, np.nan)
+
+                if ('feedback_times' in trials.columns
+                        and 'firstMovement_times' in trials.columns):
+                    movement_time = (
+                        trials['feedback_times'].values
+                        - trials['firstMovement_times'].values
+                    )
+                else:
+                    movement_time = np.full(n_trials, np.nan)
+
+                for t in range(n_trials):
+                    timing_rows.append({
+                        'eid': eid,
+                        'trial': t,
+                        'reaction_time': reaction_time[t],
+                        'movement_time': movement_time[t],
+                    })
 
             for t in range(n_trials):
                 response_rows.append({
@@ -1178,13 +1191,6 @@ class PhotometrySessionGroup:
                     'feedbackType': trials['feedbackType'].iloc[t],
                     'probabilityLeft': trials['probabilityLeft'].iloc[t],
                     'response_early': early[t],
-                })
-                timing_rows.append({
-                    'eid': meta['eid'],
-                    'trial': t,
-                    'event': event,
-                    'reaction_time': reaction_time[t],
-                    'movement_time': movement_time[t],
                 })
 
         if not response_rows:
@@ -1750,8 +1756,8 @@ class PhotometrySessionGroup:
 
         df = add_relative_contrast(self.response_magnitudes.copy())
         df = df.merge(
-            self.trial_timing[['eid', 'trial', 'event', 'reaction_time']],
-            on=['eid', 'trial', 'event'], how='left',
+            self.trial_timing[['eid', 'trial', 'reaction_time']],
+            on=['eid', 'trial'], how='left',
         )
         df = df.query('probabilityLeft == 0.5')
         df = df.dropna(subset=[response_col])
@@ -1918,13 +1924,13 @@ class PhotometrySessionGroup:
 
         dvs = ['reaction_time', 'movement_time', 'peak_velocity']
         df = self.response_magnitudes.copy()
-        timing_cols = ['eid', 'trial', 'event'] + [
+        timing_cols = ['eid', 'trial'] + [
             c for c in ['reaction_time', 'movement_time']
             if c in self.trial_timing.columns
         ]
         df = df.merge(
             self.trial_timing[timing_cols],
-            on=['eid', 'trial', 'event'], how='left',
+            on=['eid', 'trial'], how='left',
         )
         df = df.merge(
             self.peak_velocity[['eid', 'trial', 'peak_velocity']],
