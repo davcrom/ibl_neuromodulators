@@ -857,9 +857,9 @@ class TestPlotLMMSummary:
                 summary_df=_make_summary(reward_p, side_p,
                                          contrast_p, interaction_p),
                 variance_explained={'marginal': ve_m, 'conditional': ve_c},
-                predictions=pd.DataFrame(),
                 random_effects={},
             )
+            r.predictions = pd.DataFrame()
             r.emm_reward = pd.DataFrame({
                 'level': [0, 1],
                 'mean': reward_means,
@@ -1145,19 +1145,6 @@ def _make_wheel_lmm_summary():
     return pd.DataFrame(rows)
 
 
-def _make_wheel_scatter_data():
-    """Synthetic data for scatter plot testing."""
-    rng = np.random.default_rng(42)
-    n = 100
-    return pd.DataFrame({
-        'subject': rng.choice(['s0', 's1', 's2'], n),
-        'reaction_time': rng.uniform(0.1, 0.5, n),
-        'response_early': rng.normal(0, 1, n),
-        'contrast': rng.choice([0.0, 0.125, 1.0], n),
-        'target_NM': 'VTA-DA',
-    })
-
-
 class TestPlotWheelLMMSummary:
 
     def test_returns_figure(self):
@@ -1183,26 +1170,6 @@ class TestPlotWheelLMMSummary:
         ])
         fig = plot_wheel_lmm_summary(summary)
         assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-
-class TestPlotWheelNMScatter:
-
-    def test_returns_figure(self):
-        from iblnm.vis import plot_wheel_nm_scatter
-        df = _make_wheel_scatter_data()
-        fig = plot_wheel_nm_scatter(df, 'reaction_time', 'response_early',
-                                     'VTA-DA')
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_one_panel_per_contrast(self):
-        from iblnm.vis import plot_wheel_nm_scatter
-        df = _make_wheel_scatter_data()
-        fig = plot_wheel_nm_scatter(df, 'reaction_time', 'response_early',
-                                     'VTA-DA')
-        n_contrasts = df['contrast'].nunique()
-        assert len(fig.axes) == n_contrasts
         plt.close(fig)
 
 

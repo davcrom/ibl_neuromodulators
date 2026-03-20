@@ -1,19 +1,18 @@
 """
 Response Analysis Pipeline
 
-Extracts trial-level response magnitudes (events) and recording-level response
-vectors, then produces similarity, decoding, and contrast-based figures.
+Extracts trial-level response magnitudes and recording-level response
+vectors, then produces similarity, decoding, contrast-based, and wheel
+kinematics figures.
 
-Combines the former events.py and response_vectors.py scripts.
+Includes biased, ephys, and qualifying training sessions (>70% performance
+with the full contrast set).
 
 Output:
     data/events.pqt              — trial-level response magnitudes
     data/response_matrix.pqt     — response feature vectors
-    figures/events/*.svg         — response magnitude by contrast plots
-    figures/events/*_lmm.svg     — LMM modeled response plots
-    figures/events/lmm_*.csv     — LMM coefficient tables
-    figures/events/lmm_*.svg     — variance explained summary
-    figures/response_vectors/*.svg — similarity, confusion, decoding plots
+    figures/responses/*.svg      — all response analysis figures
+    figures/traces/*.svg         — mean response traces
 
 Usage:
     python scripts/responses.py          # full pipeline: extract + plot
@@ -29,6 +28,7 @@ from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, EVENTS_FPATH, RESPONSE_MATRIX_FPATH,
     SIMILARITY_MATRIX_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI,
+    MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -38,6 +38,9 @@ from iblnm.vis import (
     plot_relative_contrast, plot_similarity_matrix, plot_confusion_matrix,
     plot_mean_response_vectors, plot_decoding_summary, plot_empirical_similarity,
     plot_lmm_response, plot_lmm_summary,
+    plot_within_target_similarity, plot_response_decoding_summary,
+    plot_mean_response_traces,
+    plot_wheel_lmm_summary,
 )
 from iblnm.analysis import (
     within_between_similarity, mean_similarity_by_target,
@@ -47,37 +50,18 @@ plt.ion()
 
 
 # =========================================================================
-# Ad-hoc data fix helpers (remove when corrected upstream)
+# Response magnitude plotting
 # =========================================================================
 
-# TEMPFIX: normalize brain_region naming errors from Alyx metadata
-_REGION_FIXES = {'DRN': 'DR', 'SNC': 'SNc'}
+def print_response_summary(df_responses):
+    """Print a summary of the response magnitudes DataFrame."""
+    n_sessions = df_responses['eid'].nunique()
+    n_subjects = df_responses['subject'].nunique()
 
-
-def _fix_regions(regions):
-    if not isinstance(regions, (list, np.ndarray)):
-        return regions
-    fixed = []
-    for r in regions:
-        bare = r.rsplit('-', 1)[0] if r.endswith(('-l', '-r')) else r
-        suffix = r[len(bare):]
-        fixed.append(_REGION_FIXES.get(bare, bare) + suffix)
-    return fixed
-
-
-# =========================================================================
-# Events plotting
-# =========================================================================
-
-def print_events_summary(df_events):
-    """Print a summary of the events DataFrame."""
-    n_sessions = df_events['eid'].nunique()
-    n_subjects = df_events['subject'].nunique()
-
-    print(f"\n{len(df_events)} rows, {n_sessions} sessions, {n_subjects} subjects")
+    print(f"\n{len(df_responses)} rows, {n_sessions} sessions, {n_subjects} subjects")
     print("\nTrials per target-NM:")
     summary = (
-        df_events[df_events['event'] == RESPONSE_EVENTS[0]]
+        df_responses[df_responses['event'] == RESPONSE_EVENTS[0]]
         .groupby('target_NM')
         .agg(
             n_subjects=('subject', 'nunique'),
@@ -88,14 +72,14 @@ def print_events_summary(df_events):
     print(summary.to_string())
 
 
-def plot_events_figures(group, figures_dir, response_col='response_early',
+def plot_response_figures(group, figures_dir, response_col='response_early',
                         aggregation='pool'):
     """Plot response magnitude by contrast x feedback x hemisphere.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have group.events populated.
+        Must have group.response_magnitudes populated.
     figures_dir : Path
         Output directory for SVG files.
     response_col : str
@@ -103,8 +87,8 @@ def plot_events_figures(group, figures_dir, response_col='response_early',
     aggregation : str
         'pool' or 'subject'.
     """
-    df_events = add_relative_contrast(group.events.copy())
-    df_unbiased = df_events.query('probabilityLeft == 0.5')
+    df_responses = add_relative_contrast(group.response_magnitudes.copy())
+    df_unbiased = df_responses.query('probabilityLeft == 0.5')
 
     window_label = response_col.replace('response_', '')
     df = df_unbiased.dropna(subset=[response_col]).copy()
@@ -149,7 +133,7 @@ def plot_lmm_figures(group, figures_dir, response_col='response_early'):
         return
 
     # Prepare raw data for overlay
-    df_raw = add_relative_contrast(group.events.copy())
+    df_raw = add_relative_contrast(group.response_magnitudes.copy())
     df_raw = df_raw.query('probabilityLeft == 0.5')
     df_raw = df_raw.dropna(subset=[response_col])
     df_raw = df_raw.query('choice != 0 and reaction_time > 0.05')
@@ -182,7 +166,42 @@ def plot_lmm_figures(group, figures_dir, response_col='response_early'):
         fig.savefig(
             figures_dir / f'lmm_summary_{event_label}_{window_label}.svg',
             dpi=FIGURE_DPI, bbox_inches='tight')
-    print(f"  LMM summary plots saved")
+    print("  LMM summary plots saved")
+
+
+# =========================================================================
+# Wheel kinematics LMM analysis
+# =========================================================================
+
+def plot_wheel_lmm_figures(group, figures_dir, response_col='response_early'):
+    """Generate wheel kinematics LMM summary plot and CSV.
+
+    Requires ``group.fit_wheel_lmm()`` to have been called.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        Must have wheel_lmm_summary populated.
+    figures_dir : Path
+        Output directory for SVG and CSV files.
+    response_col : str
+        Column name for the NM response magnitude.
+    """
+    summary = group.wheel_lmm_summary
+    if summary is None or len(summary) == 0:
+        print("  No wheel LMM results to plot.")
+        return
+
+    # Summary figure: delta R² across contrasts
+    fig = plot_wheel_lmm_summary(summary)
+    fig.savefig(figures_dir / 'wheel_lmm_delta_r2.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+
+    # CSV export
+    csv_path = figures_dir / 'wheel_lmm_summary.csv'
+    summary.to_csv(csv_path, index=False)
+    print(f"  Wheel LMM summary saved to {csv_path}")
 
 
 # =========================================================================
@@ -204,7 +223,15 @@ def plot_vectors_figures(group, figures_dir):
     labels = pd.Series(labels.values, index=group.response_features.index)
     labels_clean = labels.loc[sim.index]
 
-    rec_indexed = group.recordings.set_index(['eid', 'target_NM'])
+    recs = group.recordings.copy()
+    if 'fiber_idx' not in recs.columns:
+        recs['fiber_idx'] = 0
+    idx_cols = ['eid', 'target_NM', 'fiber_idx']
+    rec_indexed = (
+        recs[idx_cols + ['subject']]
+        .drop_duplicates(subset=idx_cols)
+        .set_index(idx_cols)
+    )
     subjects_clean = rec_indexed['subject'].reindex(sim.index)
 
     # Similarity matrix
@@ -242,10 +269,17 @@ def plot_vectors_figures(group, figures_dir):
     fig.savefig(figures_dir / 'confusion_matrix.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
 
-    # Mean response vectors
+    # Within-target similarity barplot
+    fig = plot_within_target_similarity(sim, labels_clean, subjects_clean)
+    fig.savefig(figures_dir / 'within_target_similarity.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+
+    # Mean response vectors (legacy — kept for standalone viewing)
     fig = plot_mean_response_vectors(group.response_features)
     fig.savefig(figures_dir / 'mean_response_vectors.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
 
     # Coefficients + unique contributions
     print("\nFeature unique contributions:")
@@ -256,6 +290,14 @@ def plot_vectors_figures(group, figures_dir):
     fig = plot_decoding_summary(decoder.coefficients, contrib)
     fig.savefig(figures_dir / 'decoding_summary.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+
+    # Unified response vectors + decoding summary
+    fig = plot_response_decoding_summary(
+        group.response_features, decoder.coefficients, contrib)
+    fig.savefig(figures_dir / 'response_decoding_summary.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
 
     contrib.to_parquet(figures_dir / 'feature_contributions.pqt', index=False)
 
@@ -269,10 +311,8 @@ if __name__ == '__main__':
                         help='skip extraction; plot from existing parquet files')
     args = parser.parse_args()
 
-    events_figures_dir = PROJECT_ROOT / 'figures/events'
-    vectors_figures_dir = PROJECT_ROOT / 'figures/response_vectors'
-    events_figures_dir.mkdir(parents=True, exist_ok=True)
-    vectors_figures_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir = PROJECT_ROOT / 'figures/responses'
+    figures_dir.mkdir(parents=True, exist_ok=True)
 
     # =====================================================================
     # Load sessions
@@ -281,14 +321,8 @@ if __name__ == '__main__':
     df_sessions = pd.read_parquet(SESSIONS_FPATH)
     print(f"  Total sessions: {len(df_sessions)}")
 
-    # =====================================================================
-    # Ad-hoc data fixes (remove when corrected upstream)
-    # =====================================================================
-
-    # TEMPFIX: normalize brain_region naming errors from Alyx metadata
-    df_sessions['brain_region'] = df_sessions['brain_region'].apply(_fix_regions)
-
     # Derive target_NM and NM from brain_region
+    # (brain_region already filled and corrected in query_database.py)
     df_sessions = derive_target_nm(df_sessions)
 
     # TEMPFIX: drop sessions where brain_region, hemisphere, and target_NM
@@ -314,14 +348,20 @@ if __name__ == '__main__':
         df_sessions = df_sessions[_lengths_match].copy()
 
     # Explode to one row per recording (brain_region x hemisphere x target_NM)
+    # Add fiber_idx to distinguish bilateral same-target recordings
     df_recordings = df_sessions.explode(_parallel_cols).copy()
+    df_recordings['fiber_idx'] = df_recordings.groupby('eid').cumcount()
 
     # =====================================================================
     # Create group and apply standard filters
     # =====================================================================
     one = _get_default_connection()
     group = PhotometrySessionGroup(df_recordings, one=one)
-    group.filter_recordings()
+    group.filter_recordings(
+        session_types=('biased', 'ephys', 'training'),
+        min_performance=MIN_TRAINING_PERFORMANCE,
+        required_contrasts=REQUIRED_CONTRASTS,
+    )
     print(f"  Recordings (session x region): {len(group)}")
 
     if args.plot:
@@ -335,28 +375,44 @@ if __name__ == '__main__':
             print(f"Error: {RESPONSE_MATRIX_FPATH} not found. Run without --plot first.")
             raise SystemExit(1)
 
-        print(f"Loading events from {EVENTS_FPATH}")
-        group.events = pd.read_parquet(EVENTS_FPATH)
+        print(f"Loading response magnitudes from {EVENTS_FPATH}")
+        group.response_magnitudes = pd.read_parquet(EVENTS_FPATH)
 
         print(f"Loading response matrix from {RESPONSE_MATRIX_FPATH}")
         group.response_features = pd.read_parquet(RESPONSE_MATRIX_FPATH)
+
+        mean_traces_fpath = PROJECT_ROOT / 'data/mean_traces.pqt'
+        if mean_traces_fpath.exists():
+            print(f"Loading mean traces from {mean_traces_fpath}")
+            group.mean_traces = pd.read_parquet(mean_traces_fpath)
 
     else:
         # =================================================================
         # Full pipeline: extract from H5 files
         # =================================================================
 
-        # --- Events ---
-        print("\nExtracting trial-level response magnitudes...")
-        group.get_events()
+        # --- Load traces cache ---
+        print("\nLoading response traces...")
+        group.load_response_traces()
 
-        if len(group.events) == 0:
-            print("No events extracted. Check H5 files exist.")
+        # --- Response magnitudes ---
+        print("Computing trial-level response magnitudes...")
+        group.get_response_magnitudes()
+
+        if len(group.response_magnitudes) == 0:
+            print("No response magnitudes extracted. Check H5 files exist.")
             raise SystemExit(1)
 
         EVENTS_FPATH.parent.mkdir(parents=True, exist_ok=True)
-        group.events.to_parquet(EVENTS_FPATH, index=False)
-        print(f"Saved events to {EVENTS_FPATH}")
+        group.response_magnitudes.to_parquet(EVENTS_FPATH, index=False)
+        print(f"Saved response magnitudes to {EVENTS_FPATH}")
+
+        # --- Mean traces ---
+        print("Computing mean traces...")
+        group.get_mean_traces()
+        mean_traces_fpath = PROJECT_ROOT / 'data/mean_traces.pqt'
+        group.mean_traces.to_parquet(mean_traces_fpath, index=False)
+        print(f"Saved mean traces to {mean_traces_fpath}")
 
         # --- Response vectors ---
         print("\nBuilding response features...")
@@ -372,13 +428,13 @@ if __name__ == '__main__':
               f"to {RESPONSE_MATRIX_FPATH}")
 
     # =====================================================================
-    # Events plots
+    # Response magnitude plots
     # =====================================================================
-    print_events_summary(group.events)
+    print_response_summary(group.response_magnitudes)
 
     print("\nGenerating response magnitude plots...")
-    plot_events_figures(group, events_figures_dir)
-    print(f"Events figures saved to {events_figures_dir}")
+    plot_response_figures(group, figures_dir)
+    print(f"Response magnitude figures saved to {figures_dir}")
 
     # =====================================================================
     # LMM statistical analysis
@@ -387,9 +443,27 @@ if __name__ == '__main__':
     group.fit_lmm()
     for (tnm, ev), result in group.lmm_results.items():
         ve = result.variance_explained
-        print(f"  {tnm} × {ev}: R² marginal={ve['marginal']:.3f}, "
+        print(f"  {tnm} x {ev}: R2 marginal={ve['marginal']:.3f}, "
               f"conditional={ve['conditional']:.3f}")
-    plot_lmm_figures(group, events_figures_dir)
+    plot_lmm_figures(group, figures_dir)
+
+    # =====================================================================
+    # Wheel kinematics LMM
+    # =====================================================================
+    print("\nEnriching with peak velocity...")
+    group.enrich_peak_velocity()
+    n_with_wheel = group.response_magnitudes['peak_velocity'].notna().sum()
+    print(f"  {n_with_wheel} trials with wheel data")
+
+    print("Fitting wheel kinematics LMMs...")
+    group.fit_wheel_lmm()
+    if len(group.wheel_lmm_summary) > 0:
+        n_sig = (group.wheel_lmm_summary['lrt_pvalue'] < 0.05).sum()
+        print(f"  {len(group.wheel_lmm_summary)} model comparisons, "
+              f"{n_sig} significant (p < 0.05)")
+        plot_wheel_lmm_figures(group, figures_dir)
+    else:
+        print("  No wheel LMM results (insufficient data).")
 
     # =====================================================================
     # Response vectors: similarity + decoding
@@ -412,5 +486,27 @@ if __name__ == '__main__':
         data_dir / 'feature_contributions.pqt', index=False)
     print(f"Saved decoding results to {data_dir}")
 
-    plot_vectors_figures(group, vectors_figures_dir)
-    print(f"Response vector figures saved to {vectors_figures_dir}")
+    plot_vectors_figures(group, figures_dir)
+    print(f"Response vector figures saved to {figures_dir}")
+
+    # =====================================================================
+    # Mean response traces per target-NM
+    # =====================================================================
+    traces_figures_dir = PROJECT_ROOT / 'figures/traces'
+    traces_figures_dir.mkdir(parents=True, exist_ok=True)
+
+    if group.mean_traces is not None and len(group.mean_traces) > 0:
+        print("\nGenerating mean response trace plots...")
+        for event in RESPONSE_EVENTS:
+            df_event = group.mean_traces[group.mean_traces['event'] == event]
+            if len(df_event) == 0:
+                continue
+            event_label = event.replace('_times', '')
+            fig = plot_mean_response_traces(df_event, event)
+            fig.savefig(traces_figures_dir / f'mean_traces_{event_label}.svg',
+                        dpi=FIGURE_DPI, bbox_inches='tight')
+            plt.close(fig)
+        print(f"Trace figures saved to {traces_figures_dir}")
+
+    # Free trace cache
+    group.flush_response_traces()
