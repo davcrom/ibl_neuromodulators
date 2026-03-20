@@ -1706,7 +1706,7 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
     Parameters
     ----------
     predictions : pd.DataFrame
-        Output from ``fit_events_lmm().predictions`` with columns:
+        Output from ``fit_response_lmm().predictions`` with columns:
         contrast, side, reward, predicted, ci_lower, ci_upper.
     target_nm : str
         Target neuromodulator label (for title and color).

@@ -878,10 +878,10 @@ class LMMResult:
         Fixed-effects coefficient table.
     variance_explained : dict
         Keys: 'marginal', 'conditional'.
-    predictions : pd.DataFrame
-        Model predictions on a contrast grid.
     random_effects : dict
         Subject → pd.Series of BLUPs.
+    predictions : pd.DataFrame or None
+        Model predictions on a design grid (set by callers, not by _fit_lmm).
     emm_reward : pd.DataFrame or None
         Estimated marginal means for reward factor.
     emm_side : pd.DataFrame or None
@@ -893,20 +893,132 @@ class LMMResult:
     """
 
     def __init__(self, model, result, summary_df, variance_explained,
-                 predictions, random_effects):
+                 random_effects):
         self.model = model
         self.result = result
         self.summary_df = summary_df
         self.variance_explained = variance_explained
-        self.predictions = predictions
         self.random_effects = random_effects
+        self.predictions = None
         self.emm_reward = None
         self.emm_side = None
         self.emm_contrast = None
         self.contrast_slopes = None
 
 
-def fit_events_lmm(df, response_col, formula=None, re_formula='1'):
+def _variance_explained(result, df, response_col):
+    """Compute Nakagawa & Schielzeth R² for a fitted MixedLM.
+
+    Parameters
+    ----------
+    result : statsmodels MixedLMResults
+    df : pd.DataFrame
+        The data used for fitting.
+    response_col : str
+        Name of the dependent variable column.
+
+    Returns
+    -------
+    dict
+        Keys: 'marginal', 'conditional' (both float, 0–1).
+    """
+    y = df[response_col].values
+    var_y = np.var(y)
+    if var_y == 0:
+        return {'marginal': 0.0, 'conditional': 0.0}
+
+    fe_params = result.fe_params.values
+    exog = result.model.exog
+    y_pred_fe = exog @ fe_params
+    y_pred_full = result.fittedvalues.values
+
+    var_fixed = np.var(y_pred_fe)
+    var_random = np.var(y_pred_full - y_pred_fe)
+
+    r2_m = float(np.clip(var_fixed / var_y, 0, 1))
+    r2_c = float(np.clip((var_fixed + var_random) / var_y, 0, 1))
+    return {'marginal': r2_m, 'conditional': r2_c}
+
+
+def _fit_lmm(formula, df, groups, re_formula='1', reml=True):
+    """Fit a linear mixed-effects model and return an LMMResult.
+
+    Generic fitting function: builds the model, checks for convergence,
+    computes coefficient summary and variance explained. Does not compute
+    prediction grids or marginal means — callers add those.
+
+    Parameters
+    ----------
+    formula : str
+        Wilkinson formula for fixed effects.
+    df : pd.DataFrame
+        Trial-level data.
+    groups : pd.Series
+        Grouping variable for random effects.
+    re_formula : str
+        Random-effects formula (default ``'1'``).
+    reml : bool
+        Use REML (True) or ML (False) estimation.
+
+    Returns
+    -------
+    LMMResult or None
+        None if the model fails to converge or data is degenerate.
+    """
+    import statsmodels.formula.api as smf
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            model = smf.mixedlm(
+                formula, df, groups=groups,
+                re_formula=re_formula,
+            )
+            result = model.fit(reml=reml)
+        fatal = any(
+            issubclass(w.category, ConvergenceWarning)
+            and 'failed to converge' in str(w.message).lower()
+            for w in caught
+        )
+        if fatal:
+            return None
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+    except Exception:
+        return None
+
+    # Determine response column from formula
+    response_col = formula.split('~')[0].strip()
+
+    # Summary table
+    fe_names = list(result.fe_params.index)
+    summary_df = pd.DataFrame({
+        'Coef.': result.fe_params,
+        'Std.Err.': result.bse_fe,
+        'z': result.tvalues[fe_names],
+        'P>|z|': result.pvalues[fe_names],
+    })
+
+    ve = _variance_explained(result, df, response_col)
+    if ve['marginal'] == 0.0 and ve['conditional'] == 0.0 and np.var(df[response_col].values) == 0:
+        return None
+
+    re_dict = {
+        subj: pd.Series(effects)
+        for subj, effects in result.random_effects.items()
+    }
+
+    return LMMResult(
+        model=model,
+        result=result,
+        summary_df=summary_df,
+        variance_explained=ve,
+        random_effects=re_dict,
+    )
+
+
+def fit_response_lmm(df, response_col, formula=None, re_formula='1'):
     """Fit a linear mixed-effects model to trial-level response data.
 
     Model: ``response ~ log_contrast * C(side) * C(reward)`` with subject
@@ -931,9 +1043,6 @@ def fit_events_lmm(df, response_col, formula=None, re_formula='1'):
     LMMResult or None
         None if the model fails to converge or data is degenerate.
     """
-    import statsmodels.formula.api as smf
-    from statsmodels.tools.sm_exceptions import ConvergenceWarning
-
     df = df.copy()
     df['log_contrast'] = contrast_transform(df['contrast'])
     df['reward'] = (df['feedbackType'] == 1).astype(int)
@@ -949,60 +1058,19 @@ def fit_events_lmm(df, response_col, formula=None, re_formula='1'):
     if formula is None:
         formula = f'{response_col} ~ log_contrast * C(side) * C(reward)'
 
-    try:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
-            model = smf.mixedlm(
-                formula, df, groups=df['subject'],
-                re_formula=re_formula,
-            )
-            result = model.fit(reml=True)
-        fatal = any(
-            issubclass(w.category, ConvergenceWarning)
-            and 'failed to converge' in str(w.message).lower()
-            for w in caught
-        )
-        if fatal:
-            return None
-    except (np.linalg.LinAlgError, ValueError):
+    lmm_result = _fit_lmm(formula, df, groups=df['subject'],
+                           re_formula=re_formula, reml=True)
+    if lmm_result is None:
         return None
-    except Exception:
-        return None
-
-    # Summary table — use fixed-effects params only
-    fe_names = list(result.fe_params.index)
-    summary_df = pd.DataFrame({
-        'Coef.': result.fe_params,
-        'Std.Err.': result.bse_fe,
-        'z': result.tvalues[fe_names],
-        'P>|z|': result.pvalues[fe_names],
-    })
-
-    # Variance explained (Nakagawa & Schielzeth R²)
-    y = df[response_col].values
-    var_y = np.var(y)
-    if var_y == 0:
-        return None
-
-    # Fixed-effects-only predictions
-    fe_params = result.fe_params.values
-    exog = result.model.exog
-    y_pred_fe = exog @ fe_params
-
-    # Full predictions (fixed + random)
-    y_pred_full = result.fittedvalues.values
-
-    var_fixed = np.var(y_pred_fe)
-    var_random = np.var(y_pred_full - y_pred_fe)
-
-    r2_marginal = float(np.clip(var_fixed / var_y, 0, 1))
-    r2_conditional = float(np.clip((var_fixed + var_random) / var_y, 0, 1))
 
     # Predictions on contrast grid (fixed effects only)
+    result = lmm_result.result
+    fe_params = result.fe_params.values
+    fe_names = list(result.fe_params.index)
+    fe_cov = result.cov_params().loc[fe_names, fe_names].values
+
     contrasts = sorted(df['contrast'].unique())
     pred_rows = []
-    # Build design matrix for the grid using the model's formula
-    fe_cov = result.cov_params().loc[fe_names, fe_names].values
     for side in ['contra', 'ipsi']:
         for reward in [0, 1]:
             grid = pd.DataFrame({
@@ -1013,7 +1081,6 @@ def fit_events_lmm(df, response_col, formula=None, re_formula='1'):
                 'subject': df['subject'].iloc[0],  # dummy
                 response_col: 0.0,
             })
-            # Get design matrix for fixed effects
             from patsy import dmatrix
             design_info = result.model.data.orig_exog.design_info
             X_grid = np.asarray(dmatrix(design_info, grid))
@@ -1028,22 +1095,9 @@ def fit_events_lmm(df, response_col, formula=None, re_formula='1'):
                     'ci_lower': float(pred[i] - 1.96 * se_pred[i]),
                     'ci_upper': float(pred[i] + 1.96 * se_pred[i]),
                 })
-    predictions = pd.DataFrame(pred_rows)
+    lmm_result.predictions = pd.DataFrame(pred_rows)
 
-    # Extract random effects (BLUPs) per subject
-    re_dict = {
-        subj: pd.Series(effects)
-        for subj, effects in result.random_effects.items()
-    }
-
-    return LMMResult(
-        model=model,
-        result=result,
-        summary_df=summary_df,
-        variance_explained={'marginal': r2_marginal, 'conditional': r2_conditional},
-        predictions=predictions,
-        random_effects=re_dict,
-    )
+    return lmm_result
 
 
 def compute_marginal_means(lmm_result, factor):
@@ -1055,7 +1109,7 @@ def compute_marginal_means(lmm_result, factor):
     Parameters
     ----------
     lmm_result : LMMResult
-        Output from ``fit_events_lmm``.
+        Output from ``fit_response_lmm``.
     factor : str
         Factor to compute EMMs for: 'reward' or 'side'.
 
@@ -1123,7 +1177,7 @@ def compute_contrast_slopes(lmm_result):
     Parameters
     ----------
     lmm_result : LMMResult
-        Output from ``fit_events_lmm``.
+        Output from ``fit_response_lmm``.
 
     Returns
     -------

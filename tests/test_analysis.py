@@ -731,19 +731,19 @@ def _make_lmm_data(n_per_cell=20, seed=42):
     return pd.DataFrame(rows)
 
 
-class TestFitEventsLMM:
+class TestFitResponseLMM:
 
     def test_returns_lmm_result(self):
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         assert result is not None
 
     def test_accepts_re_formula(self):
         """re_formula parameter controls the random effects structure."""
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response', re_formula='1')
+        result = fit_response_lmm(df, 'response', re_formula='1')
         assert result is not None
         # Intercept-only: random effects should not have log_contrast
         for effects in result.random_effects.values():
@@ -751,9 +751,9 @@ class TestFitEventsLMM:
 
     def test_re_formula_with_slope(self):
         """Random slope model should include log_contrast in random effects."""
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_events_lmm(df, 'response', re_formula='log_contrast')
+        result = fit_response_lmm(df, 'response', re_formula='log_contrast')
         if result is not None:
             has_slope = any(
                 'log_contrast' in eff.index
@@ -762,17 +762,17 @@ class TestFitEventsLMM:
             assert has_slope
 
     def test_result_has_expected_fields(self):
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         assert hasattr(result, 'result')
         assert hasattr(result, 'summary_df')
         assert hasattr(result, 'variance_explained')
 
     def test_variance_explained_keys(self):
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         ve = result.variance_explained
         assert 'marginal' in ve
         assert 'conditional' in ve
@@ -781,9 +781,9 @@ class TestFitEventsLMM:
         assert ve['conditional'] >= ve['marginal']
 
     def test_summary_df_has_coefficients(self):
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         assert isinstance(result.summary_df, pd.DataFrame)
         assert 'Coef.' in result.summary_df.columns
         assert 'P>|z|' in result.summary_df.columns
@@ -791,9 +791,9 @@ class TestFitEventsLMM:
 
     def test_detects_contrast_effect(self):
         """With known contrast slope of 0.5, the model should detect it."""
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         # log_contrast coefficient should be significantly positive
         coef = result.summary_df.loc['log_contrast', 'Coef.']
         pval = result.summary_df.loc['log_contrast', 'P>|z|']
@@ -802,7 +802,7 @@ class TestFitEventsLMM:
 
     def test_convergence_failure_returns_none(self):
         """Degenerate data should return None, not raise."""
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         # Single subject, single side — model can't fit random effect or side
         df = pd.DataFrame({
             'contrast': [0.25] * 10,
@@ -811,14 +811,14 @@ class TestFitEventsLMM:
             'subject': ['s0'] * 10,
             'response': np.zeros(10),
         })
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         assert result is None
 
     def test_predictions_on_grid(self):
         """Result should include predicted values on a contrast grid."""
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         assert hasattr(result, 'predictions')
         assert isinstance(result.predictions, pd.DataFrame)
         assert 'contrast' in result.predictions.columns
@@ -832,32 +832,32 @@ class TestFitEventsLMM:
 class TestComputeMarginalMeans:
 
     def test_returns_dataframe(self):
-        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        from iblnm.analysis import fit_response_lmm, compute_marginal_means
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(result, 'reward')
         assert isinstance(emm, pd.DataFrame)
 
     def test_reward_has_two_levels(self):
-        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        from iblnm.analysis import fit_response_lmm, compute_marginal_means
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(result, 'reward')
         assert len(emm) == 2
         assert set(emm['level']) == {0, 1}
 
     def test_side_has_two_levels(self):
-        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        from iblnm.analysis import fit_response_lmm, compute_marginal_means
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(result, 'side')
         assert len(emm) == 2
         assert set(emm['level']) == {'contra', 'ipsi'}
 
     def test_has_ci_columns(self):
-        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        from iblnm.analysis import fit_response_lmm, compute_marginal_means
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(result, 'reward')
         assert 'mean' in emm.columns
         assert 'ci_lower' in emm.columns
@@ -865,9 +865,9 @@ class TestComputeMarginalMeans:
 
     def test_reward_effect_detected(self):
         """With known reward effect of 0.2, correct EMM should exceed incorrect."""
-        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        from iblnm.analysis import fit_response_lmm, compute_marginal_means
         df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(result, 'reward')
         correct = emm[emm['level'] == 1]['mean'].iloc[0]
         incorrect = emm[emm['level'] == 0]['mean'].iloc[0]
@@ -875,17 +875,17 @@ class TestComputeMarginalMeans:
 
     def test_contrast_column_present(self):
         """EMM DataFrame should include the contrast column for the factor."""
-        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        from iblnm.analysis import fit_response_lmm, compute_marginal_means
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(result, 'reward')
         assert 'contrast_diff' in emm.columns or 'diff' in emm.columns or len(emm) == 2
 
     def test_contrast_emm_returns_one_row_per_contrast(self):
         """EMM for contrast should have one row per contrast level."""
-        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        from iblnm.analysis import fit_response_lmm, compute_marginal_means
         df = _make_lmm_data()
-        lmm = fit_events_lmm(df, 'response')
+        lmm = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(lmm, 'contrast')
         assert isinstance(emm, pd.DataFrame)
         assert len(emm) == 5  # 5 contrast levels
@@ -895,9 +895,9 @@ class TestComputeMarginalMeans:
 
     def test_contrast_emm_monotonic(self):
         """With known positive contrast slope, EMMs should increase with contrast."""
-        from iblnm.analysis import fit_events_lmm, compute_marginal_means
+        from iblnm.analysis import fit_response_lmm, compute_marginal_means
         df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(result, 'contrast')
         means = emm.sort_values('level')['mean'].values
         # Not strictly monotonic due to log transform, but highest > lowest
@@ -913,30 +913,30 @@ class TestLMMResultRandomEffects:
 
     def test_random_effects_field_exists(self):
         """LMMResult should have a random_effects field."""
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         assert hasattr(result, 'random_effects')
 
     def test_random_effects_is_dict(self):
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         assert isinstance(result.random_effects, dict)
 
     def test_random_effects_has_subjects(self):
         """random_effects keys should be subjects from the data."""
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         assert set(result.random_effects.keys()) == {'s0', 's1', 's2'}
 
     def test_random_effects_has_slope_when_converged(self):
         """When random slope model converges, each subject's effects should
         include both intercept and slope."""
-        from iblnm.analysis import fit_events_lmm
+        from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data(n_per_cell=30)
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         for subj, effects in result.random_effects.items():
             # effects is a Series with 'Group' (intercept) and possibly 'log_contrast'
             assert len(effects) >= 1  # at minimum, intercept
@@ -945,16 +945,16 @@ class TestLMMResultRandomEffects:
 class TestComputeContrastSlopes:
 
     def test_returns_dataframe(self):
-        from iblnm.analysis import fit_events_lmm, compute_contrast_slopes
+        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         slopes = compute_contrast_slopes(result)
         assert isinstance(slopes, pd.DataFrame)
 
     def test_has_expected_columns(self):
-        from iblnm.analysis import fit_events_lmm, compute_contrast_slopes
+        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         slopes = compute_contrast_slopes(result)
         assert 'reward' in slopes.columns
         assert 'slope' in slopes.columns
@@ -963,18 +963,18 @@ class TestComputeContrastSlopes:
 
     def test_two_reward_conditions(self):
         """Should have slopes for both correct and incorrect."""
-        from iblnm.analysis import fit_events_lmm, compute_contrast_slopes
+        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
         df = _make_lmm_data()
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         slopes = compute_contrast_slopes(result)
         pop = slopes[slopes['type'] == 'population']
         assert set(pop['reward']) == {0, 1}
 
     def test_subject_slopes_present(self):
         """When random slope model converges, subject-level slopes should appear."""
-        from iblnm.analysis import fit_events_lmm, compute_contrast_slopes
+        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
         df = _make_lmm_data(n_per_cell=30)
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         slopes = compute_contrast_slopes(result)
         subj_rows = slopes[slopes['type'] == 'subject']
         # Should have subject rows if random slope converged
@@ -984,9 +984,9 @@ class TestComputeContrastSlopes:
 
     def test_known_contrast_effect(self):
         """Population slope for correct should reflect contrast + interaction."""
-        from iblnm.analysis import fit_events_lmm, compute_contrast_slopes
+        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
         df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_events_lmm(df, 'response')
+        result = fit_response_lmm(df, 'response')
         slopes = compute_contrast_slopes(result)
         pop = slopes[slopes['type'] == 'population']
         # Both conditions should have positive contrast slopes

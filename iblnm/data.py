@@ -1707,7 +1707,7 @@ class PhotometrySessionGroup:
             emm_contrast, and contrast_slopes populated.
         """
         from iblnm.analysis import (
-            fit_events_lmm, compute_marginal_means, compute_contrast_slopes,
+            fit_response_lmm, compute_marginal_means, compute_contrast_slopes,
         )
         from iblnm.task import add_relative_contrast
 
@@ -1744,7 +1744,7 @@ class PhotometrySessionGroup:
         cached_fits = None
         for re_formula in re_formulas:
             fits = {
-                key: fit_events_lmm(df_g, response_col, re_formula=re_formula)
+                key: fit_response_lmm(df_g, response_col, re_formula=re_formula)
                 for key, df_g in groups.items()
             }
             if all(lmm is not None for lmm in fits.values()):
