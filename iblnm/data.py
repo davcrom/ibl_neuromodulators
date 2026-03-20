@@ -1595,6 +1595,82 @@ class PhotometrySessionGroup:
         self.cohort_cca_data = data
         return results
 
+    def cross_project_cca(self, cohorts=None):
+        """Cross-project each cohort's data through every other's CCA weights.
+
+        Parameters
+        ----------
+        cohorts : list of str, optional
+            Subset of cohort keys. Default: all fitted cohorts.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``data_cohort``, ``weight_cohort``, ``correlation``.
+        """
+        from iblnm.analysis import cross_project_cca as _cross_project
+
+        if self.cohort_cca_results is None:
+            raise ValueError("Call fit_cohort_cca first")
+
+        if cohorts is None:
+            cohorts = list(self.cohort_cca_results.keys())
+
+        rows = []
+        for data_cohort in cohorts:
+            X_z, Y_z = self.cohort_cca_data[data_cohort]
+            for weight_cohort in cohorts:
+                target_result = self.cohort_cca_results[weight_cohort]
+                r = _cross_project(X_z, Y_z, target_result)
+                rows.append({
+                    'data_cohort': data_cohort,
+                    'weight_cohort': weight_cohort,
+                    'correlation': r,
+                })
+
+        df = pd.DataFrame(rows)
+        self.cohort_cca_cross_projections = df
+        return df
+
+    def compare_cca_weights(self, cohorts=None):
+        """Cosine similarity between CC1 weights for all cohort pairs.
+
+        Parameters
+        ----------
+        cohorts : list of str, optional
+            Subset of cohort keys. Default: all fitted cohorts.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``cohort_a``, ``cohort_b``, ``neural_cosine``,
+            ``behavioral_cosine``.
+        """
+        from iblnm.analysis import compare_cca_weights as _compare_weights
+
+        if self.cohort_cca_results is None:
+            raise ValueError("Call fit_cohort_cca first")
+
+        if cohorts is None:
+            cohorts = list(self.cohort_cca_results.keys())
+
+        rows = []
+        for a in cohorts:
+            for b in cohorts:
+                sims = _compare_weights(
+                    self.cohort_cca_results[a],
+                    self.cohort_cca_results[b],
+                )
+                rows.append({
+                    'cohort_a': a,
+                    'cohort_b': b,
+                    **sims,
+                })
+
+        df = pd.DataFrame(rows)
+        self.cohort_cca_weight_similarities = df
+        return df
+
     def fit_lmm(self, response_col='response_early',
                  min_subjects=2, re_formulas=None):
         """Fit LMMs per (target_NM, event) on trial-level events data.

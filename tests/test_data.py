@@ -2720,3 +2720,66 @@ class TestGroupFitCohortCCA:
         results = group.fit_cohort_cca(n_permutations=0, min_recordings=10)
         assert 'VTA-DA' in results
         assert 'DR-5HT' not in results
+
+
+class TestGroupCrossProjectCCA:
+
+    def test_diagonal_matches_within(self):
+        group = _make_group_for_cohort_cca()
+        group.fit_cohort_cca(n_permutations=0)
+        cp = group.cross_project_cca()
+        for cohort, result in group.cohort_cca_results.items():
+            row = cp[(cp['data_cohort'] == cohort) &
+                     (cp['weight_cohort'] == cohort)]
+            np.testing.assert_allclose(
+                row['correlation'].iloc[0], result.correlations[0], atol=0.05)
+
+    def test_all_pairs(self):
+        group = _make_group_for_cohort_cca()
+        group.fit_cohort_cca(n_permutations=0)
+        cp = group.cross_project_cca()
+        n = len(group.cohort_cca_results)
+        assert len(cp) == n ** 2
+
+    def test_subset(self):
+        group = _make_group_for_cohort_cca()
+        group.fit_cohort_cca(n_permutations=0)
+        cp = group.cross_project_cca(cohorts=['VTA-DA'])
+        assert len(cp) == 1
+
+    def test_stores_result(self):
+        group = _make_group_for_cohort_cca()
+        group.fit_cohort_cca(n_permutations=0)
+        group.cross_project_cca()
+        assert group.cohort_cca_cross_projections is not None
+
+
+class TestGroupCompareCCAWeights:
+
+    def test_self_cosine_one(self):
+        group = _make_group_for_cohort_cca()
+        group.fit_cohort_cca(n_permutations=0)
+        ws = group.compare_cca_weights()
+        for cohort in group.cohort_cca_results:
+            row = ws[(ws['cohort_a'] == cohort) &
+                     (ws['cohort_b'] == cohort)]
+            np.testing.assert_allclose(
+                abs(row['neural_cosine'].iloc[0]), 1.0, atol=0.01)
+
+    def test_symmetric(self):
+        group = _make_group_for_cohort_cca()
+        group.fit_cohort_cca(n_permutations=0)
+        ws = group.compare_cca_weights()
+        ab = ws[(ws['cohort_a'] == 'VTA-DA') &
+                (ws['cohort_b'] == 'DR-5HT')]
+        ba = ws[(ws['cohort_a'] == 'DR-5HT') &
+                (ws['cohort_b'] == 'VTA-DA')]
+        np.testing.assert_allclose(
+            ab['neural_cosine'].iloc[0], ba['neural_cosine'].iloc[0],
+            atol=1e-10)
+
+    def test_stores_result(self):
+        group = _make_group_for_cohort_cca()
+        group.fit_cohort_cca(n_permutations=0)
+        group.compare_cca_weights()
+        assert group.cohort_cca_weight_similarities is not None
