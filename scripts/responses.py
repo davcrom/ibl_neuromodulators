@@ -9,7 +9,9 @@ Includes biased, ephys, and qualifying training sessions (>70% performance
 with the full contrast set).
 
 Output:
-    data/events.pqt              — trial-level response magnitudes
+    data/responses.pqt           — trial-level response magnitudes
+    data/trial_timing.pqt        — per-trial reaction and movement times
+    data/peak_velocity.pqt       — per-trial peak wheel velocity
     data/response_matrix.pqt     — response feature vectors
     figures/responses/*.svg      — all response analysis figures
     figures/traces/*.svg         — mean response traces
@@ -25,8 +27,9 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, RESPONSES_FPATH, RESPONSE_MATRIX_FPATH,
-    SIMILARITY_MATRIX_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH,
+    RESPONSES_FPATH, TRIAL_TIMING_FPATH, PEAK_VELOCITY_FPATH,
+    RESPONSE_MATRIX_FPATH, SIMILARITY_MATRIX_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI,
     MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
@@ -378,6 +381,14 @@ if __name__ == '__main__':
         print(f"Loading response magnitudes from {RESPONSES_FPATH}")
         group.response_magnitudes = pd.read_parquet(RESPONSES_FPATH)
 
+        if TRIAL_TIMING_FPATH.exists():
+            print(f"Loading trial timing from {TRIAL_TIMING_FPATH}")
+            group.trial_timing = pd.read_parquet(TRIAL_TIMING_FPATH)
+
+        if PEAK_VELOCITY_FPATH.exists():
+            print(f"Loading peak velocity from {PEAK_VELOCITY_FPATH}")
+            group.peak_velocity = pd.read_parquet(PEAK_VELOCITY_FPATH)
+
         print(f"Loading response matrix from {RESPONSE_MATRIX_FPATH}")
         group.response_features = pd.read_parquet(RESPONSE_MATRIX_FPATH)
 
@@ -406,6 +417,9 @@ if __name__ == '__main__':
         RESPONSES_FPATH.parent.mkdir(parents=True, exist_ok=True)
         group.response_magnitudes.to_parquet(RESPONSES_FPATH, index=False)
         print(f"Saved response magnitudes to {RESPONSES_FPATH}")
+
+        group.trial_timing.to_parquet(TRIAL_TIMING_FPATH, index=False)
+        print(f"Saved trial timing to {TRIAL_TIMING_FPATH}")
 
         # --- Mean traces ---
         print("Computing mean traces...")
@@ -450,9 +464,13 @@ if __name__ == '__main__':
     # =====================================================================
     # Wheel kinematics LMM
     # =====================================================================
-    print("\nEnriching with peak velocity...")
-    group.enrich_peak_velocity()
-    n_with_wheel = group.response_magnitudes['peak_velocity'].notna().sum()
+    if group.peak_velocity is None:
+        print("\nEnriching with peak velocity...")
+        group.enrich_peak_velocity()
+        group.peak_velocity.to_parquet(PEAK_VELOCITY_FPATH, index=False)
+        print(f"Saved peak velocity to {PEAK_VELOCITY_FPATH}")
+
+    n_with_wheel = group.peak_velocity['peak_velocity'].notna().sum()
     print(f"  {n_with_wheel} trials with wheel data")
 
     print("Fitting wheel kinematics LMMs...")
