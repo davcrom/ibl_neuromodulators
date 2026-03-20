@@ -4,6 +4,8 @@ import pandas as pd
 import pytest
 from unittest.mock import MagicMock, patch
 
+from iblnm.config import contrast_transform
+
 
 # =============================================================================
 # Exception Tests
@@ -1547,7 +1549,7 @@ class TestGetResponseFeatures:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         df = group.get_response_features(min_trials=1)
         assert isinstance(df, pd.DataFrame)
-        assert df.index.names == ['eid', 'target_NM']
+        assert df.index.names == ['eid', 'target_NM', 'fiber_idx']
 
     def test_stores_response_features(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
@@ -1803,35 +1805,35 @@ class TestFilterRecordings:
 
 
 # =============================================================================
-# get_events Tests
+# get_response_magnitudes Tests
 # =============================================================================
 
-class TestGetEvents:
+class TestGetResponseMagnitudes:
 
     def test_returns_dataframe(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        df_events = group.get_events()
+        df_events = group.get_response_magnitudes()
         assert isinstance(df_events, pd.DataFrame)
         assert len(df_events) > 0
 
-    def test_stores_events_attribute(self, tmp_path):
+    def test_stores_response_magnitudes_attribute(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        group.get_events()
-        assert group.events is not None
-        assert isinstance(group.events, pd.DataFrame)
+        group.get_response_magnitudes()
+        assert group.response_magnitudes is not None
+        assert isinstance(group.response_magnitudes, pd.DataFrame)
 
     def test_has_expected_columns(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        df_events = group.get_events()
+        df_events = group.get_response_magnitudes()
         expected_cols = {
             'eid', 'subject', 'session_type', 'NM', 'target_NM',
             'brain_region', 'hemisphere', 'event', 'trial',
@@ -1847,7 +1849,7 @@ class TestGetEvents:
         n_trials = 50
         _write_h5(tmp_path / 'eid-0.h5', n_trials=n_trials)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        df_events = group.get_events()
+        df_events = group.get_response_magnitudes()
         n_events = df_events['event'].nunique()
         assert len(df_events) == n_trials * n_events
 
@@ -1857,7 +1859,7 @@ class TestGetEvents:
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        df_events = group.get_events()
+        df_events = group.get_response_magnitudes()
         # After baseline subtraction, post-event signal = 1.0
         # Response magnitude in early window should be ~1.0
         magnitudes = df_events['response_early'].dropna()
@@ -1869,7 +1871,7 @@ class TestGetEvents:
         # Only write H5 for eid-0
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        df_events = group.get_events()
+        df_events = group.get_response_magnitudes()
         assert df_events['eid'].nunique() == 1
         assert 'eid-0' in df_events['eid'].values
 
@@ -1879,14 +1881,14 @@ class TestGetEvents:
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
         _write_h5(tmp_path / 'eid-1.h5', n_trials=50, seed=1)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        df_events = group.get_events()
+        df_events = group.get_response_magnitudes()
         assert df_events['eid'].nunique() == 2
 
     def test_empty_when_no_h5(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        df_events = group.get_events()
+        df_events = group.get_response_magnitudes()
         assert isinstance(df_events, pd.DataFrame)
         assert len(df_events) == 0
 
@@ -1919,7 +1921,7 @@ def _make_group_with_events():
                     for fb in [1, -1]:
                         for contrast in contrasts:
                             for _ in range(n_per_cell):
-                                log_c = np.log(contrast + 0.01)
+                                log_c = contrast_transform(contrast)
                                 response = (
                                     1.0 + 0.5 * log_c
                                     + 0.2 * (1 if fb == 1 else 0)
@@ -1970,7 +1972,7 @@ def _make_group_with_events():
     recs = pd.DataFrame(rec_rows)
 
     group = PhotometrySessionGroup(recs, one=MagicMock())
-    group.events = df_events
+    group.response_magnitudes = df_events
     return group
 
 
@@ -2026,7 +2028,7 @@ class TestFitLMM:
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         group = PhotometrySessionGroup(recs, one=MagicMock())
-        with pytest.raises(ValueError, match='events'):
+        with pytest.raises(ValueError, match='response_magnitudes'):
             group.fit_lmm()
 
     def test_re_formulas_default_intercept_only(self):
@@ -2055,3 +2057,666 @@ class TestFitLMM:
         group.fit_lmm(re_formulas=['log_contrast', '1'])
         assert hasattr(group, 'lmm_re_formula')
         assert group.lmm_re_formula in ('log_contrast', '1')
+
+
+# =============================================================================
+# CCA Tests
+# =============================================================================
+
+
+def _make_group_with_response_features(n_per_target=5, n_features=8, seed=42):
+    """Create a PhotometrySessionGroup with synthetic response_features.
+
+    3 subjects, 2 target_NMs (VTA-DA, DR-5HT), n_per_target recordings each.
+    """
+    from iblnm.data import PhotometrySessionGroup
+
+    rng = np.random.default_rng(seed)
+    target_nms = ['VTA-DA', 'DR-5HT']
+    subjects = ['s0', 's1', 's2']
+
+    rec_rows = []
+    feature_rows = {}
+    for tnm in target_nms:
+        for i in range(n_per_target):
+            subj = subjects[i % len(subjects)]
+            eid = f'eid-{subj}-{tnm}-{i}'
+            rec_rows.append({
+                'eid': eid,
+                'subject': subj,
+                'brain_region': tnm.split('-')[0],
+                'hemisphere': 'r',
+                'target_NM': tnm,
+                'NM': tnm.split('-')[1],
+                'session_type': 'biased',
+                'start_time': '2024-01-01T10:00:00',
+                'number': 1,
+                'task_protocol': 'biased_protocol',
+            })
+            feature_rows[(eid, tnm)] = rng.standard_normal(n_features)
+
+    recs = pd.DataFrame(rec_rows)
+    group = PhotometrySessionGroup(recs, one=MagicMock())
+
+    index = pd.MultiIndex.from_tuples(feature_rows.keys(),
+                                       names=['eid', 'target_NM'])
+    cols = [f'feat_{i}' for i in range(n_features)]
+    group.response_features = pd.DataFrame(
+        list(feature_rows.values()), index=index, columns=cols,
+    )
+    return group
+
+
+def _make_mock_performance(group, seed=0):
+    """Create a mock performance DataFrame matching the eids in group."""
+    rng = np.random.default_rng(seed)
+    eids = group.response_features.index.get_level_values('eid').unique()
+    return pd.DataFrame({
+        'eid': eids,
+        'psych_50_threshold': rng.uniform(10, 50, len(eids)),
+        'psych_50_bias': rng.uniform(-20, 20, len(eids)),
+        'psych_50_lapse_left': rng.uniform(0, 0.2, len(eids)),
+        'psych_50_lapse_right': rng.uniform(0, 0.2, len(eids)),
+        'bias_shift': rng.uniform(-10, 10, len(eids)),
+    })
+
+
+class TestGetPsychometricFeatures:
+
+    def test_returns_aligned_dataframe(self):
+        """Output index should match response_features index."""
+        import tempfile
+        group = _make_group_with_response_features()
+        perf = _make_mock_performance(group)
+        with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
+            perf.to_parquet(f.name)
+            result = group.get_psychometric_features(performance_path=f.name)
+        assert list(result.index) == list(group.response_features.index)
+
+    def test_default_params(self):
+        """Default params should be psych_50 threshold, bias, lapse_left, lapse_right."""
+        import tempfile
+        group = _make_group_with_response_features()
+        perf = _make_mock_performance(group)
+        with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
+            perf.to_parquet(f.name)
+            result = group.get_psychometric_features(performance_path=f.name)
+        assert set(result.columns) == {
+            'psych_50_threshold', 'psych_50_bias',
+            'psych_50_lapse_left', 'psych_50_lapse_right',
+        }
+
+    def test_custom_params(self):
+        import tempfile
+        group = _make_group_with_response_features()
+        perf = _make_mock_performance(group)
+        with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
+            perf.to_parquet(f.name)
+            result = group.get_psychometric_features(
+                performance_path=f.name,
+                params=['psych_50_threshold', 'bias_shift'],
+            )
+        assert set(result.columns) == {'psych_50_threshold', 'bias_shift'}
+
+    def test_stored_as_attribute(self):
+        import tempfile
+        group = _make_group_with_response_features()
+        perf = _make_mock_performance(group)
+        with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
+            perf.to_parquet(f.name)
+            group.get_psychometric_features(performance_path=f.name)
+        assert group.psychometric_features is not None
+
+    def test_values_match_performance_data(self):
+        """Merged values should match the source performance data."""
+        import tempfile
+        group = _make_group_with_response_features()
+        perf = _make_mock_performance(group)
+        with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
+            perf.to_parquet(f.name)
+            result = group.get_psychometric_features(performance_path=f.name)
+        # Check first recording's threshold matches
+        first_eid = result.index.get_level_values('eid')[0]
+        expected = perf.loc[perf['eid'] == first_eid, 'psych_50_threshold'].iloc[0]
+        actual = result.iloc[0]['psych_50_threshold']
+        assert np.isclose(actual, expected)
+
+
+class TestGroupFitCCA:
+
+    def test_returns_cca_result(self):
+        from iblnm.analysis import CCAResult
+        import tempfile
+        group = _make_group_with_response_features()
+        perf = _make_mock_performance(group)
+        with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
+            perf.to_parquet(f.name)
+            group.get_psychometric_features(performance_path=f.name)
+        result = group.fit_cca(n_permutations=0)
+        assert isinstance(result, CCAResult)
+
+    def test_stored_as_attribute(self):
+        import tempfile
+        group = _make_group_with_response_features()
+        perf = _make_mock_performance(group)
+        with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
+            perf.to_parquet(f.name)
+            group.get_psychometric_features(performance_path=f.name)
+        group.fit_cca(n_permutations=0)
+        assert group.cca_result is not None
+
+    def test_session_labels_from_eid(self):
+        """fit_cca should pass eid as session_labels for permutation."""
+        import tempfile
+        group = _make_group_with_response_features()
+        perf = _make_mock_performance(group)
+        with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
+            perf.to_parquet(f.name)
+            group.get_psychometric_features(performance_path=f.name)
+        result = group.fit_cca(n_permutations=50, seed=0)
+        assert result.p_values is not None
+
+
+# =============================================================================
+# GLM Response Features Tests
+# =============================================================================
+
+
+class TestGetGLMResponseFeatures:
+
+    def test_returns_dataframe(self):
+        """Returns a DataFrame with GLM coefficient columns."""
+        group = _make_group_with_events()
+        result = group.get_glm_response_features(event_name='stimOn_times')
+        assert isinstance(result, pd.DataFrame)
+        assert 'log_contrast' in result.columns
+        assert 'side' in result.columns
+        assert 'side:feedback' in result.columns
+
+    def test_stored_as_attribute(self):
+        """Result is stored as self.glm_response_features."""
+        group = _make_group_with_events()
+        group.get_glm_response_features(event_name='stimOn_times')
+        assert group.glm_response_features is not None
+        assert len(group.glm_response_features) > 0
+
+    def test_index_structure(self):
+        """Index has (eid, target_NM, fiber_idx) levels."""
+        group = _make_group_with_events()
+        result = group.get_glm_response_features(event_name='stimOn_times')
+        assert result.index.names == ['eid', 'target_NM', 'fiber_idx']
+
+    def test_weight_by_se(self):
+        """With weight_by_se=True, values are t-statistics (coef / SE)."""
+        group = _make_group_with_events()
+        coefs = group.get_glm_response_features(
+            event_name='stimOn_times', weight_by_se=False)
+        group2 = _make_group_with_events()
+        tstats = group2.get_glm_response_features(
+            event_name='stimOn_times', weight_by_se=True)
+        assert not np.allclose(coefs.values, tstats.values)
+
+    def test_one_row_per_recording(self):
+        """Each recording (eid × brain_region) produces one row."""
+        group = _make_group_with_events()
+        result = group.get_glm_response_features(event_name='stimOn_times')
+        # _make_group_with_events has 6 recordings (3 subjects × 2 targets)
+        assert len(result) == 6
+
+    def test_seven_coefficients(self):
+        """Output has 7 coefficient columns."""
+        group = _make_group_with_events()
+        result = group.get_glm_response_features(event_name='stimOn_times')
+        assert result.shape[1] == 7
+
+
+class TestGLMFeaturesCCA:
+
+    def test_cca_with_glm_features(self):
+        """fit_cca works with glm_response_features as X input."""
+        import tempfile
+        group = _make_group_with_events()
+        group.get_glm_response_features(event_name='stimOn_times')
+        group.response_features = group.glm_response_features
+        perf = _make_mock_performance(group)
+        with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
+            perf.to_parquet(f.name)
+            group.get_psychometric_features(performance_path=f.name)
+        result = group.fit_cca(n_permutations=0)
+        assert result.x_weights.shape[1] > 0
+        assert 'log_contrast' in result.x_weights.index
+
+
+# =============================================================================
+# load_response_traces / flush_response_traces Tests
+# =============================================================================
+
+
+class TestLoadResponseTraces:
+
+    def test_loads_traces(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=50, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        assert group.response_traces is not None
+        assert len(group.response_traces) > 0
+
+    def test_cache_structure(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        key = list(group.response_traces.keys())[0]
+        entry = group.response_traces[key]
+        assert 'traces' in entry
+        assert 'tpts' in entry
+        assert 'meta' in entry
+        assert 'trials' in entry
+        assert entry['traces'].ndim == 2  # (n_trials, n_timepoints)
+
+    def test_key_is_eid_region_event(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        key = list(group.response_traces.keys())[0]
+        assert len(key) == 3  # (eid, brain_region, event)
+        assert key[0] == 'eid-0'
+
+    def test_traces_are_baseline_subtracted(self, tmp_path):
+        """Post-event traces should be ~1.0 after baseline subtraction."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        key = list(group.response_traces.keys())[0]
+        traces = group.response_traces[key]['traces']
+        tpts = group.response_traces[key]['tpts']
+        post = traces[:, tpts > 0.1]
+        np.testing.assert_allclose(np.nanmean(post), 1.0, atol=0.2)
+
+    def test_stores_shared_time_axis(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        assert group.response_traces_tpts is not None
+        assert len(group.response_traces_tpts) > 0
+
+    def test_flush(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        assert group.response_traces is not None
+        group.flush_response_traces()
+        assert group.response_traces is None
+
+    def test_skips_missing_h5(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        # eid-1.h5 not written
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        eids = {k[0] for k in group.response_traces.keys()}
+        assert 'eid-0' in eids
+        assert 'eid-1' not in eids
+
+    def test_multiple_events_per_recording(self, tmp_path):
+        """Each recording should produce one cache entry per event."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        events = {k[2] for k in group.response_traces.keys()}
+        assert len(events) == 3  # stimOn, firstMovement, feedback
+
+
+class TestGetResponseMagnitudesFromCache:
+
+    def test_uses_cached_traces(self, tmp_path):
+        """If traces already loaded, does not re-load H5."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        # Delete H5 to prove it doesn't re-read
+        (tmp_path / 'eid-0.h5').unlink()
+        result = group.get_response_magnitudes()
+        assert len(result) > 0
+
+    def test_auto_loads_traces_if_not_cached(self, tmp_path):
+        """Calling get_response_magnitudes without prior load still works."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_response_magnitudes()
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+        assert group.response_traces is not None
+
+
+class TestGetMeanTraces:
+
+    def test_returns_dataframe(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=50, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_mean_traces()
+        assert isinstance(result, pd.DataFrame)
+        expected_cols = {'eid', 'subject', 'target_NM', 'brain_region',
+                         'event', 'time', 'response'}
+        assert expected_cols <= set(result.columns)
+
+    def test_one_trace_per_recording_event(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=50, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_mean_traces()
+        n_rec_events = result.groupby(['eid', 'brain_region', 'event']).ngroups
+        assert n_rec_events == 2 * 3  # 2 recordings × 3 events
+
+    def test_stored_as_attribute(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.get_mean_traces()
+        assert group.mean_traces is not None
+
+    def test_uses_cached_traces(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        (tmp_path / 'eid-0.h5').unlink()
+        result = group.get_mean_traces()
+        assert len(result) > 0
+
+    def test_mean_trace_values(self, tmp_path):
+        """Post-event mean trace should be ~1.0 for our test data."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_mean_traces()
+        post_event = result[result['time'] > 0.1]
+        np.testing.assert_allclose(
+            post_event['response'].mean(), 1.0, atol=0.2)
+
+
+# =============================================================================
+# Wheel Kinematics Enrichment and LMM Tests
+# =============================================================================
+
+
+def _write_h5_with_wheel(path, n_trials=100, seed=42):
+    """Write an H5 file with trials, responses, and wheel velocity."""
+    import h5py
+
+    rng = np.random.default_rng(seed)
+    n_time = 61
+    tpts = np.linspace(-1, 1, n_time)
+    events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+    contrasts = np.array([0.0, 0.0625, 0.125, 0.25, 1.0])
+
+    post_mask = tpts >= 0
+    stim_times = np.linspace(10, 10 + n_trials, n_trials)
+    fm_times = stim_times + rng.uniform(0.1, 0.5, n_trials)
+    fb_times = fm_times + rng.uniform(0.1, 0.5, n_trials)
+
+    # Build wheel velocity: (n_trials, max_samples)
+    wheel_fs = 100
+    max_duration = np.max(fb_times - stim_times)
+    max_samples = int(np.ceil(max_duration * wheel_fs)) + 1
+    wheel_vel = np.full((n_trials, max_samples), np.nan, dtype=np.float32)
+    for t in range(n_trials):
+        dur = fb_times[t] - stim_times[t]
+        n_samp = int(np.ceil(dur * wheel_fs))
+        wheel_vel[t, :n_samp] = rng.normal(0, 5.0, n_samp).astype(np.float32)
+
+    with h5py.File(path, 'w') as f:
+        grp = f.create_group('trials')
+        grp.create_dataset('stimOn_times', data=stim_times)
+        grp.create_dataset('firstMovement_times', data=fm_times)
+        grp.create_dataset('feedback_times', data=fb_times)
+        sides = rng.choice(['left', 'right'], n_trials)
+        contrast_vals = rng.choice(contrasts, n_trials)
+        signed = np.where(sides == 'left', -1, 1).astype(float) * contrast_vals
+        grp.create_dataset('signed_contrast', data=signed)
+        grp.create_dataset('contrast', data=contrast_vals)
+        grp.create_dataset('stim_side', data=np.array(sides, dtype='S5'))
+        grp.create_dataset('feedbackType', data=rng.choice([1, -1], n_trials))
+        grp.create_dataset('choice', data=rng.choice([-1, 1], n_trials))
+        grp.create_dataset('probabilityLeft', data=np.full(n_trials, 0.5))
+
+        resp_grp = f.create_group('responses')
+        resp_grp.create_dataset('time', data=tpts)
+        region = 'VTA-r'
+        region_grp = resp_grp.create_group(region)
+        for event in events:
+            data = np.zeros((n_trials, n_time))
+            data[:, post_mask] = 1.0
+            region_grp.create_dataset(event, data=data)
+
+        w_grp = f.create_group('wheel')
+        w_grp.create_dataset('velocity', data=wheel_vel, compression='gzip')
+        w_grp.attrs['fs'] = wheel_fs
+        w_grp.attrs['t0_event'] = 'stimOn_times'
+        w_grp.attrs['t1_event'] = 'feedback_times'
+
+
+class TestEnrichWheelKinematics:
+
+    def test_adds_columns(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        for i in range(2):
+            _write_h5_with_wheel(tmp_path / f'eid-{i}.h5', n_trials=50, seed=i)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        group.get_response_magnitudes()
+        group.enrich_wheel_kinematics()
+        df = group.response_magnitudes
+        assert 'movement_time' in df.columns
+        assert 'peak_velocity' in df.columns
+
+    def test_peak_velocity_is_positive(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5_with_wheel(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        group.get_response_magnitudes()
+        group.enrich_wheel_kinematics()
+        valid = group.response_magnitudes['peak_velocity'].dropna()
+        assert (valid >= 0).all()
+
+    def test_reaction_time_computed_denovo(self, tmp_path):
+        """reaction_time is freshly computed from H5 trial times."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5_with_wheel(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        group.get_response_magnitudes()
+        # Overwrite existing reaction_time with garbage
+        group.response_magnitudes['reaction_time'] = -999.0
+        group.enrich_wheel_kinematics()
+        assert (group.response_magnitudes['reaction_time'] != -999.0).any()
+
+    def test_skips_sessions_without_wheel(self, tmp_path):
+        """Sessions without wheel data get NaN for peak_velocity."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        # Write one with wheel, one without
+        _write_h5_with_wheel(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        _write_h5(tmp_path / 'eid-1.h5', n_trials=50, seed=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        group.get_response_magnitudes()
+        group.enrich_wheel_kinematics()
+        df = group.response_magnitudes
+        eid0_pv = df[df['eid'] == 'eid-0']['peak_velocity']
+        eid1_pv = df[df['eid'] == 'eid-1']['peak_velocity']
+        assert eid0_pv.notna().any()
+        assert eid1_pv.isna().all()
+
+
+class TestFitWheelLMM:
+
+    def test_returns_results(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        # Need enough subjects for LMM — use 4 eids with 2 subjects
+        recs = _make_recordings_df(n_eids=4, regions_per=1)
+        for i in range(4):
+            _write_h5_with_wheel(
+                tmp_path / f'eid-{i}.h5', n_trials=100, seed=i)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        group.get_response_magnitudes()
+        group.enrich_wheel_kinematics()
+        group.fit_wheel_lmm()
+        assert group.wheel_lmm_results is not None
+        assert group.wheel_lmm_summary is not None
+
+    def test_summary_has_expected_columns(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=4, regions_per=1)
+        for i in range(4):
+            _write_h5_with_wheel(
+                tmp_path / f'eid-{i}.h5', n_trials=100, seed=i)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        group.get_response_magnitudes()
+        group.enrich_wheel_kinematics()
+        group.fit_wheel_lmm()
+        if len(group.wheel_lmm_summary) > 0:
+            expected = {'target_NM', 'contrast', 'dv', 'delta_r2',
+                        'lrt_pvalue', 'nm_coefficient', 'nm_pvalue',
+                        'n_trials', 'n_subjects'}
+            assert expected.issubset(set(group.wheel_lmm_summary.columns))
+
+
+# =============================================================================
+# Per-Cohort CCA Tests
+# =============================================================================
+
+
+def _make_group_for_cohort_cca(n_per_cohort=None, seed=42):
+    """Create a group with pre-populated glm and psychometric features.
+
+    Parameters
+    ----------
+    n_per_cohort : dict, optional
+        Mapping target_NM → number of recordings.
+        Default: {'VTA-DA': 50, 'DR-5HT': 50}.
+    seed : int
+    """
+    from iblnm.data import PhotometrySessionGroup
+
+    if n_per_cohort is None:
+        n_per_cohort = {'VTA-DA': 50, 'DR-5HT': 50}
+
+    rng = np.random.default_rng(seed)
+    subjects = ['s0', 's1', 's2', 's3', 's4']
+    glm_cols = [
+        'intercept', 'log_contrast', 'side', 'feedback',
+        'log_contrast:side', 'log_contrast:feedback', 'side:feedback',
+    ]
+    psych_cols = [
+        'psych_50_threshold', 'psych_50_bias',
+        'psych_50_lapse_left', 'psych_50_lapse_right',
+    ]
+
+    rec_rows = []
+    glm_rows = {}
+    psych_rows = {}
+
+    for tnm, n in n_per_cohort.items():
+        for i in range(n):
+            subj = subjects[i % len(subjects)]
+            eid = f'eid-{subj}-{tnm}-{i}'
+            rec_rows.append({
+                'eid': eid,
+                'subject': subj,
+                'brain_region': tnm.split('-')[0],
+                'hemisphere': 'r',
+                'target_NM': tnm,
+                'NM': tnm.split('-')[1],
+                'session_type': 'biased',
+                'start_time': '2024-01-01T10:00:00',
+                'number': 1,
+                'task_protocol': 'biased_protocol',
+            })
+            key = (eid, tnm, 0)
+            glm_rows[key] = rng.standard_normal(len(glm_cols))
+            psych_rows[key] = rng.uniform(0, 1, len(psych_cols))
+
+    recs = pd.DataFrame(rec_rows)
+    group = PhotometrySessionGroup(recs, one=MagicMock())
+
+    glm_index = pd.MultiIndex.from_tuples(
+        glm_rows.keys(), names=['eid', 'target_NM', 'fiber_idx'])
+    group.glm_response_features = pd.DataFrame(
+        list(glm_rows.values()), index=glm_index, columns=glm_cols)
+
+    psych_index = pd.MultiIndex.from_tuples(
+        psych_rows.keys(), names=['eid', 'target_NM', 'fiber_idx'])
+    group.psychometric_features = pd.DataFrame(
+        list(psych_rows.values()), index=psych_index, columns=psych_cols)
+
+    return group
+
+
+class TestGroupFitCohortCCA:
+
+    def test_returns_dict_of_cca_results(self):
+        from iblnm.analysis import CCAResult
+        group = _make_group_for_cohort_cca()
+        results = group.fit_cohort_cca(n_permutations=0)
+        assert isinstance(results, dict)
+        for v in results.values():
+            assert isinstance(v, CCAResult)
+
+    def test_one_result_per_target_nm(self):
+        group = _make_group_for_cohort_cca()
+        results = group.fit_cohort_cca(n_permutations=0)
+        assert set(results.keys()) == {'VTA-DA', 'DR-5HT'}
+
+    def test_stores_standardized_data(self):
+        group = _make_group_for_cohort_cca()
+        group.fit_cohort_cca(n_permutations=0)
+        assert group.cohort_cca_data is not None
+        for X_z, Y_z in group.cohort_cca_data.values():
+            np.testing.assert_allclose(X_z.mean(axis=0), 0, atol=0.01)
+
+    def test_excludes_intercept_by_default(self):
+        group = _make_group_for_cohort_cca()
+        group.fit_cohort_cca(n_permutations=0)
+        for result in group.cohort_cca_results.values():
+            assert 'intercept' not in result.x_weights.index
+
+    def test_skips_small_cohort(self):
+        group = _make_group_for_cohort_cca(
+            n_per_cohort={'VTA-DA': 50, 'DR-5HT': 5})
+        results = group.fit_cohort_cca(n_permutations=0, min_recordings=10)
+        assert 'VTA-DA' in results
+        assert 'DR-5HT' not in results

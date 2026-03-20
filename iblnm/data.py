@@ -864,16 +864,29 @@ class PhotometrySessionGroup:
         self.one = one
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
         self._sessions = {}  # eid → PhotometrySession
-        self.events = None
+        self.response_traces = None
+        self.response_traces_tpts = None
+        self.mean_traces = None
+        self.response_magnitudes = None
         self.response_features = None
+        self.psychometric_features = None
         self.similarity_matrix = None
         self.decoder = None
+        self.glm_response_features = None
+        self.cca_result = None
+        self.cohort_cca_results = None
+        self.cohort_cca_data = None
+        self.cohort_cca_cross_projections = None
+        self.cohort_cca_weight_similarities = None
         self.lmm_results = None
         self.lmm_coefficients = None
+        self.wheel_lmm_results = None
+        self.wheel_lmm_summary = None
 
     def filter_recordings(self, session_types=None, exclude_subjects=None,
                           qc_blockers=None, targetnms=None,
-                          log_fpaths=None):
+                          log_fpaths=None,
+                          min_performance=None, required_contrasts=None):
         """Filter recordings by session type, QC, subjects, and target-NM.
 
         Attaches upstream error logs (if log_fpaths provided), then removes
@@ -882,7 +895,7 @@ class PhotometrySessionGroup:
         Parameters
         ----------
         session_types : tuple of str, optional
-            Session types to keep. Defaults to config values.
+            Session types to keep. Defaults to ``('biased', 'ephys')``.
         exclude_subjects : list of str, optional
             Subjects to exclude. Defaults to config.SUBJECTS_TO_EXCLUDE.
         qc_blockers : set of str, optional
@@ -892,6 +905,15 @@ class PhotometrySessionGroup:
         log_fpaths : list of Path or pd.DataFrame, optional
             Error log sources for collect_session_errors. Defaults to
             [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH].
+        min_performance : float, optional
+            Minimum ``fraction_correct`` for training sessions. Training
+            recordings below this threshold are dropped. Requires
+            ``PERFORMANCE_FPATH`` to exist. No effect on biased/ephys.
+        required_contrasts : set of float, optional
+            Contrast levels (percent) that training sessions must contain.
+            Training recordings from sessions missing any required contrast
+            are dropped. Checked from H5 trial data at extraction time when
+            provided via :meth:`get_response_magnitudes`.
 
         Returns
         -------
@@ -944,6 +966,22 @@ class PhotometrySessionGroup:
         if 'target_NM' in df.columns:
             df = df.loc[df['target_NM'].isin(targetnms)]
 
+        # Filter training sessions by performance
+        if min_performance is not None:
+            from iblnm.config import PERFORMANCE_FPATH
+            if PERFORMANCE_FPATH.exists():
+                df_perf = pd.read_parquet(
+                    PERFORMANCE_FPATH, columns=['eid', 'fraction_correct'],
+                )
+                df = df.merge(df_perf, on='eid', how='left')
+                is_training = df['session_type'] == 'training'
+                meets_perf = df['fraction_correct'] >= min_performance
+                df = df[~is_training | meets_perf]
+                df = df.drop(columns='fraction_correct')
+
+        # Store required_contrasts for downstream use in get_response_magnitudes
+        self._required_contrasts = required_contrasts
+
         self.recordings = df.copy().reset_index(drop=True)
         return self
 
@@ -975,30 +1013,36 @@ class PhotometrySessionGroup:
                 new_group._sessions[eid] = ps
         return new_group
 
-    def get_events(self):
-        """Extract trial-level response magnitudes from pre-computed H5 files.
+    def load_response_traces(self):
+        """Load and cache per-trial response traces from H5 files.
 
-        For each recording and event, computes per-trial response magnitudes
-        in the early response window after masking subsequent events and
-        subtracting baseline.
+        For each recording and event, loads the response xarray from H5,
+        applies ``mask_subsequent_events`` and ``subtract_baseline``, and
+        stores the per-trial traces in ``self.response_traces``.
+
+        The cache is keyed by ``(eid, brain_region, event)`` with values
+        containing ``traces``, ``tpts``, ``meta``, and ``trials``.
 
         Returns
         -------
-        pd.DataFrame
-            One row per (recording × event × trial) with scalar response
-            magnitudes and trial metadata.
+        self
         """
         from pathlib import Path
         from tqdm import tqdm
 
-        rows = []
+        required_contrasts = getattr(self, '_required_contrasts', None)
+        skipped_eids = set()
+        cache = {}
+
         for rec, ps in tqdm(self, total=len(self),
-                            desc="Extracting response magnitudes"):
+                            desc="Loading response traces"):
             eid = rec['eid']
             brain_region = rec['brain_region']
             hemisphere = rec['hemisphere']
             h5_path = Path(self.h5_dir) / f'{eid}.h5'
 
+            if eid in skipped_eids:
+                continue
             if not h5_path.exists():
                 continue
 
@@ -1008,6 +1052,14 @@ class PhotometrySessionGroup:
                     or getattr(ps, 'trials', None) is None):
                 continue
 
+            # Skip training sessions without the full contrast set
+            if (required_contrasts is not None
+                    and rec.get('session_type') == 'training'):
+                session_contrasts = set(ps.trials['contrast'].unique())
+                if not session_contrasts >= required_contrasts:
+                    skipped_eids.add(eid)
+                    continue
+
             available_regions = list(ps.responses.coords['region'].values)
             if brain_region not in available_regions:
                 continue
@@ -1016,22 +1068,14 @@ class PhotometrySessionGroup:
             responses = ps.subtract_baseline(responses)
 
             tpts = responses.coords['time'].values
-            n_trials = len(ps.trials)
-
-            if ('firstMovement_times' in ps.trials.columns
-                    and 'stimOn_times' in ps.trials.columns):
-                reaction_time = (
-                    ps.trials['firstMovement_times'].values
-                    - ps.trials['stimOn_times'].values
-                )
-            else:
-                reaction_time = np.full(n_trials, np.nan)
+            if self.response_traces_tpts is None:
+                self.response_traces_tpts = tpts
 
             meta = {
                 'eid': eid,
                 'subject': rec['subject'],
-                'session_type': rec['session_type'],
-                'NM': rec['NM'],
+                'session_type': rec.get('session_type'),
+                'NM': rec.get('NM'),
                 'target_NM': rec['target_NM'],
                 'brain_region': brain_region,
                 'hemisphere': hemisphere,
@@ -1040,38 +1084,131 @@ class PhotometrySessionGroup:
             for event in RESPONSE_EVENTS:
                 if event not in responses.coords['event'].values:
                     continue
-
                 resp = responses.sel(
                     region=brain_region, event=event,
                 ).values  # (n_trials, n_time)
+                cache[(eid, brain_region, event)] = {
+                    'traces': resp,
+                    'tpts': tpts,
+                    'meta': {**meta, 'event': event},
+                    'trials': ps.trials.copy(),
+                }
 
-                early = compute_response_magnitude(
-                    resp, tpts, RESPONSE_WINDOWS['early'],
+        if skipped_eids:
+            self.recordings = self.recordings[
+                ~self.recordings['eid'].isin(skipped_eids)
+            ].reset_index(drop=True)
+
+        self.response_traces = cache
+        return self
+
+    def flush_response_traces(self):
+        """Free the per-trial trace cache to reclaim memory."""
+        self.response_traces = None
+        self.response_traces_tpts = None
+
+    def get_response_magnitudes(self):
+        """Compute trial-level response magnitudes from the trace cache.
+
+        Calls :meth:`load_response_traces` if traces are not yet cached.
+        For each cached (recording × event), computes scalar magnitudes in
+        the early response window.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per (recording × event × trial) with scalar response
+            magnitudes and trial metadata.
+        """
+        if self.response_traces is None:
+            self.load_response_traces()
+
+        rows = []
+        for (eid, brain_region, event), entry in self.response_traces.items():
+            traces = entry['traces']
+            tpts = entry['tpts']
+            meta = entry['meta']
+            trials = entry['trials']
+            n_trials = len(trials)
+
+            early = compute_response_magnitude(
+                traces, tpts, RESPONSE_WINDOWS['early'],
+            )
+
+            if ('firstMovement_times' in trials.columns
+                    and 'stimOn_times' in trials.columns):
+                reaction_time = (
+                    trials['firstMovement_times'].values
+                    - trials['stimOn_times'].values
                 )
+            else:
+                reaction_time = np.full(n_trials, np.nan)
 
-                for t in range(n_trials):
-                    rows.append({
-                        **meta,
-                        'event': event,
-                        'trial': t,
-                        'stim_side': ps.trials['stim_side'].iloc[t],
-                        'signed_contrast':
-                            ps.trials['signed_contrast'].iloc[t],
-                        'contrast': ps.trials['contrast'].iloc[t],
-                        'choice': ps.trials['choice'].iloc[t],
-                        'feedbackType': ps.trials['feedbackType'].iloc[t],
-                        'probabilityLeft':
-                            ps.trials['probabilityLeft'].iloc[t],
-                        'reaction_time': reaction_time[t],
-                        'response_early': early[t],
-                    })
+            for t in range(n_trials):
+                rows.append({
+                    'eid': meta['eid'],
+                    'subject': meta['subject'],
+                    'session_type': meta.get('session_type'),
+                    'NM': meta.get('NM'),
+                    'target_NM': meta['target_NM'],
+                    'brain_region': meta['brain_region'],
+                    'hemisphere': meta['hemisphere'],
+                    'event': event,
+                    'trial': t,
+                    'stim_side': trials['stim_side'].iloc[t],
+                    'signed_contrast': trials['signed_contrast'].iloc[t],
+                    'contrast': trials['contrast'].iloc[t],
+                    'choice': trials['choice'].iloc[t],
+                    'feedbackType': trials['feedbackType'].iloc[t],
+                    'probabilityLeft': trials['probabilityLeft'].iloc[t],
+                    'reaction_time': reaction_time[t],
+                    'response_early': early[t],
+                })
 
         if not rows:
-            self.events = pd.DataFrame()
-            return self.events
+            self.response_magnitudes = pd.DataFrame()
+            return self.response_magnitudes
 
-        self.events = pd.DataFrame(rows)
-        return self.events
+        self.response_magnitudes = pd.DataFrame(rows)
+        return self.response_magnitudes
+
+    def get_mean_traces(self):
+        """Compute trial-averaged traces from the trace cache.
+
+        Calls :meth:`load_response_traces` if traces are not yet cached.
+        For each cached (recording × event), computes the mean trace across
+        trials via ``np.nanmean``.
+
+        Returns
+        -------
+        pd.DataFrame
+            Long-form DataFrame with columns: eid, subject, target_NM,
+            brain_region, event, time, response.
+        """
+        if self.response_traces is None:
+            self.load_response_traces()
+
+        rows = []
+        for (_eid, _region, _event), entry in self.response_traces.items():
+            traces = entry['traces']
+            tpts = entry['tpts']
+            meta = entry['meta']
+
+            mean_trace = np.nanmean(traces, axis=0)
+
+            for i, t in enumerate(tpts):
+                rows.append({
+                    'eid': meta['eid'],
+                    'subject': meta['subject'],
+                    'target_NM': meta['target_NM'],
+                    'brain_region': meta['brain_region'],
+                    'event': meta['event'],
+                    'time': t,
+                    'response': mean_trace[i],
+                })
+
+        self.mean_traces = pd.DataFrame(rows)
+        return self.mean_traces
 
     def get_response_features(self, nan_handling='drop_sessions',
                               nan_threshold=0.3, **kwargs):
@@ -1111,11 +1248,14 @@ class PhotometrySessionGroup:
         import logging
 
         rows = {}
+        has_fiber_idx = 'fiber_idx' in self.recordings.columns
+
         for rec, ps in self:
             eid = rec['eid']
             brain_region = rec['brain_region']
             hemisphere = rec['hemisphere']
             target_nm = rec['target_NM']
+            fiber_idx = int(rec['fiber_idx']) if has_fiber_idx else 0
 
             # Load H5 if responses not yet available
             if not hasattr(ps, 'responses') or not hasattr(ps, 'trials'):
@@ -1133,7 +1273,7 @@ class PhotometrySessionGroup:
             vec = ps.get_response_vector(
                 brain_region=brain_region, hemisphere=hemisphere, **kwargs,
             )
-            rows[(eid, target_nm)] = vec
+            rows[(eid, target_nm, fiber_idx)] = vec
 
             # Discard raw data to free memory
             del ps.responses
@@ -1144,7 +1284,9 @@ class PhotometrySessionGroup:
             return self.response_features
 
         df = pd.DataFrame(rows).T
-        df.index = pd.MultiIndex.from_tuples(df.index, names=['eid', 'target_NM'])
+        df.index = pd.MultiIndex.from_tuples(
+            df.index, names=['eid', 'target_NM', 'fiber_idx'],
+        )
 
         if nan_handling == 'drop_sessions':
             df = df.dropna()
@@ -1154,6 +1296,50 @@ class PhotometrySessionGroup:
 
         self.response_features = df
         return df
+
+    def get_glm_response_features(self, event_name='stimOn_times',
+                                   weight_by_se=False, min_trials=20):
+        """Build GLM coefficient features for each recording.
+
+        Fits a per-recording OLS model on trial-level responses and uses the
+        regression coefficients as a compact feature vector.
+
+        Parameters
+        ----------
+        event_name : str
+            Event to model (default ``'stimOn_times'``).
+        weight_by_se : bool
+            If True, return t-statistics (coef / SE) instead of raw
+            coefficients.
+        min_trials : int
+            Minimum valid trials per recording.
+
+        Returns
+        -------
+        pd.DataFrame
+            (n_recordings, 7) indexed by ``(eid, target_NM, fiber_idx)``.
+        """
+        from iblnm.analysis import fit_response_glm
+
+        if self.response_magnitudes is None:
+            self.get_response_magnitudes()
+
+        coefs, ses = fit_response_glm(self.response_magnitudes, event_name,
+                                       min_trials=min_trials)
+
+        if len(coefs) == 0:
+            self.glm_response_features = coefs
+            return coefs
+
+        if weight_by_se:
+            result = coefs / ses
+        else:
+            result = coefs
+
+        # Reindex to (eid, target_NM, fiber_idx) dropping brain_region level
+        result = result.droplevel('brain_region')
+        self.glm_response_features = result
+        return result
 
     def response_similarity_matrix(self, **kwargs):
         """Pairwise cosine similarity of response feature vectors.
@@ -1181,7 +1367,7 @@ class PhotometrySessionGroup:
     def decode_target(self, **kwargs):
         """Decode target-NM from response features.
 
-        Creates a ``TargetNMDecoder``, fits it with leave-one-subject-target-out CV,
+        Creates a ``TargetNMDecoder``, fits it with leave-one-subject-out CV,
         and computes feature unique contributions. Stores the decoder as
         ``self.decoder``.
 
@@ -1206,13 +1392,208 @@ class PhotometrySessionGroup:
         labels = self.response_features.index.get_level_values('target_NM')
         labels = pd.Series(labels.values, index=self.response_features.index)
 
-        rec_indexed = self.recordings.set_index(['eid', 'target_NM'])
+        recs = self.recordings.copy()
+        if 'fiber_idx' not in recs.columns:
+            recs['fiber_idx'] = 0
+        idx_cols = ['eid', 'target_NM', 'fiber_idx']
+        rec_indexed = (
+            recs[idx_cols + ['subject']]
+            .drop_duplicates(subset=idx_cols)
+            .set_index(idx_cols)
+        )
         subjects = rec_indexed['subject'].reindex(self.response_features.index)
 
         self.decoder = TargetNMDecoder(self.response_features, labels, subjects)
         self.decoder.fit()
         self.decoder.unique_contribution()
         return self.decoder
+
+    def get_psychometric_features(self, performance_path=None, params=None):
+        """Build psychometric parameter matrix aligned to response_features.
+
+        Parameters
+        ----------
+        performance_path : Path or str, optional
+            Path to performance.pqt. Default: config.PERFORMANCE_FPATH.
+        params : list of str, optional
+            Columns to include from performance data. Default:
+            ``['psych_50_threshold', 'psych_50_bias',
+            'psych_50_lapse_left', 'psych_50_lapse_right']``.
+
+        Returns
+        -------
+        pd.DataFrame
+            (n_recordings, P) aligned to ``self.response_features`` index.
+        """
+        from iblnm.config import PERFORMANCE_FPATH
+
+        if performance_path is None:
+            performance_path = PERFORMANCE_FPATH
+        if params is None:
+            params = [
+                'psych_50_threshold', 'psych_50_bias',
+                'psych_50_lapse_left', 'psych_50_lapse_right',
+            ]
+
+        perf = pd.read_parquet(performance_path)
+
+        # Extract eid from response_features index and merge
+        rf_index = self.response_features.index
+        eids = rf_index.get_level_values('eid')
+        lookup = perf.set_index('eid')[params]
+
+        # Build aligned DataFrame: one row per recording, matching rf_index
+        psych = lookup.reindex(eids)
+        psych.index = rf_index
+
+        self.psychometric_features = psych
+        return psych
+
+    def fit_cca(self, n_components=None, n_permutations=1000, seed=42,
+                **kwargs):
+        """Fit CCA between response features and psychometric parameters.
+
+        Parameters
+        ----------
+        n_components : int or None
+            Number of canonical variates. Default: min(K, P, n).
+        n_permutations : int
+            Permutation test iterations. Default 1000.
+        seed : int
+            RNG seed. Default 42.
+        **kwargs
+            Forwarded to ``get_response_features`` /
+            ``get_psychometric_features`` if not yet computed.
+
+        Returns
+        -------
+        CCAResult
+        """
+        from iblnm.analysis import fit_cca
+
+        if self.response_features is None:
+            self.get_response_features(**kwargs)
+        if self.psychometric_features is None:
+            self.get_psychometric_features(**kwargs)
+
+        X = self.response_features
+        Y = self.psychometric_features
+
+        # Align on shared index
+        shared = X.index.intersection(Y.index)
+        X = X.loc[shared]
+        Y = Y.loc[shared]
+
+        session_labels = pd.Series(
+            shared.get_level_values('eid'), index=shared,
+        )
+
+        self.cca_result = fit_cca(
+            X, Y,
+            n_components=n_components,
+            n_permutations=n_permutations,
+            session_labels=session_labels,
+            seed=seed,
+        )
+        return self.cca_result
+
+    def fit_cohort_cca(self, n_permutations=1000, seed=42,
+                       min_recordings=10, exclude_intercept=True):
+        """Fit CCA separately per target-NM cohort.
+
+        Parameters
+        ----------
+        n_permutations : int
+            Permutation test iterations per cohort.
+        seed : int
+            RNG seed.
+        min_recordings : int
+            Minimum recordings to include a cohort.
+        exclude_intercept : bool
+            If True, drop the ``intercept`` column from neural features.
+
+        Returns
+        -------
+        dict[str, CCAResult]
+        """
+        from sklearn.preprocessing import StandardScaler
+        from iblnm.analysis import fit_cca
+
+        if self.glm_response_features is None:
+            raise ValueError("glm_response_features is None")
+        if self.psychometric_features is None:
+            raise ValueError("psychometric_features is None")
+
+        X = self.glm_response_features.copy()
+        Y = self.psychometric_features.copy()
+
+        if exclude_intercept and 'intercept' in X.columns:
+            X = X.drop(columns=['intercept'])
+
+        # Align on shared index
+        shared = X.index.intersection(Y.index)
+        X = X.loc[shared]
+        Y = Y.loc[shared]
+
+        # Group by target_NM
+        target_nms = shared.get_level_values('target_NM')
+
+        results = {}
+        data = {}
+
+        for tnm in target_nms.unique():
+            mask = target_nms == tnm
+            X_cohort = X.loc[mask]
+            Y_cohort = Y.loc[mask]
+
+            # Drop NaN rows
+            valid = X_cohort.notna().all(axis=1) & Y_cohort.notna().all(axis=1)
+            X_cohort = X_cohort.loc[valid]
+            Y_cohort = Y_cohort.loc[valid]
+
+            if len(X_cohort) < min_recordings:
+                continue
+
+            # Drop constant Y columns
+            y_std = Y_cohort.std()
+            varying = y_std[y_std > 0].index
+            if len(varying) == 0:
+                continue
+            Y_cohort = Y_cohort[varying]
+
+            # Standardize
+            x_scaler = StandardScaler()
+            y_scaler = StandardScaler()
+            X_z = x_scaler.fit_transform(X_cohort.values)
+            Y_z = y_scaler.fit_transform(Y_cohort.values)
+
+            X_z_df = pd.DataFrame(X_z, columns=X_cohort.columns,
+                                  index=X_cohort.index)
+            Y_z_df = pd.DataFrame(Y_z, columns=Y_cohort.columns,
+                                  index=Y_cohort.index)
+
+            session_labels = pd.Series(
+                X_cohort.index.get_level_values('eid'),
+                index=X_cohort.index,
+            )
+
+            result = fit_cca(
+                X_z_df, Y_z_df,
+                n_components=1,
+                n_permutations=n_permutations,
+                session_labels=session_labels,
+                seed=seed,
+                scale=False,
+            )
+            results[tnm] = result
+            data[tnm] = (X_z, Y_z)
+
+        if not results:
+            raise ValueError("No cohort has enough recordings")
+
+        self.cohort_cca_results = results
+        self.cohort_cca_data = data
+        return results
 
     def fit_lmm(self, response_col='response_early',
                  min_subjects=2, re_formulas=None):
@@ -1225,8 +1606,8 @@ class PhotometrySessionGroup:
         simplest), the method selects the most complex formula that converges
         for **all** groups and refits everyone with that formula.
 
-        Requires ``self.events`` to be populated (via ``get_events()`` or
-        direct assignment).
+        Requires ``self.response_magnitudes`` to be populated (via
+        ``get_response_magnitudes()`` or direct assignment).
 
         Parameters
         ----------
@@ -1253,12 +1634,12 @@ class PhotometrySessionGroup:
         if re_formulas is None:
             re_formulas = ['1']
 
-        if self.events is None:
+        if self.response_magnitudes is None:
             raise ValueError(
-                "events not populated. Call get_events() first."
+                "response_magnitudes not populated. Call get_response_magnitudes() first."
             )
 
-        df = add_relative_contrast(self.events.copy())
+        df = add_relative_contrast(self.response_magnitudes.copy())
         df = df.query('probabilityLeft == 0.5')
         df = df.dropna(subset=[response_col])
         df = df.query('choice != 0 and reaction_time > 0.05')
@@ -1326,5 +1707,185 @@ class PhotometrySessionGroup:
         else:
             self.lmm_coefficients = pd.DataFrame()
 
+        return results
+
+    def enrich_wheel_kinematics(self):
+        """Add wheel kinematics columns to response_magnitudes from H5 files.
+
+        Adds ``reaction_time``, ``movement_time``, and ``peak_velocity``
+        columns, computed de-novo from H5 trial times and wheel velocity.
+
+        Requires ``self.response_magnitudes`` to be populated.
+
+        Returns
+        -------
+        self
+        """
+        import h5py
+        from pathlib import Path
+
+        if self.response_magnitudes is None:
+            raise ValueError(
+                "response_magnitudes not populated. "
+                "Call get_response_magnitudes() first."
+            )
+
+        df = self.response_magnitudes
+
+        # Initialize new columns
+        if 'peak_velocity' not in df.columns:
+            df['peak_velocity'] = np.nan
+        if 'movement_time' not in df.columns:
+            df['movement_time'] = np.nan
+
+        for eid in df['eid'].unique():
+            h5_path = Path(self.h5_dir) / f'{eid}.h5'
+            if not h5_path.exists():
+                continue
+
+            with h5py.File(h5_path, 'r') as f:
+                # Load trial times for de-novo computation
+                if 'trials' not in f:
+                    continue
+                stim_times = f['trials/stimOn_times'][:]
+                fm_times = f['trials/firstMovement_times'][:]
+                fb_times = f['trials/feedback_times'][:]
+
+                # Compute reaction_time and movement_time
+                reaction_time = fm_times - stim_times
+                movement_time = fb_times - fm_times
+
+                # Load wheel velocity if available
+                has_wheel = 'wheel' in f
+                if has_wheel:
+                    wheel_vel = f['wheel/velocity'][:]
+                else:
+                    wheel_vel = None
+
+            eid_mask = df['eid'] == eid
+            eid_indices = df.index[eid_mask]
+
+            # Map trial indices to rows
+            for idx in eid_indices:
+                trial = df.loc[idx, 'trial']
+                if trial < len(reaction_time):
+                    df.loc[idx, 'reaction_time'] = reaction_time[trial]
+                    df.loc[idx, 'movement_time'] = movement_time[trial]
+                    if wheel_vel is not None and trial < len(wheel_vel):
+                        trial_vel = wheel_vel[trial]
+                        valid = trial_vel[~np.isnan(trial_vel)]
+                        if len(valid) > 0:
+                            df.loc[idx, 'peak_velocity'] = float(
+                                np.max(np.abs(valid)))
+
+        self.response_magnitudes = df
+        return self
+
+    def fit_wheel_lmm(self, response_col='response_early', min_subjects=2):
+        """Fit nested LMMs for wheel kinematics predicted by NM activity.
+
+        For each (target_NM, contrast_level, dv), fits:
+          Base:  ``dv ~ C(stim_side) * C(choice) + (1 | subject)``
+          Full:  ``dv ~ C(stim_side) * C(choice) + response_early + (1|subject)``
+
+        Requires ``response_magnitudes`` with ``reaction_time``,
+        ``movement_time``, and ``peak_velocity`` columns (call
+        ``enrich_wheel_kinematics()`` first).
+
+        Parameters
+        ----------
+        response_col : str
+            Column name for NM response magnitude.
+        min_subjects : int
+            Minimum subjects per group.
+
+        Returns
+        -------
+        dict
+            Keys: ``(target_NM, contrast, dv_name)`` tuples.
+            Values: ``WheelLMMResult`` objects.
+        """
+        from iblnm.analysis import fit_wheel_kinematics_lmm
+
+        if self.response_magnitudes is None:
+            raise ValueError(
+                "response_magnitudes not populated. "
+                "Call get_response_magnitudes() first."
+            )
+
+        dvs = ['reaction_time', 'movement_time', 'peak_velocity']
+        df = self.response_magnitudes.copy()
+
+        # Filter to stimOn event, unbiased blocks, valid trials
+        df = df[df['event'] == 'stimOn_times']
+        df = df[df['probabilityLeft'] == 0.5]
+        df = df[df['choice'] != 0]
+        df = df.dropna(subset=[response_col])
+
+        # Lateralize stim_side relative to hemisphere
+        # stim_side is already 'left'/'right' — convert to contra/ipsi
+        if 'hemisphere' in df.columns:
+            contra_map = {'l': 'right', 'r': 'left'}
+            df['stim_side_lateral'] = df.apply(
+                lambda row: 'contra' if row['stim_side'] == contra_map.get(
+                    row['hemisphere'], '') else 'ipsi',
+                axis=1,
+            )
+        else:
+            df['stim_side_lateral'] = df['stim_side']
+        df['stim_side'] = df['stim_side_lateral']
+
+        results = {}
+        summary_rows = []
+
+        for target_nm in df['target_NM'].unique():
+            df_target = df[df['target_NM'] == target_nm]
+
+            for contrast in sorted(df_target['contrast'].unique()):
+                df_c = df_target[np.isclose(df_target['contrast'], contrast)]
+
+                if df_c['subject'].nunique() < min_subjects:
+                    continue
+
+                for dv in dvs:
+                    if dv not in df_c.columns:
+                        continue
+                    df_dv = df_c.dropna(subset=[dv])
+                    if len(df_dv) < 10:
+                        continue
+
+                    result = fit_wheel_kinematics_lmm(
+                        df_dv, dv_col=dv, response_col=response_col,
+                        target_nm=target_nm, contrast=contrast,
+                        min_subjects=min_subjects,
+                    )
+
+                    if result is not None:
+                        key = (target_nm, contrast, dv)
+                        results[key] = result
+                        summary_rows.append({
+                            'target_NM': target_nm,
+                            'contrast': contrast,
+                            'dv': dv,
+                            'delta_r2': result.delta_r2,
+                            'base_r2_marginal': result.base_r2['marginal'],
+                            'full_r2_marginal': result.full_r2['marginal'],
+                            'lrt_chi2': result.lrt_chi2,
+                            'lrt_pvalue': result.lrt_pvalue,
+                            'nm_coefficient': result.nm_coefficient,
+                            'nm_pvalue': result.nm_pvalue,
+                            'n_trials': result.n_trials,
+                            'n_subjects': result.n_subjects,
+                        })
+
+        self.wheel_lmm_results = results
+        self.wheel_lmm_summary = (
+            pd.DataFrame(summary_rows) if summary_rows
+            else pd.DataFrame(columns=[
+                'target_NM', 'contrast', 'dv', 'delta_r2',
+                'lrt_pvalue', 'nm_coefficient', 'nm_pvalue',
+                'n_trials', 'n_subjects',
+            ])
+        )
         return results
 
