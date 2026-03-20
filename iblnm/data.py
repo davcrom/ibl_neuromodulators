@@ -1799,11 +1799,11 @@ class PhotometrySessionGroup:
 
         return results
 
-    def enrich_wheel_kinematics(self):
-        """Add wheel kinematics columns to response_magnitudes from H5 files.
+    def enrich_peak_velocity(self):
+        """Add peak wheel velocity to response_magnitudes from H5 files.
 
-        Adds ``reaction_time``, ``movement_time``, and ``peak_velocity``
-        columns, computed de-novo from H5 trial times and wheel velocity.
+        Loads per-trial wheel velocity from H5 and computes the maximum
+        absolute velocity for each trial.
 
         Requires ``self.response_magnitudes`` to be populated.
 
@@ -1813,6 +1813,7 @@ class PhotometrySessionGroup:
         """
         import h5py
         from pathlib import Path
+        from tqdm import tqdm
 
         if self.response_magnitudes is None:
             raise ValueError(
@@ -1822,51 +1823,31 @@ class PhotometrySessionGroup:
 
         df = self.response_magnitudes
 
-        # Initialize new columns
         if 'peak_velocity' not in df.columns:
             df['peak_velocity'] = np.nan
-        if 'movement_time' not in df.columns:
-            df['movement_time'] = np.nan
 
-        for eid in df['eid'].unique():
+        eids = df['eid'].unique()
+        for eid in tqdm(eids, desc="Enriching peak velocity"):
             h5_path = Path(self.h5_dir) / f'{eid}.h5'
             if not h5_path.exists():
                 continue
 
             with h5py.File(h5_path, 'r') as f:
-                # Load trial times for de-novo computation
-                if 'trials' not in f:
+                if 'wheel' not in f:
                     continue
-                stim_times = f['trials/stimOn_times'][:]
-                fm_times = f['trials/firstMovement_times'][:]
-                fb_times = f['trials/feedback_times'][:]
-
-                # Compute reaction_time and movement_time
-                reaction_time = fm_times - stim_times
-                movement_time = fb_times - fm_times
-
-                # Load wheel velocity if available
-                has_wheel = 'wheel' in f
-                if has_wheel:
-                    wheel_vel = f['wheel/velocity'][:]
-                else:
-                    wheel_vel = None
+                wheel_vel = f['wheel/velocity'][:]
 
             eid_mask = df['eid'] == eid
             eid_indices = df.index[eid_mask]
 
-            # Map trial indices to rows
             for idx in eid_indices:
                 trial = df.loc[idx, 'trial']
-                if trial < len(reaction_time):
-                    df.loc[idx, 'reaction_time'] = reaction_time[trial]
-                    df.loc[idx, 'movement_time'] = movement_time[trial]
-                    if wheel_vel is not None and trial < len(wheel_vel):
-                        trial_vel = wheel_vel[trial]
-                        valid = trial_vel[~np.isnan(trial_vel)]
-                        if len(valid) > 0:
-                            df.loc[idx, 'peak_velocity'] = float(
-                                np.max(np.abs(valid)))
+                if trial < len(wheel_vel):
+                    trial_vel = wheel_vel[trial]
+                    valid = trial_vel[~np.isnan(trial_vel)]
+                    if len(valid) > 0:
+                        df.loc[idx, 'peak_velocity'] = float(
+                            np.max(np.abs(valid)))
 
         self.response_magnitudes = df
         return self
@@ -1880,7 +1861,7 @@ class PhotometrySessionGroup:
 
         Requires ``response_magnitudes`` with ``reaction_time``,
         ``movement_time``, and ``peak_velocity`` columns (call
-        ``enrich_wheel_kinematics()`` first).
+        ``enrich_peak_velocity()`` first).
 
         Parameters
         ----------

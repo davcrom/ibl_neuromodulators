@@ -2533,9 +2533,9 @@ def _write_h5_with_wheel(path, n_trials=100, seed=42):
         w_grp.attrs['t1_event'] = 'feedback_times'
 
 
-class TestEnrichWheelKinematics:
+class TestEnrichPeakVelocity:
 
-    def test_adds_columns(self, tmp_path):
+    def test_adds_peak_velocity(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=2, regions_per=1)
         for i in range(2):
@@ -2543,9 +2543,8 @@ class TestEnrichWheelKinematics:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         group.get_response_magnitudes()
-        group.enrich_wheel_kinematics()
+        group.enrich_peak_velocity()
         df = group.response_magnitudes
-        assert 'movement_time' in df.columns
         assert 'peak_velocity' in df.columns
 
     def test_peak_velocity_is_positive(self, tmp_path):
@@ -2555,22 +2554,23 @@ class TestEnrichWheelKinematics:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         group.get_response_magnitudes()
-        group.enrich_wheel_kinematics()
+        group.enrich_peak_velocity()
         valid = group.response_magnitudes['peak_velocity'].dropna()
         assert (valid >= 0).all()
 
-    def test_reaction_time_computed_denovo(self, tmp_path):
-        """reaction_time is freshly computed from H5 trial times."""
+    def test_does_not_modify_timing(self, tmp_path):
+        """enrich_peak_velocity should not touch reaction_time or movement_time."""
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5_with_wheel(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        group.load_response_traces()
         group.get_response_magnitudes()
-        # Overwrite existing reaction_time with garbage
         group.response_magnitudes['reaction_time'] = -999.0
-        group.enrich_wheel_kinematics()
-        assert (group.response_magnitudes['reaction_time'] != -999.0).any()
+        group.response_magnitudes['movement_time'] = -999.0
+        group.enrich_peak_velocity()
+        assert (group.response_magnitudes['reaction_time'] == -999.0).all()
+        assert (group.response_magnitudes['movement_time'] == -999.0).all()
+        assert 'peak_velocity' in group.response_magnitudes.columns
 
     def test_skips_sessions_without_wheel(self, tmp_path):
         """Sessions without wheel data get NaN for peak_velocity."""
@@ -2582,7 +2582,7 @@ class TestEnrichWheelKinematics:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         group.get_response_magnitudes()
-        group.enrich_wheel_kinematics()
+        group.enrich_peak_velocity()
         df = group.response_magnitudes
         eid0_pv = df[df['eid'] == 'eid-0']['peak_velocity']
         eid1_pv = df[df['eid'] == 'eid-1']['peak_velocity']
@@ -2602,7 +2602,7 @@ class TestFitWheelLMM:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         group.get_response_magnitudes()
-        group.enrich_wheel_kinematics()
+        group.enrich_peak_velocity()
         group.fit_wheel_lmm()
         assert group.wheel_lmm_results is not None
         assert group.wheel_lmm_summary is not None
@@ -2616,7 +2616,7 @@ class TestFitWheelLMM:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         group.get_response_magnitudes()
-        group.enrich_wheel_kinematics()
+        group.enrich_peak_velocity()
         group.fit_wheel_lmm()
         if len(group.wheel_lmm_summary) > 0:
             expected = {'target_NM', 'contrast', 'dv', 'delta_r2',
