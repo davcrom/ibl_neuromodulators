@@ -1743,8 +1743,16 @@ class PhotometrySessionGroup:
             raise ValueError(
                 "response_magnitudes not populated. Call get_response_magnitudes() first."
             )
+        if self.trial_timing is None:
+            raise ValueError(
+                "trial_timing not populated. Call get_response_magnitudes() first."
+            )
 
         df = add_relative_contrast(self.response_magnitudes.copy())
+        df = df.merge(
+            self.trial_timing[['eid', 'trial', 'event', 'reaction_time']],
+            on=['eid', 'trial', 'event'], how='left',
+        )
         df = df.query('probabilityLeft == 0.5')
         df = df.dropna(subset=[response_col])
         df = df.query('choice != 0 and reaction_time > 0.05')
@@ -1873,9 +1881,8 @@ class PhotometrySessionGroup:
           Base:  ``dv ~ C(stim_side) * C(choice) + (1 | subject)``
           Full:  ``dv ~ C(stim_side) * C(choice) + response_early + (1|subject)``
 
-        Requires ``response_magnitudes`` with ``reaction_time``,
-        ``movement_time``, and ``peak_velocity`` columns (call
-        ``enrich_peak_velocity()`` first).
+        Requires ``response_magnitudes``, ``trial_timing``, and
+        ``peak_velocity`` to be populated.
 
         Parameters
         ----------
@@ -1898,9 +1905,27 @@ class PhotometrySessionGroup:
                 "response_magnitudes not populated. "
                 "Call get_response_magnitudes() first."
             )
+        if self.trial_timing is None:
+            raise ValueError(
+                "trial_timing not populated. "
+                "Call get_response_magnitudes() first."
+            )
+        if self.peak_velocity is None:
+            raise ValueError(
+                "peak_velocity not populated. "
+                "Call enrich_peak_velocity() first."
+            )
 
         dvs = ['reaction_time', 'movement_time', 'peak_velocity']
         df = self.response_magnitudes.copy()
+        df = df.merge(
+            self.trial_timing[['eid', 'trial', 'event', 'reaction_time', 'movement_time']],
+            on=['eid', 'trial', 'event'], how='left',
+        )
+        df = df.merge(
+            self.peak_velocity[['eid', 'trial', 'peak_velocity']],
+            on=['eid', 'trial'], how='left',
+        )
 
         # Filter to stimOn event, unbiased blocks, valid trials
         df = df[df['event'] == 'stimOn_times']

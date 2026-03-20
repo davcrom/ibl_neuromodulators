@@ -1991,6 +1991,12 @@ def _make_group_with_events():
 
     df_events = pd.DataFrame(rows)
 
+    # Separate trial_timing from response_magnitudes
+    timing_cols = ['eid', 'trial', 'event', 'reaction_time']
+    trial_timing = df_events[timing_cols].copy()
+    trial_timing['movement_time'] = 0.15
+    df_events = df_events.drop(columns=['reaction_time'])
+
     # Build minimal recordings DataFrame
     rec_rows = []
     for target_nm in target_nms:
@@ -2011,6 +2017,7 @@ def _make_group_with_events():
 
     group = PhotometrySessionGroup(recs, one=MagicMock())
     group.response_magnitudes = df_events
+    group.trial_timing = trial_timing
     return group
 
 
@@ -2067,6 +2074,12 @@ class TestFitLMM:
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         group = PhotometrySessionGroup(recs, one=MagicMock())
         with pytest.raises(ValueError, match='response_magnitudes'):
+            group.fit_lmm()
+
+    def test_requires_trial_timing(self):
+        group = _make_group_with_events()
+        group.trial_timing = None
+        with pytest.raises(ValueError, match='trial_timing'):
             group.fit_lmm()
 
     def test_re_formulas_default_intercept_only(self):
@@ -2619,6 +2632,19 @@ class TestEnrichPeakVelocity:
 
 
 class TestFitWheelLMM:
+
+    def test_requires_peak_velocity(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=4, regions_per=1)
+        for i in range(4):
+            _write_h5_with_wheel(
+                tmp_path / f'eid-{i}.h5', n_trials=100, seed=i)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.load_response_traces()
+        group.get_response_magnitudes()
+        # Don't call enrich_peak_velocity
+        with pytest.raises(ValueError, match='peak_velocity'):
+            group.fit_wheel_lmm()
 
     def test_returns_results(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
