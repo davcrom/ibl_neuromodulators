@@ -1310,81 +1310,14 @@ def feature_unique_contribution(response_matrix, labels, subjects,
 # =============================================================================
 
 
-class WheelLMMResult:
-    """Container for a nested LMM comparison (base vs full with NM predictor).
-
-    Attributes
-    ----------
-    dv : str
-        Dependent variable name.
-    target_nm : str
-        Target-NM group.
-    contrast : float
-        Contrast level.
-    base_r2 : dict
-        Nakagawa R² for base model {'marginal', 'conditional'}.
-    full_r2 : dict
-        Nakagawa R² for full model {'marginal', 'conditional'}.
-    delta_r2 : float
-        full_r2['marginal'] - base_r2['marginal'].
-    lrt_chi2 : float
-        Likelihood ratio test statistic.
-    lrt_pvalue : float
-        LRT p-value (chi2, df=1).
-    nm_coefficient : float
-        Fixed-effect coefficient for the NM predictor in the full model.
-    nm_pvalue : float
-        p-value for the NM coefficient.
-    n_trials : int
-    n_subjects : int
-    """
-
-    def __init__(self, dv, target_nm, contrast, base_r2, full_r2,
-                 delta_r2, lrt_chi2, lrt_pvalue, nm_coefficient, nm_pvalue,
-                 n_trials, n_subjects):
-        self.dv = dv
-        self.target_nm = target_nm
-        self.contrast = contrast
-        self.base_r2 = base_r2
-        self.full_r2 = full_r2
-        self.delta_r2 = delta_r2
-        self.lrt_chi2 = lrt_chi2
-        self.lrt_pvalue = lrt_pvalue
-        self.nm_coefficient = nm_coefficient
-        self.nm_pvalue = nm_pvalue
-        self.n_trials = n_trials
-        self.n_subjects = n_subjects
-
-
-def _compute_nakagawa_r2(result, df, response_col):
-    """Compute Nakagawa & Schielzeth R² for a fitted MixedLM.
-
-    Returns dict with 'marginal' and 'conditional' R².
-    """
-    y = df[response_col].values
-    var_y = np.var(y)
-    if var_y == 0:
-        return {'marginal': 0.0, 'conditional': 0.0}
-
-    fe_params = result.fe_params.values
-    exog = result.model.exog
-    y_pred_fe = exog @ fe_params
-    y_pred_full = result.fittedvalues.values
-
-    var_fixed = np.var(y_pred_fe)
-    var_random = np.var(y_pred_full - y_pred_fe)
-
-    r2_m = float(np.clip(var_fixed / var_y, 0, 1))
-    r2_c = float(np.clip((var_fixed + var_random) / var_y, 0, 1))
-    return {'marginal': r2_m, 'conditional': r2_c}
-
-
-def fit_wheel_kinematics_lmm(df, dv_col, response_col='response_early',
-                              target_nm='', contrast=0.0, min_subjects=2):
+def fit_wheel_lmm(df, dv_col, response_col='response_early',
+                   target_nm='', contrast=0.0, min_subjects=2):
     """Fit nested LMMs comparing base (task structure) vs full (+ NM predictor).
 
     Base:  ``dv ~ C(stim_side) * C(choice) + (1 | subject)``
-    Full:  ``dv ~ C(stim_side) * C(choice) + response_early + (1 | subject)``
+    Full:  ``dv ~ C(stim_side) * C(choice) + response_col + (1 | subject)``
+
+    Uses ML (not REML) estimation so the likelihood ratio test is valid.
 
     Parameters
     ----------
@@ -1404,11 +1337,9 @@ def fit_wheel_kinematics_lmm(df, dv_col, response_col='response_early',
 
     Returns
     -------
-    WheelLMMResult or None
+    dict or None
         None if fewer than min_subjects or model fails to converge.
     """
-    import statsmodels.formula.api as smf
-    from statsmodels.tools.sm_exceptions import ConvergenceWarning
     from scipy.stats import chi2
 
     df = df.dropna(subset=[dv_col, response_col]).copy()
@@ -1425,55 +1356,38 @@ def fit_wheel_kinematics_lmm(df, dv_col, response_col='response_early',
     base_formula = f'{dv_col} ~ C(stim_side) * C(choice)'
     full_formula = f'{dv_col} ~ C(stim_side) * C(choice) + {response_col}'
 
-    def _fit(formula):
-        try:
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter('always')
-                model = smf.mixedlm(
-                    formula, df, groups=df['subject'], re_formula='1',
-                )
-                result = model.fit(reml=False)  # ML for LRT comparison
-            fatal = any(
-                issubclass(w.category, ConvergenceWarning)
-                and 'failed to converge' in str(w.message).lower()
-                for w in caught
-            )
-            if fatal:
-                return None
-            return result
-        except Exception:
-            return None
+    base_lmm = _fit_lmm(base_formula, df, groups=df['subject'],
+                          re_formula='1', reml=False)
+    full_lmm = _fit_lmm(full_formula, df, groups=df['subject'],
+                          re_formula='1', reml=False)
 
-    base_result = _fit(base_formula)
-    full_result = _fit(full_formula)
-
-    if base_result is None or full_result is None:
+    if base_lmm is None or full_lmm is None:
         return None
 
-    base_r2 = _compute_nakagawa_r2(base_result, df, dv_col)
-    full_r2 = _compute_nakagawa_r2(full_result, df, dv_col)
+    base_r2 = base_lmm.variance_explained
+    full_r2 = full_lmm.variance_explained
     delta_r2 = full_r2['marginal'] - base_r2['marginal']
 
     # Likelihood ratio test
-    lrt_stat = 2 * (full_result.llf - base_result.llf)
+    lrt_stat = 2 * (full_lmm.result.llf - base_lmm.result.llf)
     lrt_stat = max(lrt_stat, 0.0)  # numerical floor
     lrt_p = float(chi2.sf(lrt_stat, df=1))
 
     # NM coefficient from full model
-    nm_coef = float(full_result.fe_params[response_col])
-    nm_p = float(full_result.pvalues[response_col])
+    nm_coef = float(full_lmm.result.fe_params[response_col])
+    nm_p = float(full_lmm.result.pvalues[response_col])
 
-    return WheelLMMResult(
-        dv=dv_col,
-        target_nm=target_nm,
-        contrast=contrast,
-        base_r2=base_r2,
-        full_r2=full_r2,
-        delta_r2=delta_r2,
-        lrt_chi2=float(lrt_stat),
-        lrt_pvalue=lrt_p,
-        nm_coefficient=nm_coef,
-        nm_pvalue=nm_p,
-        n_trials=len(df),
-        n_subjects=df['subject'].nunique(),
-    )
+    return {
+        'dv': dv_col,
+        'target_nm': target_nm,
+        'contrast': contrast,
+        'base_r2_marginal': base_r2['marginal'],
+        'full_r2_marginal': full_r2['marginal'],
+        'delta_r2': delta_r2,
+        'lrt_chi2': float(lrt_stat),
+        'lrt_pvalue': lrt_p,
+        'nm_coefficient': nm_coef,
+        'nm_pvalue': nm_p,
+        'n_trials': len(df),
+        'n_subjects': df['subject'].nunique(),
+    }

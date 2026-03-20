@@ -1142,63 +1142,64 @@ def _make_wheel_lmm_data(n_subjects=3, n_per_subject=80, seed=42):
     return pd.DataFrame(rows)
 
 
-class TestFitWheelKinematicsLMM:
+class TestFitWheelLMM:
 
-    def test_returns_wheel_lmm_result(self):
-        from iblnm.analysis import fit_wheel_kinematics_lmm, WheelLMMResult
+    def test_returns_dict(self):
+        from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data()
-        result = fit_wheel_kinematics_lmm(df, dv_col='reaction_time',
-                                           response_col='response_early')
-        assert isinstance(result, WheelLMMResult)
+        result = fit_wheel_lmm(df, dv_col='reaction_time',
+                                response_col='response_early')
+        assert isinstance(result, dict)
+        assert 'delta_r2' in result
+        assert 'lrt_pvalue' in result
 
     def test_has_expected_fields(self):
-        from iblnm.analysis import fit_wheel_kinematics_lmm
+        from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data()
-        result = fit_wheel_kinematics_lmm(df, dv_col='reaction_time',
-                                           response_col='response_early')
-        assert result.dv == 'reaction_time'
-        assert result.delta_r2 is not None
-        assert result.lrt_pvalue is not None
-        assert result.nm_coefficient is not None
-        assert result.n_trials > 0
-        assert result.n_subjects == 3
+        result = fit_wheel_lmm(df, dv_col='reaction_time',
+                                response_col='response_early')
+        assert result['dv'] == 'reaction_time'
+        assert result['delta_r2'] is not None
+        assert result['lrt_pvalue'] is not None
+        assert result['nm_coefficient'] is not None
+        assert result['n_trials'] > 0
+        assert result['n_subjects'] == 3
 
     def test_r2_values_valid(self):
-        from iblnm.analysis import fit_wheel_kinematics_lmm
+        from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data()
-        result = fit_wheel_kinematics_lmm(df, dv_col='reaction_time',
-                                           response_col='response_early')
-        assert 0 <= result.base_r2['marginal'] <= 1
-        assert 0 <= result.full_r2['marginal'] <= 1
-        assert 0 <= result.lrt_pvalue <= 1
+        result = fit_wheel_lmm(df, dv_col='reaction_time',
+                                response_col='response_early')
+        assert 0 <= result['base_r2_marginal'] <= 1
+        assert 0 <= result['full_r2_marginal'] <= 1
+        assert 0 <= result['lrt_pvalue'] <= 1
 
     def test_detects_known_nm_effect(self):
         """Data has known positive relationship between response_early and RT."""
-        from iblnm.analysis import fit_wheel_kinematics_lmm
+        from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data(n_subjects=5, n_per_subject=200, seed=0)
-        # Filter to one contrast to match actual usage
         df_c = df[np.isclose(df['contrast'], 0.125)]
-        result = fit_wheel_kinematics_lmm(df_c, dv_col='reaction_time',
-                                           response_col='response_early')
+        result = fit_wheel_lmm(df_c, dv_col='reaction_time',
+                                response_col='response_early')
         assert result is not None
-        assert result.nm_coefficient > 0
-        assert result.lrt_pvalue < 0.05
+        assert result['nm_coefficient'] > 0
+        assert result['lrt_pvalue'] < 0.05
 
     def test_insufficient_subjects_returns_none(self):
-        from iblnm.analysis import fit_wheel_kinematics_lmm
+        from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data(n_subjects=1, n_per_subject=50)
-        result = fit_wheel_kinematics_lmm(df, dv_col='reaction_time',
-                                           response_col='response_early')
+        result = fit_wheel_lmm(df, dv_col='reaction_time',
+                                response_col='response_early')
         assert result is None
 
     def test_delta_r2_positive_with_true_effect(self):
         """When NM truly predicts DV, delta R² should be positive."""
-        from iblnm.analysis import fit_wheel_kinematics_lmm
+        from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data(n_subjects=5, n_per_subject=200, seed=0)
         df_c = df[np.isclose(df['contrast'], 0.125)]
-        result = fit_wheel_kinematics_lmm(df_c, dv_col='reaction_time',
-                                           response_col='response_early')
-        assert result.delta_r2 > 0
+        result = fit_wheel_lmm(df_c, dv_col='reaction_time',
+                                response_col='response_early')
+        assert result['delta_r2'] > 0
 
 
 class TestCCAPermutation:

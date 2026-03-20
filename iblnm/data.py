@@ -1883,9 +1883,10 @@ class PhotometrySessionGroup:
         -------
         dict
             Keys: ``(target_NM, contrast, dv_name)`` tuples.
-            Values: ``WheelLMMResult`` objects.
+            Values: dict with comparison results.
         """
-        from iblnm.analysis import fit_wheel_kinematics_lmm
+        from iblnm.analysis import fit_wheel_lmm as _fit_wheel_lmm
+        from tqdm import tqdm
 
         if self.response_magnitudes is None:
             raise ValueError(
@@ -1915,26 +1916,28 @@ class PhotometrySessionGroup:
             df['stim_side_lateral'] = df['stim_side']
         df['stim_side'] = df['stim_side_lateral']
 
-        results = {}
-        summary_rows = []
-
+        # Build list of (target_nm, contrast, dv, df_dv) jobs
+        jobs = []
         for target_nm in df['target_NM'].unique():
             df_target = df[df['target_NM'] == target_nm]
-
             for contrast in sorted(df_target['contrast'].unique()):
                 df_c = df_target[np.isclose(df_target['contrast'], contrast)]
-
                 if df_c['subject'].nunique() < min_subjects:
                     continue
-
                 for dv in dvs:
                     if dv not in df_c.columns:
                         continue
                     df_dv = df_c.dropna(subset=[dv])
                     if len(df_dv) < 10:
                         continue
+                    jobs.append((target_nm, contrast, dv, df_dv))
 
-                    result = fit_wheel_kinematics_lmm(
+        results = {}
+        summary_rows = []
+
+        for target_nm, contrast, dv, df_dv in tqdm(
+                jobs, desc="Fitting wheel LMMs"):
+                    result = _fit_wheel_lmm(
                         df_dv, dv_col=dv, response_col=response_col,
                         target_nm=target_nm, contrast=contrast,
                         min_subjects=min_subjects,
@@ -1947,15 +1950,12 @@ class PhotometrySessionGroup:
                             'target_NM': target_nm,
                             'contrast': contrast,
                             'dv': dv,
-                            'delta_r2': result.delta_r2,
-                            'base_r2_marginal': result.base_r2['marginal'],
-                            'full_r2_marginal': result.full_r2['marginal'],
-                            'lrt_chi2': result.lrt_chi2,
-                            'lrt_pvalue': result.lrt_pvalue,
-                            'nm_coefficient': result.nm_coefficient,
-                            'nm_pvalue': result.nm_pvalue,
-                            'n_trials': result.n_trials,
-                            'n_subjects': result.n_subjects,
+                            **{k: result[k] for k in [
+                                'delta_r2', 'base_r2_marginal',
+                                'full_r2_marginal', 'lrt_chi2', 'lrt_pvalue',
+                                'nm_coefficient', 'nm_pvalue', 'n_trials',
+                                'n_subjects',
+                            ]},
                         })
 
         self.wheel_lmm_results = results
