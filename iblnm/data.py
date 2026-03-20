@@ -1120,11 +1120,15 @@ class PhotometrySessionGroup:
             One row per (recording × event × trial) with scalar response
             magnitudes and trial metadata.
         """
+        from tqdm import tqdm
+
         if self.response_traces is None:
             self.load_response_traces()
 
         rows = []
-        for (eid, brain_region, event), entry in self.response_traces.items():
+        for (eid, brain_region, event), entry in tqdm(
+                self.response_traces.items(),
+                desc="Computing response magnitudes"):
             traces = entry['traces']
             tpts = entry['tpts']
             meta = entry['meta']
@@ -1716,6 +1720,7 @@ class PhotometrySessionGroup:
             Values: LMMResult objects with emm_reward, emm_side,
             emm_contrast, and contrast_slopes populated.
         """
+        from tqdm import tqdm
         from iblnm.analysis import (
             fit_response_lmm, compute_marginal_means, compute_contrast_slopes,
         )
@@ -1755,7 +1760,8 @@ class PhotometrySessionGroup:
         for re_formula in re_formulas:
             fits = {
                 key: fit_response_lmm(df_g, response_col, re_formula=re_formula)
-                for key, df_g in groups.items()
+                for key, df_g in tqdm(groups.items(),
+                                      desc=f"Fitting LMMs (re={re_formula})")
             }
             if all(lmm is not None for lmm in fits.values()):
                 selected_re = re_formula
