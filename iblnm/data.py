@@ -1816,12 +1816,14 @@ class PhotometrySessionGroup:
         return results
 
     def enrich_peak_velocity(self):
-        """Add peak wheel velocity to response_magnitudes from H5 files.
+        """Extract peak wheel velocity from H5 files.
 
         Loads per-trial wheel velocity from H5 and computes the maximum
-        absolute velocity for each trial.
+        absolute velocity for each trial. Stores result in
+        ``self.peak_velocity``.
 
-        Requires ``self.response_magnitudes`` to be populated.
+        Requires ``self.response_magnitudes`` to be populated (uses its
+        eid/trial index to know which trials to extract).
 
         Returns
         -------
@@ -1838,34 +1840,30 @@ class PhotometrySessionGroup:
             )
 
         df = self.response_magnitudes
+        # Get unique (eid, trial) pairs
+        trial_keys = df[['eid', 'trial']].drop_duplicates()
 
-        if 'peak_velocity' not in df.columns:
-            df['peak_velocity'] = np.nan
-
-        eids = df['eid'].unique()
-        for eid in tqdm(eids, desc="Enriching peak velocity"):
+        rows = []
+        for eid in tqdm(df['eid'].unique(), desc="Enriching peak velocity"):
             h5_path = Path(self.h5_dir) / f'{eid}.h5'
-            if not h5_path.exists():
-                continue
+            wheel_vel = None
 
-            with h5py.File(h5_path, 'r') as f:
-                if 'wheel' not in f:
-                    continue
-                wheel_vel = f['wheel/velocity'][:]
+            if h5_path.exists():
+                with h5py.File(h5_path, 'r') as f:
+                    if 'wheel' in f:
+                        wheel_vel = f['wheel/velocity'][:]
 
-            eid_mask = df['eid'] == eid
-            eid_indices = df.index[eid_mask]
-
-            for idx in eid_indices:
-                trial = df.loc[idx, 'trial']
-                if trial < len(wheel_vel):
+            eid_trials = trial_keys[trial_keys['eid'] == eid]['trial']
+            for trial in eid_trials:
+                pv = np.nan
+                if wheel_vel is not None and trial < len(wheel_vel):
                     trial_vel = wheel_vel[trial]
                     valid = trial_vel[~np.isnan(trial_vel)]
                     if len(valid) > 0:
-                        df.loc[idx, 'peak_velocity'] = float(
-                            np.max(np.abs(valid)))
+                        pv = float(np.max(np.abs(valid)))
+                rows.append({'eid': eid, 'trial': trial, 'peak_velocity': pv})
 
-        self.response_magnitudes = df
+        self.peak_velocity = pd.DataFrame(rows)
         return self
 
     def fit_wheel_lmm(self, response_col='response_early', min_subjects=2):

@@ -2563,7 +2563,7 @@ def _write_h5_with_wheel(path, n_trials=100, seed=42):
 
 class TestEnrichPeakVelocity:
 
-    def test_adds_peak_velocity(self, tmp_path):
+    def test_peak_velocity_stored_separately(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=2, regions_per=1)
         for i in range(2):
@@ -2572,8 +2572,10 @@ class TestEnrichPeakVelocity:
         group.load_response_traces()
         group.get_response_magnitudes()
         group.enrich_peak_velocity()
-        df = group.response_magnitudes
-        assert 'peak_velocity' in df.columns
+        assert 'peak_velocity' not in group.response_magnitudes.columns
+        assert group.peak_velocity is not None
+        assert {'eid', 'trial', 'peak_velocity'}.issubset(
+            group.peak_velocity.columns)
 
     def test_peak_velocity_is_positive(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
@@ -2583,22 +2585,20 @@ class TestEnrichPeakVelocity:
         group.load_response_traces()
         group.get_response_magnitudes()
         group.enrich_peak_velocity()
-        valid = group.response_magnitudes['peak_velocity'].dropna()
+        valid = group.peak_velocity['peak_velocity'].dropna()
         assert (valid >= 0).all()
 
-    def test_does_not_modify_timing(self, tmp_path):
-        """enrich_peak_velocity should not touch reaction_time or movement_time."""
+    def test_does_not_modify_response_magnitudes(self, tmp_path):
+        """enrich_peak_velocity should not add columns to response_magnitudes."""
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5_with_wheel(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.get_response_magnitudes()
-        group.response_magnitudes['reaction_time'] = -999.0
-        group.response_magnitudes['movement_time'] = -999.0
+        cols_before = set(group.response_magnitudes.columns)
         group.enrich_peak_velocity()
-        assert (group.response_magnitudes['reaction_time'] == -999.0).all()
-        assert (group.response_magnitudes['movement_time'] == -999.0).all()
-        assert 'peak_velocity' in group.response_magnitudes.columns
+        cols_after = set(group.response_magnitudes.columns)
+        assert cols_before == cols_after
 
     def test_skips_sessions_without_wheel(self, tmp_path):
         """Sessions without wheel data get NaN for peak_velocity."""
@@ -2611,7 +2611,7 @@ class TestEnrichPeakVelocity:
         group.load_response_traces()
         group.get_response_magnitudes()
         group.enrich_peak_velocity()
-        df = group.response_magnitudes
+        df = group.peak_velocity
         eid0_pv = df[df['eid'] == 'eid-0']['peak_velocity']
         eid1_pv = df[df['eid'] == 'eid-1']['peak_velocity']
         assert eid0_pv.notna().any()
