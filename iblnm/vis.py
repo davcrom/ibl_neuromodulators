@@ -9,6 +9,7 @@ from sklearn.preprocessing import quantile_transform
 from iblnm.config import (
     QCCMAP, SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT,
     TARGETNM2POSITION, TARGETNM_COLORS, TARGETNM_POSITIONS,
+    contrast_transform,
 )
 
 
@@ -1553,14 +1554,88 @@ def plot_mean_response_vectors(response_matrix, fig=None):
             mean_vec = data.loc[mask].mean(axis=0)
             sem_vec = data.loc[mask].sem(axis=0)
             x = np.arange(len(mean_vec))
+            color = TARGETNM_COLORS.get(target, None)
             ax.errorbar(x, mean_vec.values, yerr=sem_vec.values,
-                        fmt='o', markersize=3, capsize=2, label=target)
+                        fmt='o', markersize=3, capsize=2, label=target,
+                        color=color)
         ax.set_ylabel(ylabel)
         ax.legend(frameon=False)
 
     axes[-1].set_xticks(np.arange(len(response_matrix.columns)))
     axes[-1].set_xticklabels(response_matrix.columns, rotation=90, fontsize=7)
     axes[0].set_title('Mean response vectors by target-NM')
+    fig.tight_layout()
+    return fig
+
+
+def plot_within_target_similarity(sim_matrix, labels, subjects, fig=None):
+    """Barplot of mean within-target similarity with per-subject scatter.
+
+    Parameters
+    ----------
+    sim_matrix : pd.DataFrame
+        Symmetric pairwise cosine similarity matrix.
+    labels : pd.Series
+        target_NM per recording, aligned to sim_matrix index.
+    subjects : pd.Series
+        Subject per recording, aligned to sim_matrix index.
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    targets = sorted(labels.unique())
+    bar_means = []
+    bar_colors = []
+    subject_points = []  # list of lists of per-subject means
+
+    for target in targets:
+        mask = labels == target
+        idx = labels.index[mask]
+        # Extract within-target submatrix
+        sub = sim_matrix.loc[idx, idx].values
+        n = len(idx)
+        # All off-diagonal pairs
+        triu_mask = np.triu(np.ones((n, n), dtype=bool), k=1)
+        within_vals = sub[triu_mask]
+        bar_means.append(np.nanmean(within_vals))
+        bar_colors.append(TARGETNM_COLORS.get(target, 'gray'))
+
+        # Per-subject means
+        subj_vals = subjects.loc[idx].values
+        pts = []
+        for s in sorted(set(subj_vals)):
+            s_mask = subj_vals == s
+            s_idx = np.where(s_mask)[0]
+            if len(s_idx) < 2:
+                continue
+            s_pairs = []
+            for i in range(len(s_idx)):
+                for j in range(i + 1, len(s_idx)):
+                    s_pairs.append(sub[s_idx[i], s_idx[j]])
+            pts.append(np.nanmean(s_pairs))
+        subject_points.append(pts)
+
+    if fig is None:
+        fig, ax = plt.subplots(figsize=(max(4, len(targets) * 1.2), 4))
+    else:
+        ax = fig.axes[0]
+
+    x = np.arange(len(targets))
+    ax.bar(x, bar_means, color=bar_colors, edgecolor='white', zorder=2)
+
+    rng = np.random.default_rng(0)
+    for i, pts in enumerate(subject_points):
+        if pts:
+            jitter = rng.uniform(-0.15, 0.15, len(pts))
+            ax.scatter(x[i] + jitter, pts, color='black', s=15,
+                       zorder=3, alpha=0.7)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(targets, rotation=45, ha='right')
+    ax.set_ylabel('Mean within-target similarity')
+    ax.set_title('Within-target cosine similarity')
     fig.tight_layout()
     return fig
 
@@ -1661,7 +1736,7 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
     fig.suptitle(f'{target_nm} — {event_label} ({_window}) [LMM]', fontsize=10)
 
     contrasts = sorted(predictions['contrast'].unique())
-    log_contrasts = np.log(np.array(contrasts) + 0.01)
+    log_contrasts = contrast_transform(contrasts)
 
     for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
         df_side = predictions[predictions['side'] == side]
@@ -1670,7 +1745,7 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
             df_r = df_side[df_side['reward'] == reward].sort_values('contrast')
             if len(df_r) == 0:
                 continue
-            xvals = np.log(df_r['contrast'].values + 0.01)
+            xvals = contrast_transform(df_r['contrast'].values)
             ax.plot(xvals, df_r['predicted'].values,
                     color=color, linestyle=ls, label=label, marker='o',
                     markersize=3)
@@ -1686,13 +1761,13 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
                 if len(raw_fb) == 0:
                     continue
                 means = raw_fb.groupby('contrast')[response_col].mean()
-                ax.scatter(np.log(means.index + 0.01), means.values,
+                ax.scatter(contrast_transform(means.index), means.values,
                            color=color, marker=marker, alpha=0.3, s=15,
                            zorder=0)
 
         ax.set_xticks(log_contrasts if len(log_contrasts) else [])
         ax.set_xticklabels([f'{c:g}' for c in contrasts])
-        ax.set_xlabel('log(contrast + 0.01)')
+        ax.set_xlabel('Contrast')
         ax.axhline(0, ls='--', color='gray', lw=0.5)
 
     ax_c.invert_xaxis()
@@ -1953,7 +2028,7 @@ def plot_lmm_summary(group, event, fig=None):
         means = emm_c['mean'].values
         ci_lo = emm_c['ci_lower'].values
         ci_hi = emm_c['ci_upper'].values
-        log_c = np.log(np.array(contrasts, dtype=float) + 0.01)
+        log_c = contrast_transform(contrasts)
 
         # Filled if log_contrast main effect is significant
         sig = False
@@ -1967,7 +2042,7 @@ def plot_lmm_summary(group, event, fig=None):
                              markersize=4, fillstyle=fs, lw=1)
 
     contrasts_all = [0.0, 0.0625, 0.125, 0.25, 1.0]
-    log_ticks = np.log(np.array(contrasts_all) + 0.01)
+    log_ticks = contrast_transform(contrasts_all)
     ax_contrast.set_xticks(log_ticks)
     ax_contrast.set_xticklabels([f'{c:g}' for c in contrasts_all], fontsize=7)
     ax_contrast.set_xlabel('Contrast')
@@ -2085,4 +2160,399 @@ def plot_decoding_summary(coefficients, contributions, fig=None):
     ax_delta.set_ylabel(r'$\Delta$ acc.')
     ax_delta.axhline(0, color='k', linewidth=0.5)
 
+    return fig
+
+
+def plot_response_decoding_summary(response_matrix, coefficients,
+                                    contributions, fig=None):
+    """Unified figure: normalized response vectors + decoding coefficients + contributions.
+
+    Three stacked axes sharing the x-axis:
+    1. Top: min-max normalized response vectors (mean ± SEM per target_NM).
+    2. Middle: decoding coefficients heatmap.
+    3. Bottom: unique contribution bars.
+
+    Parameters
+    ----------
+    response_matrix : pd.DataFrame
+        Rows indexed by (eid, target_NM, ...), columns = feature labels.
+    coefficients : pd.DataFrame
+        Shape (n_classes, n_features) L1 logistic weights.
+    contributions : pd.DataFrame
+        Columns: feature, delta, etc.
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    # Sort features
+    feature_order = sorted(contributions['feature'], key=feature_sort_key)
+    contrib_sorted = contributions.set_index('feature').loc[feature_order].reset_index()
+    coefs_sorted = coefficients[feature_order]
+    rm_sorted = response_matrix[feature_order]
+
+    # Min-max normalize each recording
+    row_min = rm_sorted.min(axis=1)
+    row_max = rm_sorted.max(axis=1)
+    row_range = (row_max - row_min).replace(0, np.nan)
+    normalized = rm_sorted.sub(row_min, axis=0).div(row_range, axis=0)
+
+    labels = rm_sorted.index.get_level_values('target_NM')
+    targets = sorted(labels.unique())
+    n_classes, n_features = coefs_sorted.shape
+
+    if fig is None:
+        fig = plt.figure(figsize=(max(8, n_features * 0.3), 9),
+                         layout='constrained')
+        gs = fig.add_gridspec(3, 2, height_ratios=[2, n_classes, 1],
+                              width_ratios=[1, 0.02], wspace=0.03)
+        ax_resp = fig.add_subplot(gs[0, 0])
+        ax_coef = fig.add_subplot(gs[1, 0], sharex=ax_resp)
+        ax_delta = fig.add_subplot(gs[2, 0], sharex=ax_resp)
+        ax_cbar = fig.add_subplot(gs[1, 1])
+    else:
+        ax_resp, ax_coef, ax_delta, ax_cbar = (
+            fig.axes[0], fig.axes[1], fig.axes[2], fig.axes[3])
+
+    x = np.arange(n_features)
+
+    # --- Top: normalized response vectors ---
+    # Alternating background shading
+    groups = []
+    for col in feature_order:
+        m = _FEATURE_RE.match(col)
+        groups.append((m['side'], m['event'], m['fb']) if m else None)
+    for ax in [ax_resp, ax_coef, ax_delta]:
+        current_group = None
+        shade_idx = 0
+        block_start = 0
+        for i, g in enumerate(groups + [None]):
+            if g != current_group:
+                if current_group is not None and shade_idx % 2 == 1:
+                    ax.axvspan(block_start - 0.5, i - 0.5,
+                               color='0.93', zorder=0)
+                current_group = g
+                block_start = i
+                shade_idx += 1
+
+    for target in targets:
+        mask = labels == target
+        mean_vec = normalized.loc[mask].mean(axis=0)
+        sem_vec = normalized.loc[mask].sem(axis=0)
+        color = TARGETNM_COLORS.get(target, None)
+        ax_resp.errorbar(x, mean_vec.values, yerr=sem_vec.values,
+                         fmt='o', markersize=3, capsize=2, label=target,
+                         color=color)
+    ax_resp.set_ylabel('Normalized response')
+    ax_resp.legend(frameon=False, fontsize=8)
+    ax_resp.tick_params(axis='x', labelbottom=False)
+
+    # --- Middle: coefficients heatmap ---
+    vmax = np.abs(coefs_sorted.values).max()
+    im = ax_coef.imshow(coefs_sorted.values, cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+                        aspect='auto')
+    fig.colorbar(im, cax=ax_cbar, label='Coefficient')
+    ax_coef.set_yticks(range(n_classes))
+    ax_coef.set_yticklabels(coefs_sorted.index)
+    ax_coef.tick_params(axis='x', labelbottom=False)
+
+    # --- Bottom: contribution bars ---
+    ax_delta.bar(x, contrib_sorted['delta'].values)
+    ax_delta.set_xticks(x)
+    ax_delta.set_xticklabels(feature_order, rotation=90, fontsize=7)
+    ax_delta.set_ylabel(r'$\Delta$ acc.')
+    ax_delta.axhline(0, color='k', linewidth=0.5)
+
+    return fig
+
+
+def plot_mean_response_traces(traces_df, event_name, fig=None):
+    """Mean peri-event response traces per target-NM with subject-mean removal.
+
+    For each target_NM, applies subject-mean removal before computing
+    the grand mean and SEM:
+        adjusted_r(t) = r(t) - mean_s(t) + grand_mean(t)
+
+    Parameters
+    ----------
+    traces_df : pd.DataFrame
+        Long-form with columns: eid, subject, target_NM, brain_region,
+        event, time, response.
+    event_name : str
+        Event name for the title.
+    fig : plt.Figure, optional
+
+    Returns
+    -------
+    plt.Figure
+    """
+    targets = sorted(traces_df['target_NM'].unique())
+    n_targets = len(targets)
+
+    if fig is None:
+        fig, axes = plt.subplots(1, n_targets,
+                                 figsize=(4 * n_targets, 3.5),
+                                 sharey=True, squeeze=False)
+        axes = axes[0]
+    else:
+        axes = fig.axes
+
+    for ax, target in zip(axes, targets):
+        df_t = traces_df[traces_df['target_NM'] == target]
+
+        # Pivot to (recording, time) matrix
+        recordings = df_t['eid'].unique()
+        time_vals = sorted(df_t['time'].unique())
+        n_recs = len(recordings)
+        n_time = len(time_vals)
+
+        trace_matrix = np.full((n_recs, n_time), np.nan)
+        subjects_arr = []
+        for i, eid in enumerate(recordings):
+            rec_data = df_t[df_t['eid'] == eid].sort_values('time')
+            trace_matrix[i] = rec_data['response'].values
+            subjects_arr.append(rec_data['subject'].iloc[0])
+        subjects_arr = np.array(subjects_arr)
+
+        # Subject-mean removal
+        grand_mean = np.nanmean(trace_matrix, axis=0)
+        adjusted = np.copy(trace_matrix)
+        for s in np.unique(subjects_arr):
+            s_mask = subjects_arr == s
+            s_mean = np.nanmean(trace_matrix[s_mask], axis=0)
+            adjusted[s_mask] = trace_matrix[s_mask] - s_mean + grand_mean
+
+        mean_trace = np.nanmean(adjusted, axis=0)
+        if n_recs > 1:
+            sem_trace = np.nanstd(adjusted, axis=0, ddof=1) / np.sqrt(n_recs)
+        else:
+            sem_trace = np.zeros(n_time)
+
+        color = TARGETNM_COLORS.get(target, 'gray')
+        ax.plot(time_vals, mean_trace, color=color, linewidth=1.5)
+        if n_recs > 1:
+            ax.fill_between(time_vals, mean_trace - sem_trace,
+                            mean_trace + sem_trace,
+                            color=color, alpha=0.3)
+        ax.axvline(0, color='gray', linewidth=0.5, linestyle='--')
+        ax.set_xlabel('Time (s)')
+        ax.set_title(target)
+
+    axes[0].set_ylabel('Response (z-scored ΔF/F)')
+    fig.suptitle(event_name, fontsize=12)
+    fig.tight_layout()
+    return fig
+
+
+# =============================================================================
+# Wheel Kinematics LMM Plots
+# =============================================================================
+
+_DV_LABELS = {
+    'reaction_time': 'Reaction time',
+    'movement_time': 'Movement time',
+    'peak_velocity': 'Peak velocity',
+}
+
+
+def plot_wheel_lmm_summary(summary_df):
+    """Plot delta R² across contrasts for each DV, one line per target_NM.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        Output from ``PhotometrySessionGroup.fit_wheel_lmm()``.
+
+    Returns
+    -------
+    matplotlib.Figure
+    """
+    dvs = ['reaction_time', 'movement_time', 'peak_velocity']
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), sharey=True)
+
+    if len(summary_df) == 0:
+        for ax, dv in zip(axes, dvs):
+            ax.set_title(_DV_LABELS.get(dv, dv))
+            ax.set_xlabel('Contrast (%)')
+        axes[0].set_ylabel('ΔR² (marginal)')
+        fig.suptitle('NM activity contribution to behavioral vigor', fontsize=12)
+        fig.tight_layout()
+        return fig
+
+    for ax, dv in zip(axes, dvs):
+        df_dv = summary_df[summary_df['dv'] == dv]
+        for target_nm, df_tnm in df_dv.groupby('target_NM'):
+            df_tnm = df_tnm.sort_values('contrast')
+            color = TARGETNM_COLORS.get(target_nm, 'gray')
+            ax.plot(df_tnm['contrast'], df_tnm['delta_r2'],
+                    'o-', color=color, label=target_nm, markersize=5)
+            # Mark significant results (p < 0.05) with filled markers
+            sig = df_tnm['lrt_pvalue'] < 0.05
+            if sig.any():
+                ax.scatter(df_tnm.loc[sig, 'contrast'],
+                           df_tnm.loc[sig, 'delta_r2'],
+                           color=color, s=40, zorder=5, edgecolors='black',
+                           linewidths=0.5)
+
+        ax.axhline(0, color='gray', linewidth=0.5, linestyle='--')
+        ax.set_title(_DV_LABELS.get(dv, dv))
+        ax.set_xlabel('Contrast (%)')
+
+    axes[0].set_ylabel('ΔR² (marginal)')
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        axes[-1].legend(handles, labels, fontsize=8)
+    fig.suptitle('NM activity contribution to behavioral vigor', fontsize=12)
+    fig.tight_layout()
+    return fig
+
+
+def plot_wheel_nm_scatter(df, dv_col, response_col, target_nm,
+                           contrast=None):
+    """Scatter plot of behavioral DV vs NM response, faceted by contrast.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data with ``dv_col``, ``response_col``, ``contrast``,
+        and ``subject`` columns.
+    dv_col : str
+        Dependent variable column name.
+    response_col : str
+        NM response column name.
+    target_nm : str
+        Target-NM label for title.
+    contrast : float, optional
+        If provided, plot only this contrast level. Otherwise facet by all.
+
+    Returns
+    -------
+    matplotlib.Figure
+    """
+    df = df.dropna(subset=[dv_col, response_col])
+    color = TARGETNM_COLORS.get(target_nm, 'gray')
+
+    if contrast is not None:
+        contrasts = [contrast]
+        df = df[np.isclose(df['contrast'], contrast)]
+    else:
+        contrasts = sorted(df['contrast'].unique())
+
+    n_panels = len(contrasts)
+    fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels, 4),
+                              sharey=True, squeeze=False)
+    axes = axes[0]
+
+    for ax, c in zip(axes, contrasts):
+        df_c = df[np.isclose(df['contrast'], c)]
+        if len(df_c) == 0:
+            ax.set_title(f'{c}%')
+            continue
+
+        # Plot each subject
+        for subj, df_s in df_c.groupby('subject'):
+            ax.scatter(df_s[response_col], df_s[dv_col],
+                       alpha=0.3, s=10, color=color)
+
+        # Overall regression line
+        if len(df_c) > 2:
+            z = np.polyfit(df_c[response_col], df_c[dv_col], 1)
+            x_line = np.linspace(df_c[response_col].min(),
+                                  df_c[response_col].max(), 50)
+            ax.plot(x_line, np.polyval(z, x_line), color='black',
+                    linewidth=1.5, linestyle='--')
+
+        cfmt = int(c) if c == int(c) else c
+        ax.set_title(f'{cfmt}%')
+        ax.set_xlabel(response_col.replace('_', ' '))
+
+    axes[0].set_ylabel(_DV_LABELS.get(dv_col, dv_col))
+    fig.suptitle(f'{target_nm}: {_DV_LABELS.get(dv_col, dv_col)} vs NM response',
+                 fontsize=12)
+    fig.tight_layout()
+    return fig
+
+
+def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
+                            fig=None):
+    """Three-panel summary of per-cohort CCA results.
+
+    Parameters
+    ----------
+    cohort_results : dict[str, CCAResult]
+        Per-cohort CCA fits.
+    cross_projections : pd.DataFrame
+        Columns: ``data_cohort``, ``weight_cohort``, ``correlation``.
+    weight_sims : pd.DataFrame
+        Columns: ``cohort_a``, ``cohort_b``, ``neural_cosine``,
+        ``behavioral_cosine``.
+    fig : matplotlib.figure.Figure, optional
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib.pyplot as plt
+
+    targets = sorted(cohort_results.keys())
+
+    if fig is None:
+        fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    else:
+        axes = fig.subplots(1, 3)
+
+    # Panel 1: per-cohort canonical correlations
+    ax = axes[0]
+    colors = [TARGETNM_COLORS.get(t, 'gray') for t in targets]
+    corrs = [cohort_results[t].correlations[0] for t in targets]
+    bars = ax.bar(range(len(targets)), corrs, color=colors)
+    ax.set_xticks(range(len(targets)))
+    ax.set_xticklabels(targets, rotation=45, ha='right')
+    ax.set_ylabel('Canonical correlation')
+    ax.set_title('Per-cohort CC1')
+
+    # Annotate p-values
+    for i, t in enumerate(targets):
+        pv = cohort_results[t].p_values
+        if pv is not None:
+            ax.text(i, corrs[i] + 0.01, f'p={pv[0]:.3f}',
+                    ha='center', va='bottom', fontsize=8)
+
+    # Panel 2: cross-projection heatmap
+    ax = axes[1]
+    matrix = cross_projections.pivot(
+        index='data_cohort', columns='weight_cohort', values='correlation')
+    matrix = matrix.reindex(index=targets, columns=targets)
+    im = ax.imshow(matrix.values, cmap='RdBu_r', vmin=-1, vmax=1)
+    ax.set_xticks(range(len(targets)))
+    ax.set_xticklabels(targets, rotation=45, ha='right')
+    ax.set_yticks(range(len(targets)))
+    ax.set_yticklabels(targets)
+    ax.set_xlabel('Weight source')
+    ax.set_ylabel('Data source')
+    ax.set_title('Cross-projection')
+    for i in range(len(targets)):
+        for j in range(len(targets)):
+            ax.text(j, i, f'{matrix.values[i, j]:.2f}',
+                    ha='center', va='center', fontsize=9)
+    fig.colorbar(im, ax=ax, shrink=0.8)
+
+    # Panel 3: neural weights comparison
+    ax = axes[2]
+    feature_names = cohort_results[targets[0]].x_weights.index.tolist()
+    n_features = len(feature_names)
+    width = 0.8 / len(targets)
+    for i, t in enumerate(targets):
+        weights = cohort_results[t].x_weights['CC1'].values
+        x = np.arange(n_features) + i * width
+        ax.bar(x, weights, width, label=t,
+               color=TARGETNM_COLORS.get(t, 'gray'))
+    ax.set_xticks(np.arange(n_features) + width * (len(targets) - 1) / 2)
+    ax.set_xticklabels(feature_names, rotation=45, ha='right')
+    ax.set_ylabel('CC1 weight')
+    ax.set_title('Neural weights')
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
     return fig

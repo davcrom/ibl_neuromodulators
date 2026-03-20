@@ -531,6 +531,21 @@ class TestPlotMeanResponseVectors:
         assert 'normalized' in fig.axes[1].get_ylabel().lower()
         plt.close(fig)
 
+    def test_uses_targetnm_colors(self):
+        import matplotlib as mpl
+        from iblnm.vis import plot_mean_response_vectors
+        from iblnm.config import TARGETNM_COLORS
+        df = self._make_matrix_with_labels()
+        fig = plot_mean_response_vectors(df)
+        ax = fig.axes[0]
+        targets = sorted(df.index.get_level_values('target_NM').unique())
+        # errorbar lines: get color from the line children
+        for container, target in zip(ax.containers, targets):
+            expected = mpl.colors.to_rgba(TARGETNM_COLORS[target])
+            actual = mpl.colors.to_rgba(container[0].get_color())
+            np.testing.assert_allclose(actual, expected, atol=0.01)
+        plt.close(fig)
+
 
 class TestPlotDecodingSummary:
 
@@ -958,4 +973,377 @@ class TestPlotLMMSummary:
             assert marker_line.get_fillstyle() == 'none', (
                 "Expected open markers when interaction is not significant"
             )
+        plt.close(fig)
+
+
+# =============================================================================
+# plot_within_target_similarity Tests
+# =============================================================================
+
+
+def _make_sim_data(n_targets=3, n_per_target=4, n_subjects=2):
+    """Build a similarity matrix, labels, and subjects for testing."""
+    from iblnm.config import TARGETNM_COLORS
+    targets = sorted(list(TARGETNM_COLORS.keys()))[:n_targets]
+    rng = np.random.default_rng(42)
+    eids = []
+    target_list = []
+    subject_list = []
+    for tnm in targets:
+        for i in range(n_per_target):
+            eids.append(f'eid-{tnm}-{i}')
+            target_list.append(tnm)
+            subject_list.append(f's{i % n_subjects}')
+    index = pd.MultiIndex.from_arrays(
+        [eids, target_list, list(range(len(eids)))],
+        names=['eid', 'target_NM', 'fiber_idx'],
+    )
+    n = len(eids)
+    # Build a positive semi-definite similarity matrix
+    data = rng.uniform(0.3, 0.9, (n, n))
+    sim = (data + data.T) / 2
+    np.fill_diagonal(sim, 1.0)
+    sim_df = pd.DataFrame(sim, index=index, columns=index)
+    labels = pd.Series(target_list, index=index)
+    subjects = pd.Series(subject_list, index=index)
+    return sim_df, labels, subjects
+
+
+class TestPlotWithinTargetSimilarity:
+
+    def test_one_bar_per_target(self):
+        import matplotlib.patches as mpatches
+        from iblnm.vis import plot_within_target_similarity
+        sim, labels, subjects = _make_sim_data()
+        fig = plot_within_target_similarity(sim, labels, subjects)
+        ax = fig.axes[0]
+        bars = [p for p in ax.patches
+                if isinstance(p, mpatches.Rectangle) and p.get_height() != 0]
+        assert len(bars) == len(labels.unique())
+        plt.close(fig)
+
+    def test_bar_colors_match_config(self):
+        import matplotlib as mpl
+        import matplotlib.patches as mpatches
+        from iblnm.vis import plot_within_target_similarity
+        from iblnm.config import TARGETNM_COLORS
+        sim, labels, subjects = _make_sim_data()
+        fig = plot_within_target_similarity(sim, labels, subjects)
+        ax = fig.axes[0]
+        targets = sorted(labels.unique())
+        bars = [p for p in ax.patches
+                if isinstance(p, mpatches.Rectangle) and p.get_height() != 0]
+        for bar, target in zip(bars, targets):
+            expected = mpl.colors.to_rgba(TARGETNM_COLORS[target])
+            np.testing.assert_allclose(bar.get_facecolor(), expected, atol=0.01)
+        plt.close(fig)
+
+    def test_scatter_points_present(self):
+        from iblnm.vis import plot_within_target_similarity
+        sim, labels, subjects = _make_sim_data()
+        fig = plot_within_target_similarity(sim, labels, subjects)
+        ax = fig.axes[0]
+        assert len(ax.collections) >= 1
+        plt.close(fig)
+
+
+# =============================================================================
+# plot_response_decoding_summary Tests
+# =============================================================================
+
+
+def _make_decoding_summary_data():
+    """Build response_matrix, coefficients, contributions for testing."""
+    from iblnm.config import TARGETNM_COLORS
+    targets = sorted(list(TARGETNM_COLORS.keys()))[:3]
+    features = [
+        'stimOn_c0_contra_correct', 'stimOn_c1_contra_correct',
+        'feedback_c0_ipsi_incorrect',
+    ]
+    rng = np.random.default_rng(42)
+
+    # Response matrix: 4 recordings per target
+    eids = []
+    target_list = []
+    for tnm in targets:
+        for i in range(4):
+            eids.append(f'eid-{tnm}-{i}')
+            target_list.append(tnm)
+    index = pd.MultiIndex.from_arrays(
+        [eids, target_list, list(range(len(eids)))],
+        names=['eid', 'target_NM', 'fiber_idx'],
+    )
+    rm = pd.DataFrame(
+        rng.normal(0, 1, (len(eids), len(features))),
+        index=index, columns=features,
+    )
+    coefs = pd.DataFrame(
+        rng.normal(0, 1, (len(targets), len(features))),
+        index=targets, columns=features,
+    )
+    contrib = pd.DataFrame({
+        'feature': features,
+        'delta': rng.uniform(0, 0.1, len(features)),
+    })
+    return rm, coefs, contrib
+
+
+class TestPlotResponseDecodingSummary:
+
+    def test_four_axes(self):
+        from iblnm.vis import plot_response_decoding_summary
+        rm, coefs, contrib = _make_decoding_summary_data()
+        fig = plot_response_decoding_summary(rm, coefs, contrib)
+        assert len(fig.axes) == 4  # response_vectors + coefs + delta + colorbar
+        plt.close(fig)
+
+    def test_top_axis_uses_targetnm_colors(self):
+        import matplotlib as mpl
+        from iblnm.vis import plot_response_decoding_summary
+        from iblnm.config import TARGETNM_COLORS
+        rm, coefs, contrib = _make_decoding_summary_data()
+        fig = plot_response_decoding_summary(rm, coefs, contrib)
+        ax = fig.axes[0]
+        targets = sorted(rm.index.get_level_values('target_NM').unique())
+        for container, target in zip(ax.containers, targets):
+            expected = mpl.colors.to_rgba(TARGETNM_COLORS[target])
+            actual = mpl.colors.to_rgba(container[0].get_color())
+            np.testing.assert_allclose(actual, expected, atol=0.01)
+        plt.close(fig)
+
+
+# =============================================================================
+# plot_mean_response_traces Tests
+# =============================================================================
+
+
+# =============================================================================
+# Wheel LMM Plot Tests
+# =============================================================================
+
+
+def _make_wheel_lmm_summary():
+    """Synthetic wheel LMM summary DataFrame."""
+    rows = []
+    for tnm in ['VTA-DA', 'DR-5HT']:
+        for contrast in [0.0, 0.125, 1.0]:
+            for dv in ['reaction_time', 'movement_time', 'peak_velocity']:
+                rows.append({
+                    'target_NM': tnm,
+                    'contrast': contrast,
+                    'dv': dv,
+                    'delta_r2': np.random.uniform(0, 0.1),
+                    'base_r2_marginal': np.random.uniform(0, 0.05),
+                    'full_r2_marginal': np.random.uniform(0.02, 0.15),
+                    'lrt_chi2': np.random.uniform(0, 10),
+                    'lrt_pvalue': np.random.uniform(0, 1),
+                    'nm_coefficient': np.random.normal(0, 0.5),
+                    'nm_pvalue': np.random.uniform(0, 1),
+                    'n_trials': 200,
+                    'n_subjects': 5,
+                })
+    return pd.DataFrame(rows)
+
+
+def _make_wheel_scatter_data():
+    """Synthetic data for scatter plot testing."""
+    rng = np.random.default_rng(42)
+    n = 100
+    return pd.DataFrame({
+        'subject': rng.choice(['s0', 's1', 's2'], n),
+        'reaction_time': rng.uniform(0.1, 0.5, n),
+        'response_early': rng.normal(0, 1, n),
+        'contrast': rng.choice([0.0, 0.125, 1.0], n),
+        'target_NM': 'VTA-DA',
+    })
+
+
+class TestPlotWheelLMMSummary:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_wheel_lmm_summary
+        summary = _make_wheel_lmm_summary()
+        fig = plot_wheel_lmm_summary(summary)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_three_axes(self):
+        """One panel per DV (reaction_time, movement_time, peak_velocity)."""
+        from iblnm.vis import plot_wheel_lmm_summary
+        summary = _make_wheel_lmm_summary()
+        fig = plot_wheel_lmm_summary(summary)
+        assert len(fig.axes) == 3
+        plt.close(fig)
+
+    def test_empty_summary(self):
+        from iblnm.vis import plot_wheel_lmm_summary
+        summary = pd.DataFrame(columns=[
+            'target_NM', 'contrast', 'dv', 'delta_r2', 'lrt_pvalue',
+            'nm_coefficient', 'nm_pvalue', 'n_trials', 'n_subjects',
+        ])
+        fig = plot_wheel_lmm_summary(summary)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
+class TestPlotWheelNMScatter:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_wheel_nm_scatter
+        df = _make_wheel_scatter_data()
+        fig = plot_wheel_nm_scatter(df, 'reaction_time', 'response_early',
+                                     'VTA-DA')
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_one_panel_per_contrast(self):
+        from iblnm.vis import plot_wheel_nm_scatter
+        df = _make_wheel_scatter_data()
+        fig = plot_wheel_nm_scatter(df, 'reaction_time', 'response_early',
+                                     'VTA-DA')
+        n_contrasts = df['contrast'].nunique()
+        assert len(fig.axes) == n_contrasts
+        plt.close(fig)
+
+
+def _make_traces_df(n_targets=2, n_subjects=3, n_recs_per=2, n_timepoints=100):
+    from iblnm.config import TARGETNM_COLORS
+    targets = sorted(list(TARGETNM_COLORS.keys()))[:n_targets]
+    rng = np.random.default_rng(42)
+    time = np.linspace(-1, 1, n_timepoints)
+    rows = []
+    for tnm in targets:
+        for s in range(n_subjects):
+            for r in range(n_recs_per):
+                trace = rng.normal(0, 1, n_timepoints)
+                for t_idx, t in enumerate(time):
+                    rows.append({
+                        'eid': f'eid-{tnm}-s{s}-r{r}',
+                        'subject': f's{s}',
+                        'target_NM': tnm,
+                        'brain_region': tnm.split('-')[0],
+                        'event': 'stimOn_times',
+                        'time': t,
+                        'response': trace[t_idx],
+                    })
+    return pd.DataFrame(rows)
+
+
+class TestPlotMeanResponseTraces:
+
+    def test_one_axis_per_target(self):
+        from iblnm.vis import plot_mean_response_traces
+        traces = _make_traces_df(n_targets=3)
+        fig = plot_mean_response_traces(traces, 'stimOn_times')
+        assert len(fig.axes) == 3
+        plt.close(fig)
+
+    def test_line_colors_match_config(self):
+        import matplotlib as mpl
+        from iblnm.vis import plot_mean_response_traces
+        from iblnm.config import TARGETNM_COLORS
+        traces = _make_traces_df(n_targets=2)
+        fig = plot_mean_response_traces(traces, 'stimOn_times')
+        targets = sorted(traces['target_NM'].unique())
+        for ax, target in zip(fig.axes, targets):
+            line = ax.lines[0]
+            expected = mpl.colors.to_rgba(TARGETNM_COLORS[target])
+            actual = mpl.colors.to_rgba(line.get_color())
+            np.testing.assert_allclose(actual, expected, atol=0.01)
+        plt.close(fig)
+
+    def test_fill_between_present(self):
+        from iblnm.vis import plot_mean_response_traces
+        traces = _make_traces_df(n_targets=2, n_subjects=3)
+        fig = plot_mean_response_traces(traces, 'stimOn_times')
+        for ax in fig.axes:
+            assert len(ax.collections) >= 1
+        plt.close(fig)
+
+
+# =============================================================================
+# Per-Cohort CCA Summary Plot
+# =============================================================================
+
+
+def _make_mock_cohort_cca_data():
+    """Create mock data for plot_cohort_cca_summary tests."""
+    from iblnm.analysis import CCAResult
+
+    targets = ['VTA-DA', 'DR-5HT']
+    feature_names = ['log_contrast', 'side', 'feedback',
+                     'log_contrast:side', 'log_contrast:feedback',
+                     'side:feedback']
+    psych_names = ['psych_50_threshold', 'psych_50_bias',
+                   'psych_50_lapse_left', 'psych_50_lapse_right']
+
+    rng = np.random.default_rng(42)
+    results = {}
+    for t in targets:
+        x_w = pd.DataFrame(
+            rng.standard_normal((6, 1)),
+            index=feature_names, columns=['CC1'])
+        y_w = pd.DataFrame(
+            rng.standard_normal((4, 1)),
+            index=psych_names, columns=['CC1'])
+        results[t] = CCAResult(
+            x_weights=x_w, y_weights=y_w,
+            x_scores=rng.standard_normal((50, 1)),
+            y_scores=rng.standard_normal((50, 1)),
+            correlations=np.array([rng.uniform(0.3, 0.8)]),
+            p_values=np.array([rng.uniform(0, 0.05)]),
+            n_recordings=50, n_permutations=100,
+        )
+
+    cross_projections = pd.DataFrame([
+        {'data_cohort': 'VTA-DA', 'weight_cohort': 'VTA-DA', 'correlation': 0.7},
+        {'data_cohort': 'VTA-DA', 'weight_cohort': 'DR-5HT', 'correlation': 0.3},
+        {'data_cohort': 'DR-5HT', 'weight_cohort': 'VTA-DA', 'correlation': 0.25},
+        {'data_cohort': 'DR-5HT', 'weight_cohort': 'DR-5HT', 'correlation': 0.65},
+    ])
+
+    weight_sims = pd.DataFrame([
+        {'cohort_a': 'VTA-DA', 'cohort_b': 'VTA-DA',
+         'neural_cosine': 1.0, 'behavioral_cosine': 1.0},
+        {'cohort_a': 'VTA-DA', 'cohort_b': 'DR-5HT',
+         'neural_cosine': 0.5, 'behavioral_cosine': 0.6},
+        {'cohort_a': 'DR-5HT', 'cohort_b': 'VTA-DA',
+         'neural_cosine': 0.5, 'behavioral_cosine': 0.6},
+        {'cohort_a': 'DR-5HT', 'cohort_b': 'DR-5HT',
+         'neural_cosine': 1.0, 'behavioral_cosine': 1.0},
+    ])
+
+    return results, cross_projections, weight_sims
+
+
+class TestPlotCohortCCASummary:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_cohort_cca_summary
+        results, cp, ws = _make_mock_cohort_cca_data()
+        fig = plot_cohort_cca_summary(results, cp, ws)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_three_panels(self):
+        from iblnm.vis import plot_cohort_cca_summary
+        results, cp, ws = _make_mock_cohort_cca_data()
+        fig = plot_cohort_cca_summary(results, cp, ws)
+        assert len(fig.axes) >= 3
+        plt.close(fig)
+
+    def test_bar_colors_match_config(self):
+        import matplotlib as mpl
+        from iblnm.vis import plot_cohort_cca_summary
+        from iblnm.config import TARGETNM_COLORS
+        results, cp, ws = _make_mock_cohort_cca_data()
+        fig = plot_cohort_cca_summary(results, cp, ws)
+        ax = fig.axes[0]
+        targets = sorted(results.keys())
+        bars = [p for p in ax.patches
+                if isinstance(p, mpl.patches.Rectangle) and p.get_height() != 0]
+        for bar, target in zip(bars, targets):
+            expected = mpl.colors.to_rgba(TARGETNM_COLORS[target])
+            np.testing.assert_allclose(
+                bar.get_facecolor(), expected, atol=0.01)
         plt.close(fig)
