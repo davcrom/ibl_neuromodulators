@@ -2557,21 +2557,132 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
                     ha='center', va='center', fontsize=9)
     fig.colorbar(im2, ax=ax, shrink=0.8)
 
-    # Panel 4: neural weights comparison
-    ax = axes[3]
-    feature_names = cohort_results[targets[0]].x_weights.index.tolist()
-    n_features = len(feature_names)
-    width = 0.8 / len(targets)
-    for i, t in enumerate(targets):
-        weights = cohort_results[t].x_weights['CC1'].values
-        x = np.arange(n_features) + i * width
-        ax.bar(x, weights, width, label=t,
-               color=TARGETNM_COLORS.get(t, 'gray'))
-    ax.set_xticks(np.arange(n_features) + width * (len(targets) - 1) / 2)
-    ax.set_xticklabels(feature_names, rotation=45, ha='right')
-    ax.set_ylabel('CC1 weight')
-    ax.set_title('Neural weights')
-    ax.legend(fontsize=8)
+    # Panel 4: weight profiles (neural + behavioral combined)
+    _plot_weight_heatmap_pair(cohort_results, targets, axes[3])
 
+    fig.tight_layout()
+    return fig
+
+
+def _plot_weight_heatmap_pair(cohort_results, targets, ax):
+    """Draw a split heatmap of neural|behavioral CC1 weights on a single axis.
+
+    Features on y-axis (neural on top, behavioral on bottom, separated by a
+    line), cohorts on x-axis. Shared diverging colormap.
+    """
+    neural_names = cohort_results[targets[0]].x_weights.index.tolist()
+    behav_names = cohort_results[targets[0]].y_weights.index.tolist()
+
+    neural_mat = np.column_stack(
+        [cohort_results[t].x_weights['CC1'].values for t in targets])
+    behav_mat = np.column_stack(
+        [cohort_results[t].y_weights['CC1'].values for t in targets])
+
+    # Stack: neural rows on top, behavioral below
+    combined = np.vstack([neural_mat, behav_mat])
+    all_names = neural_names + behav_names
+    n_neural = len(neural_names)
+
+    vmax = np.max(np.abs(combined))
+    im = ax.imshow(combined, cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+                   aspect='auto')
+
+    ax.set_xticks(range(len(targets)))
+    ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=8)
+    ax.set_yticks(range(len(all_names)))
+    ax.set_yticklabels(all_names, fontsize=7)
+
+    # Separator between neural and behavioral
+    ax.axhline(n_neural - 0.5, color='black', linewidth=1.5)
+
+    # Annotate values
+    for i in range(combined.shape[0]):
+        for j in range(combined.shape[1]):
+            ax.text(j, i, f'{combined[i, j]:.2f}',
+                    ha='center', va='center', fontsize=7,
+                    color='white' if abs(combined[i, j]) > 0.6 * vmax else 'black')
+
+    # Label the two sections
+    ax.text(-0.7, (n_neural - 1) / 2, 'Neural', ha='right', va='center',
+            fontsize=8, fontweight='bold', transform=ax.get_yaxis_transform())
+    ax.text(-0.7, n_neural + (len(behav_names) - 1) / 2, 'Behav.',
+            ha='right', va='center', fontsize=8, fontweight='bold',
+            transform=ax.get_yaxis_transform())
+
+    ax.set_title('CC1 weight profiles')
+    ax.figure.colorbar(im, ax=ax, shrink=0.8, label='Weight')
+
+
+def plot_cca_weight_profiles(cohort_results, fig=None):
+    """Side-by-side heatmaps of neural and behavioral CC1 weights.
+
+    Left panel: neural features (rows) × cohorts (columns).
+    Right panel: behavioral features (rows) × cohorts (columns).
+    Shared diverging colormap centered at zero.
+
+    Parameters
+    ----------
+    cohort_results : dict[str, CCAResult]
+        Per-cohort CCA fits (sign-aligned).
+    fig : matplotlib.figure.Figure, optional
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib.pyplot as plt
+
+    targets = sorted(cohort_results.keys())
+
+    neural_names = cohort_results[targets[0]].x_weights.index.tolist()
+    behav_names = cohort_results[targets[0]].y_weights.index.tolist()
+
+    neural_mat = np.column_stack(
+        [cohort_results[t].x_weights['CC1'].values for t in targets])
+    behav_mat = np.column_stack(
+        [cohort_results[t].y_weights['CC1'].values for t in targets])
+
+    vmax = max(np.max(np.abs(neural_mat)), np.max(np.abs(behav_mat)))
+
+    if fig is None:
+        fig, (ax_n, ax_b) = plt.subplots(
+            1, 2, figsize=(4 + len(targets), max(len(neural_names),
+                                                  len(behav_names)) * 0.5),
+            gridspec_kw={'width_ratios': [len(neural_names),
+                                           len(behav_names)]})
+    else:
+        ax_n, ax_b = fig.subplots(1, 2)
+
+    # Neural weights
+    im_n = ax_n.imshow(neural_mat, cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+                        aspect='auto')
+    ax_n.set_xticks(range(len(targets)))
+    ax_n.set_xticklabels(targets, rotation=45, ha='right')
+    ax_n.set_yticks(range(len(neural_names)))
+    ax_n.set_yticklabels(neural_names)
+    ax_n.set_title('Neural CC1 weights')
+    for i in range(neural_mat.shape[0]):
+        for j in range(neural_mat.shape[1]):
+            ax_n.text(j, i, f'{neural_mat[i, j]:.2f}',
+                      ha='center', va='center', fontsize=8,
+                      color='white' if abs(neural_mat[i, j]) > 0.6 * vmax
+                      else 'black')
+
+    # Behavioral weights
+    im_b = ax_b.imshow(behav_mat, cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+                        aspect='auto')
+    ax_b.set_xticks(range(len(targets)))
+    ax_b.set_xticklabels(targets, rotation=45, ha='right')
+    ax_b.set_yticks(range(len(behav_names)))
+    ax_b.set_yticklabels(behav_names)
+    ax_b.set_title('Behavioral CC1 weights')
+    for i in range(behav_mat.shape[0]):
+        for j in range(behav_mat.shape[1]):
+            ax_b.text(j, i, f'{behav_mat[i, j]:.2f}',
+                      ha='center', va='center', fontsize=8,
+                      color='white' if abs(behav_mat[i, j]) > 0.6 * vmax
+                      else 'black')
+
+    fig.colorbar(im_b, ax=[ax_n, ax_b], shrink=0.8, label='CC1 weight')
     fig.tight_layout()
     return fig

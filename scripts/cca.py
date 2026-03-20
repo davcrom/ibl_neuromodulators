@@ -29,7 +29,7 @@ from iblnm.config import (
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.util import derive_target_nm
-from iblnm.vis import plot_cohort_cca_summary
+from iblnm.vis import plot_cohort_cca_summary, plot_cca_weight_profiles
 
 plt.ion()
 
@@ -184,6 +184,15 @@ if __name__ == '__main__':
     print("Generating summary figure...")
     fig = plot_cohort_cca_summary(results, cp, ws)
     fig.savefig(figures_dir / 'cohort_cca_summary.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+
+    # =====================================================================
+    # Weight profiles (neural + behavioral)
+    # =====================================================================
+    print("Generating weight profile heatmaps...")
+    fig = plot_cca_weight_profiles(results)
+    fig.savefig(figures_dir / 'cohort_weight_profiles.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
 

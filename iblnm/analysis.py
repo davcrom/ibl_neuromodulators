@@ -786,6 +786,52 @@ def cross_project_cca(X_z, Y_z, target_result):
     return r
 
 
+def align_cca_signs(results, reference=None):
+    """Align CCA weight signs across cohorts to a reference.
+
+    CCA has sign indeterminacy: ``(w_x, w_y)`` and ``(-w_x, -w_y)`` yield
+    the same canonical correlation. This function flips both weight vectors
+    (and scores) for each cohort so that the neural CC1 weights point in the
+    same direction as the reference cohort.
+
+    Parameters
+    ----------
+    results : dict[str, CCAResult]
+        Per-cohort CCA fits.
+    reference : str, optional
+        Key of the reference cohort. Default: first in sorted order.
+
+    Returns
+    -------
+    dict[str, CCAResult]
+        New dict with sign-aligned copies. Originals are not mutated.
+    """
+    if reference is None:
+        reference = sorted(results.keys())[0]
+
+    ref_w = results[reference].x_weights['CC1'].values
+    aligned = {}
+
+    for key, res in results.items():
+        w = res.x_weights['CC1'].values
+        cos = np.dot(ref_w, w) / (np.linalg.norm(ref_w) * np.linalg.norm(w))
+        if cos < 0:
+            aligned[key] = CCAResult(
+                x_weights=-res.x_weights,
+                y_weights=-res.y_weights,
+                x_scores=-res.x_scores,
+                y_scores=-res.y_scores,
+                correlations=res.correlations,
+                p_values=res.p_values,
+                n_recordings=res.n_recordings,
+                n_permutations=res.n_permutations,
+            )
+        else:
+            aligned[key] = res
+
+    return aligned
+
+
 def compare_cca_weights(result_a, result_b):
     """Cosine similarity between two CCA fits' CC1 weight vectors.
 

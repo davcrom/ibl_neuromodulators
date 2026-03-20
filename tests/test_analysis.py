@@ -1514,3 +1514,64 @@ class TestCompareCCAWeights:
         sims = compare_cca_weights(result, result)
         assert 'neural_cosine' in sims
         assert 'behavioral_cosine' in sims
+
+
+class TestAlignCCASigns:
+
+    def _make_results(self):
+        from iblnm.analysis import fit_cca
+        from sklearn.preprocessing import StandardScaler
+        rng = np.random.default_rng(42)
+        n, k, p = 50, 6, 4
+        X = pd.DataFrame(rng.standard_normal((n, k)),
+                          columns=[f'x{i}' for i in range(k)])
+        W = rng.standard_normal((2, p))
+        Y = pd.DataFrame(
+            X.iloc[:, :2].values @ W + 0.1 * rng.standard_normal((n, p)),
+            columns=[f'y{i}' for i in range(p)])
+        Xz = pd.DataFrame(StandardScaler().fit_transform(X),
+                           columns=X.columns)
+        Yz = pd.DataFrame(StandardScaler().fit_transform(Y),
+                           columns=Y.columns)
+        return fit_cca(Xz, Yz, scale=False)
+
+    def test_flipped_result_gets_aligned(self):
+        from iblnm.analysis import align_cca_signs
+        result = self._make_results()
+        # Create a flipped copy
+        from iblnm.analysis import CCAResult
+        flipped = CCAResult(
+            x_weights=-result.x_weights.copy(),
+            y_weights=-result.y_weights.copy(),
+            x_scores=-result.x_scores.copy(),
+            y_scores=-result.y_scores.copy(),
+            correlations=result.correlations.copy(),
+            p_values=result.p_values,
+            n_recordings=result.n_recordings,
+            n_permutations=result.n_permutations,
+        )
+        results = {'A': result, 'B': flipped}
+        aligned = align_cca_signs(results, reference='A')
+        # After alignment, neural weights should point same direction
+        cos = np.dot(
+            aligned['A'].x_weights['CC1'].values,
+            aligned['B'].x_weights['CC1'].values,
+        )
+        assert cos > 0
+
+    def test_already_aligned_unchanged(self):
+        from iblnm.analysis import align_cca_signs
+        result = self._make_results()
+        results = {'A': result, 'B': result}
+        aligned = align_cca_signs(results, reference='A')
+        np.testing.assert_array_equal(
+            aligned['A'].x_weights.values, result.x_weights.values)
+        np.testing.assert_array_equal(
+            aligned['B'].x_weights.values, result.x_weights.values)
+
+    def test_default_reference_is_first_sorted(self):
+        from iblnm.analysis import align_cca_signs
+        result = self._make_results()
+        results = {'Z': result, 'A': result}
+        aligned = align_cca_signs(results)
+        assert list(aligned.keys()) == ['Z', 'A']

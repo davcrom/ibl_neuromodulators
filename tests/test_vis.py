@@ -1361,3 +1361,33 @@ class TestPlotCohortCCASummary:
             np.testing.assert_allclose(
                 bar.get_facecolor(), expected, atol=0.01)
         plt.close(fig)
+
+
+class TestPlotCCAWeightProfiles:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_cca_weight_profiles
+        results, _, _ = _make_mock_cohort_cca_data()
+        fig = plot_cca_weight_profiles(results)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_two_panels(self):
+        from iblnm.vis import plot_cca_weight_profiles
+        results, _, _ = _make_mock_cohort_cca_data()
+        fig = plot_cca_weight_profiles(results)
+        # Two imshow axes (neural + behavioral), possibly + colorbars
+        imshow_axes = [ax for ax in fig.axes if len(ax.images) > 0]
+        assert len(imshow_axes) == 2
+        plt.close(fig)
+
+    def test_neural_panel_has_correct_shape(self):
+        from iblnm.vis import plot_cca_weight_profiles
+        results, _, _ = _make_mock_cohort_cca_data()
+        fig = plot_cca_weight_profiles(results)
+        imshow_axes = [ax for ax in fig.axes if len(ax.images) > 0]
+        neural_data = imshow_axes[0].images[0].get_array()
+        n_features = len(results['VTA-DA'].x_weights)
+        n_cohorts = len(results)
+        assert neural_data.shape == (n_features, n_cohorts)
+        plt.close(fig)

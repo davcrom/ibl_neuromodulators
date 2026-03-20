@@ -1591,6 +1591,10 @@ class PhotometrySessionGroup:
         if not results:
             raise ValueError("No cohort has enough recordings")
 
+        # Align signs across cohorts for consistent comparison
+        from iblnm.analysis import align_cca_signs
+        results = align_cca_signs(results)
+
         self.cohort_cca_results = results
         self.cohort_cca_data = data
         return results
