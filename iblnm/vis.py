@@ -2498,9 +2498,9 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
     targets = sorted(cohort_results.keys())
 
     if fig is None:
-        fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+        fig, axes = plt.subplots(1, 4, figsize=(18, 4))
     else:
-        axes = fig.subplots(1, 3)
+        axes = fig.subplots(1, 4)
 
     # Panel 1: per-cohort canonical correlations
     ax = axes[0]
@@ -2538,8 +2538,27 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
                     ha='center', va='center', fontsize=9)
     fig.colorbar(im, ax=ax, shrink=0.8)
 
-    # Panel 3: neural weights comparison
+    # Panel 3: delta-r cross-projection (relative to within-cohort diagonal)
     ax = axes[2]
+    diag = np.diag(matrix.values)  # within-cohort correlations
+    delta_matrix = matrix.values - diag[np.newaxis, :]  # subtract column baseline
+    max_abs = max(abs(np.nanmin(delta_matrix)), abs(np.nanmax(delta_matrix)), 0.01)
+    im2 = ax.imshow(delta_matrix, cmap='RdBu_r', vmin=-max_abs, vmax=max_abs)
+    ax.set_xticks(range(len(targets)))
+    ax.set_xticklabels(targets, rotation=45, ha='right')
+    ax.set_yticks(range(len(targets)))
+    ax.set_yticklabels(targets)
+    ax.set_xlabel('Weight source')
+    ax.set_ylabel('Data source')
+    ax.set_title(r'$\Delta r$ (vs within-cohort)')
+    for i in range(len(targets)):
+        for j in range(len(targets)):
+            ax.text(j, i, f'{delta_matrix[i, j]:+.2f}',
+                    ha='center', va='center', fontsize=9)
+    fig.colorbar(im2, ax=ax, shrink=0.8)
+
+    # Panel 4: neural weights comparison
+    ax = axes[3]
     feature_names = cohort_results[targets[0]].x_weights.index.tolist()
     n_features = len(feature_names)
     width = 0.8 / len(targets)

@@ -1325,11 +1325,25 @@ class TestPlotCohortCCASummary:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_has_three_panels(self):
+    def test_has_four_panels(self):
         from iblnm.vis import plot_cohort_cca_summary
         results, cp, ws = _make_mock_cohort_cca_data()
         fig = plot_cohort_cca_summary(results, cp, ws)
-        assert len(fig.axes) >= 3
+        assert len(fig.axes) >= 4
+        plt.close(fig)
+
+    def test_delta_r_diagonal_is_zero(self):
+        from iblnm.vis import plot_cohort_cca_summary
+        results, cp, ws = _make_mock_cohort_cca_data()
+        fig = plot_cohort_cca_summary(results, cp, ws)
+        # axes[2] is the delta-r heatmap (axes[0]=bars, [1]=raw, [2]=delta,
+        # but colorbars add extra axes; the imshow axes are the first 4)
+        delta_ax = fig.axes[2]
+        im = delta_ax.images[0]
+        delta_data = im.get_array()
+        n = len(results)
+        for i in range(n):
+            np.testing.assert_allclose(delta_data[i, i], 0.0, atol=1e-10)
         plt.close(fig)
 
     def test_bar_colors_match_config(self):
