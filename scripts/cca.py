@@ -176,7 +176,7 @@ if __name__ == '__main__':
         fig = plot_cohort_scatter(r, tnm)
         fname = f'cohort_scatter_{tnm.replace("-", "_")}.svg'
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
+        # fig kept open (plt.ion)
 
     # =====================================================================
     # Summary figure
