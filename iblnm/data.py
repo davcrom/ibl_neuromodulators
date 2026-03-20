@@ -1918,8 +1918,12 @@ class PhotometrySessionGroup:
 
         dvs = ['reaction_time', 'movement_time', 'peak_velocity']
         df = self.response_magnitudes.copy()
+        timing_cols = ['eid', 'trial', 'event'] + [
+            c for c in ['reaction_time', 'movement_time']
+            if c in self.trial_timing.columns
+        ]
         df = df.merge(
-            self.trial_timing[['eid', 'trial', 'event', 'reaction_time', 'movement_time']],
+            self.trial_timing[timing_cols],
             on=['eid', 'trial', 'event'], how='left',
         )
         df = df.merge(
