@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from iblnm.config import TARGET_FS
+from iblnm.config import TARGET_FS, contrast_transform
 
 
 def get_responses(photometry, events, t0=-1.0, t1=1.0):
@@ -249,8 +249,8 @@ def decode_target_nm(response_matrix, labels, subjects, normalize=True,
     labels : pd.Series
         Target-NM label per recording.
     subjects : pd.Series
-        Subject identifier per recording. Combined with ``labels`` to form
-        subject-target groups for leave-one-group-out CV.
+        Subject identifier per recording, used as group for
+        leave-one-subject-out CV.
     normalize : bool
         If True (default), z-score features within each CV fold (fit on
         train, transform both train and test).
@@ -277,7 +277,7 @@ def decode_target_nm(response_matrix, labels, subjects, normalize=True,
     clean = response_matrix.dropna()
     y = labels.loc[clean.index]
     subj = subjects.loc[clean.index]
-    groups = subj.astype(str) + '/' + y.astype(str)
+    groups = subj
 
     if y.nunique() < 2:
         raise ValueError("Need at least 2 target-NM classes for decoding")
@@ -390,7 +390,7 @@ def decode_target_nm(response_matrix, labels, subjects, normalize=True,
 class TargetNMDecoder:
     """Decode target-NM identity from response feature vectors.
 
-    Wraps L1 logistic regression with leave-one-subject-target-out CV,
+    Wraps L1 logistic regression with leave-one-subject-out CV,
     plus drop-one-feature importance analysis.
 
     Parameters
@@ -464,6 +464,354 @@ def _fit_full_data(X, y_enc, C, normalize):
     clf.fit(X, y_enc)
     preds = clf.predict(X)
     return balanced_accuracy_score(y_enc, preds)
+
+
+# =============================================================================
+# GLM Response Features
+# =============================================================================
+
+
+def fit_response_glm(events, event_name, min_trials=20):
+    """Fit per-recording OLS models and return coefficients as features.
+
+    For each recording in the events DataFrame, fits:
+    ``response_early ~ 1 + log_contrast + side + feedback
+    + log_contrast:side + log_contrast:feedback + side:feedback``
+
+    Only unbiased-block trials (probabilityLeft == 0.5) are used.
+
+    Parameters
+    ----------
+    events : pd.DataFrame
+        Trial-level data from ``get_response_magnitudes`` with ``add_relative_contrast``
+        applied (must have ``side`` column). Required columns: ``eid``,
+        ``brain_region``, ``target_NM``, ``event``, ``contrast``, ``side``,
+        ``feedbackType``, ``probabilityLeft``, ``response_early``.
+    event_name : str
+        Event to model (e.g., ``'stimOn_times'``).
+    min_trials : int
+        Minimum valid trials per recording. Recordings with fewer are skipped.
+
+    Returns
+    -------
+    coefs : pd.DataFrame
+        (n_recordings, 7) coefficient values.
+    ses : pd.DataFrame
+        (n_recordings, 7) standard errors.
+    """
+    import logging
+    from iblnm.task import add_relative_contrast
+
+    if events is None or len(events) == 0:
+        raise ValueError("events DataFrame is empty")
+
+    available_events = events['event'].unique()
+    if event_name not in available_events:
+        raise ValueError(
+            f"Event '{event_name}' not found in events. "
+            f"Available: {list(available_events)}"
+        )
+
+    # Filter to requested event and unbiased blocks
+    df = events[events['event'] == event_name].copy()
+    df = df[df['probabilityLeft'] == 0.5]
+
+    # Add lateralized side column if not present
+    if 'side' not in df.columns:
+        df = add_relative_contrast(df)
+
+    coef_names = [
+        'intercept', 'log_contrast', 'side', 'feedback',
+        'log_contrast:side', 'log_contrast:feedback', 'side:feedback',
+    ]
+
+    coef_rows = {}
+    se_rows = {}
+
+    for (eid, brain_region), grp in df.groupby(['eid', 'brain_region']):
+        # Drop NaN responses
+        valid = grp.dropna(subset=['response_early'])
+        if len(valid) < min_trials:
+            continue
+
+        y = valid['response_early'].values
+        log_c = contrast_transform(valid['contrast'].values)
+        side = (valid['side'] == 'contra').astype(float).values
+        feedback = valid['feedbackType'].values.astype(float)
+
+        X = np.column_stack([
+            np.ones(len(y)),
+            log_c,
+            side,
+            feedback,
+            log_c * side,
+            log_c * feedback,
+            side * feedback,
+        ])
+
+        # Check rank
+        if np.linalg.matrix_rank(X) < X.shape[1]:
+            logging.warning(
+                f"Singular design matrix for {eid}/{brain_region}, skipping"
+            )
+            continue
+
+        # OLS via lstsq
+        beta, residuals, rank, sv = np.linalg.lstsq(X, y, rcond=None)
+
+        # Compute standard errors
+        n, p = X.shape
+        y_hat = X @ beta
+        resid = y - y_hat
+        sigma2 = np.sum(resid ** 2) / (n - p)
+        XtX_inv = np.linalg.inv(X.T @ X)
+        se = np.sqrt(sigma2 * np.diag(XtX_inv))
+
+        # Get target_NM and fiber_idx from this group
+        target_nm = grp['target_NM'].iloc[0]
+        fiber_idx = int(grp['fiber_idx'].iloc[0]) if 'fiber_idx' in grp.columns else 0
+
+        key = (eid, target_nm, brain_region, fiber_idx)
+        coef_rows[key] = dict(zip(coef_names, beta))
+        se_rows[key] = dict(zip(coef_names, se))
+
+    if not coef_rows:
+        empty = pd.DataFrame(columns=coef_names)
+        return empty, empty.copy()
+
+    coefs = pd.DataFrame(coef_rows).T
+    coefs.index = pd.MultiIndex.from_tuples(
+        coefs.index, names=['eid', 'target_NM', 'brain_region', 'fiber_idx'],
+    )
+    ses = pd.DataFrame(se_rows).T
+    ses.index = coefs.index
+
+    return coefs, ses
+
+
+# =============================================================================
+# Canonical Correlation Analysis
+# =============================================================================
+
+
+class CCAResult:
+    """Container for a CCA fit result.
+
+    Attributes
+    ----------
+    x_weights : pd.DataFrame
+        (K, n_components) neural feature weights.
+    y_weights : pd.DataFrame
+        (P, n_components) behavioral parameter weights.
+    x_scores : np.ndarray
+        (n, n_components) neural canonical variates.
+    y_scores : np.ndarray
+        (n, n_components) behavioral canonical variates.
+    correlations : np.ndarray
+        (n_components,) canonical correlations.
+    p_values : np.ndarray or None
+        (n_components,) from permutation test, None if no permutation.
+    n_recordings : int
+    n_permutations : int
+    """
+
+    def __init__(self, x_weights, y_weights, x_scores, y_scores,
+                 correlations, p_values, n_recordings, n_permutations):
+        self.x_weights = x_weights
+        self.y_weights = y_weights
+        self.x_scores = x_scores
+        self.y_scores = y_scores
+        self.correlations = correlations
+        self.p_values = p_values
+        self.n_recordings = n_recordings
+        self.n_permutations = n_permutations
+
+
+def fit_cca(X, Y, n_components=None, n_permutations=0, session_labels=None,
+            seed=None, scale=True):
+    """Fit canonical correlation analysis between neural and behavioral features.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        (n_recordings, K) neural features. NaN rows dropped.
+    Y : pd.DataFrame
+        (n_recordings, P) behavioral features, aligned to X.
+    n_components : int or None
+        Number of canonical variates. Default: min(K, P, n).
+    n_permutations : int
+        If > 0, run permutation test.
+    session_labels : pd.Series or None
+        Session identifier per row. When provided, permutations shuffle
+        at the session level (all rows of a session move together).
+    seed : int or None
+        RNG seed for reproducibility.
+    scale : bool
+        If True (default), standardize X and Y before fitting. Set to False
+        when passing pre-standardized data.
+
+    Returns
+    -------
+    CCAResult
+    """
+    from sklearn.cross_decomposition import CCA
+    from sklearn.preprocessing import StandardScaler
+    from scipy.stats import pearsonr
+
+    # Drop rows with NaN in either X or Y
+    valid = X.notna().all(axis=1) & Y.notna().all(axis=1)
+    X_clean = X.loc[valid].copy()
+    Y_clean = Y.loc[valid].copy()
+
+    n = len(X_clean)
+    if n < 3:
+        raise ValueError(f"Need at least 3 recordings, got {n}")
+
+    # Drop constant Y columns
+    y_std = Y_clean.std()
+    varying = y_std[y_std > 0].index
+    if len(varying) == 0:
+        raise ValueError("Y has no variance — all columns are constant")
+    Y_clean = Y_clean[varying]
+
+    k = X_clean.shape[1]
+    p = Y_clean.shape[1]
+    max_components = min(k, p, n)
+    if n_components is None:
+        n_components = max_components
+    else:
+        n_components = min(n_components, max_components)
+
+    # Standardize
+    if scale:
+        x_scaler = StandardScaler()
+        y_scaler = StandardScaler()
+        X_z = x_scaler.fit_transform(X_clean.values)
+        Y_z = y_scaler.fit_transform(Y_clean.values)
+    else:
+        X_z = X_clean.values
+        Y_z = Y_clean.values
+
+    # Fit CCA
+    cca = CCA(n_components=n_components, max_iter=1000)
+    x_scores, y_scores = cca.fit_transform(X_z, Y_z)
+
+    # Canonical correlations
+    correlations = np.array([
+        pearsonr(x_scores[:, i], y_scores[:, i])[0]
+        for i in range(n_components)
+    ])
+
+    # Weights as DataFrames preserving feature names
+    comp_names = [f'CC{i+1}' for i in range(n_components)]
+    x_weights = pd.DataFrame(cca.x_weights_, index=X_clean.columns,
+                              columns=comp_names)
+    y_weights = pd.DataFrame(cca.y_weights_, index=Y_clean.columns,
+                              columns=comp_names)
+
+    # Permutation test
+    p_values = None
+    if n_permutations > 0:
+        rng = np.random.default_rng(seed)
+        perm_corrs = np.zeros((n_permutations, n_components))
+
+        if session_labels is not None:
+            session_labels_clean = session_labels.loc[valid].values
+            unique_sessions = np.unique(session_labels_clean)
+        else:
+            session_labels_clean = None
+
+        for perm_i in range(n_permutations):
+            if session_labels_clean is not None:
+                # Shuffle at session level
+                shuffled_sessions = rng.permutation(unique_sessions)
+                session_map = dict(zip(unique_sessions, shuffled_sessions))
+                new_labels = np.array([session_map[s] for s in session_labels_clean])
+                # Reorder Y rows according to shuffled session mapping
+                sort_idx = np.argsort(session_labels_clean)
+                new_sort_idx = np.argsort(new_labels)
+                Y_perm = np.empty_like(Y_z)
+                Y_perm[sort_idx] = Y_z[new_sort_idx]
+            else:
+                perm_idx = rng.permutation(n)
+                Y_perm = Y_z[perm_idx]
+
+            cca_perm = CCA(n_components=n_components, max_iter=1000)
+            try:
+                xs_perm, ys_perm = cca_perm.fit_transform(X_z, Y_perm)
+                for j in range(n_components):
+                    perm_corrs[perm_i, j] = pearsonr(xs_perm[:, j], ys_perm[:, j])[0]
+            except Exception:
+                perm_corrs[perm_i, :] = 0.0
+
+        p_values = np.array([
+            (np.sum(perm_corrs[:, j] >= correlations[j]) + 1) / (n_permutations + 1)
+            for j in range(n_components)
+        ])
+
+    return CCAResult(
+        x_weights=x_weights,
+        y_weights=y_weights,
+        x_scores=x_scores,
+        y_scores=y_scores,
+        correlations=correlations,
+        p_values=p_values,
+        n_recordings=n,
+        n_permutations=n_permutations,
+    )
+
+
+def cross_project_cca(X_z, Y_z, target_result):
+    """Cross-project data through another cohort's CCA weights.
+
+    Parameters
+    ----------
+    X_z : np.ndarray
+        (n, K) standardized neural features for the source cohort.
+    Y_z : np.ndarray
+        (n, P) standardized behavioral features for the source cohort.
+    target_result : CCAResult
+        CCA fit from the target cohort whose weights are used.
+
+    Returns
+    -------
+    float
+        Pearson r between projected neural and behavioral CC1 scores.
+    """
+    from scipy.stats import pearsonr
+
+    x_proj = X_z @ target_result.x_weights['CC1'].values
+    y_proj = Y_z @ target_result.y_weights['CC1'].values
+    r, _ = pearsonr(x_proj, y_proj)
+    return r
+
+
+def compare_cca_weights(result_a, result_b):
+    """Cosine similarity between two CCA fits' CC1 weight vectors.
+
+    Parameters
+    ----------
+    result_a, result_b : CCAResult
+
+    Returns
+    -------
+    dict
+        Keys: ``neural_cosine``, ``behavioral_cosine``.
+    """
+    def _cosine(a, b):
+        dot = np.dot(a, b)
+        norm = np.linalg.norm(a) * np.linalg.norm(b)
+        return dot / norm if norm > 0 else 0.0
+
+    w_a_x = result_a.x_weights['CC1'].values
+    w_b_x = result_b.x_weights['CC1'].values
+    w_a_y = result_a.y_weights['CC1'].values
+    w_b_y = result_b.y_weights['CC1'].values
+
+    return {
+        'neural_cosine': _cosine(w_a_x, w_b_x),
+        'behavioral_cosine': _cosine(w_a_y, w_b_y),
+    }
 
 
 # =============================================================================
@@ -541,7 +889,7 @@ def fit_events_lmm(df, response_col, formula=None, re_formula='1'):
     from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
     df = df.copy()
-    df['log_contrast'] = np.log(df['contrast'] + 0.01)
+    df['log_contrast'] = contrast_transform(df['contrast'])
     df['reward'] = (df['feedbackType'] == 1).astype(int)
 
     # Check minimum requirements
@@ -613,7 +961,7 @@ def fit_events_lmm(df, response_col, formula=None, re_formula='1'):
         for reward in [0, 1]:
             grid = pd.DataFrame({
                 'contrast': contrasts,
-                'log_contrast': np.log(np.array(contrasts) + 0.01),
+                'log_contrast': contrast_transform(contrasts),
                 'side': side,
                 'reward': reward,
                 'subject': df['subject'].iloc[0],  # dummy
@@ -693,7 +1041,7 @@ def compute_marginal_means(lmm_result, factor):
         design_info = result.model.data.orig_exog.design_info
         # Need a DataFrame with all the right columns
         grid = df_level.copy()
-        grid['log_contrast'] = np.log(grid['contrast'] + 0.01)
+        grid['log_contrast'] = contrast_transform(grid['contrast'])
         # Add dummy columns needed by the formula
         response_col = result.model.endog_names
         if response_col not in grid.columns:
@@ -855,3 +1203,177 @@ def feature_unique_contribution(response_matrix, labels, subjects,
         })
 
     return pd.DataFrame(rows)
+
+
+# =============================================================================
+# Wheel Kinematics LMM
+# =============================================================================
+
+
+class WheelLMMResult:
+    """Container for a nested LMM comparison (base vs full with NM predictor).
+
+    Attributes
+    ----------
+    dv : str
+        Dependent variable name.
+    target_nm : str
+        Target-NM group.
+    contrast : float
+        Contrast level.
+    base_r2 : dict
+        Nakagawa R² for base model {'marginal', 'conditional'}.
+    full_r2 : dict
+        Nakagawa R² for full model {'marginal', 'conditional'}.
+    delta_r2 : float
+        full_r2['marginal'] - base_r2['marginal'].
+    lrt_chi2 : float
+        Likelihood ratio test statistic.
+    lrt_pvalue : float
+        LRT p-value (chi2, df=1).
+    nm_coefficient : float
+        Fixed-effect coefficient for the NM predictor in the full model.
+    nm_pvalue : float
+        p-value for the NM coefficient.
+    n_trials : int
+    n_subjects : int
+    """
+
+    def __init__(self, dv, target_nm, contrast, base_r2, full_r2,
+                 delta_r2, lrt_chi2, lrt_pvalue, nm_coefficient, nm_pvalue,
+                 n_trials, n_subjects):
+        self.dv = dv
+        self.target_nm = target_nm
+        self.contrast = contrast
+        self.base_r2 = base_r2
+        self.full_r2 = full_r2
+        self.delta_r2 = delta_r2
+        self.lrt_chi2 = lrt_chi2
+        self.lrt_pvalue = lrt_pvalue
+        self.nm_coefficient = nm_coefficient
+        self.nm_pvalue = nm_pvalue
+        self.n_trials = n_trials
+        self.n_subjects = n_subjects
+
+
+def _compute_nakagawa_r2(result, df, response_col):
+    """Compute Nakagawa & Schielzeth R² for a fitted MixedLM.
+
+    Returns dict with 'marginal' and 'conditional' R².
+    """
+    y = df[response_col].values
+    var_y = np.var(y)
+    if var_y == 0:
+        return {'marginal': 0.0, 'conditional': 0.0}
+
+    fe_params = result.fe_params.values
+    exog = result.model.exog
+    y_pred_fe = exog @ fe_params
+    y_pred_full = result.fittedvalues.values
+
+    var_fixed = np.var(y_pred_fe)
+    var_random = np.var(y_pred_full - y_pred_fe)
+
+    r2_m = float(np.clip(var_fixed / var_y, 0, 1))
+    r2_c = float(np.clip((var_fixed + var_random) / var_y, 0, 1))
+    return {'marginal': r2_m, 'conditional': r2_c}
+
+
+def fit_wheel_kinematics_lmm(df, dv_col, response_col='response_early',
+                              target_nm='', contrast=0.0, min_subjects=2):
+    """Fit nested LMMs comparing base (task structure) vs full (+ NM predictor).
+
+    Base:  ``dv ~ C(stim_side) * C(choice) + (1 | subject)``
+    Full:  ``dv ~ C(stim_side) * C(choice) + response_early + (1 | subject)``
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data with columns: stim_side, choice, subject,
+        ``dv_col``, and ``response_col``.
+    dv_col : str
+        Dependent variable column name.
+    response_col : str
+        NM response magnitude column name.
+    target_nm : str
+        Target-NM label (stored in result, not used for filtering).
+    contrast : float
+        Contrast level (stored in result, not used for filtering).
+    min_subjects : int
+        Minimum subjects required to fit.
+
+    Returns
+    -------
+    WheelLMMResult or None
+        None if fewer than min_subjects or model fails to converge.
+    """
+    import statsmodels.formula.api as smf
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning
+    from scipy.stats import chi2
+
+    df = df.dropna(subset=[dv_col, response_col]).copy()
+
+    if df['subject'].nunique() < min_subjects:
+        return None
+    if len(df) < 10:
+        return None
+
+    # Check we have variation in categorical predictors
+    if df['stim_side'].nunique() < 2 or df['choice'].nunique() < 2:
+        return None
+
+    base_formula = f'{dv_col} ~ C(stim_side) * C(choice)'
+    full_formula = f'{dv_col} ~ C(stim_side) * C(choice) + {response_col}'
+
+    def _fit(formula):
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                model = smf.mixedlm(
+                    formula, df, groups=df['subject'], re_formula='1',
+                )
+                result = model.fit(reml=False)  # ML for LRT comparison
+            fatal = any(
+                issubclass(w.category, ConvergenceWarning)
+                and 'failed to converge' in str(w.message).lower()
+                for w in caught
+            )
+            if fatal:
+                return None
+            return result
+        except Exception:
+            return None
+
+    base_result = _fit(base_formula)
+    full_result = _fit(full_formula)
+
+    if base_result is None or full_result is None:
+        return None
+
+    base_r2 = _compute_nakagawa_r2(base_result, df, dv_col)
+    full_r2 = _compute_nakagawa_r2(full_result, df, dv_col)
+    delta_r2 = full_r2['marginal'] - base_r2['marginal']
+
+    # Likelihood ratio test
+    lrt_stat = 2 * (full_result.llf - base_result.llf)
+    lrt_stat = max(lrt_stat, 0.0)  # numerical floor
+    lrt_p = float(chi2.sf(lrt_stat, df=1))
+
+    # NM coefficient from full model
+    nm_coef = float(full_result.fe_params[response_col])
+    nm_p = float(full_result.pvalues[response_col])
+
+    return WheelLMMResult(
+        dv=dv_col,
+        target_nm=target_nm,
+        contrast=contrast,
+        base_r2=base_r2,
+        full_r2=full_r2,
+        delta_r2=delta_r2,
+        lrt_chi2=float(lrt_stat),
+        lrt_pvalue=lrt_p,
+        nm_coefficient=nm_coef,
+        nm_pvalue=nm_p,
+        n_trials=len(df),
+        n_subjects=df['subject'].nunique(),
+    )

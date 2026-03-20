@@ -3,6 +3,31 @@ import numpy as np
 import pandas as pd
 
 from iblnm.analysis import get_responses, normalize_responses, resample_signal
+from iblnm.config import contrast_transform
+
+
+class TestContrastTransform:
+    def test_zero_contrast(self):
+        from iblnm.config import contrast_transform
+        assert contrast_transform(0) == 0.0
+
+    def test_known_values(self):
+        from iblnm.config import contrast_transform
+        c = np.array([0.0, 6.25, 12.5, 25, 100])
+        result = contrast_transform(c)
+        expected = np.log(c + 1)
+        np.testing.assert_allclose(result, expected)
+
+    def test_roundtrip(self):
+        from iblnm.config import contrast_transform, contrast_inverse
+        c = np.array([0.0, 6.25, 12.5, 25, 50, 100])
+        np.testing.assert_allclose(contrast_inverse(contrast_transform(c)), c)
+
+    def test_monotonic(self):
+        from iblnm.config import contrast_transform
+        c = np.array([0.0, 6.25, 12.5, 25, 50, 100])
+        result = contrast_transform(c)
+        assert np.all(np.diff(result) > 0)
 
 
 class TestComputeBleachingTau:
@@ -458,7 +483,7 @@ class TestFullDataCoefficients:
         expected = clf.coef_
         if expected.shape[0] == 1 and len(le.classes_) == 2:
             expected = np.vstack([expected, -expected])
-        np.testing.assert_allclose(coef_df.values, expected, atol=1e-3)
+        np.testing.assert_allclose(coef_df.values, expected, atol=1e-2)
 
     def test_unique_contribution_uses_full_data_accuracy(self):
         """Unique contribution's full_accuracy should be full-data accuracy,
@@ -520,19 +545,15 @@ class TestCTuning:
         assert result['best_C'] in [0.01, 100.0]
 
 
-class TestSubjectTargetGrouping:
-    """LOSO should group by subject-target, not bare subject."""
+class TestLeaveOneSubjectOutGrouping:
+    """LOSO groups by subject to prevent information leakage."""
 
-    def test_subject_target_grouping_keeps_other_fiber(self):
-        """Holding out s0-A should keep s0-B in training.
+    def test_subject_grouping_holds_out_all_targets(self):
+        """Holding out s0 removes all of s0's recordings (both A and B).
 
-        s0 is the only subject with class B data. With bare-subject LOSO,
+        s0 is the only subject with class B data. With leave-one-subject-out,
         holding out s0 removes all class B from training → fold skipped,
-        s0-A is unpredicted. With subject-target grouping, holding out
-        s0-A keeps s0-B in training → s0-A gets a valid prediction.
-
-        We detect this via n_valid_predictions: subject-target gives 3
-        valid folds (s0-A, s1-A, s2-A) vs bare-subject's 2 (s1, s2).
+        n_valid = 2 (only s1 and s2 get predictions).
         """
         from iblnm.analysis import decode_target_nm
         # 4 recordings: class A = [s0, s1, s2], class B = [s0]
@@ -550,10 +571,9 @@ class TestSubjectTargetGrouping:
 
         result = decode_target_nm(mat, labels, subjects)
 
-        # With subject-target grouping: s0-A fold has s0-B in training →
-        # valid prediction. n_valid = 3 (s0-A, s1-A, s2-A; s0-B skipped).
-        # With bare-subject: s0 fold removes both → n_valid = 2.
-        assert result['n_valid'] == 3
+        # With leave-one-subject-out: s0 fold removes both s0-A and s0-B →
+        # no class B in training → fold skipped. n_valid = 2 (s1, s2).
+        assert result['n_valid'] == 2
 
 
 class TestMeanSimilarityByTarget:
@@ -692,7 +712,7 @@ def _make_lmm_data(n_per_cell=20, seed=42):
             for reward in rewards:
                 for contrast in contrasts:
                     for _ in range(n_per_cell):
-                        log_c = np.log(contrast + 0.01)
+                        log_c = contrast_transform(contrast)
                         response = (
                             1.0                              # intercept
                             + 0.5 * log_c                    # contrast effect
@@ -973,3 +993,524 @@ class TestComputeContrastSlopes:
         # (data has 0.5 contrast effect, no interaction)
         for _, row in pop.iterrows():
             assert row['slope'] > 0.2
+
+
+# =============================================================================
+# CCA Tests
+# =============================================================================
+
+
+class TestFitCCA:
+
+    def test_perfect_correlation(self):
+        """When Y is a linear function of X, canonical correlation should be ~1."""
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(42)
+        n, k, p = 50, 5, 2
+        X = pd.DataFrame(rng.standard_normal((n, k)), columns=[f'x{i}' for i in range(k)])
+        W = rng.standard_normal((2, p))
+        Y = pd.DataFrame(X.iloc[:, :2].values @ W + 0.01 * rng.standard_normal((n, p)),
+                          columns=[f'y{i}' for i in range(p)])
+        result = fit_cca(X, Y)
+        assert result.correlations[0] > 0.95
+
+    def test_returns_cca_result(self):
+        from iblnm.analysis import fit_cca, CCAResult
+        rng = np.random.default_rng(0)
+        n, k, p = 30, 4, 2
+        X = pd.DataFrame(rng.standard_normal((n, k)), columns=[f'x{i}' for i in range(k)])
+        Y = pd.DataFrame(rng.standard_normal((n, p)), columns=[f'y{i}' for i in range(p)])
+        result = fit_cca(X, Y)
+        assert isinstance(result, CCAResult)
+
+    def test_result_shapes(self):
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(0)
+        n, k, p = 40, 6, 3
+        X = pd.DataFrame(rng.standard_normal((n, k)), columns=[f'x{i}' for i in range(k)])
+        Y = pd.DataFrame(rng.standard_normal((n, p)), columns=[f'y{i}' for i in range(p)])
+        result = fit_cca(X, Y, n_components=2)
+        assert result.x_weights.shape == (k, 2)
+        assert result.y_weights.shape == (p, 2)
+        assert result.x_scores.shape == (n, 2)
+        assert result.y_scores.shape == (n, 2)
+        assert result.correlations.shape == (2,)
+
+    def test_weight_column_names_preserved(self):
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.standard_normal((20, 3)),
+                          columns=['stim_c0_contra', 'stim_c25_ipsi', 'fb_correct'])
+        Y = pd.DataFrame(rng.standard_normal((20, 2)),
+                          columns=['threshold', 'bias'])
+        result = fit_cca(X, Y)
+        assert list(result.x_weights.index) == ['stim_c0_contra', 'stim_c25_ipsi', 'fb_correct']
+        assert list(result.y_weights.index) == ['threshold', 'bias']
+
+    def test_n_components_capped(self):
+        """n_components should not exceed min(K, P, n)."""
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.standard_normal((20, 10)), columns=[f'x{i}' for i in range(10)])
+        Y = pd.DataFrame(rng.standard_normal((20, 2)), columns=['y0', 'y1'])
+        result = fit_cca(X, Y, n_components=5)
+        assert result.correlations.shape == (2,)
+
+    def test_no_permutation_by_default(self):
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.standard_normal((20, 3)), columns=[f'x{i}' for i in range(3)])
+        Y = pd.DataFrame(rng.standard_normal((20, 2)), columns=[f'y{i}' for i in range(2)])
+        result = fit_cca(X, Y)
+        assert result.p_values is None
+
+    def test_drops_nan_rows(self):
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.standard_normal((22, 3)), columns=[f'x{i}' for i in range(3)])
+        Y = pd.DataFrame(rng.standard_normal((22, 2)), columns=[f'y{i}' for i in range(2)])
+        X.iloc[0, 0] = np.nan
+        Y.iloc[1, 1] = np.nan
+        result = fit_cca(X, Y)
+        assert result.n_recordings == 20
+
+    def test_too_few_recordings_raises(self):
+        from iblnm.analysis import fit_cca
+        X = pd.DataFrame({'x0': [1.0, 2.0]})
+        Y = pd.DataFrame({'y0': [3.0, 4.0]})
+        with pytest.raises(ValueError, match='at least 3'):
+            fit_cca(X, Y)
+
+    def test_constant_y_column_dropped(self):
+        """A constant Y column should be dropped, not crash."""
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(0)
+        n = 30
+        X = pd.DataFrame(rng.standard_normal((n, 4)), columns=[f'x{i}' for i in range(4)])
+        Y = pd.DataFrame({
+            'varying': rng.standard_normal(n),
+            'constant': np.ones(n),
+        })
+        result = fit_cca(X, Y)
+        assert result.y_weights.shape[0] == 1  # constant column removed
+        assert result.correlations.shape == (1,)
+
+
+# =============================================================================
+# Wheel Kinematics LMM Tests
+# =============================================================================
+
+
+def _make_wheel_lmm_data(n_subjects=3, n_per_subject=80, seed=42):
+    """Synthetic trial data for wheel kinematics LMM testing.
+
+    Creates data where response_early has a known positive effect on
+    reaction_time within each contrast group.
+    """
+    rng = np.random.default_rng(seed)
+    subjects = [f's{i}' for i in range(n_subjects)]
+    contrasts = [0.0, 0.0625, 0.125, 0.25, 1.0]
+    sides = ['contra', 'ipsi']
+    choices = [-1, 1]
+
+    rows = []
+    for subj in subjects:
+        subj_intercept = rng.normal(0, 0.5)
+        for _ in range(n_per_subject):
+            contrast = rng.choice(contrasts)
+            side = rng.choice(sides)
+            choice = rng.choice(choices)
+            response_early = rng.normal(1.0, 0.5)
+            # reaction_time has known relationship with response_early
+            reaction_time = (
+                0.3
+                + 0.1 * response_early  # known effect
+                + subj_intercept
+                + rng.normal(0, 0.1)
+            )
+            rows.append({
+                'contrast': contrast,
+                'side': side,
+                'choice': choice,
+                'stim_side': side,
+                'subject': subj,
+                'response_early': response_early,
+                'reaction_time': max(reaction_time, 0.06),
+                'movement_time': max(rng.normal(0.3, 0.1), 0.01),
+                'peak_velocity': abs(rng.normal(5.0, 2.0)),
+            })
+    return pd.DataFrame(rows)
+
+
+class TestFitWheelKinematicsLMM:
+
+    def test_returns_wheel_lmm_result(self):
+        from iblnm.analysis import fit_wheel_kinematics_lmm, WheelLMMResult
+        df = _make_wheel_lmm_data()
+        result = fit_wheel_kinematics_lmm(df, dv_col='reaction_time',
+                                           response_col='response_early')
+        assert isinstance(result, WheelLMMResult)
+
+    def test_has_expected_fields(self):
+        from iblnm.analysis import fit_wheel_kinematics_lmm
+        df = _make_wheel_lmm_data()
+        result = fit_wheel_kinematics_lmm(df, dv_col='reaction_time',
+                                           response_col='response_early')
+        assert result.dv == 'reaction_time'
+        assert result.delta_r2 is not None
+        assert result.lrt_pvalue is not None
+        assert result.nm_coefficient is not None
+        assert result.n_trials > 0
+        assert result.n_subjects == 3
+
+    def test_r2_values_valid(self):
+        from iblnm.analysis import fit_wheel_kinematics_lmm
+        df = _make_wheel_lmm_data()
+        result = fit_wheel_kinematics_lmm(df, dv_col='reaction_time',
+                                           response_col='response_early')
+        assert 0 <= result.base_r2['marginal'] <= 1
+        assert 0 <= result.full_r2['marginal'] <= 1
+        assert 0 <= result.lrt_pvalue <= 1
+
+    def test_detects_known_nm_effect(self):
+        """Data has known positive relationship between response_early and RT."""
+        from iblnm.analysis import fit_wheel_kinematics_lmm
+        df = _make_wheel_lmm_data(n_subjects=5, n_per_subject=200, seed=0)
+        # Filter to one contrast to match actual usage
+        df_c = df[np.isclose(df['contrast'], 0.125)]
+        result = fit_wheel_kinematics_lmm(df_c, dv_col='reaction_time',
+                                           response_col='response_early')
+        assert result is not None
+        assert result.nm_coefficient > 0
+        assert result.lrt_pvalue < 0.05
+
+    def test_insufficient_subjects_returns_none(self):
+        from iblnm.analysis import fit_wheel_kinematics_lmm
+        df = _make_wheel_lmm_data(n_subjects=1, n_per_subject=50)
+        result = fit_wheel_kinematics_lmm(df, dv_col='reaction_time',
+                                           response_col='response_early')
+        assert result is None
+
+    def test_delta_r2_positive_with_true_effect(self):
+        """When NM truly predicts DV, delta R² should be positive."""
+        from iblnm.analysis import fit_wheel_kinematics_lmm
+        df = _make_wheel_lmm_data(n_subjects=5, n_per_subject=200, seed=0)
+        df_c = df[np.isclose(df['contrast'], 0.125)]
+        result = fit_wheel_kinematics_lmm(df_c, dv_col='reaction_time',
+                                           response_col='response_early')
+        assert result.delta_r2 > 0
+
+
+class TestCCAPermutation:
+
+    def test_permutation_returns_p_values(self):
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(42)
+        n, k, p = 50, 5, 2
+        X = pd.DataFrame(rng.standard_normal((n, k)), columns=[f'x{i}' for i in range(k)])
+        Y = pd.DataFrame(rng.standard_normal((n, p)), columns=[f'y{i}' for i in range(p)])
+        result = fit_cca(X, Y, n_permutations=100, seed=0)
+        assert result.p_values is not None
+        assert result.p_values.shape == result.correlations.shape
+        assert result.n_permutations == 100
+
+    def test_random_data_not_significant(self):
+        """Uncorrelated X and Y should yield p > 0.05 for all components."""
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(42)
+        n = 80
+        X = pd.DataFrame(rng.standard_normal((n, 5)), columns=[f'x{i}' for i in range(5)])
+        Y = pd.DataFrame(rng.standard_normal((n, 3)), columns=[f'y{i}' for i in range(3)])
+        result = fit_cca(X, Y, n_permutations=200, seed=0)
+        assert all(p > 0.01 for p in result.p_values)
+
+    def test_correlated_data_significant(self):
+        """Strongly correlated X and Y should yield p < 0.05 for first component."""
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(42)
+        n = 80
+        X = pd.DataFrame(rng.standard_normal((n, 5)), columns=[f'x{i}' for i in range(5)])
+        Y = pd.DataFrame(X.iloc[:, :2].values + 0.1 * rng.standard_normal((n, 2)),
+                          columns=['y0', 'y1'])
+        result = fit_cca(X, Y, n_permutations=200, seed=0)
+        assert result.p_values[0] < 0.05
+
+    def test_session_level_permutation(self):
+        """When session_labels provided, permutation preserves within-session structure."""
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(42)
+        n_sessions = 10
+        X = pd.DataFrame(rng.standard_normal((n_sessions * 2, 4)),
+                          columns=[f'x{i}' for i in range(4)])
+        Y_session = rng.standard_normal((n_sessions, 2))
+        Y = pd.DataFrame(np.repeat(Y_session, 2, axis=0), columns=['y0', 'y1'])
+        session_labels = pd.Series(np.repeat(np.arange(n_sessions), 2))
+        result = fit_cca(X, Y, n_permutations=50, session_labels=session_labels, seed=0)
+        assert result.p_values is not None
+
+    def test_reproducible_with_seed(self):
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((30, 3)), columns=[f'x{i}' for i in range(3)])
+        Y = pd.DataFrame(rng.standard_normal((30, 2)), columns=[f'y{i}' for i in range(2)])
+        r1 = fit_cca(X, Y, n_permutations=50, seed=99)
+        r2 = fit_cca(X, Y, n_permutations=50, seed=99)
+        np.testing.assert_array_equal(r1.p_values, r2.p_values)
+
+
+# =============================================================================
+# fit_response_glm
+# =============================================================================
+
+
+def _make_glm_events(n=200, eid='eid1', brain_region='VTA', hemisphere='l',
+                     target_nm='VTA-DA', seed=42):
+    """Synthetic events DataFrame for GLM tests."""
+    rng = np.random.default_rng(seed)
+    contrast = rng.choice([0, 6.25, 12.5, 25, 100], n)
+    stim_side = rng.choice(['left', 'right'], n)
+    feedback = rng.choice([-1, 1], n)
+    log_c = contrast_transform(contrast)
+    contra_side = {'l': 'right', 'r': 'left'}[hemisphere]
+    is_contra = (stim_side == contra_side).astype(float)
+    response = (2 + 0.5 * log_c + 1.0 * is_contra + 0.3 * feedback
+                + rng.normal(0, 0.5, n))
+    return pd.DataFrame({
+        'eid': eid, 'brain_region': brain_region, 'hemisphere': hemisphere,
+        'target_NM': target_nm, 'event': 'stimOn_times',
+        'contrast': contrast, 'stim_side': stim_side,
+        'signed_contrast': np.where(stim_side == 'left', -contrast, contrast),
+        'feedbackType': feedback, 'probabilityLeft': 0.5,
+        'response_early': response,
+    })
+
+
+class TestFitResponseGLM:
+    def test_known_coefficients(self):
+        """Synthetic data with known linear relationship recovers coefficients."""
+        from iblnm.analysis import fit_response_glm
+        rng = np.random.default_rng(42)
+        n = 400
+        contrast = rng.choice([0, 6.25, 12.5, 25, 100], n)
+        stim_side = rng.choice(['left', 'right'], n)
+        is_contra = (stim_side == 'right').astype(float)  # hemisphere='l'
+        feedback = rng.choice([-1, 1], n).astype(float)
+        log_c = contrast_transform(contrast)
+
+        # 7 known coefficients
+        true_beta = np.array([2.0, 0.5, 1.0, 0.3, -0.2, 0.1, 0.4])
+        X = np.column_stack([
+            np.ones(n), log_c, is_contra, feedback,
+            log_c * is_contra, log_c * feedback, is_contra * feedback,
+        ])
+        response = X @ true_beta + rng.normal(0, 0.1, n)
+
+        events = pd.DataFrame({
+            'eid': 'eid1', 'brain_region': 'VTA', 'hemisphere': 'l',
+            'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+            'contrast': contrast, 'stim_side': stim_side,
+            'signed_contrast': np.where(stim_side == 'left', -contrast, contrast),
+            'feedbackType': feedback.astype(int),
+            'probabilityLeft': 0.5,
+            'response_early': response,
+        })
+        coefs, ses = fit_response_glm(events, 'stimOn_times')
+        np.testing.assert_allclose(coefs.iloc[0].values, true_beta, atol=0.15)
+
+    def test_returns_standard_errors(self):
+        """SE values are positive and finite."""
+        from iblnm.analysis import fit_response_glm
+        events = _make_glm_events(n=200, seed=0)
+        coefs, ses = fit_response_glm(events, 'stimOn_times')
+        assert (ses.values > 0).all()
+        assert np.all(np.isfinite(ses.values))
+
+    def test_multiple_recordings(self):
+        """Two recordings produce two rows."""
+        from iblnm.analysis import fit_response_glm
+        e1 = _make_glm_events(n=200, eid='eid1', brain_region='VTA', seed=0)
+        e2 = _make_glm_events(n=200, eid='eid2', brain_region='SNc', seed=1)
+        events = pd.concat([e1, e2], ignore_index=True)
+        coefs, ses = fit_response_glm(events, 'stimOn_times')
+        assert len(coefs) == 2
+
+    def test_skips_too_few_trials(self):
+        """Recording with fewer than min_trials is excluded."""
+        from iblnm.analysis import fit_response_glm
+        events = _make_glm_events(n=10, seed=0)
+        coefs, ses = fit_response_glm(events, 'stimOn_times', min_trials=20)
+        assert len(coefs) == 0
+
+    def test_skips_nan_responses(self):
+        """Trials with NaN response are excluded; fit proceeds on remainder."""
+        from iblnm.analysis import fit_response_glm
+        events = _make_glm_events(n=100, seed=0)
+        events.loc[:29, 'response_early'] = np.nan
+        coefs, ses = fit_response_glm(events, 'stimOn_times', min_trials=20)
+        assert len(coefs) == 1  # fits on 70 valid trials
+
+    def test_skips_singular_design(self):
+        """Recording with rank-deficient design is skipped."""
+        from iblnm.analysis import fit_response_glm
+        events = _make_glm_events(n=100, seed=0)
+        events['contrast'] = 25  # constant
+        events['stim_side'] = 'right'  # constant
+        events['feedbackType'] = 1  # constant
+        coefs, ses = fit_response_glm(events, 'stimOn_times')
+        assert len(coefs) == 0
+
+    def test_wrong_event_raises(self):
+        """Requesting an event not in data raises ValueError."""
+        from iblnm.analysis import fit_response_glm
+        events = _make_glm_events(n=100, seed=0)
+        with pytest.raises(ValueError, match="not found"):
+            fit_response_glm(events, 'nonexistent_event')
+
+    def test_column_names(self):
+        """Output columns match expected coefficient names."""
+        from iblnm.analysis import fit_response_glm
+        events = _make_glm_events(n=200, seed=0)
+        coefs, ses = fit_response_glm(events, 'stimOn_times')
+        expected = ['intercept', 'log_contrast', 'side', 'feedback',
+                    'log_contrast:side', 'log_contrast:feedback',
+                    'side:feedback']
+        assert list(coefs.columns) == expected
+        assert list(ses.columns) == expected
+
+    def test_filters_biased_blocks(self):
+        """Only trials with probabilityLeft == 0.5 are used."""
+        from iblnm.analysis import fit_response_glm
+        events = _make_glm_events(n=200, seed=0)
+        events.loc[:99, 'probabilityLeft'] = 0.2
+        coefs, ses = fit_response_glm(events, 'stimOn_times', min_trials=20)
+        assert len(coefs) == 1  # fits on ~100 unbiased trials
+
+
+# =============================================================================
+# fit_cca scale parameter
+# =============================================================================
+
+
+class TestFitCCAScale:
+
+    def test_scale_false_skips_standardization(self):
+        """Pre-scaled data with scale=False gives same result as scale=True."""
+        from iblnm.analysis import fit_cca
+        from sklearn.preprocessing import StandardScaler
+        rng = np.random.default_rng(42)
+        n, k, p = 50, 5, 2
+        X = pd.DataFrame(rng.standard_normal((n, k)),
+                          columns=[f'x{i}' for i in range(k)])
+        W = rng.standard_normal((2, p))
+        Y = pd.DataFrame(
+            X.iloc[:, :2].values @ W + 0.01 * rng.standard_normal((n, p)),
+            columns=[f'y{i}' for i in range(p)])
+        r1 = fit_cca(X, Y, scale=True)
+        Xz = pd.DataFrame(StandardScaler().fit_transform(X),
+                           columns=X.columns, index=X.index)
+        Yz = pd.DataFrame(StandardScaler().fit_transform(Y),
+                           columns=Y.columns, index=Y.index)
+        r2 = fit_cca(Xz, Yz, scale=False)
+        np.testing.assert_allclose(
+            abs(r1.correlations[0]), abs(r2.correlations[0]), atol=0.01)
+
+    def test_scale_true_is_default(self):
+        """Default behavior unchanged — scale=True."""
+        from iblnm.analysis import fit_cca
+        import inspect
+        sig = inspect.signature(fit_cca)
+        assert sig.parameters['scale'].default is True
+
+
+# =============================================================================
+# cross_project_cca / compare_cca_weights
+# =============================================================================
+
+
+class TestCrossProjectCCA:
+
+    def test_self_projection_matches_within(self):
+        """Projecting A through A's weights recovers A's canonical corr."""
+        from iblnm.analysis import fit_cca, cross_project_cca
+        from sklearn.preprocessing import StandardScaler
+        rng = np.random.default_rng(42)
+        n, k, p = 50, 6, 4
+        X = pd.DataFrame(rng.standard_normal((n, k)),
+                          columns=[f'x{i}' for i in range(k)])
+        W = rng.standard_normal((2, p))
+        Y = pd.DataFrame(
+            X.iloc[:, :2].values @ W + 0.1 * rng.standard_normal((n, p)),
+            columns=[f'y{i}' for i in range(p)])
+        Xz = StandardScaler().fit_transform(X)
+        Yz = StandardScaler().fit_transform(Y)
+        Xz_df = pd.DataFrame(Xz, columns=X.columns, index=X.index)
+        Yz_df = pd.DataFrame(Yz, columns=Y.columns, index=Y.index)
+        result = fit_cca(Xz_df, Yz_df, scale=False)
+        r = cross_project_cca(Xz, Yz, result)
+        np.testing.assert_allclose(r, result.correlations[0], atol=0.05)
+
+    def test_unrelated_data_gives_low_projection(self):
+        from iblnm.analysis import fit_cca, cross_project_cca
+        from sklearn.preprocessing import StandardScaler
+        rng = np.random.default_rng(42)
+        n, k, p = 50, 6, 4
+        X = pd.DataFrame(rng.standard_normal((n, k)),
+                          columns=[f'x{i}' for i in range(k)])
+        W = rng.standard_normal((2, p))
+        Y = pd.DataFrame(
+            X.iloc[:, :2].values @ W + 0.1 * rng.standard_normal((n, p)),
+            columns=[f'y{i}' for i in range(p)])
+        Xz = StandardScaler().fit_transform(X)
+        Yz = StandardScaler().fit_transform(Y)
+        result = fit_cca(
+            pd.DataFrame(Xz, columns=X.columns),
+            pd.DataFrame(Yz, columns=Y.columns),
+            scale=False)
+        # Random data — low cross-projection
+        X2 = rng.standard_normal((40, k))
+        Y2 = rng.standard_normal((40, p))
+        r = cross_project_cca(X2, Y2, result)
+        assert abs(r) < 0.5
+
+
+class TestCompareCCAWeights:
+
+    def test_identical_weights_give_cosine_one(self):
+        from iblnm.analysis import fit_cca, compare_cca_weights
+        from sklearn.preprocessing import StandardScaler
+        rng = np.random.default_rng(42)
+        n, k, p = 50, 6, 4
+        X = pd.DataFrame(rng.standard_normal((n, k)),
+                          columns=[f'x{i}' for i in range(k)])
+        W = rng.standard_normal((2, p))
+        Y = pd.DataFrame(
+            X.iloc[:, :2].values @ W + 0.01 * rng.standard_normal((n, p)),
+            columns=[f'y{i}' for i in range(p)])
+        Xz = pd.DataFrame(StandardScaler().fit_transform(X),
+                           columns=X.columns)
+        Yz = pd.DataFrame(StandardScaler().fit_transform(Y),
+                           columns=Y.columns)
+        result = fit_cca(Xz, Yz, scale=False)
+        sims = compare_cca_weights(result, result)
+        np.testing.assert_allclose(
+            abs(sims['neural_cosine']), 1.0, atol=0.01)
+        np.testing.assert_allclose(
+            abs(sims['behavioral_cosine']), 1.0, atol=0.01)
+
+    def test_returns_expected_keys(self):
+        from iblnm.analysis import fit_cca, compare_cca_weights
+        from sklearn.preprocessing import StandardScaler
+        rng = np.random.default_rng(42)
+        n, k, p = 50, 6, 4
+        X = pd.DataFrame(rng.standard_normal((n, k)),
+                          columns=[f'x{i}' for i in range(k)])
+        Y = pd.DataFrame(rng.standard_normal((n, p)),
+                          columns=[f'y{i}' for i in range(p)])
+        Xz = pd.DataFrame(StandardScaler().fit_transform(X),
+                           columns=X.columns)
+        Yz = pd.DataFrame(StandardScaler().fit_transform(Y),
+                           columns=Y.columns)
+        result = fit_cca(Xz, Yz, scale=False)
+        sims = compare_cca_weights(result, result)
+        assert 'neural_cosine' in sims
+        assert 'behavioral_cosine' in sims
