@@ -91,11 +91,19 @@ def plot_response_figures(group, figures_dir, response_col='response_early',
         'pool' or 'subject'.
     """
     df_responses = add_relative_contrast(group.response_magnitudes.copy())
+    if group.trial_timing is not None:
+        df_responses = df_responses.merge(
+            group.trial_timing[['eid', 'trial', 'event', 'reaction_time']],
+            on=['eid', 'trial', 'event'], how='left',
+        )
     df_unbiased = df_responses.query('probabilityLeft == 0.5')
 
     window_label = response_col.replace('response_', '')
     df = df_unbiased.dropna(subset=[response_col]).copy()
-    df = df.query('choice != 0 and reaction_time > 0.05')
+    if 'reaction_time' in df.columns:
+        df = df.query('choice != 0 and reaction_time > 0.05')
+    else:
+        df = df.query('choice != 0')
 
     for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
         n_subjects = df_group['subject'].nunique()
@@ -137,9 +145,17 @@ def plot_lmm_figures(group, figures_dir, response_col='response_early'):
 
     # Prepare raw data for overlay
     df_raw = add_relative_contrast(group.response_magnitudes.copy())
+    if group.trial_timing is not None:
+        df_raw = df_raw.merge(
+            group.trial_timing[['eid', 'trial', 'event', 'reaction_time']],
+            on=['eid', 'trial', 'event'], how='left',
+        )
     df_raw = df_raw.query('probabilityLeft == 0.5')
     df_raw = df_raw.dropna(subset=[response_col])
-    df_raw = df_raw.query('choice != 0 and reaction_time > 0.05')
+    if 'reaction_time' in df_raw.columns:
+        df_raw = df_raw.query('choice != 0 and reaction_time > 0.05')
+    else:
+        df_raw = df_raw.query('choice != 0')
 
     # Per-target modeled response plots (save and close)
     for (target_nm, event_label), result in group.lmm_results.items():
