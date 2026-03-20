@@ -2518,6 +2518,29 @@ class TestGetMeanTraces:
         np.testing.assert_allclose(
             post_event['response'].mean(), 1.0, atol=0.2)
 
+    def test_has_contrast_and_feedback_columns(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_mean_traces()
+        assert 'contrast' in result.columns
+        assert 'feedbackType' in result.columns
+
+    def test_traces_grouped_by_contrast_feedback(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_mean_traces()
+        # Should have multiple (contrast, feedbackType) combinations per
+        # (eid, brain_region, event)
+        n_groups = result.groupby(
+            ['eid', 'brain_region', 'event', 'contrast', 'feedbackType']
+        ).ngroups
+        n_rec_events = result.groupby(['eid', 'brain_region', 'event']).ngroups
+        assert n_groups > n_rec_events
+
 
 # =============================================================================
 # Wheel Kinematics Enrichment and LMM Tests

@@ -7,7 +7,7 @@ from scipy.stats import sem as scipy_sem
 from sklearn.preprocessing import quantile_transform
 
 from iblnm.config import (
-    QCCMAP, SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT,
+    CONTRAST_COLORS, QCCMAP, SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT,
     TARGETNM2POSITION, TARGETNM_COLORS, TARGETNM_POSITIONS,
     contrast_transform,
 )
@@ -2267,21 +2267,22 @@ def plot_response_decoding_summary(response_matrix, coefficients,
     return fig
 
 
-def plot_mean_response_traces(traces_df, event_name, fig=None):
-    """Mean peri-event response traces per target-NM with subject-mean removal.
+def plot_mean_response_traces(traces_df, event_name):
+    """Mean peri-event response traces split by contrast and feedback type.
 
-    For each target_NM, applies subject-mean removal before computing
-    the grand mean and SEM:
-        adjusted_r(t) = r(t) - mean_s(t) + grand_mean(t)
+    Layout: 2 rows (reward top, omission bottom) × n_targets columns.
+    Each panel has one line per contrast level, colored by ``CONTRAST_COLORS``.
+
+    For each (target_NM, contrast, feedbackType), applies subject-mean
+    removal before computing the grand mean and SEM.
 
     Parameters
     ----------
     traces_df : pd.DataFrame
         Long-form with columns: eid, subject, target_NM, brain_region,
-        event, time, response.
+        event, contrast, feedbackType, time, response.
     event_name : str
         Event name for the title.
-    fig : plt.Figure, optional
 
     Returns
     -------
@@ -2289,58 +2290,81 @@ def plot_mean_response_traces(traces_df, event_name, fig=None):
     """
     targets = sorted(traces_df['target_NM'].unique())
     n_targets = len(targets)
+    feedback_types = [1, -1]
+    fb_labels = {1: 'Reward', -1: 'Omission'}
+    contrasts = sorted(traces_df['contrast'].unique())
 
-    if fig is None:
-        fig, axes = plt.subplots(1, n_targets,
-                                 figsize=(4 * n_targets, 3.5),
-                                 sharey=True, squeeze=False)
-        axes = axes[0]
-    else:
-        axes = fig.axes
+    fig, axes = plt.subplots(2, n_targets,
+                             figsize=(4 * n_targets, 6),
+                             sharey=True, squeeze=False)
 
-    for ax, target in zip(axes, targets):
-        df_t = traces_df[traces_df['target_NM'] == target]
+    for col, target in enumerate(targets):
+        for row, fb in enumerate(feedback_types):
+            ax = axes[row, col]
+            df_cell = traces_df[
+                (traces_df['target_NM'] == target)
+                & (traces_df['feedbackType'] == fb)
+            ]
 
-        # Pivot to (recording, time) matrix
-        recordings = df_t['eid'].unique()
-        time_vals = sorted(df_t['time'].unique())
-        n_recs = len(recordings)
-        n_time = len(time_vals)
+            for contrast in contrasts:
+                df_c = df_cell[df_cell['contrast'] == contrast]
+                if len(df_c) == 0:
+                    continue
 
-        trace_matrix = np.full((n_recs, n_time), np.nan)
-        subjects_arr = []
-        for i, eid in enumerate(recordings):
-            rec_data = df_t[df_t['eid'] == eid].sort_values('time')
-            trace_matrix[i] = rec_data['response'].values
-            subjects_arr.append(rec_data['subject'].iloc[0])
-        subjects_arr = np.array(subjects_arr)
+                # Pivot to (recording, time) matrix
+                recordings = df_c['eid'].unique()
+                time_vals = sorted(df_c['time'].unique())
+                n_recs = len(recordings)
+                n_time = len(time_vals)
 
-        # Subject-mean removal
-        grand_mean = np.nanmean(trace_matrix, axis=0)
-        adjusted = np.copy(trace_matrix)
-        for s in np.unique(subjects_arr):
-            s_mask = subjects_arr == s
-            s_mean = np.nanmean(trace_matrix[s_mask], axis=0)
-            adjusted[s_mask] = trace_matrix[s_mask] - s_mean + grand_mean
+                trace_matrix = np.full((n_recs, n_time), np.nan)
+                subjects_arr = []
+                for i, eid in enumerate(recordings):
+                    rec_data = df_c[df_c['eid'] == eid].sort_values('time')
+                    trace_matrix[i] = rec_data['response'].values
+                    subjects_arr.append(rec_data['subject'].iloc[0])
+                subjects_arr = np.array(subjects_arr)
 
-        mean_trace = np.nanmean(adjusted, axis=0)
-        if n_recs > 1:
-            sem_trace = np.nanstd(adjusted, axis=0, ddof=1) / np.sqrt(n_recs)
-        else:
-            sem_trace = np.zeros(n_time)
+                # Subject-mean removal
+                grand_mean = np.nanmean(trace_matrix, axis=0)
+                adjusted = np.copy(trace_matrix)
+                for s in np.unique(subjects_arr):
+                    s_mask = subjects_arr == s
+                    s_mean = np.nanmean(trace_matrix[s_mask], axis=0)
+                    adjusted[s_mask] = (
+                        trace_matrix[s_mask] - s_mean + grand_mean
+                    )
 
-        color = TARGETNM_COLORS.get(target, 'gray')
-        ax.plot(time_vals, mean_trace, color=color, linewidth=1.5)
-        if n_recs > 1:
-            ax.fill_between(time_vals, mean_trace - sem_trace,
-                            mean_trace + sem_trace,
-                            color=color, alpha=0.3)
-        ax.axvline(0, color='gray', linewidth=0.5, linestyle='--')
-        ax.set_xlabel('Time (s)')
-        ax.set_title(target)
+                mean_trace = np.nanmean(adjusted, axis=0)
+                if n_recs > 1:
+                    sem_trace = (np.nanstd(adjusted, axis=0, ddof=1)
+                                 / np.sqrt(n_recs))
+                else:
+                    sem_trace = np.zeros(n_time)
 
-    axes[0].set_ylabel('Response (z-scored ΔF/F)')
-    fig.suptitle(event_name, fontsize=12)
+                color_key = f'contrast_{contrast}'
+                color = CONTRAST_COLORS.get(color_key, 'gray')
+                ax.plot(time_vals, mean_trace, color=color, linewidth=1.5,
+                        label=f'{contrast}')
+                if n_recs > 1:
+                    ax.fill_between(time_vals, mean_trace - sem_trace,
+                                    mean_trace + sem_trace,
+                                    color=color, alpha=0.2)
+
+            ax.axvline(0, color='gray', linewidth=0.5, linestyle='--')
+            if row == 1:
+                ax.set_xlabel('Time (s)')
+            if col == 0:
+                ax.set_ylabel(fb_labels[fb])
+            if row == 0:
+                ax.set_title(target)
+
+    # Legend on first axis
+    axes[0, 0].legend(title='Contrast', fontsize=7, title_fontsize=8,
+                      loc='upper left')
+
+    event_label = event_name.replace('_times', '')
+    fig.suptitle(event_label, fontsize=12)
     fig.tight_layout()
     return fig
 

@@ -975,7 +975,7 @@ def _fit_lmm(formula, df, groups, re_formula='1', reml=True):
                 formula, df, groups=groups,
                 re_formula=re_formula,
             )
-            result = model.fit(reml=reml)
+            result = model.fit(reml=reml, method='powell', maxiter=500)
         fatal = any(
             issubclass(w.category, ConvergenceWarning)
             and 'failed to converge' in str(w.message).lower()
@@ -1085,7 +1085,7 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1'):
             design_info = result.model.data.orig_exog.design_info
             X_grid = np.asarray(dmatrix(design_info, grid))
             pred = X_grid @ fe_params
-            se_pred = np.sqrt(np.diag(X_grid @ fe_cov @ X_grid.T))
+            se_pred = np.sqrt(np.maximum(np.diag(X_grid @ fe_cov @ X_grid.T), 0))
             for i, c in enumerate(contrasts):
                 pred_rows.append({
                     'contrast': c,

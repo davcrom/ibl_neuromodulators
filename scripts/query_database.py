@@ -12,7 +12,8 @@ from iblnm.io import (
 )
 from iblnm.util import (
     enforce_schema, get_session_type, get_targetNM, get_session_length,
-    df2pqt,
+    fill_empty_lists_from_group, fill_brain_region_from_fibers,
+    fix_brain_regions, df2pqt,
 )
 from iblnm.validation import (
     validate_subject, validate_strain, validate_line,
@@ -92,6 +93,16 @@ df_sessions = df_sessions.progress_apply(
 df_sessions = df_sessions.progress_apply(
     fill_hemisphere_from_fiber_insertion_table, axis='columns', exlog=error_log
 ).copy()
+
+# Fill empty brain_region/hemisphere from other sessions of the same subject,
+# then from fibers.csv for subjects with no Alyx brain_region at all
+df_sessions = fill_empty_lists_from_group(df_sessions, 'brain_region')
+df_sessions = fill_empty_lists_from_group(df_sessions, 'hemisphere')
+df_sessions = fill_brain_region_from_fibers(df_sessions)
+
+# TEMPFIX: normalize brain_region naming errors from Alyx metadata
+df_sessions = fix_brain_regions(df_sessions)
+
 df_sessions.apply(validate_brain_region, axis='columns', exlog=error_log)
 df_sessions.apply(validate_hemisphere, axis='columns', exlog=error_log)
 

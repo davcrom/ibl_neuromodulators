@@ -1176,47 +1176,50 @@ class TestPlotWheelLMMSummary:
 def _make_traces_df(n_targets=2, n_subjects=3, n_recs_per=2, n_timepoints=100):
     from iblnm.config import TARGETNM_COLORS
     targets = sorted(list(TARGETNM_COLORS.keys()))[:n_targets]
+    contrasts = [0.0, 0.25, 1.0]
+    feedback_types = [1, -1]
     rng = np.random.default_rng(42)
     time = np.linspace(-1, 1, n_timepoints)
     rows = []
     for tnm in targets:
         for s in range(n_subjects):
             for r in range(n_recs_per):
-                trace = rng.normal(0, 1, n_timepoints)
-                for t_idx, t in enumerate(time):
-                    rows.append({
-                        'eid': f'eid-{tnm}-s{s}-r{r}',
-                        'subject': f's{s}',
-                        'target_NM': tnm,
-                        'brain_region': tnm.split('-')[0],
-                        'event': 'stimOn_times',
-                        'time': t,
-                        'response': trace[t_idx],
-                    })
+                for contrast in contrasts:
+                    for fb in feedback_types:
+                        trace = rng.normal(0, 1, n_timepoints)
+                        for t_idx, t in enumerate(time):
+                            rows.append({
+                                'eid': f'eid-{tnm}-s{s}-r{r}',
+                                'subject': f's{s}',
+                                'target_NM': tnm,
+                                'brain_region': tnm.split('-')[0],
+                                'event': 'stimOn_times',
+                                'contrast': contrast,
+                                'feedbackType': fb,
+                                'time': t,
+                                'response': trace[t_idx],
+                            })
     return pd.DataFrame(rows)
 
 
 class TestPlotMeanResponseTraces:
 
-    def test_one_axis_per_target(self):
+    def test_two_rows_n_target_cols(self):
         from iblnm.vis import plot_mean_response_traces
         traces = _make_traces_df(n_targets=3)
         fig = plot_mean_response_traces(traces, 'stimOn_times')
-        assert len(fig.axes) == 3
+        # 2 rows (reward, omission) × 3 target columns = 6 axes
+        assert len(fig.axes) == 6
         plt.close(fig)
 
-    def test_line_colors_match_config(self):
-        import matplotlib as mpl
+    def test_one_line_per_contrast(self):
         from iblnm.vis import plot_mean_response_traces
-        from iblnm.config import TARGETNM_COLORS
         traces = _make_traces_df(n_targets=2)
         fig = plot_mean_response_traces(traces, 'stimOn_times')
-        targets = sorted(traces['target_NM'].unique())
-        for ax, target in zip(fig.axes, targets):
-            line = ax.lines[0]
-            expected = mpl.colors.to_rgba(TARGETNM_COLORS[target])
-            actual = mpl.colors.to_rgba(line.get_color())
-            np.testing.assert_allclose(actual, expected, atol=0.01)
+        n_contrasts = traces['contrast'].nunique()
+        for ax in fig.axes:
+            # Each axis should have one line per contrast + the vline
+            assert len(ax.lines) == n_contrasts + 1
         plt.close(fig)
 
     def test_fill_between_present(self):

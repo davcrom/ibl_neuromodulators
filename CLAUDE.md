@@ -55,6 +55,13 @@ scripts/ ← orchestration (filtering, iteration, figure layout)
 `scripts/` contains analysis-specific orchestration. Never put generic
 functions in scripts.
 
+**analysis.py vs data.py rule**: `analysis.py` contains pure functions that
+take arrays/DataFrames and return results. `data.py` contains the
+`PhotometrySessionGroup` class whose methods unpack `self` attributes, call
+`analysis.py` functions with the correct arguments for each operation (e.g.,
+each pairwise comparison), and package results back onto `self`. Never put
+computational logic directly in `data.py` methods — they are orchestrators.
+
 ## Key Patterns
 
 ### 1. Exception Logger (`@exception_logger`)

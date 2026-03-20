@@ -11,7 +11,7 @@ y_ij = beta_0 + beta_1 * log(c) + beta_2 * side + beta_3 * reward
        + u_0j + u_1j * log(c) + epsilon_ij
 ```
 
-where `i` indexes trials, `j` indexes subjects, `c = contrast + 0.01`, and:
+where `i` indexes trials, `j` indexes subjects, `c = contrast + 1`, and:
 
 - **beta_0 -- beta_7** are **fixed effects**: population-level parameters shared
   across all subjects.

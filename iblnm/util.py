@@ -611,6 +611,39 @@ def traj2coord(x, y, z, depth, theta, phi, **kwargs):
     return np.array([tip_ml, tip_ap, tip_dv])
 
 
+def fix_brain_regions(df):
+    """Normalize brain_region naming errors from Alyx metadata.
+
+    TEMPFIX: applies REGION_NAME_FIXES (e.g. DRN→DR, SNC→SNc).
+    Remove once corrected upstream in Alyx.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Sessions with brain_region list column.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy with corrected brain_region names.
+    """
+    from iblnm.config import REGION_NAME_FIXES
+
+    def _fix(regions):
+        if not isinstance(regions, (list, np.ndarray)):
+            return regions
+        fixed = []
+        for r in regions:
+            bare = r.rsplit('-', 1)[0] if r.endswith(('-l', '-r')) else r
+            suffix = r[len(bare):]
+            fixed.append(REGION_NAME_FIXES.get(bare, bare) + suffix)
+        return fixed
+
+    df = df.copy()
+    df['brain_region'] = df['brain_region'].apply(_fix)
+    return df
+
+
 def fill_brain_region_from_fibers(df, fibers_fpath=None):
     """Fill empty brain_region/hemisphere from fiber insertion table.
 

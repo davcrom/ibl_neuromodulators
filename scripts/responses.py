@@ -9,12 +9,8 @@ Includes biased, ephys, and qualifying training sessions (>70% performance
 with the full contrast set).
 
 Output:
-    data/responses.pqt           — trial-level response magnitudes
-    data/trial_timing.pqt        — per-trial reaction and movement times
-    data/peak_velocity.pqt       — per-trial peak wheel velocity
-    data/response_matrix.pqt     — response feature vectors
-    figures/responses/*.svg      — all response analysis figures
-    figures/traces/*.svg         — mean response traces
+    data/responses/                — all parquet and CSV data files
+    figures/responses/             — all figures, organized by analysis
 
 Usage:
     python scripts/responses.py          # full pipeline: extract + plot
@@ -28,8 +24,8 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH,
-    RESPONSES_FPATH, TRIAL_TIMING_FPATH, PEAK_VELOCITY_FPATH,
-    RESPONSE_MATRIX_FPATH, SIMILARITY_MATRIX_FPATH,
+    RESPONSES_DIR, RESPONSES_FPATH, TRIAL_TIMING_FPATH, PEAK_VELOCITY_FPATH,
+    RESPONSE_MATRIX_FPATH, RESPONSE_SIMILARITY_FPATH, MEAN_TRACES_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI,
     MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
@@ -123,17 +119,18 @@ def plot_response_figures(group, figures_dir, response_col='response_early',
 # LMM statistical analysis
 # =========================================================================
 
-def plot_lmm_figures(group, figures_dir, response_col='response_early'):
+def plot_lmm_figures(group, figures_dir, data_dir,
+                     response_col='response_early'):
     """Generate per-target LMM response plots and consolidated summaries.
-
-    Requires ``group.fit_lmm()`` to have been called already.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
         Must have lmm_results populated.
     figures_dir : Path
-        Output directory for SVG and CSV files.
+        Output directory for SVG files.
+    data_dir : Path
+        Output directory for CSV files.
     response_col : str
         Column name for the response magnitude (used for raw data overlay).
     """
@@ -172,9 +169,9 @@ def plot_lmm_figures(group, figures_dir, response_col='response_early'):
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
 
-    # Save coefficients
+    # Save coefficients to data dir
     if len(group.lmm_coefficients) > 0:
-        csv_path = figures_dir / f'lmm_coefficients_{window_label}.csv'
+        csv_path = data_dir / f'lmm_coefficients_{window_label}.csv'
         group.lmm_coefficients.to_csv(csv_path, index=False)
         print(f"  LMM coefficients saved to {csv_path}")
 
@@ -192,33 +189,29 @@ def plot_lmm_figures(group, figures_dir, response_col='response_early'):
 # Wheel kinematics LMM analysis
 # =========================================================================
 
-def plot_wheel_lmm_figures(group, figures_dir, response_col='response_early'):
+def plot_wheel_lmm_figures(group, figures_dir, data_dir):
     """Generate wheel kinematics LMM summary plot and CSV.
-
-    Requires ``group.fit_wheel_lmm()`` to have been called.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
         Must have wheel_lmm_summary populated.
     figures_dir : Path
-        Output directory for SVG and CSV files.
-    response_col : str
-        Column name for the NM response magnitude.
+        Output directory for SVG files.
+    data_dir : Path
+        Output directory for CSV files.
     """
     summary = group.wheel_lmm_summary
     if summary is None or len(summary) == 0:
         print("  No wheel LMM results to plot.")
         return
 
-    # Summary figure: delta R² across contrasts
     fig = plot_wheel_lmm_summary(summary)
     fig.savefig(figures_dir / 'wheel_lmm_delta_r2.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
 
-    # CSV export
-    csv_path = figures_dir / 'wheel_lmm_summary.csv'
+    csv_path = data_dir / 'wheel_lmm_summary.csv'
     summary.to_csv(csv_path, index=False)
     print(f"  Wheel LMM summary saved to {csv_path}")
 
@@ -227,15 +220,19 @@ def plot_wheel_lmm_figures(group, figures_dir, response_col='response_early'):
 # Response vectors plotting
 # =========================================================================
 
-def plot_vectors_figures(group, figures_dir):
+def plot_vectors_figures(group, similarity_dir, decoding_dir, data_dir):
     """Plot similarity matrix, confusion matrix, and decoding summary.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
         Must have response_features, similarity_matrix, and decoder populated.
-    figures_dir : Path
-        Output directory for SVG files.
+    similarity_dir : Path
+        Output directory for similarity SVG files.
+    decoding_dir : Path
+        Output directory for decoding SVG files.
+    data_dir : Path
+        Output directory for data files.
     """
     sim = group.similarity_matrix
     labels = group.response_features.index.get_level_values('target_NM')
@@ -255,7 +252,7 @@ def plot_vectors_figures(group, figures_dir):
 
     # Similarity matrix
     fig = plot_similarity_matrix(sim, labels_clean, subjects=subjects_clean)
-    fig.savefig(figures_dir / 'similarity_matrix.svg',
+    fig.savefig(similarity_dir / 'response_similarity_matrix.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     print(f"  {len(sim)} recordings in similarity matrix")
 
@@ -270,10 +267,16 @@ def plot_vectors_figures(group, figures_dir):
     target_sim_loso = mean_similarity_by_target(sim, labels_clean,
                                                 subjects=subjects_clean)
     fig = plot_empirical_similarity(target_sim, loso_matrix=target_sim_loso)
-    fig.savefig(figures_dir / 'empirical_similarity.svg',
+    fig.savefig(similarity_dir / 'empirical_similarity.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     print(f"  Empirical similarity (all pairs):\n{target_sim.to_string()}")
     print(f"  Empirical similarity (cross-subject):\n{target_sim_loso.to_string()}")
+
+    # Within-target similarity barplot
+    fig = plot_within_target_similarity(sim, labels_clean, subjects_clean)
+    fig.savefig(similarity_dir / 'within_target_similarity.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
 
     # Confusion matrix
     decoder = group.decoder
@@ -285,18 +288,12 @@ def plot_vectors_figures(group, figures_dir):
     print(f"  Confusion matrix:\n{decoder.confusion}")
 
     fig = plot_confusion_matrix(decoder.confusion)
-    fig.savefig(figures_dir / 'confusion_matrix.svg',
+    fig.savefig(decoding_dir / 'confusion_matrix.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
 
-    # Within-target similarity barplot
-    fig = plot_within_target_similarity(sim, labels_clean, subjects_clean)
-    fig.savefig(figures_dir / 'within_target_similarity.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
-
-    # Mean response vectors (legacy — kept for standalone viewing)
+    # Mean response vectors
     fig = plot_mean_response_vectors(group.response_features)
-    fig.savefig(figures_dir / 'mean_response_vectors.svg',
+    fig.savefig(decoding_dir / 'mean_response_vectors.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
 
@@ -307,18 +304,22 @@ def plot_vectors_figures(group, figures_dir):
     print(contrib.head().to_string(index=False))
 
     fig = plot_decoding_summary(decoder.coefficients, contrib)
-    fig.savefig(figures_dir / 'decoding_summary.svg',
+    fig.savefig(decoding_dir / 'decoding_summary.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
 
     # Unified response vectors + decoding summary
     fig = plot_response_decoding_summary(
         group.response_features, decoder.coefficients, contrib)
-    fig.savefig(figures_dir / 'response_decoding_summary.svg',
+    fig.savefig(decoding_dir / 'response_decoding_summary.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
 
-    contrib.to_parquet(figures_dir / 'feature_contributions.pqt', index=False)
+    # Save decoding data
+    decoder.confusion.to_parquet(data_dir / 'confusion_matrix.pqt')
+    decoder.coefficients.to_parquet(data_dir / 'decoding_coefficients.pqt')
+    decoder.contributions.to_parquet(
+        data_dir / 'feature_contributions.pqt', index=False)
 
 
 if __name__ == '__main__':
@@ -330,8 +331,21 @@ if __name__ == '__main__':
                         help='skip extraction; plot from existing parquet files')
     args = parser.parse_args()
 
-    figures_dir = PROJECT_ROOT / 'figures/responses'
-    figures_dir.mkdir(parents=True, exist_ok=True)
+    # Create output directories
+    data_dir = RESPONSES_DIR
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    fig_base = PROJECT_ROOT / 'figures/responses'
+    fig_dirs = {
+        'contrast_curves': fig_base / 'contrast_curves',
+        'lmm': fig_base / 'lmm',
+        'wheel_lmm': fig_base / 'wheel_lmm',
+        'similarity': fig_base / 'similarity',
+        'target_decoding': fig_base / 'target_decoding',
+        'traces': fig_base / 'traces',
+    }
+    for d in fig_dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
 
     # =====================================================================
     # Load sessions
@@ -408,10 +422,9 @@ if __name__ == '__main__':
         print(f"Loading response matrix from {RESPONSE_MATRIX_FPATH}")
         group.response_features = pd.read_parquet(RESPONSE_MATRIX_FPATH)
 
-        mean_traces_fpath = PROJECT_ROOT / 'data/mean_traces.pqt'
-        if mean_traces_fpath.exists():
-            print(f"Loading mean traces from {mean_traces_fpath}")
-            group.mean_traces = pd.read_parquet(mean_traces_fpath)
+        if MEAN_TRACES_FPATH.exists():
+            print(f"Loading mean traces from {MEAN_TRACES_FPATH}")
+            group.mean_traces = pd.read_parquet(MEAN_TRACES_FPATH)
 
     else:
         # =================================================================
@@ -430,7 +443,6 @@ if __name__ == '__main__':
             print("No response magnitudes extracted. Check H5 files exist.")
             raise SystemExit(1)
 
-        RESPONSES_FPATH.parent.mkdir(parents=True, exist_ok=True)
         group.response_magnitudes.to_parquet(RESPONSES_FPATH, index=False)
         print(f"Saved response magnitudes to {RESPONSES_FPATH}")
 
@@ -440,9 +452,8 @@ if __name__ == '__main__':
         # --- Mean traces ---
         print("Computing mean traces...")
         group.get_mean_traces()
-        mean_traces_fpath = PROJECT_ROOT / 'data/mean_traces.pqt'
-        group.mean_traces.to_parquet(mean_traces_fpath, index=False)
-        print(f"Saved mean traces to {mean_traces_fpath}")
+        group.mean_traces.to_parquet(MEAN_TRACES_FPATH, index=False)
+        print(f"Saved mean traces to {MEAN_TRACES_FPATH}")
 
         # --- Response vectors ---
         print("\nBuilding response features...")
@@ -452,7 +463,6 @@ if __name__ == '__main__':
             print("No response vectors extracted. Check H5 files.")
             raise SystemExit(1)
 
-        RESPONSE_MATRIX_FPATH.parent.mkdir(parents=True, exist_ok=True)
         group.response_features.to_parquet(RESPONSE_MATRIX_FPATH)
         print(f"Saved {len(group.response_features)} response vectors "
               f"to {RESPONSE_MATRIX_FPATH}")
@@ -463,8 +473,8 @@ if __name__ == '__main__':
     print_response_summary(group.response_magnitudes)
 
     print("\nGenerating response magnitude plots...")
-    plot_response_figures(group, figures_dir)
-    print(f"Response magnitude figures saved to {figures_dir}")
+    plot_response_figures(group, fig_dirs['contrast_curves'])
+    print(f"Response magnitude figures saved to {fig_dirs['contrast_curves']}")
 
     # =====================================================================
     # LMM statistical analysis
@@ -475,7 +485,7 @@ if __name__ == '__main__':
         ve = result.variance_explained
         print(f"  {tnm} x {ev}: R2 marginal={ve['marginal']:.3f}, "
               f"conditional={ve['conditional']:.3f}")
-    plot_lmm_figures(group, figures_dir)
+    plot_lmm_figures(group, fig_dirs['lmm'], data_dir)
 
     # =====================================================================
     # Wheel kinematics LMM
@@ -495,7 +505,7 @@ if __name__ == '__main__':
         n_sig = (group.wheel_lmm_summary['lrt_pvalue'] < 0.05).sum()
         print(f"  {len(group.wheel_lmm_summary)} model comparisons, "
               f"{n_sig} significant (p < 0.05)")
-        plot_wheel_lmm_figures(group, figures_dir)
+        plot_wheel_lmm_figures(group, fig_dirs['wheel_lmm'], data_dir)
     else:
         print("  No wheel LMM results (insufficient data).")
 
@@ -505,42 +515,31 @@ if __name__ == '__main__':
     print("\nComputing cosine similarity matrix...")
     group.response_similarity_matrix()
 
-    group.similarity_matrix.to_parquet(SIMILARITY_MATRIX_FPATH)
-    print(f"Saved similarity matrix to {SIMILARITY_MATRIX_FPATH}")
+    group.similarity_matrix.to_parquet(RESPONSE_SIMILARITY_FPATH)
+    print(f"Saved similarity matrix to {RESPONSE_SIMILARITY_FPATH}")
 
     print("Decoding target-NM from response vectors...")
     group.decode_target()
 
-    # Save decoding results
-    data_dir = PROJECT_ROOT / 'data'
-    decoder = group.decoder
-    decoder.confusion.to_parquet(data_dir / 'confusion_matrix.pqt')
-    decoder.coefficients.to_parquet(data_dir / 'decoding_coefficients.pqt')
-    decoder.contributions.to_parquet(
-        data_dir / 'feature_contributions.pqt', index=False)
-    print(f"Saved decoding results to {data_dir}")
-
-    plot_vectors_figures(group, figures_dir)
-    print(f"Response vector figures saved to {figures_dir}")
+    plot_vectors_figures(group, fig_dirs['similarity'],
+                        fig_dirs['target_decoding'], data_dir)
+    print("Response vector figures saved")
 
     # =====================================================================
     # Mean response traces per target-NM
     # =====================================================================
-    traces_figures_dir = PROJECT_ROOT / 'figures/traces'
-    traces_figures_dir.mkdir(parents=True, exist_ok=True)
-
     if group.mean_traces is not None and len(group.mean_traces) > 0:
         print("\nGenerating mean response trace plots...")
         for event in RESPONSE_EVENTS:
             df_event = group.mean_traces[group.mean_traces['event'] == event]
             if len(df_event) == 0:
                 continue
-            event_label = event.replace('_times', '')
             fig = plot_mean_response_traces(df_event, event)
-            fig.savefig(traces_figures_dir / f'mean_traces_{event_label}.svg',
+            event_label = event.replace('_times', '')
+            fig.savefig(fig_dirs['traces'] / f'mean_traces_{event_label}.svg',
                         dpi=FIGURE_DPI, bbox_inches='tight')
             plt.close(fig)
-        print(f"Trace figures saved to {traces_figures_dir}")
+        print(f"Trace figures saved to {fig_dirs['traces']}")
 
     # Free trace cache
     group.flush_response_traces()

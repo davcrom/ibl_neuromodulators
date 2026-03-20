@@ -5,11 +5,9 @@ Fits CCA (k=1) separately per target-NM cohort, then compares coupling
 structures via cross-projection and weight cosine similarity.
 
 Output:
-    figures/cca/cohort_cca_summary.svg       - 3-panel summary
-    figures/cca/cohort_scatter_{target}.svg   - neural vs behavioral score
-    figures/cca/cross_projections.csv         - cross-projection correlations
-    figures/cca/weight_similarities.csv       - cosine similarities
-    figures/cca/cohort_cca_summary.csv        - per-cohort correlations & p-values
+    data/cca/                              — CSV data files
+    figures/cca/scatter/                   — per-cohort score scatter plots
+    figures/cca/summary/                   — summary, weight profiles, cosine sim
 
 Usage:
     python scripts/cca.py
@@ -86,8 +84,17 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     params = args.params if args.params else DEFAULT_PARAMS
-    figures_dir = PROJECT_ROOT / 'figures/cca'
-    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create output directories
+    data_dir = PROJECT_ROOT / 'data/cca'
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    fig_dirs = {
+        'scatter': PROJECT_ROOT / 'figures/cca/scatter',
+        'summary': PROJECT_ROOT / 'figures/cca/summary',
+    }
+    for d in fig_dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
 
     # =====================================================================
     # Load sessions and build group
@@ -122,7 +129,7 @@ if __name__ == '__main__':
         print(f"Error: {RESPONSES_FPATH} not found. "
               "Run scripts/responses.py first.")
         raise SystemExit(1)
-    print(f"Loading events from {RESPONSES_FPATH}")
+    print(f"Loading responses from {RESPONSES_FPATH}")
     group.response_magnitudes = pd.read_parquet(RESPONSES_FPATH)
     print(f"Computing GLM features (event={args.event}, "
           f"weight_by_se={args.weight_by_se})...")
@@ -178,39 +185,33 @@ if __name__ == '__main__':
     for tnm, r in sorted(results.items()):
         fig = plot_cohort_scatter(r, tnm)
         fname = f'cohort_scatter_{tnm.replace("-", "_")}.svg'
-        fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
-        # fig kept open (plt.ion)
+        fig.savefig(fig_dirs['scatter'] / fname,
+                    dpi=FIGURE_DPI, bbox_inches='tight')
 
     # =====================================================================
-    # Summary figure
+    # Summary figures
     # =====================================================================
     print("Generating summary figure...")
     fig = plot_cohort_cca_summary(results, cp, ws)
-    fig.savefig(figures_dir / 'cohort_cca_summary.svg',
+    fig.savefig(fig_dirs['summary'] / 'cohort_cca_summary.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
 
-    # =====================================================================
-    # Weight profiles (neural + behavioral)
-    # =====================================================================
     print("Generating weight profile heatmaps...")
     fig = plot_cca_weight_profiles(results)
-    fig.savefig(figures_dir / 'cohort_weight_profiles.svg',
+    fig.savefig(fig_dirs['summary'] / 'cohort_weight_profiles.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
 
-    # =====================================================================
-    # Cosine similarity
-    # =====================================================================
     print("Generating cosine similarity heatmaps...")
     fig = plot_cca_cosine_similarity(ws)
-    fig.savefig(figures_dir / 'cohort_cosine_similarity.svg',
+    fig.savefig(fig_dirs['summary'] / 'cohort_cosine_similarity.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
 
     # =====================================================================
-    # Save CSVs
+    # Save CSVs to data directory
     # =====================================================================
-    cp.to_csv(figures_dir / 'cross_projections.csv', index=False)
-    ws.to_csv(figures_dir / 'weight_similarities.csv', index=False)
+    cp.to_csv(data_dir / 'cross_projections.csv', index=False)
+    ws.to_csv(data_dir / 'weight_similarities.csv', index=False)
 
     summary_rows = []
     for tnm, r in sorted(results.items()):
@@ -221,7 +222,7 @@ if __name__ == '__main__':
             'n_recordings': r.n_recordings,
         })
     summary = pd.DataFrame(summary_rows)
-    summary.to_csv(figures_dir / 'cohort_cca_summary.csv', index=False)
+    summary.to_csv(data_dir / 'cohort_cca_summary.csv', index=False)
 
-    print(f"\nSummary saved to {figures_dir / 'cohort_cca_summary.csv'}")
-    print(f"Figures saved to {figures_dir}")
+    print(f"\nData saved to {data_dir}")
+    print(f"Figures saved to {PROJECT_ROOT / 'figures/cca'}")

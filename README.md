@@ -233,8 +233,8 @@ group.filter_recordings()
 
 ```python
 # Trial-level response magnitudes (one row per recording × event × trial)
-group.get_events()
-# → group.events (DataFrame)
+group.get_response_magnitudes()
+# → group.response_magnitudes (DataFrame)
 
 # Response feature vectors (one row per recording, columns = condition labels)
 group.get_response_features(nan_handling='drop_features')

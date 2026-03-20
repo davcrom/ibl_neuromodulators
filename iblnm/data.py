@@ -1206,36 +1206,44 @@ class PhotometrySessionGroup:
         """Compute trial-averaged traces from the trace cache.
 
         Calls :meth:`load_response_traces` if traces are not yet cached.
-        For each cached (recording × event), computes the mean trace across
-        trials via ``np.nanmean``.
+        For each cached (recording × event), groups trials by
+        ``(contrast, feedbackType)`` and computes the mean trace per group.
 
         Returns
         -------
         pd.DataFrame
             Long-form DataFrame with columns: eid, subject, target_NM,
-            brain_region, event, time, response.
+            brain_region, event, contrast, feedbackType, time, response.
         """
         if self.response_traces is None:
             self.load_response_traces()
 
         rows = []
         for (_eid, _region, _event), entry in self.response_traces.items():
-            traces = entry['traces']
+            traces = entry['traces']  # (n_trials, n_time)
             tpts = entry['tpts']
             meta = entry['meta']
+            trials = entry['trials']
 
-            mean_trace = np.nanmean(traces, axis=0)
+            for (contrast, fb), idx in trials.groupby(
+                    ['contrast', 'feedbackType']).groups.items():
+                trial_mask = idx.values
+                if len(trial_mask) == 0:
+                    continue
+                mean_trace = np.nanmean(traces[trial_mask], axis=0)
 
-            for i, t in enumerate(tpts):
-                rows.append({
-                    'eid': meta['eid'],
-                    'subject': meta['subject'],
-                    'target_NM': meta['target_NM'],
-                    'brain_region': meta['brain_region'],
-                    'event': meta['event'],
-                    'time': t,
-                    'response': mean_trace[i],
-                })
+                for i, t in enumerate(tpts):
+                    rows.append({
+                        'eid': meta['eid'],
+                        'subject': meta['subject'],
+                        'target_NM': meta['target_NM'],
+                        'brain_region': meta['brain_region'],
+                        'event': meta['event'],
+                        'contrast': contrast,
+                        'feedbackType': fb,
+                        'time': t,
+                        'response': mean_trace[i],
+                    })
 
         self.mean_traces = pd.DataFrame(rows)
         return self.mean_traces
