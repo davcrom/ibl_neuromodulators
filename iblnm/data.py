@@ -1144,6 +1144,15 @@ class PhotometrySessionGroup:
             else:
                 reaction_time = np.full(n_trials, np.nan)
 
+            if ('feedback_times' in trials.columns
+                    and 'firstMovement_times' in trials.columns):
+                movement_time = (
+                    trials['feedback_times'].values
+                    - trials['firstMovement_times'].values
+                )
+            else:
+                movement_time = np.full(n_trials, np.nan)
+
             for t in range(n_trials):
                 rows.append({
                     'eid': meta['eid'],
@@ -1162,6 +1171,7 @@ class PhotometrySessionGroup:
                     'feedbackType': trials['feedbackType'].iloc[t],
                     'probabilityLeft': trials['probabilityLeft'].iloc[t],
                     'reaction_time': reaction_time[t],
+                    'movement_time': movement_time[t],
                     'response_early': early[t],
                 })
 

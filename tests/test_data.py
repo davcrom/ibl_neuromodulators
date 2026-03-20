@@ -1892,6 +1892,16 @@ class TestGetResponseMagnitudes:
         assert isinstance(df_events, pd.DataFrame)
         assert len(df_events) == 0
 
+    def test_response_magnitudes_has_movement_time(self, tmp_path):
+        """movement_time should be computed from trial times."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        group.get_response_magnitudes()
+        assert 'movement_time' in group.response_magnitudes.columns
+        assert group.response_magnitudes['movement_time'].notna().any()
+
 
 # =============================================================================
 # fit_lmm Tests
