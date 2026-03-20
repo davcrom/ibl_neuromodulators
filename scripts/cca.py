@@ -29,7 +29,10 @@ from iblnm.config import (
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.util import derive_target_nm
-from iblnm.vis import plot_cohort_cca_summary, plot_cca_weight_profiles
+from iblnm.vis import (
+    plot_cohort_cca_summary, plot_cca_weight_profiles,
+    plot_cca_cosine_similarity,
+)
 
 plt.ion()
 
@@ -194,7 +197,14 @@ if __name__ == '__main__':
     fig = plot_cca_weight_profiles(results)
     fig.savefig(figures_dir / 'cohort_weight_profiles.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
+
+    # =====================================================================
+    # Cosine similarity
+    # =====================================================================
+    print("Generating cosine similarity heatmaps...")
+    fig = plot_cca_cosine_similarity(ws)
+    fig.savefig(figures_dir / 'cohort_cosine_similarity.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
 
     # =====================================================================
     # Save CSVs

@@ -1391,3 +1391,31 @@ class TestPlotCCAWeightProfiles:
         n_cohorts = len(results)
         assert neural_data.shape == (n_features, n_cohorts)
         plt.close(fig)
+
+
+class TestPlotCCACosineSimilarity:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_cca_cosine_similarity
+        _, _, ws = _make_mock_cohort_cca_data()
+        fig = plot_cca_cosine_similarity(ws)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_two_panels(self):
+        from iblnm.vis import plot_cca_cosine_similarity
+        _, _, ws = _make_mock_cohort_cca_data()
+        fig = plot_cca_cosine_similarity(ws)
+        imshow_axes = [ax for ax in fig.axes if len(ax.images) > 0]
+        assert len(imshow_axes) == 2
+        plt.close(fig)
+
+    def test_colorbars_span_minus1_to_1(self):
+        from iblnm.vis import plot_cca_cosine_similarity
+        _, _, ws = _make_mock_cohort_cca_data()
+        fig = plot_cca_cosine_similarity(ws)
+        imshow_axes = [ax for ax in fig.axes if len(ax.images) > 0]
+        for ax in imshow_axes:
+            im = ax.images[0]
+            assert im.get_clim() == (-1, 1)
+        plt.close(fig)

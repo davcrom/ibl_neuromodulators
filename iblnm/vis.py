@@ -2509,6 +2509,7 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
     bars = ax.bar(range(len(targets)), corrs, color=colors)
     ax.set_xticks(range(len(targets)))
     ax.set_xticklabels(targets, rotation=45, ha='right')
+    ax.set_ylim(0, 1)
     ax.set_ylabel('Canonical correlation')
     ax.set_title('Per-cohort CC1')
 
@@ -2542,8 +2543,7 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
     ax = axes[2]
     diag = np.diag(matrix.values)  # within-cohort correlations
     delta_matrix = matrix.values - diag[np.newaxis, :]  # subtract column baseline
-    max_abs = max(abs(np.nanmin(delta_matrix)), abs(np.nanmax(delta_matrix)), 0.01)
-    im2 = ax.imshow(delta_matrix, cmap='RdBu_r', vmin=-max_abs, vmax=max_abs)
+    im2 = ax.imshow(delta_matrix, cmap='RdBu_r', vmin=-1, vmax=1)
     ax.set_xticks(range(len(targets)))
     ax.set_xticklabels(targets, rotation=45, ha='right')
     ax.set_yticks(range(len(targets)))
@@ -2684,5 +2684,51 @@ def plot_cca_weight_profiles(cohort_results, fig=None):
                       else 'black')
 
     fig.colorbar(im_b, ax=[ax_n, ax_b], shrink=0.8, label='CC1 weight')
+    fig.tight_layout()
+    return fig
+
+
+def plot_cca_cosine_similarity(weight_sims, fig=None):
+    """Side-by-side heatmaps of neural and behavioral CC1 weight cosine similarity.
+
+    Parameters
+    ----------
+    weight_sims : pd.DataFrame
+        Columns: ``cohort_a``, ``cohort_b``, ``neural_cosine``,
+        ``behavioral_cosine``.
+    fig : matplotlib.figure.Figure, optional
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib.pyplot as plt
+
+    cohorts = sorted(weight_sims['cohort_a'].unique())
+
+    if fig is None:
+        fig, (ax_n, ax_b) = plt.subplots(1, 2, figsize=(10, 4))
+    else:
+        ax_n, ax_b = fig.subplots(1, 2)
+
+    for ax, col, title in [
+        (ax_n, 'neural_cosine', 'Neural CC1 cosine similarity'),
+        (ax_b, 'behavioral_cosine', 'Behavioral CC1 cosine similarity'),
+    ]:
+        matrix = weight_sims.pivot(
+            index='cohort_a', columns='cohort_b', values=col)
+        matrix = matrix.reindex(index=cohorts, columns=cohorts)
+        im = ax.imshow(matrix.values, cmap='RdBu_r', vmin=-1, vmax=1)
+        ax.set_xticks(range(len(cohorts)))
+        ax.set_xticklabels(cohorts, rotation=45, ha='right')
+        ax.set_yticks(range(len(cohorts)))
+        ax.set_yticklabels(cohorts)
+        ax.set_title(title)
+        for i in range(len(cohorts)):
+            for j in range(len(cohorts)):
+                ax.text(j, i, f'{matrix.values[i, j]:.2f}',
+                        ha='center', va='center', fontsize=9)
+        fig.colorbar(im, ax=ax, shrink=0.8)
+
     fig.tight_layout()
     return fig
