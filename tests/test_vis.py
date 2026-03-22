@@ -1173,59 +1173,118 @@ class TestPlotWheelLMMSummary:
         plt.close(fig)
 
 
-def _make_traces_df(n_targets=2, n_subjects=3, n_recs_per=2, n_timepoints=100):
+def _make_traces_df(n_targets=2, n_subjects=3, n_recs_per=2,
+                    n_timepoints=100, events=None, min_trials_per=12):
+    """Synthetic mean traces for testing.
+
+    Each (eid, target_NM, event, contrast, feedbackType) gets one row per
+    timepoint. ``min_trials_per`` controls the n_trials column so tests can
+    exercise the trial-count filter.
+    """
     from iblnm.config import TARGETNM_COLORS
     targets = sorted(list(TARGETNM_COLORS.keys()))[:n_targets]
+    if events is None:
+        events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
     contrasts = [0.0, 0.25, 1.0]
     feedback_types = [1, -1]
     rng = np.random.default_rng(42)
-    time = np.linspace(-1, 1, n_timepoints)
+    time = np.linspace(-0.5, 1.5, n_timepoints)
     rows = []
     for tnm in targets:
         for s in range(n_subjects):
             for r in range(n_recs_per):
-                for contrast in contrasts:
-                    for fb in feedback_types:
-                        trace = rng.normal(0, 1, n_timepoints)
-                        for t_idx, t in enumerate(time):
-                            rows.append({
-                                'eid': f'eid-{tnm}-s{s}-r{r}',
-                                'subject': f's{s}',
-                                'target_NM': tnm,
-                                'brain_region': tnm.split('-')[0],
-                                'event': 'stimOn_times',
-                                'contrast': contrast,
-                                'feedbackType': fb,
-                                'time': t,
-                                'response': trace[t_idx],
-                            })
+                eid = f'eid-{tnm}-s{s}-r{r}'
+                for event in events:
+                    for contrast in contrasts:
+                        for fb in feedback_types:
+                            # Add known offset so baseline norm is testable
+                            offset = 5.0
+                            trace = rng.normal(0, 0.1, n_timepoints) + offset
+                            for t_idx, t in enumerate(time):
+                                rows.append({
+                                    'eid': eid,
+                                    'subject': f's{s}',
+                                    'target_NM': tnm,
+                                    'brain_region': tnm.split('-')[0],
+                                    'event': event,
+                                    'contrast': contrast,
+                                    'feedbackType': fb,
+                                    'time': t,
+                                    'response': trace[t_idx],
+                                    'n_trials': min_trials_per,
+                                })
     return pd.DataFrame(rows)
 
 
 class TestPlotMeanResponseTraces:
 
-    def test_two_rows_n_target_cols(self):
-        from iblnm.vis import plot_mean_response_traces
-        traces = _make_traces_df(n_targets=3)
-        fig = plot_mean_response_traces(traces, 'stimOn_times')
-        # 2 rows (reward, omission) × 3 target columns = 6 axes
-        assert len(fig.axes) == 6
-        plt.close(fig)
-
-    def test_one_line_per_contrast(self):
+    def test_returns_one_figure_per_target(self):
         from iblnm.vis import plot_mean_response_traces
         traces = _make_traces_df(n_targets=2)
-        fig = plot_mean_response_traces(traces, 'stimOn_times')
-        n_contrasts = traces['contrast'].nunique()
-        for ax in fig.axes:
-            # Each axis should have one line per contrast + the vline
-            assert len(ax.lines) == n_contrasts + 1
+        target = sorted(traces['target_NM'].unique())[0]
+        df_t = traces[traces['target_NM'] == target]
+        fig = plot_mean_response_traces(df_t, target)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_layout_2_rows_n_event_cols(self):
+        from iblnm.vis import plot_mean_response_traces
+        traces = _make_traces_df(n_targets=1, events=['stimOn_times', 'feedback_times'])
+        target = traces['target_NM'].iloc[0]
+        fig = plot_mean_response_traces(traces, target)
+        # 2 rows (reward, omission) × 2 event columns = 4 axes
+        assert len(fig.axes) == 4
+        plt.close(fig)
+
+    def test_uses_contrast_colors(self):
+        import matplotlib as mpl
+        from iblnm.vis import plot_mean_response_traces
+        from iblnm.config import CONTRAST_COLORS
+        traces = _make_traces_df(n_targets=1)
+        target = traces['target_NM'].iloc[0]
+        fig = plot_mean_response_traces(traces, target)
+        ax = fig.axes[0]
+        # Lines (excluding vline) should use contrast colors
+        contrasts = sorted(traces['contrast'].unique())
+        for line, c in zip(ax.lines[:-1], contrasts):
+            key = f'contrast_{c}'
+            expected = mpl.colors.to_rgba(CONTRAST_COLORS[key])
+            actual = mpl.colors.to_rgba(line.get_color())
+            np.testing.assert_allclose(actual, expected, atol=0.01)
+        plt.close(fig)
+
+    def test_baseline_normalized(self):
+        from iblnm.vis import plot_mean_response_traces
+        traces = _make_traces_df(n_targets=1, events=['stimOn_times'])
+        target = traces['target_NM'].iloc[0]
+        fig = plot_mean_response_traces(traces, target)
+        ax = fig.axes[0]
+        # With offset=5.0 in synthetic data, after baseline normalization
+        # the traces should be centered near 0, not near 5
+        for line in ax.lines[:-1]:  # exclude vline
+            ydata = line.get_ydata()
+            assert abs(np.nanmean(ydata)) < 1.0
+        plt.close(fig)
+
+    def test_filters_low_trial_counts(self):
+        from iblnm.vis import plot_mean_response_traces
+        # Make traces where one contrast has < 10 trials per subject
+        traces = _make_traces_df(n_targets=1, events=['stimOn_times'])
+        target = traces['target_NM'].iloc[0]
+        # Set n_trials=5 for contrast=0.0 → should be excluded
+        mask = traces['contrast'] == 0.0
+        traces.loc[mask, 'n_trials'] = 5
+        fig = plot_mean_response_traces(traces, target)
+        ax = fig.axes[0]
+        # Should have 2 contrasts plotted (0.25, 1.0) + 1 vline = 3 lines
+        assert len(ax.lines) == 3
         plt.close(fig)
 
     def test_fill_between_present(self):
         from iblnm.vis import plot_mean_response_traces
-        traces = _make_traces_df(n_targets=2, n_subjects=3)
-        fig = plot_mean_response_traces(traces, 'stimOn_times')
+        traces = _make_traces_df(n_targets=1, n_subjects=3)
+        target = traces['target_NM'].iloc[0]
+        fig = plot_mean_response_traces(traces, target)
         for ax in fig.axes:
             assert len(ax.collections) >= 1
         plt.close(fig)

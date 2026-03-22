@@ -1231,6 +1231,7 @@ class PhotometrySessionGroup:
                 if len(trial_mask) == 0:
                     continue
                 mean_trace = np.nanmean(traces[trial_mask], axis=0)
+                n_trials = int(np.sum(~np.isnan(traces[trial_mask, 0])))
 
                 for i, t in enumerate(tpts):
                     rows.append({
@@ -1243,6 +1244,7 @@ class PhotometrySessionGroup:
                         'feedbackType': fb,
                         'time': t,
                         'response': mean_trace[i],
+                        'n_trials': n_trials,
                     })
 
         self.mean_traces = pd.DataFrame(rows)

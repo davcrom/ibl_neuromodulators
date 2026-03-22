@@ -2267,43 +2267,53 @@ def plot_response_decoding_summary(response_matrix, coefficients,
     return fig
 
 
-def plot_mean_response_traces(traces_df, event_name):
-    """Mean peri-event response traces split by contrast and feedback type.
+def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
+                              baseline_window=(-0.15, 0)):
+    """Mean peri-event response traces for one target-NM.
 
-    Layout: 2 rows (reward top, omission bottom) × n_targets columns.
+    Layout: 2 rows (reward top, omission bottom) × n_events columns.
     Each panel has one line per contrast level, colored by ``CONTRAST_COLORS``.
 
-    For each (target_NM, contrast, feedbackType), applies subject-mean
-    removal before computing the grand mean and SEM.
+    For each (event, contrast, feedbackType), applies baseline normalization
+    (subtract mean in ``baseline_window``), then subject-mean removal before
+    computing the grand mean and SEM.
+
+    Conditions where any subject has fewer than ``min_trials`` trials are
+    excluded.
 
     Parameters
     ----------
     traces_df : pd.DataFrame
-        Long-form with columns: eid, subject, target_NM, brain_region,
-        event, contrast, feedbackType, time, response.
-    event_name : str
-        Event name for the title.
+        Long-form with columns: eid, subject, target_NM, event, contrast,
+        feedbackType, time, response, n_trials.
+    target_nm : str
+        Target-NM label (used for title).
+    min_trials : int
+        Minimum trials per subject per (event, contrast, feedbackType).
+    baseline_window : tuple of float
+        (start, end) seconds for baseline normalization.
 
     Returns
     -------
     plt.Figure
     """
-    targets = sorted(traces_df['target_NM'].unique())
-    n_targets = len(targets)
+    df = traces_df[traces_df['target_NM'] == target_nm].copy()
+    events = sorted(df['event'].unique())
+    n_events = max(len(events), 1)
     feedback_types = [1, -1]
     fb_labels = {1: 'Reward', -1: 'Omission'}
-    contrasts = sorted(traces_df['contrast'].unique())
+    contrasts = sorted(df['contrast'].unique())
 
-    fig, axes = plt.subplots(2, n_targets,
-                             figsize=(4 * n_targets, 6),
+    fig, axes = plt.subplots(2, n_events,
+                             figsize=(4 * n_events, 6),
                              sharey=True, squeeze=False)
 
-    for col, target in enumerate(targets):
+    for col, event in enumerate(events):
         for row, fb in enumerate(feedback_types):
             ax = axes[row, col]
-            df_cell = traces_df[
-                (traces_df['target_NM'] == target)
-                & (traces_df['feedbackType'] == fb)
+            df_cell = df[
+                (df['event'] == event)
+                & (df['feedbackType'] == fb)
             ]
 
             for contrast in contrasts:
@@ -2311,9 +2321,15 @@ def plot_mean_response_traces(traces_df, event_name):
                 if len(df_c) == 0:
                     continue
 
+                # Filter: min_trials per subject
+                if 'n_trials' in df_c.columns:
+                    trials_per_subj = df_c.groupby('subject')['n_trials'].first()
+                    if (trials_per_subj < min_trials).any():
+                        continue
+
                 # Pivot to (recording, time) matrix
                 recordings = df_c['eid'].unique()
-                time_vals = sorted(df_c['time'].unique())
+                time_vals = np.array(sorted(df_c['time'].unique()))
                 n_recs = len(recordings)
                 n_time = len(time_vals)
 
@@ -2324,6 +2340,13 @@ def plot_mean_response_traces(traces_df, event_name):
                     trace_matrix[i] = rec_data['response'].values
                     subjects_arr.append(rec_data['subject'].iloc[0])
                 subjects_arr = np.array(subjects_arr)
+
+                # Baseline normalization: subtract mean in baseline window
+                bl_mask = (time_vals >= baseline_window[0]) & (time_vals < baseline_window[1])
+                if bl_mask.any():
+                    bl_means = np.nanmean(trace_matrix[:, bl_mask], axis=1,
+                                          keepdims=True)
+                    trace_matrix = trace_matrix - bl_means
 
                 # Subject-mean removal
                 grand_mean = np.nanmean(trace_matrix, axis=0)
@@ -2357,14 +2380,14 @@ def plot_mean_response_traces(traces_df, event_name):
             if col == 0:
                 ax.set_ylabel(fb_labels[fb])
             if row == 0:
-                ax.set_title(target)
+                event_label = event.replace('_times', '')
+                ax.set_title(event_label)
 
     # Legend on first axis
     axes[0, 0].legend(title='Contrast', fontsize=7, title_fontsize=8,
                       loc='upper left')
 
-    event_label = event_name.replace('_times', '')
-    fig.suptitle(event_label, fontsize=12)
+    fig.suptitle(target_nm, fontsize=12)
     fig.tight_layout()
     return fig
 

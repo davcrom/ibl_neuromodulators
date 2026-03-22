@@ -468,6 +468,19 @@ if __name__ == '__main__':
               f"to {RESPONSE_MATRIX_FPATH}")
 
     # =====================================================================
+    # Mean response traces per target-NM (first figures)
+    # =====================================================================
+    if group.mean_traces is not None and len(group.mean_traces) > 0:
+        print("\nGenerating mean response trace plots...")
+        targets = sorted(group.mean_traces['target_NM'].unique())
+        for target in targets:
+            fig = plot_mean_response_traces(group.mean_traces, target)
+            fname = f'mean_traces_{target.replace("-", "_")}.svg'
+            fig.savefig(fig_dirs['traces'] / fname,
+                        dpi=FIGURE_DPI, bbox_inches='tight')
+        print(f"Trace figures saved to {fig_dirs['traces']}")
+
+    # =====================================================================
     # Response magnitude plots
     # =====================================================================
     print_response_summary(group.response_magnitudes)
@@ -524,22 +537,6 @@ if __name__ == '__main__':
     plot_vectors_figures(group, fig_dirs['similarity'],
                         fig_dirs['target_decoding'], data_dir)
     print("Response vector figures saved")
-
-    # =====================================================================
-    # Mean response traces per target-NM
-    # =====================================================================
-    if group.mean_traces is not None and len(group.mean_traces) > 0:
-        print("\nGenerating mean response trace plots...")
-        for event in RESPONSE_EVENTS:
-            df_event = group.mean_traces[group.mean_traces['event'] == event]
-            if len(df_event) == 0:
-                continue
-            fig = plot_mean_response_traces(df_event, event)
-            event_label = event.replace('_times', '')
-            fig.savefig(fig_dirs['traces'] / f'mean_traces_{event_label}.svg',
-                        dpi=FIGURE_DPI, bbox_inches='tight')
-            plt.close(fig)
-        print(f"Trace figures saved to {fig_dirs['traces']}")
 
     # Free trace cache
     group.flush_response_traces()
