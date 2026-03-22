@@ -25,8 +25,8 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_TIMING_FPATH, PEAK_VELOCITY_FPATH,
-    RESPONSE_MATRIX_FPATH, RESPONSE_SIMILARITY_FPATH, MEAN_TRACES_FPATH,
-    RESPONSE_EVENTS, FIGURE_DPI,
+    RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
+    RESPONSE_EVENTS, FIGURE_DPI, ANALYSIS_CONTRASTS,
     MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
 from iblnm.data import PhotometrySessionGroup
@@ -34,15 +34,18 @@ from iblnm.io import _get_default_connection
 from iblnm.task import add_relative_contrast
 from iblnm.util import derive_target_nm
 from iblnm.vis import (
-    plot_relative_contrast, plot_similarity_matrix, plot_confusion_matrix,
-    plot_mean_response_vectors, plot_decoding_summary, plot_empirical_similarity,
+    plot_relative_contrast, plot_similarity_matrix,
+    plot_mean_response_vectors, plot_empirical_similarity,
     plot_lmm_response, plot_lmm_summary,
-    plot_within_target_similarity, plot_response_decoding_summary,
+    plot_within_target_similarity,
     plot_mean_response_traces,
     plot_wheel_lmm_summary,
+    plot_glm_pca_weights, plot_glm_pca_scores,
 )
 from iblnm.analysis import (
-    within_between_similarity, mean_similarity_by_target,
+    split_features_by_event,
+    cosine_similarity_matrix, within_between_similarity,
+    mean_similarity_by_target, pca_score_stats,
 )
 
 plt.ion()
@@ -164,6 +167,7 @@ def plot_lmm_figures(group, figures_dir, data_dir,
             result.predictions, target_nm, event,
             window_label=window_label,
             df_raw=df_group, response_col=response_col,
+            contrast_coding=result.contrast_coding,
         )
         fname = f'{target_nm}_{event_label}_{window_label}_lmm.svg'
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
@@ -217,28 +221,31 @@ def plot_wheel_lmm_figures(group, figures_dir, data_dir):
 
 
 # =========================================================================
-# Response vectors plotting
+# Response vectors plotting (per-event)
 # =========================================================================
 
-def plot_vectors_figures(group, similarity_dir, decoding_dir, data_dir):
-    """Plot similarity matrix, confusion matrix, and decoding summary.
+def plot_similarity_figures(group, similarity_dir, data_dir):
+    """Plot per-event response vector similarity figures.
+
+    For each event, produces:
+    1. Mean response vectors (raw + normalized)
+    2. Full recording × recording cosine similarity matrix
+    3. Reduced target × target summary matrices (all pairs + cross-subject)
+    4. Within-target similarity barplot
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have response_features, similarity_matrix, and decoder populated.
+        Must have response_features populated.
     similarity_dir : Path
-        Output directory for similarity SVG files.
-    decoding_dir : Path
-        Output directory for decoding SVG files.
+        Output directory for SVG files.
     data_dir : Path
-        Output directory for data files.
+        Output directory for parquet files.
     """
-    sim = group.similarity_matrix
-    labels = group.response_features.index.get_level_values('target_NM')
-    labels = pd.Series(labels.values, index=group.response_features.index)
-    labels_clean = labels.loc[sim.index]
+    features = group.response_features
+    per_event = split_features_by_event(features)
 
+    # Build subject lookup from recordings
     recs = group.recordings.copy()
     if 'fiber_idx' not in recs.columns:
         recs['fiber_idx'] = 0
@@ -248,78 +255,62 @@ def plot_vectors_figures(group, similarity_dir, decoding_dir, data_dir):
         .drop_duplicates(subset=idx_cols)
         .set_index(idx_cols)
     )
-    subjects_clean = rec_indexed['subject'].reindex(sim.index)
 
-    # Similarity matrix
-    fig = plot_similarity_matrix(sim, labels_clean, subjects=subjects_clean)
-    fig.savefig(similarity_dir / 'response_similarity_matrix.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    print(f"  {len(sim)} recordings in similarity matrix")
+    for event_stem, event_features in per_event.items():
+        print(f"\n  [{event_stem}] {len(event_features.columns)} features, "
+              f"{len(event_features)} recordings")
 
-    wb = within_between_similarity(sim, labels_clean)
-    within_mean = wb[wb['comparison'] == 'within']['similarity'].mean()
-    between_mean = wb[wb['comparison'] == 'between']['similarity'].mean()
-    print(f"  Within target-NM similarity:  {within_mean:.3f}")
-    print(f"  Between target-NM similarity: {between_mean:.3f}")
+        sim = cosine_similarity_matrix(event_features)
+        if len(sim) < 2:
+            print(f"  [{event_stem}] Too few valid recordings, skipping")
+            continue
 
-    # Empirical similarity matrix (target × target mean pairwise similarity)
-    target_sim = mean_similarity_by_target(sim, labels_clean)
-    target_sim_loso = mean_similarity_by_target(sim, labels_clean,
-                                                subjects=subjects_clean)
-    fig = plot_empirical_similarity(target_sim, loso_matrix=target_sim_loso)
-    fig.savefig(similarity_dir / 'empirical_similarity.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    print(f"  Empirical similarity (all pairs):\n{target_sim.to_string()}")
-    print(f"  Empirical similarity (cross-subject):\n{target_sim_loso.to_string()}")
+        labels = pd.Series(
+            sim.index.get_level_values('target_NM').values,
+            index=sim.index,
+        )
+        subjects = rec_indexed['subject'].reindex(sim.index)
 
-    # Within-target similarity barplot
-    fig = plot_within_target_similarity(sim, labels_clean, subjects_clean)
-    fig.savefig(similarity_dir / 'within_target_similarity.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
+        # Full similarity matrix
+        fig = plot_similarity_matrix(sim, labels, subjects=subjects)
+        fig.savefig(similarity_dir / f'similarity_matrix_{event_stem}.svg',
+                    dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
 
-    # Confusion matrix
-    decoder = group.decoder
-    print(f"\n  Accuracy (raw):      {decoder.accuracy:.3f}")
-    print(f"  Accuracy (balanced): {decoder.balanced_accuracy:.3f}")
-    print("  Per-class recall:")
-    for name, recall in decoder.per_class_accuracy.items():
-        print(f"    {name}: {recall:.3f}")
-    print(f"  Confusion matrix:\n{decoder.confusion}")
+        # Within / between summary
+        wb = within_between_similarity(sim, labels)
+        within_mean = wb[wb['comparison'] == 'within']['similarity'].mean()
+        between_mean = wb[wb['comparison'] == 'between']['similarity'].mean()
+        print(f"  [{event_stem}] Within: {within_mean:.3f}, "
+              f"Between: {between_mean:.3f}")
 
-    fig = plot_confusion_matrix(decoder.confusion)
-    fig.savefig(decoding_dir / 'confusion_matrix.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
+        # Reduced target × target summary matrices
+        target_sim = mean_similarity_by_target(sim, labels)
+        target_sim_loso = mean_similarity_by_target(
+            sim, labels, subjects=subjects)
+        fig = plot_empirical_similarity(
+            target_sim, loso_matrix=target_sim_loso)
+        fig.savefig(
+            similarity_dir / f'empirical_similarity_{event_stem}.svg',
+            dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
 
-    # Mean response vectors
-    fig = plot_mean_response_vectors(group.response_features)
-    fig.savefig(decoding_dir / 'mean_response_vectors.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
+        # Within-target barplot
+        fig = plot_within_target_similarity(sim, labels, subjects)
+        fig.savefig(
+            similarity_dir / f'within_target_similarity_{event_stem}.svg',
+            dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
 
-    # Coefficients + unique contributions
-    print("\nFeature unique contributions:")
-    contrib = decoder.contributions.sort_values('delta', ascending=False)
-    print("  Top 5 features by delta accuracy:")
-    print(contrib.head().to_string(index=False))
+        # Mean response vectors
+        fig = plot_mean_response_vectors(event_features)
+        fig.savefig(
+            similarity_dir / f'mean_response_vectors_{event_stem}.svg',
+            dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
 
-    fig = plot_decoding_summary(decoder.coefficients, contrib)
-    fig.savefig(decoding_dir / 'decoding_summary.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
-
-    # Unified response vectors + decoding summary
-    fig = plot_response_decoding_summary(
-        group.response_features, decoder.coefficients, contrib)
-    fig.savefig(decoding_dir / 'response_decoding_summary.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
-
-    # Save decoding data
-    decoder.confusion.to_parquet(data_dir / 'confusion_matrix.pqt')
-    decoder.coefficients.to_parquet(data_dir / 'decoding_coefficients.pqt')
-    decoder.contributions.to_parquet(
-        data_dir / 'feature_contributions.pqt', index=False)
+        # Save similarity matrix
+        sim.to_parquet(data_dir / f'similarity_matrix_{event_stem}.pqt')
 
 
 if __name__ == '__main__':
@@ -329,6 +320,11 @@ if __name__ == '__main__':
     )
     parser.add_argument('--plot', action='store_true',
                         help='skip extraction; plot from existing parquet files')
+    parser.add_argument('--contrast-coding', choices=['log', 'linear', 'rank'],
+                        default='log',
+                        help='contrast transform for LMM (default: log)')
+    parser.add_argument('--cohort-weighted', action='store_true',
+                        help='weight PCA by 1/n_k so each target contributes equally')
     args = parser.parse_args()
 
     # Create output directories
@@ -343,6 +339,7 @@ if __name__ == '__main__':
         'similarity': fig_base / 'similarity',
         'target_decoding': fig_base / 'target_decoding',
         'traces': fig_base / 'traces',
+        'glm_pca': fig_base / 'glm_pca',
     }
     for d in fig_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
@@ -468,13 +465,24 @@ if __name__ == '__main__':
               f"to {RESPONSE_MATRIX_FPATH}")
 
     # =====================================================================
+    # Filter to analysis contrasts (excludes 50%)
+    # =====================================================================
+    if group.response_magnitudes is not None:
+        group.response_magnitudes = group.response_magnitudes[
+            group.response_magnitudes['contrast'].isin(ANALYSIS_CONTRASTS)
+        ].copy()
+
+    # =====================================================================
     # Mean response traces per target-NM (first figures)
     # =====================================================================
     if group.mean_traces is not None and len(group.mean_traces) > 0:
         print("\nGenerating mean response trace plots...")
-        targets = sorted(group.mean_traces['target_NM'].unique())
+        traces_df = group.mean_traces[
+            group.mean_traces['contrast'].isin(ANALYSIS_CONTRASTS)
+        ]
+        targets = sorted(traces_df['target_NM'].unique())
         for target in targets:
-            fig = plot_mean_response_traces(group.mean_traces, target)
+            fig = plot_mean_response_traces(traces_df, target)
             fname = f'mean_traces_{target.replace("-", "_")}.svg'
             fig.savefig(fig_dirs['traces'] / fname,
                         dpi=FIGURE_DPI, bbox_inches='tight')
@@ -492,8 +500,8 @@ if __name__ == '__main__':
     # =====================================================================
     # LMM statistical analysis
     # =====================================================================
-    print("\nFitting linear mixed-effects models...")
-    group.fit_lmm()
+    print(f"\nFitting linear mixed-effects models (contrast coding: {args.contrast_coding})...")
+    group.fit_lmm(contrast_coding=args.contrast_coding)
     for (tnm, ev), result in group.lmm_results.items():
         ve = result.variance_explained
         print(f"  {tnm} x {ev}: R2 marginal={ve['marginal']:.3f}, "
@@ -523,20 +531,65 @@ if __name__ == '__main__':
         print("  No wheel LMM results (insufficient data).")
 
     # =====================================================================
-    # Response vectors: similarity + decoding
+    # Response vectors: per-event similarity
     # =====================================================================
-    print("\nComputing cosine similarity matrix...")
-    group.response_similarity_matrix()
+    print("\nComputing per-event response vector similarity...")
+    plot_similarity_figures(group, fig_dirs['similarity'], data_dir)
+    print(f"Similarity figures saved to {fig_dirs['similarity']}")
 
-    group.similarity_matrix.to_parquet(RESPONSE_SIMILARITY_FPATH)
-    print(f"Saved similarity matrix to {RESPONSE_SIMILARITY_FPATH}")
+    # =====================================================================
+    # Per-event GLM coefficient PCA
+    # =====================================================================
+    _w_label = 'cohort-weighted' if args.cohort_weighted else 'unweighted'
+    print(f"\nPer-event GLM coefficient PCA ({_w_label})...")
+    for event in RESPONSE_EVENTS:
+        event_stem = event.replace('_times', '')
+        print(f"\n  [{event_stem}] Fitting per-session GLMs...")
+        pca_result = group.pca_glm_coefficients(
+            event_name=event,
+            contrast_coding=args.contrast_coding,
+            n_components=3,
+            cohort_weighted=args.cohort_weighted,
+        )
+        if pca_result is None:
+            print(f"  [{event_stem}] No valid recordings, skipping")
+            continue
 
-    # print("Decoding target-NM from response vectors...")
-    # group.decode_target()
-    #
-    # plot_vectors_figures(group, fig_dirs['similarity'],
-    #                     fig_dirs['target_decoding'], data_dir)
-    # print("Response vector figures saved")
+        n_recs = pca_result.scores.shape[0]
+        targets = sorted(set(pca_result.target_labels))
+        print(f"  [{event_stem}] {n_recs} recordings, {len(targets)} targets")
+        for i, pct in enumerate(pca_result.explained_variance_ratio):
+            print(f"    PC{i+1}: {pct:.1%}")
+
+        # Statistical tests on score distributions
+        stats_df = pca_score_stats(pca_result)
+        stats_df.to_csv(data_dir / f'pca_stats_{event_stem}.csv', index=False)
+        for pc_i in range(pca_result.scores.shape[1]):
+            kw = stats_df[(stats_df['pc'] == pc_i + 1)
+                          & stats_df['target_a'].isna()]
+            if len(kw):
+                print(f"    PC{pc_i+1} KW: H={kw['kruskal_h'].iloc[0]:.2f}, "
+                      f"p={kw['kruskal_p'].iloc[0]:.4f}")
+            pw = stats_df[(stats_df['pc'] == pc_i + 1)
+                          & stats_df['target_a'].notna()
+                          & (stats_df['mwu_p'] < 0.05)]
+            for _, row in pw.iterrows():
+                print(f"      {row['target_a']} vs {row['target_b']}: "
+                      f"U={row['mwu_u']:.0f}, p={row['mwu_p']:.4f}")
+
+        fig = plot_glm_pca_weights(pca_result)
+        fig.suptitle(f'GLM coefficient PCA — {event_stem}', fontsize=12)
+        fig.savefig(fig_dirs['glm_pca'] / f'pca_weights_{event_stem}.svg',
+                    dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
+
+        fig = plot_glm_pca_scores(pca_result, stats=stats_df)
+        fig.suptitle(f'PC score distributions — {event_stem}', fontsize=12)
+        fig.savefig(fig_dirs['glm_pca'] / f'pca_scores_{event_stem}.svg',
+                    dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
+
+    print(f"GLM PCA figures saved to {fig_dirs['glm_pca']}")
 
     # Free trace cache
     group.flush_response_traces()
