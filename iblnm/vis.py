@@ -2365,8 +2365,7 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
                 else:
                     sem_trace = np.zeros(n_time)
 
-                color_key = f'contrast_{contrast}'
-                color = CONTRAST_COLORS.get(color_key, 'gray')
+                color = CONTRAST_COLORS.get(contrast, 'gray')
                 ax.plot(time_vals, mean_trace, color=color, linewidth=1.5,
                         label=f'{contrast}')
                 if n_recs > 1:

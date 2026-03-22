@@ -446,11 +446,11 @@ EVENT2COLOR = {
 
 CONTRAST_CMAP = plt.get_cmap("inferno_r", 6)
 CONTRAST_COLORS = {
-    'contrast_0.0': CONTRAST_CMAP(1),  # skip first step, too light
-    'contrast_0.0625': CONTRAST_CMAP(2),
-    'contrast_0.125': CONTRAST_CMAP(3),
-    'contrast_0.25': CONTRAST_CMAP(4),
-    'contrast_1.0': CONTRAST_CMAP(5),
+    0.0: CONTRAST_CMAP(1),    # skip first step, too light
+    6.25: CONTRAST_CMAP(2),
+    12.5: CONTRAST_CMAP(3),
+    25.0: CONTRAST_CMAP(4),
+    100.0: CONTRAST_CMAP(5),
 }
 
 NM_CMAPS = {

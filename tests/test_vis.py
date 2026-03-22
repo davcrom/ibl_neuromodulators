@@ -1185,7 +1185,7 @@ def _make_traces_df(n_targets=2, n_subjects=3, n_recs_per=2,
     targets = sorted(list(TARGETNM_COLORS.keys()))[:n_targets]
     if events is None:
         events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
-    contrasts = [0.0, 0.25, 1.0]
+    contrasts = [0.0, 25.0, 100.0]
     feedback_types = [1, -1]
     rng = np.random.default_rng(42)
     time = np.linspace(-0.5, 1.5, n_timepoints)
@@ -1247,8 +1247,7 @@ class TestPlotMeanResponseTraces:
         # Lines (excluding vline) should use contrast colors
         contrasts = sorted(traces['contrast'].unique())
         for line, c in zip(ax.lines[:-1], contrasts):
-            key = f'contrast_{c}'
-            expected = mpl.colors.to_rgba(CONTRAST_COLORS[key])
+            expected = mpl.colors.to_rgba(CONTRAST_COLORS[c])
             actual = mpl.colors.to_rgba(line.get_color())
             np.testing.assert_allclose(actual, expected, atol=0.01)
         plt.close(fig)
