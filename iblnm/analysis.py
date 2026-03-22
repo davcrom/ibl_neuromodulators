@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
-from iblnm.config import TARGET_FS, contrast_transform
+from iblnm.config import TARGET_FS, get_contrast_coding
 
 
 def get_responses(photometry, events, t0=-1.0, t1=1.0):
@@ -140,6 +141,30 @@ def normalize_responses(responses, tpts, bwin=(-0.1, 0), divide=True):
 # =============================================================================
 # Response Vector Analysis
 # =============================================================================
+
+
+def split_features_by_event(response_matrix):
+    """Split a response feature matrix into per-event sub-matrices.
+
+    Column names follow the pattern ``{event_stem}_c{contrast}_{side}_{fb}``.
+    The event stem is everything before the first ``_c`` token.
+
+    Parameters
+    ----------
+    response_matrix : pd.DataFrame
+        Recordings × features, as returned by ``get_response_features``.
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        Event stem → sub-matrix with only that event's columns.
+    """
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for col in response_matrix.columns:
+        stem = col.split('_c')[0]
+        groups[stem].append(col)
+    return {stem: response_matrix[cols] for stem, cols in groups.items()}
 
 
 def cosine_similarity_matrix(response_matrix):
@@ -471,7 +496,164 @@ def _fit_full_data(X, y_enc, C, normalize):
 # =============================================================================
 
 
-def fit_response_glm(events, event_name, min_trials=20):
+class GLMPCAResult:
+    """Container for PCA on GLM coefficients.
+
+    Attributes
+    ----------
+    scores : np.ndarray
+        (n_recordings, n_components) PC scores from projecting standardized
+        (unweighted) data onto weighted-PCA components.
+    components : np.ndarray
+        (n_components, n_features) principal component loadings.
+    explained_variance_ratio : np.ndarray
+        (n_components,) fraction of weighted variance explained per PC.
+    feature_names : list[str]
+        Coefficient names (columns of the input matrix, minus intercept).
+    target_labels : np.ndarray
+        (n_recordings,) target_NM for each recording.
+    index : pd.MultiIndex
+        Original DataFrame index.
+    """
+
+    def __init__(self, scores, components, explained_variance_ratio,
+                 feature_names, target_labels, index):
+        self.scores = scores
+        self.components = components
+        self.explained_variance_ratio = explained_variance_ratio
+        self.feature_names = feature_names
+        self.target_labels = target_labels
+        self.index = index
+
+
+def pca_glm_coefficients(coefs, n_components=3, cohort_weighted=False):
+    """PCA on per-session GLM coefficient vectors.
+
+    Drops the intercept column if present, standardizes each coefficient
+    (z-score across sessions), then fits PCA. When ``cohort_weighted=True``,
+    each target_NM contributes equally to the covariance matrix regardless
+    of sample size (weight per session = 1/n_k). Scores are always computed
+    by projecting the unweighted standardized data onto the PCs.
+
+    Parameters
+    ----------
+    coefs : pd.DataFrame
+        (n_recordings, n_coefficients) indexed by ``(eid, target_NM, fiber_idx)``.
+    n_components : int
+        Number of principal components to retain.
+    cohort_weighted : bool
+        If True, weight sessions by 1/n_k so each target_NM contributes
+        equally. If False, standard (unweighted) PCA.
+
+    Returns
+    -------
+    GLMPCAResult
+    """
+    # Drop intercept if present
+    if 'intercept' in coefs.columns:
+        coefs = coefs.drop(columns='intercept')
+
+    feature_names = list(coefs.columns)
+    target_labels = coefs.index.get_level_values('target_NM').values
+
+    X = coefs.values.astype(float)
+
+    # Standardize each feature
+    mu = np.nanmean(X, axis=0)
+    sigma = np.nanstd(X, axis=0)
+    sigma[sigma == 0] = 1.0
+    X_std = (X - mu) / sigma
+
+    if cohort_weighted:
+        # Cohort weights: 1/n_k per session in cohort k
+        unique_targets, counts = np.unique(target_labels, return_counts=True)
+        size_map = dict(zip(unique_targets, counts))
+        weights = np.array([1.0 / size_map[t] for t in target_labels])
+        # Normalize so weights sum to n_recordings (PCA scale invariance)
+        weights = weights * len(weights) / weights.sum()
+        sqrt_w = np.sqrt(weights)[:, np.newaxis]
+        X_for_svd = X_std * sqrt_w
+    else:
+        X_for_svd = X_std
+
+    # SVD
+    U, S, Vt = np.linalg.svd(X_for_svd, full_matrices=False)
+    total_var = np.sum(S ** 2)
+    n_components = min(n_components, len(S))
+
+    components = Vt[:n_components]
+    explained_variance_ratio = (S[:n_components] ** 2) / total_var
+
+    # Project unweighted standardized data onto PCs
+    scores = X_std @ components.T
+
+    return GLMPCAResult(
+        scores=scores,
+        components=components,
+        explained_variance_ratio=explained_variance_ratio,
+        feature_names=feature_names,
+        target_labels=target_labels,
+        index=coefs.index,
+    )
+
+
+def pca_score_stats(pca_result):
+    """Kruskal-Wallis and pairwise Mann-Whitney U tests on PC scores.
+
+    For each PC, runs a Kruskal-Wallis omnibus test across all targets,
+    then pairwise Mann-Whitney U tests for every target pair.
+
+    Parameters
+    ----------
+    pca_result : GLMPCAResult
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per (PC, test). Kruskal-Wallis rows have ``target_a``
+        and ``target_b`` as NaN; pairwise rows have both filled.
+        Columns: pc, kruskal_h, kruskal_p, target_a, target_b, mwu_u, mwu_p.
+    """
+    from itertools import combinations
+    from scipy.stats import kruskal, mannwhitneyu
+
+    targets = sorted(set(pca_result.target_labels))
+    n_pcs = pca_result.scores.shape[1]
+    rows = []
+
+    for pc_idx in range(n_pcs):
+        scores = pca_result.scores[:, pc_idx]
+        groups = {t: scores[pca_result.target_labels == t] for t in targets}
+
+        # Kruskal-Wallis omnibus
+        group_arrays = [g for g in groups.values() if len(g) >= 2]
+        if len(group_arrays) >= 2:
+            h, p = kruskal(*group_arrays)
+        else:
+            h, p = np.nan, np.nan
+        rows.append({
+            'pc': pc_idx + 1, 'kruskal_h': h, 'kruskal_p': p,
+            'target_a': None, 'target_b': None,
+            'mwu_u': np.nan, 'mwu_p': np.nan,
+        })
+
+        # Pairwise Mann-Whitney U
+        for ta, tb in combinations(targets, 2):
+            ga, gb = groups[ta], groups[tb]
+            if len(ga) >= 2 and len(gb) >= 2:
+                u, mp = mannwhitneyu(ga, gb, alternative='two-sided')
+            else:
+                u, mp = np.nan, np.nan
+            rows.append({
+                'pc': pc_idx + 1, 'kruskal_h': h, 'kruskal_p': p,
+                'target_a': ta, 'target_b': tb,
+                'mwu_u': u, 'mwu_p': mp,
+            })
+
+    return pd.DataFrame(rows)
+
+
+def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
     """Fit per-recording OLS models and return coefficients as features.
 
     For each recording in the events DataFrame, fits:
@@ -501,6 +683,8 @@ def fit_response_glm(events, event_name, min_trials=20):
     """
     import logging
     from iblnm.task import add_relative_contrast
+
+    _transform, _ = get_contrast_coding(contrast_coding)
 
     if events is None or len(events) == 0:
         raise ValueError("events DataFrame is empty")
@@ -535,7 +719,7 @@ def fit_response_glm(events, event_name, min_trials=20):
             continue
 
         y = valid['response_early'].values
-        log_c = contrast_transform(valid['contrast'].values)
+        log_c = _transform(valid['contrast'].values)
         side = (valid['side'] == 'contra').astype(float).values
         feedback = valid['feedbackType'].values.astype(float)
 
@@ -613,10 +797,15 @@ class CCAResult:
         (n_components,) from permutation test, None if no permutation.
     n_recordings : int
     n_permutations : int
+    alpha : float or None
+        Selected regularization strength (sparse CCA only).
+    l1_ratio : float or None
+        L1/L2 mixing ratio (sparse CCA only). 0 = ridge, 1 = lasso.
     """
 
     def __init__(self, x_weights, y_weights, x_scores, y_scores,
-                 correlations, p_values, n_recordings, n_permutations):
+                 correlations, p_values, n_recordings, n_permutations,
+                 alpha=None, l1_ratio=None):
         self.x_weights = x_weights
         self.y_weights = y_weights
         self.x_scores = x_scores
@@ -625,6 +814,8 @@ class CCAResult:
         self.p_values = p_values
         self.n_recordings = n_recordings
         self.n_permutations = n_permutations
+        self.alpha = alpha
+        self.l1_ratio = l1_ratio
 
 
 def fit_cca(X, Y, n_components=None, n_permutations=0, session_labels=None,
@@ -721,7 +912,7 @@ def fit_cca(X, Y, n_components=None, n_permutations=0, session_labels=None,
         else:
             session_labels_clean = None
 
-        for perm_i in range(n_permutations):
+        for perm_i in tqdm(range(n_permutations), desc='CCA permutations'):
             if session_labels_clean is not None:
                 # Shuffle at session level
                 shuffled_sessions = rng.permutation(unique_sessions)
@@ -758,6 +949,223 @@ def fit_cca(X, Y, n_components=None, n_permutations=0, session_labels=None,
         p_values=p_values,
         n_recordings=n,
         n_permutations=n_permutations,
+    )
+
+
+def fit_sparse_cca(X, Y, n_components=None, n_permutations=0,
+                   session_labels=None, seed=None, scale=True,
+                   alpha=0.01, l1_ratio=0.0, unit_norm=True):
+    """Fit sparse CCA between neural and behavioral features.
+
+    Uses cca-zoo's ElasticCCA with elastic net regularization. The ``alpha``
+    parameter controls regularization strength (higher = more shrinkage).
+    The ``l1_ratio`` controls the L1/L2 mix (0 = pure ridge, 1 = pure lasso).
+
+    When ``alpha`` or ``l1_ratio`` is a list, performs grid search over all
+    combinations on the full data and selects the pair with the highest
+    canonical correlation.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        (n_recordings, K) neural features. NaN rows dropped.
+    Y : pd.DataFrame
+        (n_recordings, P) behavioral features, aligned to X.
+    n_components : int or None
+        Number of canonical variates. Default: min(K, P, n).
+    n_permutations : int
+        If > 0, run permutation test.
+    session_labels : pd.Series or None
+        Session identifier per row. Used for session-level permutation
+        shuffling.
+    seed : int or None
+        RNG seed for reproducibility.
+    scale : bool
+        If True (default), standardize X and Y before fitting.
+    alpha : float or list[float]
+        Regularization strength. When a list, grid-searched.
+    l1_ratio : float or list[float]
+        L1/L2 mixing ratio. 0 = ridge, 1 = lasso. When a list,
+        grid-searched.
+    unit_norm : bool
+        If True (default), rescale weight vectors to unit L2 norm per
+        component, matching sklearn CCA's convention.
+
+    Returns
+    -------
+    CCAResult
+    """
+    try:
+        from cca_zoo.linear import ElasticCCA
+    except ImportError:
+        raise ImportError(
+            "cca-zoo is required for sparse CCA. "
+            "Install with: uv pip install cca-zoo"
+        )
+    from sklearn.preprocessing import StandardScaler
+    from scipy.stats import pearsonr
+
+    # Drop rows with NaN in either X or Y
+    valid = X.notna().all(axis=1) & Y.notna().all(axis=1)
+    X_clean = X.loc[valid].copy()
+    Y_clean = Y.loc[valid].copy()
+
+    n = len(X_clean)
+    if n < 3:
+        raise ValueError(f"Need at least 3 recordings, got {n}")
+
+    # Drop constant Y columns
+    y_std = Y_clean.std()
+    varying = y_std[y_std > 0].index
+    if len(varying) == 0:
+        raise ValueError("Y has no variance — all columns are constant")
+    Y_clean = Y_clean[varying]
+
+    k = X_clean.shape[1]
+    p = Y_clean.shape[1]
+    max_components = min(k, p, n)
+    if n_components is None:
+        n_components = max_components
+    else:
+        n_components = min(n_components, max_components)
+
+    # Standardize
+    if scale:
+        x_scaler = StandardScaler()
+        y_scaler = StandardScaler()
+        X_z = x_scaler.fit_transform(X_clean.values)
+        Y_z = y_scaler.fit_transform(Y_clean.values)
+    else:
+        X_z = X_clean.values
+        Y_z = Y_clean.values
+
+    if session_labels is not None:
+        session_labels_clean = session_labels.loc[valid].values
+
+    # Grid search over alpha × l1_ratio if lists provided
+    alpha_grid = alpha if isinstance(alpha, list) else [alpha]
+    l1_grid = l1_ratio if isinstance(l1_ratio, list) else [l1_ratio]
+
+    if len(alpha_grid) * len(l1_grid) > 1:
+        import itertools
+        best_r, best_alpha, best_l1 = -np.inf, alpha_grid[0], l1_grid[0]
+        best_ecca = None
+        for a, l1 in tqdm(list(itertools.product(alpha_grid, l1_grid)),
+                          desc='Grid search (alpha × l1_ratio)'):
+            ecca_candidate = ElasticCCA(
+                latent_dimensions=n_components,
+                alpha=[a, a],
+                l1_ratio=[l1, l1],
+                center=False,
+                random_state=seed,
+            )
+            try:
+                xs, ys = ecca_candidate.fit_transform([X_z, Y_z])
+                r = pearsonr(xs[:, 0], ys[:, 0])[0]
+            except Exception:
+                r = -np.inf
+            if np.isfinite(r) and r > best_r:
+                best_r = r
+                best_alpha = a
+                best_l1 = l1
+                best_ecca = ecca_candidate
+        alpha = best_alpha
+        l1_ratio = best_l1
+        ecca = best_ecca
+        x_scores, y_scores = ecca.transform([X_z, Y_z])
+    else:
+        alpha = alpha_grid[0]
+        l1_ratio = l1_grid[0]
+        ecca = ElasticCCA(
+            latent_dimensions=n_components,
+            alpha=[alpha, alpha],
+            l1_ratio=[l1_ratio, l1_ratio],
+            center=False,
+            random_state=seed,
+        )
+        x_scores, y_scores = ecca.fit_transform([X_z, Y_z])
+
+    # Canonical correlations
+    correlations = np.array([
+        pearsonr(x_scores[:, i], y_scores[:, i])[0]
+        for i in range(n_components)
+    ])
+
+    # Weights as DataFrames preserving feature names
+    comp_names = [f'CC{i+1}' for i in range(n_components)]
+    x_raw = ecca.weights_[0].copy()
+    y_raw = ecca.weights_[1].copy()
+    if unit_norm:
+        for i in range(n_components):
+            x_n = np.linalg.norm(x_raw[:, i])
+            y_n = np.linalg.norm(y_raw[:, i])
+            if x_n > 0:
+                x_raw[:, i] /= x_n
+            if y_n > 0:
+                y_raw[:, i] /= y_n
+    x_weights = pd.DataFrame(x_raw, index=X_clean.columns,
+                              columns=comp_names)
+    y_weights = pd.DataFrame(y_raw, index=Y_clean.columns,
+                              columns=comp_names)
+
+    # Permutation test
+    p_values = None
+    if n_permutations > 0:
+        rng = np.random.default_rng(seed)
+        perm_corrs = np.zeros((n_permutations, n_components))
+
+        if session_labels is not None:
+            unique_sessions = np.unique(session_labels_clean)
+        else:
+            session_labels_clean = None
+
+        for perm_i in tqdm(range(n_permutations),
+                           desc='Sparse CCA permutations'):
+            if session_labels_clean is not None:
+                shuffled_sessions = rng.permutation(unique_sessions)
+                session_map = dict(zip(unique_sessions, shuffled_sessions))
+                new_labels = np.array([session_map[s]
+                                       for s in session_labels_clean])
+                sort_idx = np.argsort(session_labels_clean)
+                new_sort_idx = np.argsort(new_labels)
+                Y_perm = np.empty_like(Y_z)
+                Y_perm[sort_idx] = Y_z[new_sort_idx]
+            else:
+                perm_idx = rng.permutation(n)
+                Y_perm = Y_z[perm_idx]
+
+            ecca_perm = ElasticCCA(
+                latent_dimensions=n_components,
+                alpha=[alpha, alpha],
+                l1_ratio=[l1_ratio, l1_ratio],
+                center=False,
+                random_state=seed,
+            )
+            try:
+                xs_perm, ys_perm = ecca_perm.fit_transform([X_z, Y_perm])
+                for j in range(n_components):
+                    perm_corrs[perm_i, j] = pearsonr(
+                        xs_perm[:, j], ys_perm[:, j])[0]
+            except Exception:
+                perm_corrs[perm_i, :] = 0.0
+
+        p_values = np.array([
+            (np.sum(perm_corrs[:, j] >= correlations[j]) + 1)
+            / (n_permutations + 1)
+            for j in range(n_components)
+        ])
+
+    return CCAResult(
+        x_weights=x_weights,
+        y_weights=y_weights,
+        x_scores=x_scores,
+        y_scores=y_scores,
+        correlations=correlations,
+        p_values=p_values,
+        n_recordings=n,
+        n_permutations=n_permutations,
+        alpha=alpha,
+        l1_ratio=l1_ratio,
     )
 
 
@@ -825,6 +1233,8 @@ def align_cca_signs(results, reference=None):
                 p_values=res.p_values,
                 n_recordings=res.n_recordings,
                 n_permutations=res.n_permutations,
+                alpha=res.alpha,
+                l1_ratio=res.l1_ratio,
             )
         else:
             aligned[key] = res
@@ -893,17 +1303,21 @@ class LMMResult:
     """
 
     def __init__(self, model, result, summary_df, variance_explained,
-                 random_effects):
+                 random_effects, contrast_coding='log'):
         self.model = model
         self.result = result
         self.summary_df = summary_df
         self.variance_explained = variance_explained
         self.random_effects = random_effects
+        self.contrast_coding = contrast_coding
         self.predictions = None
         self.emm_reward = None
         self.emm_side = None
         self.emm_contrast = None
         self.contrast_slopes = None
+        self.interaction_contrast_reward = None
+        self.interaction_contrast_side = None
+        self.interaction_reward_side = None
 
 
 def _variance_explained(result, df, response_col):
@@ -940,7 +1354,8 @@ def _variance_explained(result, df, response_col):
     return {'marginal': r2_m, 'conditional': r2_c}
 
 
-def _fit_lmm(formula, df, groups, re_formula='1', reml=True):
+def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
+             contrast_coding='log'):
     """Fit a linear mixed-effects model and return an LMMResult.
 
     Generic fitting function: builds the model, checks for convergence,
@@ -1015,14 +1430,23 @@ def _fit_lmm(formula, df, groups, re_formula='1', reml=True):
         summary_df=summary_df,
         variance_explained=ve,
         random_effects=re_dict,
+        contrast_coding=contrast_coding,
     )
 
 
-def fit_response_lmm(df, response_col, formula=None, re_formula='1'):
+def fit_response_lmm(df, response_col, formula=None, re_formula='1',
+                      contrast_coding='log'):
     """Fit a linear mixed-effects model to trial-level response data.
 
-    Model: ``response ~ log_contrast * C(side) * C(reward)`` with subject
+    Uses deviation coding (±0.5) for side and reward so that every
+    coefficient is interpretable at the grand mean of all other factors.
+
+    Model: ``response ~ log_contrast * side * reward`` with subject
     as random effect.
+
+    Coding:
+        side:   contra = +0.5, ipsi = −0.5
+        reward: correct = +0.5, incorrect = −0.5
 
     Parameters
     ----------
@@ -1033,7 +1457,7 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1'):
         Column name for the response magnitude.
     formula : str, optional
         Wilkinson formula for fixed effects. Default:
-        ``'{response_col} ~ log_contrast * C(side) * C(reward)'``.
+        ``'{response_col} ~ log_contrast * side * reward'``.
     re_formula : str
         Random effects formula passed to ``statsmodels.MixedLM``.
         Default ``'1'`` (random intercept only).
@@ -1043,9 +1467,13 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1'):
     LMMResult or None
         None if the model fails to converge or data is degenerate.
     """
+    _transform, _ = get_contrast_coding(contrast_coding)
+
     df = df.copy()
-    df['log_contrast'] = contrast_transform(df['contrast'])
-    df['reward'] = (df['feedbackType'] == 1).astype(int)
+    df['log_contrast'] = _transform(df['contrast'])
+    # Deviation coding: ±0.5
+    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
 
     # Check minimum requirements
     if df['subject'].nunique() < 2:
@@ -1056,10 +1484,11 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1'):
         return None
 
     if formula is None:
-        formula = f'{response_col} ~ log_contrast * C(side) * C(reward)'
+        formula = f'{response_col} ~ log_contrast * side * reward'
 
     lmm_result = _fit_lmm(formula, df, groups=df['subject'],
-                           re_formula=re_formula, reml=True)
+                           re_formula=re_formula, reml=True,
+                           contrast_coding=contrast_coding)
     if lmm_result is None:
         return None
 
@@ -1071,13 +1500,13 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1'):
 
     contrasts = sorted(df['contrast'].unique())
     pred_rows = []
-    for side in ['contra', 'ipsi']:
-        for reward in [0, 1]:
+    for side_label, side_val in [('contra', 0.5), ('ipsi', -0.5)]:
+        for reward_label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
             grid = pd.DataFrame({
                 'contrast': contrasts,
-                'log_contrast': contrast_transform(contrasts),
-                'side': side,
-                'reward': reward,
+                'log_contrast': _transform(contrasts),
+                'side': side_val,
+                'reward': reward_val,
                 'subject': df['subject'].iloc[0],  # dummy
                 response_col: 0.0,
             })
@@ -1089,8 +1518,8 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1'):
             for i, c in enumerate(contrasts):
                 pred_rows.append({
                     'contrast': c,
-                    'side': side,
-                    'reward': reward,
+                    'side': side_label,
+                    'reward': reward_label,
                     'predicted': float(pred[i]),
                     'ci_lower': float(pred[i] - 1.96 * se_pred[i]),
                     'ci_upper': float(pred[i] + 1.96 * se_pred[i]),
@@ -1105,61 +1534,87 @@ def compute_marginal_means(lmm_result, factor):
 
     Averages model predictions over the levels of all other factors in the
     design, yielding the marginal mean response at each level of ``factor``.
+    With deviation coding (±0.5), averaged factors are set to 0.
 
     Parameters
     ----------
     lmm_result : LMMResult
-        Output from ``fit_response_lmm``.
+        Output from ``fit_response_lmm`` (deviation-coded model).
     factor : str
-        Factor to compute EMMs for: 'reward' or 'side'.
+        Factor to compute EMMs for: 'reward', 'side', or 'contrast'.
 
     Returns
     -------
     pd.DataFrame
         Columns: level, mean, ci_lower, ci_upper.
     """
+    result = lmm_result.result
+    fe_names = list(result.fe_params.index)
+    fe_params = result.fe_params.values
+    fe_cov = result.cov_params().loc[fe_names, fe_names].values
+
+    _transform, _ = get_contrast_coding(lmm_result.contrast_coding)
+
     predictions = lmm_result.predictions
-    other = 'side' if factor == 'reward' else 'reward'
+    contrast_levels = sorted(predictions['contrast'].unique())
+    lc_values = [_transform(c) for c in contrast_levels]
+    mean_lc = np.mean(lc_values)
+
+    # Factor level specs: (label, {column: value})
+    if factor == 'reward':
+        level_specs = [
+            ('incorrect', {'reward': -0.5}),
+            ('correct', {'reward': 0.5}),
+        ]
+    elif factor == 'side':
+        level_specs = [
+            ('contra', {'side': 0.5}),
+            ('ipsi', {'side': -0.5}),
+        ]
+    elif factor == 'contrast':
+        level_specs = [
+            (c, {'log_contrast': _transform(c)})
+            for c in contrast_levels
+        ]
+    else:
+        raise ValueError(f"factor must be 'reward', 'side', or 'contrast', got {factor}")
+
+    # Build name→index map for the 8 deviation-coded coefficients
+    idx = {name: i for i, name in enumerate(fe_names)}
 
     rows = []
-    for level, df_level in predictions.groupby(factor):
-        # Average over levels of the other factor and contrast
-        # (equal weighting = balanced EMM)
-        mean_pred = df_level['predicted'].mean()
+    for label, factor_vals in level_specs:
+        # Set factor to its level value, all other factors to 0 (grand mean)
+        lc = factor_vals.get('log_contrast', mean_lc)
+        side = factor_vals.get('side', 0.0)
+        reward = factor_vals.get('reward', 0.0)
 
-        # CI: average the design-matrix rows, propagate through covariance
-        # We need to reconstruct design matrix rows for proper CI
-        # For a linear model, mean of predictions = prediction at mean of inputs
-        # and SE of the mean prediction = sqrt(x_bar' Cov x_bar)
-        result = lmm_result.result
-        fe_names = list(result.fe_params.index)
-        fe_params = result.fe_params.values
-        fe_cov = result.cov_params().loc[fe_names, fe_names].values
+        # Construct the design vector manually
+        c = np.zeros(len(fe_names))
+        c[idx['Intercept']] = 1.0
+        if 'log_contrast' in idx:
+            c[idx['log_contrast']] = lc
+        if 'side' in idx:
+            c[idx['side']] = side
+        if 'reward' in idx:
+            c[idx['reward']] = reward
+        if 'log_contrast:side' in idx:
+            c[idx['log_contrast:side']] = lc * side
+        if 'log_contrast:reward' in idx:
+            c[idx['log_contrast:reward']] = lc * reward
+        if 'side:reward' in idx:
+            c[idx['side:reward']] = side * reward
+        if 'log_contrast:side:reward' in idx:
+            c[idx['log_contrast:side:reward']] = lc * side * reward
 
-        # Build design matrix for all rows of this factor level
-        from patsy import dmatrix
-        design_info = result.model.data.orig_exog.design_info
-        # Need a DataFrame with all the right columns
-        grid = df_level.copy()
-        grid['log_contrast'] = contrast_transform(grid['contrast'])
-        # Add dummy columns needed by the formula
-        response_col = result.model.endog_names
-        if response_col not in grid.columns:
-            grid[response_col] = 0.0
-        if 'subject' not in grid.columns:
-            grid['subject'] = 'dummy'
-
-        X_grid = np.asarray(dmatrix(design_info, grid))
-        # Average the design matrix rows (equal weighting)
-        x_bar = X_grid.mean(axis=0)
-        mean_pred_exact = float(x_bar @ fe_params)
-        se = float(np.sqrt(x_bar @ fe_cov @ x_bar))
+        mean_pred = float(c @ fe_params)
+        se = float(np.sqrt(max(c @ fe_cov @ c, 0)))
 
         rows.append({
-            'level': level,
-            'mean': mean_pred_exact,
-            'ci_lower': mean_pred_exact - 1.96 * se,
-            'ci_upper': mean_pred_exact + 1.96 * se,
+            'level': label,
+            'mean': mean_pred,
+            'ci_lower': mean_pred - 1.96 * se,
+            'ci_upper': mean_pred + 1.96 * se,
         })
 
     return pd.DataFrame(rows)
@@ -1168,8 +1623,9 @@ def compute_marginal_means(lmm_result, factor):
 def compute_contrast_slopes(lmm_result):
     """Compute contrast slopes per reward condition from an LMM fit.
 
-    The contrast slope for reward=0 (incorrect) is β_log_contrast.
-    For reward=1 (correct), it is β_log_contrast + β_log_contrast:C(reward)[T.1].
+    With deviation coding (±0.5):
+        incorrect (reward=-0.5): β_lc - 0.5 × β_lc:reward
+        correct   (reward=+0.5): β_lc + 0.5 × β_lc:reward
 
     When the model includes random slopes for log_contrast, subject-level
     slopes (population + BLUP deviation) are also returned.
@@ -1177,7 +1633,7 @@ def compute_contrast_slopes(lmm_result):
     Parameters
     ----------
     lmm_result : LMMResult
-        Output from ``fit_response_lmm``.
+        Output from ``fit_response_lmm`` (deviation-coded model).
 
     Returns
     -------
@@ -1190,39 +1646,31 @@ def compute_contrast_slopes(lmm_result):
     fe_names = list(fe_params.index)
     fe_cov = result.cov_params().loc[fe_names, fe_names].values
 
-    # Base contrast slope (reward=0)
-    beta_contrast = fe_params['log_contrast']
-    idx_contrast = fe_names.index('log_contrast')
+    beta_lc = fe_params['log_contrast']
+    idx_lc = fe_names.index('log_contrast')
 
-    # Interaction term: log_contrast:C(reward)[T.1]
-    interaction_name = 'log_contrast:C(reward)[T.1]'
+    interaction_name = 'log_contrast:reward'
     has_interaction = interaction_name in fe_names
     if has_interaction:
-        beta_interaction = fe_params[interaction_name]
-        idx_interaction = fe_names.index(interaction_name)
+        beta_int = fe_params[interaction_name]
+        idx_int = fe_names.index(interaction_name)
     else:
-        beta_interaction = 0.0
+        beta_int = 0.0
 
     rows = []
-
-    # Population slopes
-    for reward in [0, 1]:
-        if reward == 0:
-            slope = beta_contrast
-            se = np.sqrt(fe_cov[idx_contrast, idx_contrast])
+    for label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
+        slope = beta_lc + reward_val * beta_int
+        # Var(β_lc + r × β_int) = Var(β_lc) + r²Var(β_int) + 2r·Cov
+        if has_interaction:
+            var = (fe_cov[idx_lc, idx_lc]
+                   + reward_val**2 * fe_cov[idx_int, idx_int]
+                   + 2 * reward_val * fe_cov[idx_lc, idx_int])
+            se = np.sqrt(max(var, 0))
         else:
-            slope = beta_contrast + beta_interaction
-            if has_interaction:
-                # Var(β1 + β5) = Var(β1) + Var(β5) + 2*Cov(β1, β5)
-                var = (fe_cov[idx_contrast, idx_contrast]
-                       + fe_cov[idx_interaction, idx_interaction]
-                       + 2 * fe_cov[idx_contrast, idx_interaction])
-                se = np.sqrt(max(var, 0))
-            else:
-                se = np.sqrt(fe_cov[idx_contrast, idx_contrast])
+            se = np.sqrt(fe_cov[idx_lc, idx_lc])
 
         rows.append({
-            'reward': reward,
+            'reward': label,
             'slope': float(slope),
             'ci_lower': float(slope - 1.96 * se),
             'ci_upper': float(slope + 1.96 * se),
@@ -1238,16 +1686,105 @@ def compute_contrast_slopes(lmm_result):
     if has_random_slope:
         for subj, effects in re_dict.items():
             u_slope = effects.get('log_contrast', 0.0)
-            for reward in [0, 1]:
-                pop_slope = rows[reward]['slope']  # 0=incorrect, 1=correct
+            for i, (label, _) in enumerate(
+                    [('incorrect', -0.5), ('correct', 0.5)]):
+                pop_slope = rows[i]['slope']
                 rows.append({
-                    'reward': reward,
+                    'reward': label,
                     'slope': float(pop_slope + u_slope),
                     'ci_lower': np.nan,
                     'ci_upper': np.nan,
                     'type': 'subject',
                     'subject': subj,
                 })
+
+    return pd.DataFrame(rows)
+
+
+def compute_interaction_effects(lmm_result, y_factor, x_factor):
+    """Compute the effect of y_factor at each level of x_factor.
+
+    Uses deviation coding (±0.5). For each level of x_factor, computes
+    the y_factor effect while the remaining factor is set to 0 (its grand
+    mean under deviation coding).
+
+    Parameters
+    ----------
+    lmm_result : LMMResult
+        Output from ``fit_response_lmm`` (deviation-coded model).
+    y_factor : str
+        Factor whose effect to compute: 'contrast', 'reward', or 'side'.
+    x_factor : str
+        Factor to condition on: 'reward' or 'side'.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: x_level, effect, ci_lower, ci_upper, p_interaction.
+        ``p_interaction`` is the p-value of the two-way interaction
+        coefficient (same for both rows).
+    """
+    result = lmm_result.result
+    fe_params = result.fe_params
+    fe_names = list(fe_params.index)
+    fe_cov = result.cov_params().loc[fe_names, fe_names].values
+
+    def _idx(name):
+        return fe_names.index(name) if name in fe_names else None
+
+    # Deviation-coded coefficient names
+    _coef = {
+        'contrast': 'log_contrast',
+        'reward': 'reward',
+        'side': 'side',
+        'contrast:reward': 'log_contrast:reward',
+        'contrast:side': 'log_contrast:side',
+        'reward:side': 'side:reward',
+    }
+
+    # X-factor levels: (label, deviation-coded value)
+    if x_factor == 'reward':
+        x_levels = [('incorrect', -0.5), ('correct', 0.5)]
+    elif x_factor == 'side':
+        x_levels = [('contra', 0.5), ('ipsi', -0.5)]
+    else:
+        raise ValueError(f"x_factor must be 'reward' or 'side', got {x_factor}")
+
+    # Two-way interaction coefficient name
+    yx_key = f'{min(y_factor, x_factor)}:{max(y_factor, x_factor)}'
+    int_name = _coef.get(yx_key)
+    if int_name and int_name in fe_names:
+        p_interaction = float(result.pvalues[int_name])
+    else:
+        p_interaction = 1.0
+
+    rows = []
+    for x_label, x_val in x_levels:
+        # Build contrast vector for the y_factor effect at this x_level.
+        # Third factor is set to 0 (grand mean under deviation coding).
+        c = np.zeros(len(fe_names))
+
+        # y_factor main effect (slope for contrast, difference for categorical)
+        y_name = _coef[y_factor]
+        if _idx(y_name) is not None:
+            c[_idx(y_name)] = 1.0
+
+        # y_factor × x_factor interaction, weighted by x_val
+        if int_name and _idx(int_name) is not None:
+            c[_idx(int_name)] = x_val
+
+        # Third factor = 0, so y×third and y×x×third terms vanish.
+
+        effect = float(c @ fe_params.values)
+        se = float(np.sqrt(max(c @ fe_cov @ c, 0)))
+
+        rows.append({
+            'x_level': x_label,
+            'effect': effect,
+            'ci_lower': effect - 1.96 * se,
+            'ci_upper': effect + 1.96 * se,
+            'p_interaction': p_interaction,
+        })
 
     return pd.DataFrame(rows)
 

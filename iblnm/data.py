@@ -1338,7 +1338,8 @@ class PhotometrySessionGroup:
         return df
 
     def get_glm_response_features(self, event_name='stimOn_times',
-                                   weight_by_se=False, min_trials=20):
+                                   weight_by_se=False, min_trials=20,
+                                   contrast_coding='log'):
         """Build GLM coefficient features for each recording.
 
         Fits a per-recording OLS model on trial-level responses and uses the
@@ -1365,7 +1366,8 @@ class PhotometrySessionGroup:
             self.get_response_magnitudes()
 
         coefs, ses = fit_response_glm(self.response_magnitudes, event_name,
-                                       min_trials=min_trials)
+                                       min_trials=min_trials,
+                                       contrast_coding=contrast_coding)
 
         if len(coefs) == 0:
             self.glm_response_features = coefs
@@ -1379,6 +1381,43 @@ class PhotometrySessionGroup:
         # Reindex to (eid, target_NM, fiber_idx) dropping brain_region level
         result = result.droplevel('brain_region')
         self.glm_response_features = result
+        return result
+
+    def pca_glm_coefficients(self, event_name='stimOn_times',
+                             contrast_coding='log', n_components=3,
+                             min_trials=20, cohort_weighted=False):
+        """Fit per-session GLM and run PCA on coefficients.
+
+        Parameters
+        ----------
+        event_name : str
+            Event to model.
+        contrast_coding : str
+            Contrast transform for the GLM ('log', 'linear', 'rank').
+        n_components : int
+            Number of PCs to retain.
+        min_trials : int
+            Minimum trials per recording for GLM fitting.
+        cohort_weighted : bool
+            If True, weight by 1/n_k so each target contributes equally.
+
+        Returns
+        -------
+        GLMPCAResult
+        """
+        from iblnm.analysis import pca_glm_coefficients
+
+        self.get_glm_response_features(
+            event_name=event_name, min_trials=min_trials,
+            contrast_coding=contrast_coding,
+        )
+        if self.glm_response_features is None or len(self.glm_response_features) == 0:
+            return None
+
+        result = pca_glm_coefficients(
+            self.glm_response_features, n_components=n_components,
+            cohort_weighted=cohort_weighted)
+        self.glm_pca_result = result
         return result
 
     def response_similarity_matrix(self, **kwargs):
@@ -1538,7 +1577,9 @@ class PhotometrySessionGroup:
         return self.cca_result
 
     def fit_cohort_cca(self, n_permutations=1000, seed=42,
-                       min_recordings=10, exclude_intercept=True):
+                       min_recordings=10, exclude_intercept=True,
+                       sparse=False, alpha=0.01, l1_ratio=0.0,
+                       unit_norm=True):
         """Fit CCA separately per target-NM cohort.
 
         Parameters
@@ -1551,6 +1592,14 @@ class PhotometrySessionGroup:
             Minimum recordings to include a cohort.
         exclude_intercept : bool
             If True, drop the ``intercept`` column from neural features.
+        sparse : bool
+            If True, use sparse CCA (cca-zoo ElasticCCA) instead of sklearn CCA.
+        alpha : float or list[float]
+            Regularization strength for sparse CCA. When a list,
+            grid-searched. Ignored when ``sparse=False``.
+        l1_ratio : float or list[float]
+            L1/L2 mixing ratio for sparse CCA. When a list,
+            grid-searched. Ignored when ``sparse=False``.
 
         Returns
         -------
@@ -1558,6 +1607,8 @@ class PhotometrySessionGroup:
         """
         from sklearn.preprocessing import StandardScaler
         from iblnm.analysis import fit_cca
+        if sparse:
+            from iblnm.analysis import fit_sparse_cca
 
         if self.glm_response_features is None:
             raise ValueError("glm_response_features is None")
@@ -1581,7 +1632,8 @@ class PhotometrySessionGroup:
         results = {}
         data = {}
 
-        for tnm in target_nms.unique():
+        from tqdm import tqdm
+        for tnm in tqdm(target_nms.unique(), desc='Fitting CCA per cohort'):
             mask = target_nms == tnm
             X_cohort = X.loc[mask]
             Y_cohort = Y.loc[mask]
@@ -1617,14 +1669,19 @@ class PhotometrySessionGroup:
                 index=X_cohort.index,
             )
 
-            result = fit_cca(
-                X_z_df, Y_z_df,
+            cca_func = fit_sparse_cca if sparse else fit_cca
+            cca_kwargs = dict(
                 n_components=1,
                 n_permutations=n_permutations,
                 session_labels=session_labels,
                 seed=seed,
                 scale=False,
             )
+            if sparse:
+                cca_kwargs['alpha'] = alpha
+                cca_kwargs['l1_ratio'] = l1_ratio
+                cca_kwargs['unit_norm'] = unit_norm
+            result = cca_func(X_z_df, Y_z_df, **cca_kwargs)
             results[tnm] = result
             data[tnm] = (X_z, Y_z)
 
@@ -1716,7 +1773,7 @@ class PhotometrySessionGroup:
         return df
 
     def fit_lmm(self, response_col='response_early',
-                 min_subjects=2, re_formulas=None):
+                 min_subjects=2, re_formulas=None, contrast_coding='log'):
         """Fit LMMs per (target_NM, event) on trial-level events data.
 
         For each group, fits: response ~ log(contrast) * side * reward | subject.
@@ -1748,7 +1805,8 @@ class PhotometrySessionGroup:
         """
         from tqdm import tqdm
         from iblnm.analysis import (
-            fit_response_lmm, compute_marginal_means, compute_contrast_slopes,
+            fit_response_lmm, compute_marginal_means,
+            compute_contrast_slopes, compute_interaction_effects,
         )
         from iblnm.task import add_relative_contrast
 
@@ -1793,7 +1851,8 @@ class PhotometrySessionGroup:
         cached_fits = None
         for re_formula in re_formulas:
             fits = {
-                key: fit_response_lmm(df_g, response_col, re_formula=re_formula)
+                key: fit_response_lmm(df_g, response_col, re_formula=re_formula,
+                                      contrast_coding=contrast_coding)
                 for key, df_g in tqdm(groups.items(),
                                       desc=f"Fitting LMMs (re={re_formula})")
             }
@@ -1821,6 +1880,12 @@ class PhotometrySessionGroup:
             lmm.emm_side = compute_marginal_means(lmm, 'side')
             lmm.emm_contrast = compute_marginal_means(lmm, 'contrast')
             lmm.contrast_slopes = compute_contrast_slopes(lmm)
+            lmm.interaction_contrast_reward = compute_interaction_effects(
+                lmm, 'contrast', 'reward')
+            lmm.interaction_contrast_side = compute_interaction_effects(
+                lmm, 'contrast', 'side')
+            lmm.interaction_reward_side = compute_interaction_effects(
+                lmm, 'reward', 'side')
 
             results[(target_nm, event_label)] = lmm
 

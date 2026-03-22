@@ -30,6 +30,62 @@ class TestContrastTransform:
         assert np.all(np.diff(result) > 0)
 
 
+class TestGetContrastCoding:
+    """Tests for get_contrast_coding() which returns (transform, inverse) pairs."""
+
+    def test_log_transform_matches_legacy(self):
+        from iblnm.config import get_contrast_coding, contrast_transform
+        transform, _ = get_contrast_coding('log')
+        c = np.array([0.0, 6.25, 12.5, 25, 100])
+        np.testing.assert_allclose(transform(c), contrast_transform(c))
+
+    def test_log_roundtrip(self):
+        from iblnm.config import get_contrast_coding
+        transform, inverse = get_contrast_coding('log')
+        c = np.array([0.0, 6.25, 12.5, 25, 50, 100])
+        np.testing.assert_allclose(inverse(transform(c)), c)
+
+    def test_linear_identity(self):
+        from iblnm.config import get_contrast_coding
+        transform, inverse = get_contrast_coding('linear')
+        c = np.array([0.0, 6.25, 12.5, 25, 100])
+        np.testing.assert_allclose(transform(c), c)
+        np.testing.assert_allclose(inverse(c), c)
+
+    def test_rank_maps_to_ordinal(self):
+        from iblnm.config import get_contrast_coding
+        transform, _ = get_contrast_coding('rank')
+        c = np.array([0.0, 6.25, 12.5, 25, 100])
+        np.testing.assert_allclose(transform(c), [0, 1, 2, 3, 4])
+
+    def test_rank_roundtrip(self):
+        from iblnm.config import get_contrast_coding
+        transform, inverse = get_contrast_coding('rank')
+        c = np.array([0.0, 6.25, 12.5, 25, 100])
+        np.testing.assert_allclose(inverse(transform(c)), c)
+
+    def test_rank_scalar_after_array(self):
+        """After seeing the full contrast set, scalar lookup returns correct rank."""
+        from iblnm.config import get_contrast_coding
+        transform, _ = get_contrast_coding('rank')
+        # First call with full array to populate the rank map
+        transform(np.array([0.0, 6.25, 12.5, 25, 100]))
+        assert transform(12.5) == 2.0
+
+    def test_all_monotonic(self):
+        from iblnm.config import get_contrast_coding
+        c = np.array([0.0, 6.25, 12.5, 25, 100])
+        for coding in ('linear', 'rank', 'log'):
+            transform, _ = get_contrast_coding(coding)
+            assert np.all(np.diff(transform(c)) > 0), f"{coding} not monotonic"
+
+    def test_invalid_coding_raises(self):
+        import pytest
+        from iblnm.config import get_contrast_coding
+        with pytest.raises(ValueError, match='quadratic'):
+            get_contrast_coding('quadratic')
+
+
 class TestComputeBleachingTau:
     def test_recovers_known_tau(self):
         from iblnm.analysis import compute_bleaching_tau
@@ -268,6 +324,68 @@ class TestCosineSimilarityMatrix:
         mat = _make_response_matrix(n_recordings=5)
         sim = cosine_similarity_matrix(mat)
         np.testing.assert_allclose(sim.values, sim.values.T, atol=1e-10)
+
+
+class TestSplitFeaturesByEvent:
+
+    def test_returns_dict_keyed_by_event(self):
+        from iblnm.analysis import split_features_by_event
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'VTA-DA', 0), ('e1', 'DR-5HT', 0)],
+            names=['eid', 'target_NM', 'fiber_idx'],
+        )
+        df = pd.DataFrame({
+            'stimOn_c0_contra_correct': [1.0, 2.0],
+            'stimOn_c0_ipsi_correct': [3.0, 4.0],
+            'feedback_c0_contra_correct': [5.0, 6.0],
+        }, index=index)
+        result = split_features_by_event(df)
+        assert set(result.keys()) == {'stimOn', 'feedback'}
+
+    def test_column_count_matches_original(self):
+        from iblnm.analysis import split_features_by_event
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'A', 0)], names=['eid', 'target_NM', 'fiber_idx'],
+        )
+        df = pd.DataFrame({
+            'stimOn_c0_contra_correct': [1.0],
+            'stimOn_c100_ipsi_incorrect': [2.0],
+            'feedback_c0_contra_correct': [3.0],
+            'firstMovement_c0_contra_correct': [4.0],
+        }, index=index)
+        result = split_features_by_event(df)
+        total_cols = sum(len(v.columns) for v in result.values())
+        assert total_cols == len(df.columns)
+
+    def test_preserves_index(self):
+        from iblnm.analysis import split_features_by_event
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'A', 0), ('e1', 'B', 0)],
+            names=['eid', 'target_NM', 'fiber_idx'],
+        )
+        df = pd.DataFrame({
+            'stimOn_c0_contra_correct': [1.0, 2.0],
+            'feedback_c0_contra_correct': [3.0, 4.0],
+        }, index=index)
+        result = split_features_by_event(df)
+        for event_df in result.values():
+            assert event_df.index.equals(df.index)
+
+    def test_correct_columns_per_event(self):
+        from iblnm.analysis import split_features_by_event
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'A', 0)], names=['eid', 'target_NM', 'fiber_idx'],
+        )
+        df = pd.DataFrame({
+            'stimOn_c0_contra_correct': [1.0],
+            'stimOn_c100_ipsi_incorrect': [2.0],
+            'feedback_c0_contra_correct': [3.0],
+        }, index=index)
+        result = split_features_by_event(df)
+        assert list(result['stimOn'].columns) == [
+            'stimOn_c0_contra_correct', 'stimOn_c100_ipsi_incorrect']
+        assert list(result['feedback'].columns) == [
+            'feedback_c0_contra_correct']
 
 
 class TestWithinBetweenSimilarity:
@@ -829,6 +947,48 @@ class TestFitResponseLMM:
         assert 'reward' in result.predictions.columns
 
 
+class TestContrastCodingParameter:
+    """Test that fit_response_lmm accepts different contrast coding schemes."""
+
+    def test_default_is_log(self):
+        from iblnm.analysis import fit_response_lmm
+        df = _make_lmm_data()
+        result = fit_response_lmm(df, 'response')
+        assert result.contrast_coding == 'log'
+
+    def test_linear_coding_converges(self):
+        from iblnm.analysis import fit_response_lmm
+        df = _make_lmm_data()
+        result = fit_response_lmm(df, 'response', contrast_coding='linear')
+        assert result is not None
+        assert result.contrast_coding == 'linear'
+
+    def test_rank_coding_converges(self):
+        from iblnm.analysis import fit_response_lmm
+        df = _make_lmm_data()
+        result = fit_response_lmm(df, 'response', contrast_coding='rank')
+        assert result is not None
+        assert result.contrast_coding == 'rank'
+
+    def test_rank_coding_detects_contrast_effect(self):
+        from iblnm.analysis import fit_response_lmm
+        df = _make_lmm_data(n_per_cell=30, seed=0)
+        result = fit_response_lmm(df, 'response', contrast_coding='rank')
+        coef = result.summary_df.loc['log_contrast', 'Coef.']
+        assert coef > 0, f"Expected positive contrast effect under rank coding, got {coef}"
+
+    def test_marginal_means_use_stored_coding(self):
+        from iblnm.analysis import fit_response_lmm, compute_marginal_means
+        df = _make_lmm_data()
+        result_log = fit_response_lmm(df, 'response', contrast_coding='log')
+        result_rank = fit_response_lmm(df, 'response', contrast_coding='rank')
+        emm_log = compute_marginal_means(result_log, 'contrast')
+        emm_rank = compute_marginal_means(result_rank, 'contrast')
+        # Both should return valid DataFrames but with different predictions
+        assert len(emm_log) == len(emm_rank)
+        assert not np.allclose(emm_log['mean'].values, emm_rank['mean'].values)
+
+
 class TestComputeMarginalMeans:
 
     def test_returns_dataframe(self):
@@ -844,7 +1004,7 @@ class TestComputeMarginalMeans:
         result = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(result, 'reward')
         assert len(emm) == 2
-        assert set(emm['level']) == {0, 1}
+        assert set(emm['level']) == {'incorrect', 'correct'}
 
     def test_side_has_two_levels(self):
         from iblnm.analysis import fit_response_lmm, compute_marginal_means
@@ -869,8 +1029,8 @@ class TestComputeMarginalMeans:
         df = _make_lmm_data(n_per_cell=30, seed=0)
         result = fit_response_lmm(df, 'response')
         emm = compute_marginal_means(result, 'reward')
-        correct = emm[emm['level'] == 1]['mean'].iloc[0]
-        incorrect = emm[emm['level'] == 0]['mean'].iloc[0]
+        correct = emm[emm['level'] == 'correct']['mean'].iloc[0]
+        incorrect = emm[emm['level'] == 'incorrect']['mean'].iloc[0]
         assert correct > incorrect
 
     def test_contrast_column_present(self):
@@ -968,7 +1128,7 @@ class TestComputeContrastSlopes:
         result = fit_response_lmm(df, 'response')
         slopes = compute_contrast_slopes(result)
         pop = slopes[slopes['type'] == 'population']
-        assert set(pop['reward']) == {0, 1}
+        assert set(pop['reward']) == {'incorrect', 'correct'}
 
     def test_subject_slopes_present(self):
         """When random slope model converges, subject-level slopes should appear."""
@@ -993,6 +1153,66 @@ class TestComputeContrastSlopes:
         # (data has 0.5 contrast effect, no interaction)
         for _, row in pop.iterrows():
             assert row['slope'] > 0.2
+
+
+class TestComputeInteractionEffects:
+
+    def test_contrast_by_reward_returns_dataframe(self):
+        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
+        df = _make_lmm_data()
+        lmm = fit_response_lmm(df, 'response')
+        result = compute_interaction_effects(lmm, 'contrast', 'reward')
+        assert isinstance(result, pd.DataFrame)
+
+    def test_contrast_by_reward_has_two_rows(self):
+        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
+        df = _make_lmm_data()
+        lmm = fit_response_lmm(df, 'response')
+        result = compute_interaction_effects(lmm, 'contrast', 'reward')
+        assert len(result) == 2
+        assert set(result['x_level']) == {'incorrect', 'correct'}
+
+    def test_contrast_by_side_has_two_rows(self):
+        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
+        df = _make_lmm_data()
+        lmm = fit_response_lmm(df, 'response')
+        result = compute_interaction_effects(lmm, 'contrast', 'side')
+        assert len(result) == 2
+        assert set(result['x_level']) == {'contra', 'ipsi'}
+
+    def test_reward_by_side_has_two_rows(self):
+        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
+        df = _make_lmm_data()
+        lmm = fit_response_lmm(df, 'response')
+        result = compute_interaction_effects(lmm, 'reward', 'side')
+        assert len(result) == 2
+        assert set(result['x_level']) == {'contra', 'ipsi'}
+
+    def test_has_ci_columns(self):
+        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
+        df = _make_lmm_data()
+        lmm = fit_response_lmm(df, 'response')
+        result = compute_interaction_effects(lmm, 'contrast', 'reward')
+        for col in ['effect', 'ci_lower', 'ci_upper', 'x_level', 'p_interaction']:
+            assert col in result.columns
+
+    def test_known_contrast_effect_positive(self):
+        """Synthetic data has contrast slope 0.5; both reward levels should show it."""
+        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
+        df = _make_lmm_data(n_per_cell=30, seed=0)
+        lmm = fit_response_lmm(df, 'response')
+        result = compute_interaction_effects(lmm, 'contrast', 'reward')
+        for _, row in result.iterrows():
+            assert row['effect'] > 0.2
+
+    def test_known_reward_effect_positive(self):
+        """Synthetic data has reward effect 0.2; both side levels should show it."""
+        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
+        df = _make_lmm_data(n_per_cell=30, seed=0)
+        lmm = fit_response_lmm(df, 'response')
+        result = compute_interaction_effects(lmm, 'reward', 'side')
+        for _, row in result.iterrows():
+            assert row['effect'] > 0.0
 
 
 # =============================================================================
@@ -1094,6 +1314,144 @@ class TestFitCCA:
         result = fit_cca(X, Y)
         assert result.y_weights.shape[0] == 1  # constant column removed
         assert result.correlations.shape == (1,)
+
+
+# =============================================================================
+# Sparse CCA Tests
+# =============================================================================
+
+
+class TestCCAResultAlpha:
+
+    def test_standard_cca_has_alpha_none(self):
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.standard_normal((20, 3)), columns=[f'x{i}' for i in range(3)])
+        Y = pd.DataFrame(rng.standard_normal((20, 2)), columns=[f'y{i}' for i in range(2)])
+        result = fit_cca(X, Y)
+        assert result.alpha is None
+        assert result.l1_ratio is None
+
+
+class TestFitSparseCCA:
+
+    def test_returns_cca_result(self):
+        from iblnm.analysis import fit_sparse_cca, CCAResult
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((50, 6)), columns=[f'f{i}' for i in range(6)])
+        Y = pd.DataFrame(rng.standard_normal((50, 4)), columns=[f'p{i}' for i in range(4)])
+        result = fit_sparse_cca(X, Y, n_components=1, alpha=0.01, seed=42)
+        assert isinstance(result, CCAResult)
+        assert result.correlations.shape == (1,)
+        assert result.x_weights.shape == (6, 1)
+        assert result.y_weights.shape == (4, 1)
+
+    def test_has_alpha_attribute(self):
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((50, 6)), columns=[f'f{i}' for i in range(6)])
+        Y = pd.DataFrame(rng.standard_normal((50, 4)), columns=[f'p{i}' for i in range(4)])
+        result = fit_sparse_cca(X, Y, n_components=1, alpha=0.01, seed=42)
+        assert result.alpha == 0.01
+        assert result.l1_ratio == 0.0
+
+    def test_produces_zero_weights_at_high_alpha(self):
+        """High alpha with l1_ratio=0.5 should zero out some weights."""
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((50, 6)), columns=[f'f{i}' for i in range(6)])
+        Y = pd.DataFrame(rng.standard_normal((50, 4)), columns=[f'p{i}' for i in range(4)])
+        result = fit_sparse_cca(X, Y, n_components=1, alpha=0.1,
+                                l1_ratio=0.5, seed=42)
+        n_zero = (result.x_weights.values.ravel() == 0).sum()
+        assert n_zero > 0
+
+    def test_stores_alpha_and_l1_ratio(self):
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((50, 6)), columns=[f'f{i}' for i in range(6)])
+        Y = pd.DataFrame(rng.standard_normal((50, 4)), columns=[f'p{i}' for i in range(4)])
+        result = fit_sparse_cca(X, Y, n_components=1, alpha=0.05,
+                                l1_ratio=0.3, seed=42)
+        assert result.alpha == 0.05
+        assert result.l1_ratio == 0.3
+
+    def test_permutation_test(self):
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((30, 6)), columns=[f'f{i}' for i in range(6)])
+        Y = pd.DataFrame(rng.standard_normal((30, 4)), columns=[f'p{i}' for i in range(4)])
+        result = fit_sparse_cca(X, Y, n_components=1, n_permutations=10,
+                                alpha=0.01, seed=42)
+        assert result.p_values is not None
+        assert 0 < result.p_values[0] <= 1
+
+    def test_preserves_feature_names(self):
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        x_names = ['log_contrast', 'side', 'feedback', 'lc:side', 'lc:fb', 'side:fb']
+        y_names = ['threshold', 'bias', 'lapse_l', 'lapse_r']
+        X = pd.DataFrame(rng.standard_normal((40, 6)), columns=x_names)
+        Y = pd.DataFrame(rng.standard_normal((40, 4)), columns=y_names)
+        result = fit_sparse_cca(X, Y, n_components=1, alpha=0.01, seed=42)
+        assert list(result.x_weights.index) == x_names
+        assert list(result.y_weights.index) == y_names
+
+    def test_drops_nan_rows(self):
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((32, 4)), columns=[f'x{i}' for i in range(4)])
+        Y = pd.DataFrame(rng.standard_normal((32, 2)), columns=[f'y{i}' for i in range(2)])
+        X.iloc[0, 0] = np.nan
+        Y.iloc[1, 1] = np.nan
+        result = fit_sparse_cca(X, Y, n_components=1, alpha=0.01, seed=42)
+        assert result.n_recordings == 30
+
+    def test_low_alpha_preserves_all_weights(self):
+        """Very low alpha should keep all weights nonzero (near-standard CCA)."""
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((50, 6)), columns=[f'f{i}' for i in range(6)])
+        Y = pd.DataFrame(rng.standard_normal((50, 4)), columns=[f'p{i}' for i in range(4)])
+        result = fit_sparse_cca(X, Y, n_components=1, alpha=1e-4, seed=42)
+        n_zero = (result.x_weights.values.ravel() == 0).sum()
+        assert n_zero == 0
+
+    def test_grid_search_selects_best(self):
+        """Grid search over alpha × l1_ratio should return best combo."""
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((50, 6)), columns=[f'f{i}' for i in range(6)])
+        Y = pd.DataFrame(rng.standard_normal((50, 4)), columns=[f'p{i}' for i in range(4)])
+        result = fit_sparse_cca(X, Y, n_components=1,
+                                alpha=[1e-3, 0.01, 0.1],
+                                l1_ratio=[0.0, 0.1, 0.5],
+                                seed=42)
+        assert result.alpha in [1e-3, 0.01, 0.1]
+        assert result.l1_ratio in [0.0, 0.1, 0.5]
+
+    def test_unit_norm_rescales_weights(self):
+        """unit_norm=True should produce ||w|| = 1."""
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((50, 6)), columns=[f'f{i}' for i in range(6)])
+        Y = pd.DataFrame(rng.standard_normal((50, 4)), columns=[f'p{i}' for i in range(4)])
+        result = fit_sparse_cca(X, Y, n_components=1, alpha=0.01, seed=42,
+                                unit_norm=True)
+        np.testing.assert_allclose(
+            np.linalg.norm(result.x_weights.values), 1.0, atol=1e-6)
+        np.testing.assert_allclose(
+            np.linalg.norm(result.y_weights.values), 1.0, atol=1e-6)
+
+    def test_no_unit_norm_preserves_raw_weights(self):
+        """unit_norm=False should keep raw ElasticCCA magnitudes (< 1)."""
+        from iblnm.analysis import fit_sparse_cca
+        rng = np.random.default_rng(42)
+        X = pd.DataFrame(rng.standard_normal((50, 6)), columns=[f'f{i}' for i in range(6)])
+        Y = pd.DataFrame(rng.standard_normal((50, 4)), columns=[f'p{i}' for i in range(4)])
+        result = fit_sparse_cca(X, Y, n_components=1, alpha=0.01, seed=42,
+                                unit_norm=False)
+        assert np.linalg.norm(result.x_weights.values) < 1.0
 
 
 # =============================================================================
@@ -1284,6 +1642,154 @@ def _make_glm_events(n=200, eid='eid1', brain_region='VTA', hemisphere='l',
         'feedbackType': feedback, 'probabilityLeft': 0.5,
         'response_early': response,
     })
+
+
+def _make_glm_coefs(seed=42):
+    """Synthetic GLM coefficient matrix with known structure.
+
+    Two cohorts: A (20 sessions) and B (5 sessions).
+    A has high log_contrast, low feedback.
+    B has low log_contrast, high feedback.
+    This guarantees PC1 separates the two groups.
+    """
+    rng = np.random.default_rng(seed)
+    coef_names = [
+        'log_contrast', 'side', 'feedback',
+        'log_contrast:side', 'log_contrast:feedback', 'side:feedback',
+    ]
+    n_a, n_b = 20, 5
+    rows = []
+    targets = []
+    for i in range(n_a):
+        rows.append([2.0 + rng.normal(0, 0.3),   # log_contrast: high
+                     rng.normal(0, 0.2),
+                     0.1 + rng.normal(0, 0.2),    # feedback: low
+                     rng.normal(0, 0.1),
+                     rng.normal(0, 0.1),
+                     rng.normal(0, 0.1)])
+        targets.append('A')
+    for i in range(n_b):
+        rows.append([0.1 + rng.normal(0, 0.3),    # log_contrast: low
+                     rng.normal(0, 0.2),
+                     2.0 + rng.normal(0, 0.2),    # feedback: high
+                     rng.normal(0, 0.1),
+                     rng.normal(0, 0.1),
+                     rng.normal(0, 0.1)])
+        targets.append('B')
+
+    index = pd.MultiIndex.from_tuples(
+        [(f'e{i}', t, 0) for i, t in enumerate(targets)],
+        names=['eid', 'target_NM', 'fiber_idx'],
+    )
+    return pd.DataFrame(rows, index=index, columns=coef_names)
+
+
+class TestPcaGlmCoefficients:
+
+    def test_returns_result_with_expected_attributes(self):
+        from iblnm.analysis import pca_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = pca_glm_coefficients(coefs, n_components=3)
+        assert hasattr(result, 'scores')
+        assert hasattr(result, 'components')
+        assert hasattr(result, 'explained_variance_ratio')
+        assert hasattr(result, 'feature_names')
+        assert hasattr(result, 'target_labels')
+
+    def test_scores_shape(self):
+        from iblnm.analysis import pca_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = pca_glm_coefficients(coefs, n_components=3)
+        assert result.scores.shape == (25, 3)
+
+    def test_components_shape(self):
+        from iblnm.analysis import pca_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = pca_glm_coefficients(coefs, n_components=3)
+        assert result.components.shape == (3, 6)
+
+    def test_explained_variance_sums_to_at_most_one(self):
+        from iblnm.analysis import pca_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = pca_glm_coefficients(coefs, n_components=6)
+        np.testing.assert_allclose(
+            result.explained_variance_ratio.sum(), 1.0, atol=1e-10)
+
+    def test_drops_intercept_if_present(self):
+        from iblnm.analysis import pca_glm_coefficients
+        coefs = _make_glm_coefs()
+        coefs.insert(0, 'intercept', 1.0)
+        result = pca_glm_coefficients(coefs, n_components=3)
+        assert 'intercept' not in result.feature_names
+        assert result.components.shape[1] == 6
+
+    def test_pc1_separates_groups(self):
+        """With known group structure, PC1 scores should separate A and B."""
+        from iblnm.analysis import pca_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = pca_glm_coefficients(coefs, n_components=2)
+        scores_a = result.scores[result.target_labels == 'A', 0]
+        scores_b = result.scores[result.target_labels == 'B', 0]
+        # Group means should be well separated (no overlap in means)
+        assert abs(scores_a.mean() - scores_b.mean()) > 1.0
+
+    def test_weighting_changes_components(self):
+        """Cohort weighting should produce different PCs than unweighted."""
+        from iblnm.analysis import pca_glm_coefficients
+        coefs = _make_glm_coefs()
+        weighted = pca_glm_coefficients(coefs, n_components=2, cohort_weighted=True)
+        unweighted = pca_glm_coefficients(coefs, n_components=2, cohort_weighted=False)
+        # With 20 A vs 5 B, weighting should change the components
+        assert not np.allclose(
+            weighted.components[0], unweighted.components[0], atol=1e-6)
+
+    def test_feature_names_match_input_columns(self):
+        from iblnm.analysis import pca_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = pca_glm_coefficients(coefs, n_components=2)
+        assert list(result.feature_names) == list(coefs.columns)
+
+
+class TestPcaScoreStats:
+
+    def test_returns_dataframe_with_expected_columns(self):
+        from iblnm.analysis import pca_glm_coefficients, pca_score_stats
+        coefs = _make_glm_coefs()
+        pca = pca_glm_coefficients(coefs, n_components=3)
+        result = pca_score_stats(pca)
+        assert 'pc' in result.columns
+        assert 'kruskal_h' in result.columns
+        assert 'kruskal_p' in result.columns
+        assert 'target_a' in result.columns
+        assert 'target_b' in result.columns
+        assert 'mwu_u' in result.columns
+        assert 'mwu_p' in result.columns
+
+    def test_one_kruskal_row_per_pc(self):
+        from iblnm.analysis import pca_glm_coefficients, pca_score_stats
+        coefs = _make_glm_coefs()
+        pca = pca_glm_coefficients(coefs, n_components=2)
+        result = pca_score_stats(pca)
+        kw_rows = result[result['target_a'].isna()]
+        assert len(kw_rows) == 2
+
+    def test_pairwise_count(self):
+        """Two groups → 1 pair per PC."""
+        from iblnm.analysis import pca_glm_coefficients, pca_score_stats
+        coefs = _make_glm_coefs()  # groups A, B
+        pca = pca_glm_coefficients(coefs, n_components=2)
+        result = pca_score_stats(pca)
+        pw_rows = result[result['target_a'].notna()]
+        assert len(pw_rows) == 2  # 1 pair × 2 PCs
+
+    def test_pc1_separates_groups_significantly(self):
+        """With well-separated groups, KW p-value should be small."""
+        from iblnm.analysis import pca_glm_coefficients, pca_score_stats
+        coefs = _make_glm_coefs()
+        pca = pca_glm_coefficients(coefs, n_components=1)
+        result = pca_score_stats(pca)
+        kw_p = result.loc[result['target_a'].isna(), 'kruskal_p'].iloc[0]
+        assert kw_p < 0.01
 
 
 class TestFitResponseGLM:
