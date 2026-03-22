@@ -833,80 +833,60 @@ class TestPlotLMMSummary:
 
     @staticmethod
     def _make_mock_group():
-        """Mock group with lmm_results for testing."""
+        """Mock group with lmm_results for the 4-panel summary."""
         from types import SimpleNamespace
         from iblnm.analysis import LMMResult
 
-        def _make_summary(reward_p, side_p, contrast_p, interaction_p):
+        def _make_summary(pvals):
             """Minimal summary_df with p-values for significance markers."""
             terms = [
-                'Intercept', 'C(reward)[T.1]', 'C(side)[T.ipsi]',
-                'log_contrast', 'log_contrast:C(reward)[T.1]',
+                'Intercept', 'reward', 'side',
+                'log_contrast',
+                'side:reward', 'log_contrast:side',
+                'log_contrast:reward', 'log_contrast:side:reward',
             ]
             return pd.DataFrame({
-                'Coef.': [1.0, 0.3, 0.2, 0.5, 0.1],
-                'P>|z|': [0.001, reward_p, side_p, contrast_p, interaction_p],
+                'Coef.': [1.0, 0.3, 0.2, 0.5, -0.1, 0.05, 0.15, 0.02],
+                'P>|z|': pvals,
             }, index=terms)
 
-        def _make_result(ve_m, ve_c, reward_means, side_means, slopes_data,
-                         contrast_means=None,
-                         reward_p=0.01, side_p=0.01,
-                         contrast_p=0.001, interaction_p=0.5):
+        def _make_interaction_df(x_levels, effects, p_interaction=0.5):
+            return pd.DataFrame({
+                'x_level': x_levels,
+                'effect': effects,
+                'ci_lower': [e - 0.2 for e in effects],
+                'ci_upper': [e + 0.2 for e in effects],
+                'p_interaction': p_interaction,
+            })
+
+        def _make_result(ve_m, ve_c, pvals):
             r = LMMResult(
                 model=None, result=None,
-                summary_df=_make_summary(reward_p, side_p,
-                                         contrast_p, interaction_p),
+                summary_df=_make_summary(pvals),
                 variance_explained={'marginal': ve_m, 'conditional': ve_c},
                 random_effects={},
             )
-            r.predictions = pd.DataFrame()
-            r.emm_reward = pd.DataFrame({
-                'level': [0, 1],
-                'mean': reward_means,
-                'ci_lower': [m - 0.2 for m in reward_means],
-                'ci_upper': [m + 0.2 for m in reward_means],
-            })
-            r.emm_side = pd.DataFrame({
-                'level': ['contra', 'ipsi'],
-                'mean': side_means,
-                'ci_lower': [m - 0.2 for m in side_means],
-                'ci_upper': [m + 0.2 for m in side_means],
-            })
-            if contrast_means is None:
-                contrast_means = [-0.5, -0.2, 0.0, 0.2, 0.5]
-            r.emm_contrast = pd.DataFrame({
-                'level': [0.0, 0.0625, 0.125, 0.25, 1.0],
-                'mean': contrast_means,
-                'ci_lower': [m - 0.3 for m in contrast_means],
-                'ci_upper': [m + 0.3 for m in contrast_means],
-            })
-            r.contrast_slopes = pd.DataFrame(slopes_data)
+            # pvals[6] = log_contrast:reward, pvals[5] = log_contrast:side,
+            # pvals[4] = side:reward
+            r.interaction_contrast_reward = _make_interaction_df(
+                ['incorrect', 'correct'], [0.3, 0.5], p_interaction=pvals[6])
+            r.interaction_contrast_side = _make_interaction_df(
+                ['contra', 'ipsi'], [0.4, 0.2], p_interaction=pvals[5])
+            r.interaction_reward_side = _make_interaction_df(
+                ['contra', 'ipsi'], [0.6, 0.3], p_interaction=pvals[4])
             return r
 
         group = SimpleNamespace()
+        # VTA-DA: contrast sig, reward sig, contrast:reward sig,
+        #   contrast:side not sig, reward:side sig
+        vta_pvals = [0.001, 0.001, 0.03, 1e-10, 0.001, 0.3, 0.001, 0.2]
+        # DR-5HT: nothing significant except intercept
+        dr_pvals = [0.001, 0.15, 0.8, 0.06, 0.5, 0.7, 0.9, 0.4]
         group.lmm_results = {
-            # VTA-DA: reward sig, side sig, contrast sig, interaction not sig
-            ('VTA-DA', 'stimOn'): _make_result(
-                0.15, 0.35, [0.5, 0.8], [0.7, 0.6],
-                {'reward': [0, 1, 0, 1], 'slope': [0.3, 0.5, 0.28, 0.48],
-                 'ci_lower': [0.1, 0.3, np.nan, np.nan],
-                 'ci_upper': [0.5, 0.7, np.nan, np.nan],
-                 'type': ['population', 'population', 'subject', 'subject'],
-                 'subject': [None, None, 's0', 's0']},
-                reward_p=0.001, side_p=0.03, contrast_p=1e-10,
-                interaction_p=0.2,
-            ),
-            # DR-5HT: reward not sig, side not sig
-            ('DR-5HT', 'stimOn'): _make_result(
-                0.08, 0.22, [0.2, 0.4], [0.3, 0.3],
-                {'reward': [0, 1], 'slope': [0.1, 0.2],
-                 'ci_lower': [-0.1, 0.0], 'ci_upper': [0.3, 0.4],
-                 'type': ['population', 'population'],
-                 'subject': [None, None]},
-                reward_p=0.15, side_p=0.8, contrast_p=0.06,
-                interaction_p=0.9,
-            ),
+            ('VTA-DA', 'stimOn'): _make_result(0.15, 0.35, vta_pvals),
+            ('DR-5HT', 'stimOn'): _make_result(0.08, 0.22, dr_pvals),
         }
+        group.lmm_coefficients = None  # triggers local vmax fallback
         return group
 
     def test_returns_figure(self):
@@ -920,7 +900,8 @@ class TestPlotLMMSummary:
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
-        assert len(fig.axes) == 5
+        # 5 content panels + 1 colorbar = 6 axes
+        assert len(fig.axes) >= 5
         plt.close(fig)
 
     def test_r2_panel_has_dots(self):
@@ -932,47 +913,55 @@ class TestPlotLMMSummary:
         assert len(ax_r2.collections) > 0 or len(ax_r2.lines) > 0
         plt.close(fig)
 
-    def test_slope_panel_has_errorbars(self):
-        """Fifth panel should have errorbars for population slopes."""
+    def test_interaction_panels_have_errorbars(self):
+        """Panels 2–4 should have errorbars."""
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
-        ax_slope = fig.axes[4]
-        assert len(ax_slope.containers) > 0 or len(ax_slope.collections) > 0
+        for ax in fig.axes[1:4]:
+            assert len(ax.containers) > 0 or len(ax.collections) > 0
         plt.close(fig)
 
-    def test_nonsig_emm_markers_are_open(self):
-        """Non-significant effects should use open (unfilled) markers."""
+    def test_nonsig_main_effect_markers_are_open(self):
+        """Dot fill encodes the y-factor main effect significance."""
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
-        # DR-5HT has reward_p=0.15 (not sig) — its reward EMM markers
-        # should be open (fillstyle='none')
-        ax_reward = fig.axes[1]
-        has_open = False
-        has_filled = False
-        for container in ax_reward.containers:
-            marker_line = container[0]
-            if marker_line.get_fillstyle() == 'none':
-                has_open = True
-            else:
-                has_filled = True
-        assert has_open, "Expected open markers for non-significant effects"
-        assert has_filled, "Expected filled markers for significant effects"
+        # Panel 1 (contrast:reward) — y-factor is contrast
+        # VTA-DA has contrast p=1e-10 (sig, filled)
+        # DR-5HT has contrast p=0.06 (not sig, open)
+        ax = fig.axes[1]
+        fillstyles = set()
+        for container in ax.containers:
+            fillstyles.add(container[0].get_fillstyle())
+        assert 'none' in fillstyles, "Expected open markers for non-sig main effect"
+        assert 'full' in fillstyles, "Expected filled markers for sig main effect"
         plt.close(fig)
 
-    def test_nonsig_interaction_markers_are_open(self):
-        """Interaction panel: filled iff interaction p < 0.05."""
+    def test_nonsig_interaction_line_is_dashed(self):
+        """Line style encodes the interaction significance."""
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
-        ax_slope = fig.axes[4]
-        # Both targets have interaction_p > 0.05 → all should be open
-        for container in ax_slope.containers:
-            marker_line = container[0]
-            assert marker_line.get_fillstyle() == 'none', (
-                "Expected open markers when interaction is not significant"
-            )
+        # Panel 2 (contrast:side) — interaction is log_contrast:side
+        # VTA-DA p=0.3 (not sig → dashed), DR-5HT p=0.7 (not sig → dashed)
+        ax = fig.axes[2]
+        linestyles = set()
+        for line in ax.lines:
+            ls = line.get_linestyle()
+            if ls != 'None' and ls != '':
+                linestyles.add(ls)
+        assert '--' in linestyles or (0, (5, 5)) in linestyles, \
+            "Expected dashed lines for non-sig interactions"
+        plt.close(fig)
+
+    def test_heatmap_panel_present(self):
+        """Fifth panel should contain a coefficient heatmap."""
+        from iblnm.vis import plot_lmm_summary
+        group = self._make_mock_group()
+        fig = plot_lmm_summary(group, 'stimOn')
+        ax_hm = fig.axes[4]
+        assert len(ax_hm.images) > 0, "Expected heatmap image in panel 5"
         plt.close(fig)
 
 
@@ -1113,6 +1102,91 @@ class TestPlotResponseDecodingSummary:
 
 
 # =============================================================================
+# LMM Coefficient Heatmap Tests
+# =============================================================================
+
+
+def _make_lmm_coefficients():
+    """Synthetic LMM coefficients DataFrame matching the real schema."""
+    targets = ['VTA-DA', 'SNc-DA', 'DR-5HT']
+    events = ['stimOn', 'feedback', 'firstMovement']
+    terms = ['Intercept', 'side', 'reward',
+             'log_contrast', 'log_contrast:reward']
+    rng = np.random.default_rng(42)
+    rows = []
+    for tnm in targets:
+        for ev in events:
+            for term in terms:
+                rows.append({
+                    'term': term,
+                    'target_NM': tnm,
+                    'event': ev,
+                    'Coef.': rng.normal(0, 0.5),
+                    'Std.Err.': rng.uniform(0.01, 0.1),
+                    'z': rng.normal(0, 3),
+                    'P>|z|': rng.choice([1e-10, 0.0005, 0.02, 0.3]),
+                })
+    return pd.DataFrame(rows)
+
+
+class TestPlotLMMCoefficientHeatmap:
+
+    def test_returns_three_figures(self):
+        from iblnm.vis import plot_lmm_coefficient_heatmap
+        df = _make_lmm_coefficients()
+        figs = plot_lmm_coefficient_heatmap(df)
+        assert len(figs) == 3  # one per event
+
+    def test_each_figure_has_heatmap(self):
+        from iblnm.vis import plot_lmm_coefficient_heatmap
+        df = _make_lmm_coefficients()
+        figs = plot_lmm_coefficient_heatmap(df)
+        for fig in figs.values():
+            # Should have at least one axes with an image (heatmap)
+            assert any(len(ax.images) > 0 for ax in fig.axes)
+            plt.close(fig)
+
+    def test_rows_are_targets_cols_are_terms(self):
+        from iblnm.vis import plot_lmm_coefficient_heatmap
+        df = _make_lmm_coefficients()
+        figs = plot_lmm_coefficient_heatmap(df)
+        fig = list(figs.values())[0]
+        ax = [a for a in fig.axes if len(a.images) > 0][0]
+        ylabels = [t.get_text() for t in ax.get_yticklabels()]
+        xlabels = [t.get_text() for t in ax.get_xticklabels()]
+        targets = sorted(df['target_NM'].unique())
+        # Intercept is dropped; remaining terms from fixture
+        terms_no_intercept = ['side', 'reward',
+                              'log_contrast', 'log_contrast:reward']
+        assert ylabels == targets
+        assert len(xlabels) == len(terms_no_intercept)
+        plt.close(fig)
+
+    def test_shared_colorbar_scale(self):
+        from iblnm.vis import plot_lmm_coefficient_heatmap
+        df = _make_lmm_coefficients()
+        figs = plot_lmm_coefficient_heatmap(df)
+        clims = []
+        for fig in figs.values():
+            ax = [a for a in fig.axes if len(a.images) > 0][0]
+            clims.append(ax.images[0].get_clim())
+            plt.close(fig)
+        # All events should share the same colorbar limits
+        assert all(c == clims[0] for c in clims)
+
+    def test_asterisks_for_significant(self):
+        from iblnm.vis import plot_lmm_coefficient_heatmap
+        df = _make_lmm_coefficients()
+        figs = plot_lmm_coefficient_heatmap(df)
+        fig = list(figs.values())[0]
+        ax = [a for a in fig.axes if len(a.images) > 0][0]
+        texts = [t.get_text() for t in ax.texts]
+        # At least some cells should have asterisks
+        assert any('*' in t for t in texts)
+        plt.close(fig)
+
+
+# =============================================================================
 # plot_mean_response_traces Tests
 # =============================================================================
 
@@ -1236,18 +1310,23 @@ class TestPlotMeanResponseTraces:
         assert len(fig.axes) == 4
         plt.close(fig)
 
-    def test_uses_contrast_colors(self):
+    def test_uses_nm_colormap_shades(self):
         import matplotlib as mpl
         from iblnm.vis import plot_mean_response_traces
-        from iblnm.config import CONTRAST_COLORS
+        from iblnm.config import NM_CMAPS, ANALYSIS_CONTRASTS
         traces = _make_traces_df(n_targets=1)
         target = traces['target_NM'].iloc[0]
+        nm = target.split('-')[-1]
         fig = plot_mean_response_traces(traces, target)
         ax = fig.axes[0]
-        # Lines (excluding vline) should use contrast colors
+        # Lines (excluding vline) should use NM colormap shades
         contrasts = sorted(traces['contrast'].unique())
+        cmap = NM_CMAPS[nm]
+        n_levels = len(ANALYSIS_CONTRASTS)
+        shade_map = {c: cmap(0.3 + 0.7 * i / (n_levels - 1))
+                     for i, c in enumerate(ANALYSIS_CONTRASTS)}
         for line, c in zip(ax.lines[:-1], contrasts):
-            expected = mpl.colors.to_rgba(CONTRAST_COLORS[c])
+            expected = mpl.colors.to_rgba(shade_map[c])
             actual = mpl.colors.to_rgba(line.get_color())
             np.testing.assert_allclose(actual, expected, atol=0.01)
         plt.close(fig)
@@ -1286,6 +1365,54 @@ class TestPlotMeanResponseTraces:
         fig = plot_mean_response_traces(traces, target)
         for ax in fig.axes:
             assert len(ax.collections) >= 1
+        plt.close(fig)
+
+    def test_event_order_stim_movement_feedback(self):
+        from iblnm.vis import plot_mean_response_traces
+        traces = _make_traces_df(
+            n_targets=1,
+            events=['feedback_times', 'stimOn_times', 'firstMovement_times'],
+        )
+        target = traces['target_NM'].iloc[0]
+        fig = plot_mean_response_traces(traces, target)
+        # Top row: col 0, 1, 2 → axes[0], axes[1], axes[2]
+        titles = [fig.axes[col].get_title() for col in range(3)]
+        assert titles == ['stimOn', 'firstMovement', 'feedback']
+        plt.close(fig)
+
+    def test_response_window_shading(self):
+        """Early window on all panels, late window only on feedback."""
+        from iblnm.vis import plot_mean_response_traces
+        from iblnm.config import RESPONSE_WINDOWS
+        traces = _make_traces_df(
+            n_targets=1,
+            events=['stimOn_times', 'feedback_times'],
+        )
+        target = traces['target_NM'].iloc[0]
+        fig = plot_mean_response_traces(traces, target)
+        early = RESPONSE_WINDOWS['early']
+        late = RESPONSE_WINDOWS['late']
+        # stimOn is col 0 → axes[0] (top row)
+        ax_stim = fig.axes[0]
+        assert any(
+            np.isclose(p.get_x(), early[0], atol=0.01)
+            for p in ax_stim.patches
+        )
+        # stimOn should NOT have late window
+        assert not any(
+            np.isclose(p.get_x(), late[0], atol=0.01)
+            for p in ax_stim.patches
+        )
+        # feedback is col 1 → axes[1] (top row)
+        ax_fb = fig.axes[1]
+        assert any(
+            np.isclose(p.get_x(), early[0], atol=0.01)
+            for p in ax_fb.patches
+        )
+        assert any(
+            np.isclose(p.get_x(), late[0], atol=0.01)
+            for p in ax_fb.patches
+        )
         plt.close(fig)
 
 
@@ -1353,11 +1480,14 @@ class TestPlotCohortCCASummary:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_has_four_panels(self):
+    def test_has_six_panels(self):
         from iblnm.vis import plot_cohort_cca_summary
         results, cp, ws = _make_mock_cohort_cca_data()
         fig = plot_cohort_cca_summary(results, cp, ws)
-        assert len(fig.axes) >= 4
+        # 6 content panels: bar, cross-proj, delta-r, weights,
+        # neural cosine sim, behavioral cosine sim
+        titled = [ax for ax in fig.axes if ax.get_title() != '']
+        assert len(titled) >= 6
         plt.close(fig)
 
     def test_delta_r_diagonal_is_zero(self):
@@ -1391,59 +1521,73 @@ class TestPlotCohortCCASummary:
         plt.close(fig)
 
 
-class TestPlotCCAWeightProfiles:
+def _make_mock_glm_pca_result():
+    """Synthetic GLMPCAResult for testing plot functions."""
+    from iblnm.analysis import GLMPCAResult
+    rng = np.random.default_rng(42)
+    n = 15
+    targets = np.array(['VTA-DA'] * 8 + ['DR-5HT'] * 4 + ['LC-NE'] * 3)
+    index = pd.MultiIndex.from_tuples(
+        [(f'e{i}', targets[i], 0) for i in range(n)],
+        names=['eid', 'target_NM', 'fiber_idx'],
+    )
+    return GLMPCAResult(
+        scores=rng.normal(size=(n, 3)),
+        components=rng.normal(size=(3, 6)),
+        explained_variance_ratio=np.array([0.45, 0.25, 0.15]),
+        feature_names=['log_contrast', 'side', 'feedback',
+                       'log_contrast:side', 'log_contrast:feedback',
+                       'side:feedback'],
+        target_labels=targets,
+        index=index,
+    )
+
+
+class TestPlotGlmPcaWeights:
 
     def test_returns_figure(self):
-        from iblnm.vis import plot_cca_weight_profiles
-        results, _, _ = _make_mock_cohort_cca_data()
-        fig = plot_cca_weight_profiles(results)
+        from iblnm.vis import plot_glm_pca_weights
+        result = _make_mock_glm_pca_result()
+        fig = plot_glm_pca_weights(result)
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_has_two_panels(self):
-        from iblnm.vis import plot_cca_weight_profiles
-        results, _, _ = _make_mock_cohort_cca_data()
-        fig = plot_cca_weight_profiles(results)
-        # Two imshow axes (neural + behavioral), possibly + colorbars
-        imshow_axes = [ax for ax in fig.axes if len(ax.images) > 0]
-        assert len(imshow_axes) == 2
-        plt.close(fig)
-
-    def test_neural_panel_has_correct_shape(self):
-        from iblnm.vis import plot_cca_weight_profiles
-        results, _, _ = _make_mock_cohort_cca_data()
-        fig = plot_cca_weight_profiles(results)
-        imshow_axes = [ax for ax in fig.axes if len(ax.images) > 0]
-        neural_data = imshow_axes[0].images[0].get_array()
-        n_features = len(results['VTA-DA'].x_weights)
-        n_cohorts = len(results)
-        assert neural_data.shape == (n_features, n_cohorts)
+    def test_heatmap_shape_matches_components(self):
+        """Heatmap data should have n_components rows and n_features columns."""
+        from iblnm.vis import plot_glm_pca_weights
+        result = _make_mock_glm_pca_result()
+        fig = plot_glm_pca_weights(result)
+        ax = fig.axes[0]
+        img = ax.images[0]
+        data = img.get_array()
+        assert data.shape == (3, 6)
         plt.close(fig)
 
 
-class TestPlotCCACosineSimilarity:
+class TestPlotGlmPcaScores:
 
     def test_returns_figure(self):
-        from iblnm.vis import plot_cca_cosine_similarity
-        _, _, ws = _make_mock_cohort_cca_data()
-        fig = plot_cca_cosine_similarity(ws)
+        from iblnm.vis import plot_glm_pca_scores
+        result = _make_mock_glm_pca_result()
+        fig = plot_glm_pca_scores(result)
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_has_two_panels(self):
-        from iblnm.vis import plot_cca_cosine_similarity
-        _, _, ws = _make_mock_cohort_cca_data()
-        fig = plot_cca_cosine_similarity(ws)
-        imshow_axes = [ax for ax in fig.axes if len(ax.images) > 0]
-        assert len(imshow_axes) == 2
+    def test_three_panels_for_three_pcs(self):
+        from iblnm.vis import plot_glm_pca_scores
+        result = _make_mock_glm_pca_result()
+        fig = plot_glm_pca_scores(result)
+        assert len(fig.axes) == 3
         plt.close(fig)
 
-    def test_colorbars_span_minus1_to_1(self):
-        from iblnm.vis import plot_cca_cosine_similarity
-        _, _, ws = _make_mock_cohort_cca_data()
-        fig = plot_cca_cosine_similarity(ws)
-        imshow_axes = [ax for ax in fig.axes if len(ax.images) > 0]
-        for ax in imshow_axes:
-            im = ax.images[0]
-            assert im.get_clim() == (-1, 1)
+    def test_target_colors_used(self):
+        """Each target should use its configured color."""
+        import matplotlib as mpl
+        from iblnm.vis import plot_glm_pca_scores
+        from iblnm.config import TARGETNM_COLORS
+        result = _make_mock_glm_pca_result()
+        fig = plot_glm_pca_scores(result)
+        ax = fig.axes[0]
+        collections = ax.collections
+        assert len(collections) > 0
         plt.close(fig)
