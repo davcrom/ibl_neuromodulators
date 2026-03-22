@@ -531,12 +531,12 @@ if __name__ == '__main__':
     group.similarity_matrix.to_parquet(RESPONSE_SIMILARITY_FPATH)
     print(f"Saved similarity matrix to {RESPONSE_SIMILARITY_FPATH}")
 
-    print("Decoding target-NM from response vectors...")
-    group.decode_target()
-
-    plot_vectors_figures(group, fig_dirs['similarity'],
-                        fig_dirs['target_decoding'], data_dir)
-    print("Response vector figures saved")
+    # print("Decoding target-NM from response vectors...")
+    # group.decode_target()
+    #
+    # plot_vectors_figures(group, fig_dirs['similarity'],
+    #                     fig_dirs['target_decoding'], data_dir)
+    # print("Response vector figures saved")
 
     # Free trace cache
     group.flush_response_traces()
