@@ -1,10 +1,34 @@
+"""
+Session Viewer
+
+Interactive viewer for a single photometry session: raw bands, preprocessed
+signal, and peri-event heatmap + mean±SEM traces. All buttons are in a single
+row at the top: region selectors on the left, Baseline/Mask toggles on the
+right. Response panels are arranged as columns (one per event). Event onsets
+are drawn as thin vertical lines in both signal traces.
+
+Usage:
+    python scripts/view_session.py [eid]
+"""
+import sys
+
 import numpy as np
+import pandas as pd
 from scipy.stats import sem as scipy_sem
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.widgets import Button
 
+from iblnm.config import (
+    SESSIONS_FPATH, SESSIONS_H5_DIR,
+    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH,
+    SESSION_TYPES_TO_ANALYZE,
+)
+from iblnm.data import PhotometrySession
+from iblnm.io import _get_default_connection
+from iblnm.util import collect_session_errors
 
+DEMO_EID = '2025366a-c9aa-4b6c-97be-8af40eda6410'
 
 # Colours
 COLOR_GCAMP = '#2ca02c'
@@ -65,15 +89,11 @@ class PhotometrySessionViewer:
         """
         types, ratios = [], []
         if self._has_raw():
-            types.append('raw')
-            ratios.append(RATIO_SIGNAL)
-        types.append('preprocessed')
-        ratios.append(RATIO_SIGNAL)
+            types.append('raw');       ratios.append(RATIO_SIGNAL)
+        types.append('preprocessed'); ratios.append(RATIO_SIGNAL)
         if self._has_responses():
-            types.append('heatmap')
-            ratios.append(RATIO_HEATMAP)
-            types.append('mean')
-            ratios.append(RATIO_MEAN)
+            types.append('heatmap');   ratios.append(RATIO_HEATMAP)
+            types.append('mean');      ratios.append(RATIO_MEAN)
         return types, ratios
 
     # ------------------------------------------------------------------ #
@@ -269,14 +289,19 @@ class PhotometrySessionViewer:
         ax_mean.cla()
 
         tpts = self.session.responses.coords['time'].values
+        raw  = self.session.responses.sel(region=region, event=event).values  # (n_trials, n_times)
         resp = self._get_transformed_responses().sel(region=region, event=event).values
 
-        # Heatmap — reflects active transforms (mask, baseline)
-        vmax = max(3 * np.nanstd(resp), 1e-6)
+        # Heatmap — raw signal; blank cells that are NaN in transformed response
+        mask = np.isnan(resp)
+        heat_data = np.ma.array(raw, mask=mask)
+        vmax = max(3 * np.nanstd(raw), 1e-6)
+        cmap = plt.get_cmap('RdBu_r').copy()
+        cmap.set_bad(color='white')
         ax_heat.imshow(
-            resp, aspect='auto', origin='lower', cmap='RdBu_r',
+            heat_data, aspect='auto', origin='lower', cmap=cmap,
             vmin=-vmax, vmax=vmax,
-            extent=[tpts[0], tpts[-1], 0, resp.shape[0]],
+            extent=[tpts[0], tpts[-1], 0, raw.shape[0]],
         )
         ax_heat.axvline(0, color='k', lw=0.7, ls='--')
         ax_heat.set_ylabel('Trial', fontsize=7)
@@ -298,14 +323,7 @@ class PhotometrySessionViewer:
     # Public API                                                           #
     # ------------------------------------------------------------------ #
 
-    def plot(self, errors=None):
-        """Build and display the viewer figure.
-
-        Parameters
-        ----------
-        errors : list of str, optional
-            Error types associated with this session (displayed under the title).
-        """
+    def plot(self):
         regions = self._regions()
         self._current_region = regions[0]
 
@@ -324,10 +342,50 @@ class PhotometrySessionViewer:
             f"{s.subject} | {s.date} | {s.session_type} | {s.eid[:8]}",
             fontsize=10, y=0.99,
         )
-        if errors:
-            fig.text(
-                0.5, 0.96, ', '.join(errors),
-                ha='center', fontsize=7, color='red',
-            )
         self._draw_region(self._current_region)
         return fig
+
+
+# ======================================================================== #
+# Main                                                                      #
+# ======================================================================== #
+
+if __name__ == '__main__':
+    eid = sys.argv[1] if len(sys.argv) > 1 else DEMO_EID
+
+    df = pd.read_parquet(SESSIONS_FPATH)
+    df = collect_session_errors(df, [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH])
+    fatal_errors = {'InvalidNeuromodulator', 'InvalidTarget', 'InvalidTargetNM'}
+    df = df[df['logged_errors'].apply(
+        lambda errs: not any(e in fatal_errors for e in errs)
+    )]
+    row = df[df['eid'] == eid].iloc[0]
+
+    one = _get_default_connection()
+    ps  = PhotometrySession(row, one=one)
+
+    h5_path = SESSIONS_H5_DIR / f'{eid}.h5'
+    if h5_path.exists():
+        # Load raw bands first (load_photometry overwrites photometry dict),
+        # then layer preprocessed + trials + responses from H5 on top.
+        try:
+            ps.load_photometry()
+        except Exception as e:
+            print(f"Warning: could not load raw photometry — {e}")
+        ps.load_h5(h5_path)
+        if not (hasattr(ps, 'responses') and ps.responses is not None):
+            print("No responses in H5, extracting...")
+            ps.load_trials()
+            ps.extract_responses()
+            ps.save_h5(mode='a')
+    else:
+        print(f"No H5 for {eid}, running pipeline...")
+        ps.load_trials()
+        ps.load_photometry()
+        ps.preprocess()
+        ps.extract_responses()
+        ps.save_h5()
+
+    viewer = PhotometrySessionViewer(ps)
+    viewer.plot()
+    plt.show()
