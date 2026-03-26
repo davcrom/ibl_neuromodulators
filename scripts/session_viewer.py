@@ -75,12 +75,14 @@ def load_session_data(row, one):
     eid = row['eid']
     ps = PhotometrySession(row, one=one)
 
+    try:
+        ps.load_photometry()
+    except Exception as e:
+        print(f"Warning: could not load raw photometry — {e}")
+
     h5_path = SESSIONS_H5_DIR / f'{eid}.h5'
+
     if h5_path.exists():
-        try:
-            ps.load_photometry()
-        except Exception as e:
-            print(f"Warning: could not load raw photometry — {e}")
         ps.load_h5(h5_path)
     else:
         print(f"No H5 for {eid}, running pipeline...")
@@ -88,7 +90,6 @@ def load_session_data(row, one):
         ps.load_photometry()
         ps.preprocess()
         ps.extract_responses()
-        ps.save_h5()
 
     return ps
 
@@ -128,6 +129,9 @@ if __name__ == '__main__':
     one = _get_default_connection()
     ps = load_session_data(row, one)
 
+    # ~ if not hasattr(ps, 'responses'):
+        # ~ ps.extract_responses()
+
     viewer = PhotometrySessionViewer(ps)
-    viewer.plot(errors=errors)
+    viewer.plot()
     plt.show()
