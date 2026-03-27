@@ -257,7 +257,7 @@ MIN_NTRIALS = 90
 MIN_SESSIONLENGTH = 20 * 60  # seconds
 
 # Task performance parameters
-MIN_TRAINING_PERFORMANCE = 0.75  # minimum fraction_correct for training sessions
+MIN_TRAINING_PERFORMANCE = 0.70  # minimum fraction_correct for training sessions
 REQUIRED_CONTRASTS = {0, 6.25, 12.5, 25, 100}  # percent; must match biased/ephys
 MIN_BLOCK_LENGTH = 10  # minimum trials per bias block (flag sessions with shorter blocks)
 EVENT_TIMES = ['goCue_times', 'firstMovement_times', 'feedback_times']
@@ -454,7 +454,7 @@ def get_contrast_coding(coding='log'):
 # Analysis parameters
 # Event-based analyses
 RESPONSE_WINDOW = (-1, 1)
-BASELINE_WINDOW = (-0.1, 0)
+BASELINE_WINDOW = (-0.2, 0)
 RESPONSE_WINDOWS = {
     'early': (0.1, 0.35),
     'late': (0.35, 0.6)

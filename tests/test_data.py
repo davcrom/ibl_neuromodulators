@@ -799,6 +799,79 @@ class TestBasicPerformance:
 
 
 # =============================================================================
+# get_trial_timings Tests
+# =============================================================================
+
+class TestGetTrialTimings:
+
+    def _make_trials_with_times(self, n=50):
+        np.random.seed(42)
+        stim = np.sort(np.random.uniform(100, 500, n))
+        move = stim + np.random.uniform(0.1, 0.5, n)
+        feedback = move + np.random.uniform(0.1, 0.3, n)
+        trials = _make_training_trials(n=n)
+        trials['stimOn_times'] = stim
+        trials['firstMovement_times'] = move
+        trials['feedback_times'] = feedback
+        return trials
+
+    def test_returns_dataframe_with_timing_columns(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = self._make_trials_with_times()
+        result = session.get_trial_timings()
+        assert isinstance(result, pd.DataFrame)
+        for col in ['reaction_time', 'movement_time', 'response_time']:
+            assert col in result.columns
+
+    def test_reaction_time_is_movement_minus_stim(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = self._make_trials_with_times()
+        result = session.get_trial_timings()
+        expected = (session.trials['firstMovement_times'].values
+                    - session.trials['stimOn_times'].values)
+        np.testing.assert_allclose(result['reaction_time'].values, expected)
+
+    def test_movement_time_is_feedback_minus_movement(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = self._make_trials_with_times()
+        result = session.get_trial_timings()
+        expected = (session.trials['feedback_times'].values
+                    - session.trials['firstMovement_times'].values)
+        np.testing.assert_allclose(result['movement_time'].values, expected)
+
+    def test_response_time_is_feedback_minus_stim(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = self._make_trials_with_times()
+        result = session.get_trial_timings()
+        expected = (session.trials['feedback_times'].values
+                    - session.trials['stimOn_times'].values)
+        np.testing.assert_allclose(result['response_time'].values, expected)
+
+    def test_missing_columns_produce_nans(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = _make_training_trials(n=20)  # no timing columns
+        result = session.get_trial_timings()
+        assert result['reaction_time'].isna().all()
+        assert result['movement_time'].isna().all()
+        assert result['response_time'].isna().all()
+
+    def test_includes_eid_and_trial_columns(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        session.trials = self._make_trials_with_times(n=10)
+        result = session.get_trial_timings()
+        assert 'eid' in result.columns
+        assert 'trial' in result.columns
+        assert (result['eid'] == session.eid).all()
+        assert list(result['trial']) == list(range(10))
+
+
+# =============================================================================
 # QC Method Tests
 # =============================================================================
 
@@ -986,6 +1059,18 @@ class TestSubtractBaseline:
         responses = _make_responses(tpts, vals)
         result = session.subtract_baseline(responses, window=(-1.0, 0.0))
         assert np.all(np.isnan(result.values))
+
+    def test_default_window_uses_config_baseline(self, mock_session_series):
+        """Default window should be BASELINE_WINDOW from config, not RESPONSE_WINDOW."""
+        from iblnm.config import BASELINE_WINDOW
+        session = self._session(mock_session_series)
+        tpts = np.array([-0.3, -0.15, -0.05, 0.0, 0.5, 1.0])
+        vals = np.array([1., 2., 3., 4., 5., 6.])
+        responses = _make_responses(tpts, vals)
+        # Call without explicit window — should use BASELINE_WINDOW
+        result_default = session.subtract_baseline(responses)
+        result_explicit = session.subtract_baseline(responses, window=BASELINE_WINDOW)
+        np.testing.assert_array_equal(result_default.values, result_explicit.values)
 
 
 # =============================================================================
@@ -1499,8 +1584,19 @@ class TestGetResponseVector:
 # PhotometrySessionGroup Analysis Method Tests
 # =============================================================================
 
-def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42):
-    """Write a minimal H5 file with trials and responses."""
+def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
+              all_biased=False, all_nogo=False, fast_response=False):
+    """Write a minimal H5 file with trials and responses.
+
+    Parameters
+    ----------
+    all_biased : bool
+        If True, set all probabilityLeft to 0.8 (biased block).
+    all_nogo : bool
+        If True, set all choice to 0 (no-go).
+    fast_response : bool
+        If True, set feedback_times = stimOn_times + 0.01 (response_time < 0.05).
+    """
     import h5py
 
     rng = np.random.default_rng(seed)
@@ -1512,13 +1608,15 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42):
     # Baseline = 0, post-event = 1.0
     post_mask = tpts >= 0
 
+    stim_on = np.linspace(10, 10 + n_trials, n_trials)
+    feedback = stim_on + 0.01 if fast_response else np.linspace(11, 11 + n_trials, n_trials)
+
     with h5py.File(path, 'w') as f:
         grp = f.create_group('trials')
-        grp.create_dataset('stimOn_times', data=np.linspace(10, 10 + n_trials, n_trials))
+        grp.create_dataset('stimOn_times', data=stim_on)
         grp.create_dataset('firstMovement_times',
-                           data=np.linspace(10.2, 10.2 + n_trials, n_trials))
-        grp.create_dataset('feedback_times',
-                           data=np.linspace(11, 11 + n_trials, n_trials))
+                           data=stim_on + 0.2)
+        grp.create_dataset('feedback_times', data=feedback)
         sides = rng.choice(['left', 'right'], n_trials)
         contrast_vals = rng.choice(contrasts, n_trials)
         signed = np.where(sides == 'left', -1, 1).astype(float) * contrast_vals
@@ -1527,8 +1625,11 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42):
         # Store stim_side as fixed-length bytes for HDF5 compatibility
         grp.create_dataset('stim_side', data=np.array(sides, dtype='S5'))
         grp.create_dataset('feedbackType', data=rng.choice([1, -1], n_trials))
-        grp.create_dataset('choice', data=rng.choice([-1, 1], n_trials))
-        grp.create_dataset('probabilityLeft', data=np.full(n_trials, 0.5))
+        grp.create_dataset('choice', data=np.zeros(n_trials) if all_nogo
+                           else rng.choice([-1, 1], n_trials))
+        grp.create_dataset('probabilityLeft',
+                           data=np.full(n_trials, 0.8) if all_biased
+                           else np.full(n_trials, 0.5))
 
         resp_grp = f.create_group('responses')
         resp_grp.create_dataset('time', data=tpts)
@@ -1803,6 +1904,170 @@ class TestFilterRecordings:
         )
         assert result is group
 
+    def test_min_performance_float_applies_to_all(self, tmp_path):
+        """Float min_performance filters all session types."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=3, regions_per=1)
+        recs['session_type'] = ['training', 'biased', 'ephys']
+
+        df_perf = pd.DataFrame({
+            'eid': ['eid-0', 'eid-1', 'eid-2'],
+            'fraction_correct': [0.6, 0.8, 0.5],
+            'contrasts': [[0, 6.25, 12.5, 25, 100]] * 3,
+        })
+        perf_path = tmp_path / 'performance.pqt'
+        df_perf.to_parquet(perf_path)
+
+        import iblnm.config as cfg
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        orig = cfg.PERFORMANCE_FPATH
+        try:
+            cfg.PERFORMANCE_FPATH = perf_path
+            group.filter_recordings(
+                log_fpaths=[],
+                targetnms=['target-0'],
+                min_performance=0.7,
+                required_contrasts=None,
+            )
+        finally:
+            cfg.PERFORMANCE_FPATH = orig
+
+        remaining = set(group.recordings['eid'].values)
+        assert 'eid-1' in remaining  # 0.8 >= 0.7
+        assert 'eid-0' not in remaining  # 0.6 < 0.7
+        assert 'eid-2' not in remaining  # 0.5 < 0.7
+
+    def test_min_performance_dict_applies_per_type(self, tmp_path):
+        """Dict min_performance applies thresholds per session type."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=3, regions_per=1)
+        recs['session_type'] = ['training', 'biased', 'biased']
+
+        df_perf = pd.DataFrame({
+            'eid': ['eid-0', 'eid-1', 'eid-2'],
+            'fraction_correct': [0.6, 0.7, 0.9],
+            'contrasts': [[0, 6.25, 12.5, 25, 100]] * 3,
+        })
+        perf_path = tmp_path / 'performance.pqt'
+        df_perf.to_parquet(perf_path)
+
+        import iblnm.config as cfg
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        orig = cfg.PERFORMANCE_FPATH
+        try:
+            cfg.PERFORMANCE_FPATH = perf_path
+            group.filter_recordings(
+                session_types=('training', 'biased'),
+                log_fpaths=[],
+                targetnms=['target-0'],
+                min_performance={'training': 0.5, 'biased': 0.8},
+                required_contrasts=None,
+            )
+        finally:
+            cfg.PERFORMANCE_FPATH = orig
+
+        remaining = set(group.recordings['eid'].values)
+        assert 'eid-0' in remaining  # training 0.6 >= 0.5
+        assert 'eid-1' not in remaining  # biased 0.7 < 0.8
+        assert 'eid-2' in remaining  # biased 0.9 >= 0.8
+
+    def test_required_contrasts_exact_match(self, tmp_path):
+        """required_contrasts filters sessions whose contrast set doesn't match exactly."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=3, regions_per=1)
+
+        df_perf = pd.DataFrame({
+            'eid': ['eid-0', 'eid-1', 'eid-2'],
+            'fraction_correct': [0.9, 0.9, 0.9],
+            'contrasts': [
+                [0, 6.25, 12.5, 25, 100],   # exact match
+                [0, 6.25, 12.5, 25, 50, 100],  # superset — should be dropped
+                [0, 6.25, 25, 100],           # subset — should be dropped
+            ],
+        })
+        perf_path = tmp_path / 'performance.pqt'
+        df_perf.to_parquet(perf_path)
+
+        import iblnm.config as cfg
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        orig = cfg.PERFORMANCE_FPATH
+        try:
+            cfg.PERFORMANCE_FPATH = perf_path
+            group.filter_recordings(
+                log_fpaths=[],
+                targetnms=['target-0'],
+                min_performance=None,
+                required_contrasts={0, 6.25, 12.5, 25, 100},
+            )
+        finally:
+            cfg.PERFORMANCE_FPATH = orig
+
+        remaining = set(group.recordings['eid'].values)
+        assert remaining == {'eid-0'}
+
+    def test_required_contrasts_applies_to_all_session_types(self, tmp_path):
+        """Contrast filtering applies to biased and ephys, not just training."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        recs['session_type'] = ['biased', 'ephys']
+
+        df_perf = pd.DataFrame({
+            'eid': ['eid-0', 'eid-1'],
+            'fraction_correct': [0.9, 0.9],
+            'contrasts': [
+                [0, 6.25, 12.5, 25, 100],  # match
+                [0, 6.25, 12.5, 25, 50, 100],  # no match
+            ],
+        })
+        perf_path = tmp_path / 'performance.pqt'
+        df_perf.to_parquet(perf_path)
+
+        import iblnm.config as cfg
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        orig = cfg.PERFORMANCE_FPATH
+        try:
+            cfg.PERFORMANCE_FPATH = perf_path
+            group.filter_recordings(
+                session_types=('biased', 'ephys'),
+                log_fpaths=[],
+                targetnms=['target-0', 'target-1'],
+                min_performance=None,
+                required_contrasts={0, 6.25, 12.5, 25, 100},
+            )
+        finally:
+            cfg.PERFORMANCE_FPATH = orig
+
+        remaining = set(group.recordings['eid'].values)
+        assert remaining == {'eid-0'}
+
+    def test_no_required_contrasts_stashed(self, tmp_path):
+        """_required_contrasts should not be set on the group."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+
+        df_perf = pd.DataFrame({
+            'eid': ['eid-0'],
+            'fraction_correct': [0.9],
+            'contrasts': [[0, 6.25, 12.5, 25, 100]],
+        })
+        perf_path = tmp_path / 'performance.pqt'
+        df_perf.to_parquet(perf_path)
+
+        import iblnm.config as cfg
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        orig = cfg.PERFORMANCE_FPATH
+        try:
+            cfg.PERFORMANCE_FPATH = perf_path
+            group.filter_recordings(
+                log_fpaths=[],
+                targetnms=['target-0'],
+                required_contrasts={0, 6.25, 12.5, 25, 100},
+            )
+        finally:
+            cfg.PERFORMANCE_FPATH = orig
+
+        assert not hasattr(group, '_required_contrasts')
+
 
 # =============================================================================
 # get_response_magnitudes Tests
@@ -2001,6 +2266,7 @@ def _make_group_with_events():
         .copy()
     )
     trial_timing['movement_time'] = 0.15
+    trial_timing['response_time'] = 1.0
     df_events = df_events.drop(columns=['reaction_time'])
 
     # Build minimal recordings DataFrame
@@ -2087,6 +2353,13 @@ class TestFitLMM:
         group.trial_timing = None
         with pytest.raises(ValueError, match='trial_timing'):
             group.fit_lmm()
+
+    def test_excludes_false_start_trials(self):
+        """Trials with response_time <= 0.05 must be excluded; all-fast → empty results."""
+        group = _make_group_with_events()
+        group.trial_timing['response_time'] = 0.01
+        group.fit_lmm()
+        assert len(group.lmm_results) == 0
 
     def test_re_formulas_default_intercept_only(self):
         """Default re_formulas=['1'] should produce intercept-only models."""
@@ -2288,7 +2561,7 @@ class TestGetGLMResponseFeatures:
         assert isinstance(result, pd.DataFrame)
         assert 'log_contrast' in result.columns
         assert 'side' in result.columns
-        assert 'side:feedback' in result.columns
+        assert 'side:reward' in result.columns
 
     def test_stored_as_attribute(self):
         """Result is stored as self.glm_response_features."""
@@ -2325,6 +2598,21 @@ class TestGetGLMResponseFeatures:
         group = _make_group_with_events()
         result = group.get_glm_response_features(event_name='stimOn_times')
         assert result.shape[1] == 7
+
+    def test_excludes_false_start_trials(self):
+        """Trials with response_time <= 0.05 must be excluded; all-fast → empty result."""
+        group = _make_group_with_events()
+        group.trial_timing['response_time'] = 0.01
+        result = group.get_glm_response_features(event_name='stimOn_times')
+        assert len(result) == 0
+
+    def test_excludes_nogo_trials(self):
+        """Trials with choice == 0 must be excluded; all-nogo → empty result."""
+        group = _make_group_with_events()
+        group.response_magnitudes = group.response_magnitudes.copy()
+        group.response_magnitudes['choice'] = 0
+        result = group.get_glm_response_features(event_name='stimOn_times')
+        assert len(result) == 0
 
 
 class TestGLMFeaturesCCA:
@@ -2526,6 +2814,33 @@ class TestGetMeanTraces:
         result = group.get_mean_traces()
         assert 'contrast' in result.columns
         assert 'feedbackType' in result.columns
+
+    def test_excludes_biased_block_trials(self, tmp_path):
+        """Trials with probabilityLeft != 0.5 must be excluded."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0, all_biased=True)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_mean_traces()
+        assert len(result) == 0, "Expected empty result when all trials are biased"
+
+    def test_excludes_nogo_trials(self, tmp_path):
+        """Trials with choice == 0 must be excluded."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0, all_nogo=True)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_mean_traces()
+        assert len(result) == 0, "Expected empty result when all trials are no-go"
+
+    def test_excludes_fast_response_trials(self, tmp_path):
+        """Trials with response_time <= 0.05 must be excluded."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0, fast_response=True)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_mean_traces()
+        assert len(result) == 0, "Expected empty result when all response_times < 0.05"
 
     def test_traces_grouped_by_contrast_feedback(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
@@ -2731,8 +3046,8 @@ def _make_group_for_cohort_cca(n_per_cohort=None, seed=42):
     rng = np.random.default_rng(seed)
     subjects = ['s0', 's1', 's2', 's3', 's4']
     glm_cols = [
-        'intercept', 'log_contrast', 'side', 'feedback',
-        'log_contrast:side', 'log_contrast:feedback', 'side:feedback',
+        'intercept', 'log_contrast', 'side', 'reward',
+        'log_contrast:side', 'log_contrast:reward', 'side:reward',
     ]
     psych_cols = [
         'psych_50_threshold', 'psych_50_bias',

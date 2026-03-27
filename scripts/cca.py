@@ -25,7 +25,6 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, RESPONSES_FPATH,
     TARGETNM_COLORS, FIGURE_DPI,
-    MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -283,8 +282,6 @@ if __name__ == '__main__':
     group = PhotometrySessionGroup(df_recordings, one=one)
     group.filter_recordings(
         session_types=('biased', 'ephys', 'training'),
-        min_performance=MIN_TRAINING_PERFORMANCE,
-        required_contrasts=REQUIRED_CONTRASTS,
     )
     print(f"  {len(group)} recordings after filtering")
 
@@ -311,6 +308,7 @@ if __name__ == '__main__':
         print(f"Computing GLM features (weight_by_se={args.weight_by_se})...")
         group.get_glm_response_features(
             event_name=event, weight_by_se=args.weight_by_se,
+            contrast_coding='rank',
         )
         print(f"  {len(group.glm_response_features)} recordings, "
               f"{group.glm_response_features.shape[1]} features")

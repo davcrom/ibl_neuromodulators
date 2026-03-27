@@ -64,8 +64,8 @@ class TestPlotRelativeContrast:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_xticks_at_actual_contrast_values(self):
-        """X-ticks should be at actual contrast values (data is already 0-100 scale)."""
+    def test_xticks_are_ranks(self):
+        """X-ticks should be integer ranks, with contrast values as labels."""
         rows = [
             {'subject': s, 'side': side, 'contrast': c,
              'feedbackType': fb, 'centered_mean': 0.0}
@@ -80,9 +80,9 @@ class TestPlotRelativeContrast:
 
         for ax in fig.axes:
             ticks = ax.get_xticks()
-            assert set(ticks) == {0.0, 25.0, 100.0}, (
-                f"Expected {{0.0, 25.0, 100.0}}, got {set(ticks)}"
-            )
+            np.testing.assert_array_equal(ticks, [0, 1, 2])
+            labels = [t.get_text() for t in ax.get_xticklabels()]
+            assert labels == ['0', '25', '100']
         plt.close(fig)
 
     def test_both_panels_share_contrast_set(self):
@@ -97,9 +97,35 @@ class TestPlotRelativeContrast:
         df = pd.DataFrame(rows)
         fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOn_times')
 
-        expected = {0.0, 25.0, 100.0}
         for ax in fig.axes:
-            assert set(ax.get_xticks()) == expected
+            np.testing.assert_array_equal(ax.get_xticks(), [0, 1, 2])
+        plt.close(fig)
+
+    def test_subject_mean_removal(self):
+        """Between-subject variance should be removed from plotted values."""
+        # All subjects have same contrast effect but different offsets
+        rows = []
+        for s, offset in [('s1', 5.0), ('s2', -5.0), ('s3', 10.0)]:
+            for side in ['contra', 'ipsi']:
+                for c in [0.0, 25.0, 100.0]:
+                    for fb in [1, -1]:
+                        for _ in range(20):
+                            rows.append({
+                                'subject': s, 'side': side, 'contrast': c,
+                                'feedbackType': fb,
+                                'centered_mean': offset + c * 0.001,
+                            })
+        df = pd.DataFrame(rows)
+        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        ax = fig.axes[0]
+        # After subject-mean removal, spread across contrasts should be tiny
+        # (just the 0.001*c effect), not dominated by subject offsets
+        lines = ax.get_lines()
+        for line in lines:
+            ydata = line.get_ydata()
+            if len(ydata) > 1:
+                assert np.ptp(ydata) < 1.0, (
+                    f"Subject-mean removal failed: spread {np.ptp(ydata):.2f}")
         plt.close(fig)
 
     def test_window_label_in_suptitle(self, df_group):
@@ -117,9 +143,12 @@ class TestPlotRelativeContrast:
         from matplotlib.container import ErrorbarContainer
 
         # s3 has all-NaN centered_mean — pandas groupby.mean() returns NaN for s3
+        # s1 and s2 have different within-subject variance so errorbars survive
+        # subject-mean removal
+        rng = np.random.default_rng(42)
         rows = [
             {'subject': s, 'side': 'contra', 'contrast': 25.0,
-             'feedbackType': 1, 'centered_mean': val}
+             'feedbackType': 1, 'centered_mean': val + rng.normal(0, 0.1)}
             for s, val in [('s1', 0.3), ('s2', -0.3)]
             for _ in range(5)
         ] + [
@@ -150,15 +179,17 @@ class TestPlotRelativeContrast:
         )
         plt.close(fig)
 
-    def test_errorbars_rendered_when_multiple_subjects(self):
-        """Errorbars (± SEM) should be visible when subjects have different responses."""
+    def test_errorbars_rendered_with_within_subject_variance(self):
+        """Errorbars (± SEM) should be visible when there is within-subject variance."""
         from matplotlib.container import ErrorbarContainer
 
-        subject_vals = {'s1': -0.5, 's2': 0.0, 's3': 0.5}
+        # After subject-mean removal, between-subject variance is gone.
+        # Need within-subject variance for error bars.
+        rng = np.random.default_rng(42)
         rows = [
             {'subject': s, 'side': side, 'contrast': 25.0,
-             'feedbackType': fb, 'centered_mean': val}
-            for s, val in subject_vals.items()
+             'feedbackType': fb, 'centered_mean': rng.normal(0, 0.5)}
+            for s in ['s1', 's2', 's3']
             for side in ['contra', 'ipsi']
             for fb in [1, -1]
             for _ in range(10)
@@ -175,22 +206,15 @@ class TestPlotRelativeContrast:
                 for bl in container.lines[2]:  # barlines = vertical error bar lines
                     for seg in bl.get_segments():
                         seg_arr = np.array(seg)
-                        # Segment has two y values; if they differ the bar has non-zero height
                         if seg_arr.ndim == 2 and np.isfinite(seg_arr).all() and seg_arr[0, 1] != seg_arr[1, 1]:
                             has_finite = True
 
             assert has_finite, "No finite, non-zero error bar segments found"
         plt.close(fig)
 
-    def test_pool_aggregation_uses_trial_level_stats(self):
-        """With aggregation='pool', mean/SEM should be computed across all trials,
-        not across subject means. With unequal trial counts per subject, the two
-        methods give different means."""
-        from scipy.stats import sem as scipy_sem
-
-        # s1: 20 trials at 1.0, s2: 5 trials at 0.0
-        # Pool mean = (20*1 + 5*0) / 25 = 0.8
-        # Subject mean = (1.0 + 0.0) / 2 = 0.5
+    def test_pool_and_subject_converge_after_subject_mean_removal(self):
+        """After subject-mean removal, pool and subject aggregation should give
+        the same grand mean (both see the same adjusted values)."""
         rows = (
             [{'subject': 's1', 'side': 'contra', 'contrast': 25.0,
               'feedbackType': 1, 'response': 1.0}] * 20
@@ -199,36 +223,20 @@ class TestPlotRelativeContrast:
         )
         df = pd.DataFrame(rows)
 
-        fig = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times',
-                                     aggregation='pool')
-        ax_c = fig.axes[0]
-        line = ax_c.containers[0].lines[0]
-        plotted_mean = line.get_ydata()[0]
-        assert np.isclose(plotted_mean, 0.8), (
-            f"Pool mean should be 0.8 (trial-level), got {plotted_mean}"
-        )
-        plt.close(fig)
-
-    def test_subject_aggregation_uses_subject_means(self):
-        """With aggregation='subject', mean should be the mean of subject means."""
-        # Same data as above — subject mean should be 0.5
-        rows = (
-            [{'subject': 's1', 'side': 'contra', 'contrast': 25.0,
-              'feedbackType': 1, 'response': 1.0}] * 20
-            + [{'subject': 's2', 'side': 'contra', 'contrast': 25.0,
-                'feedbackType': 1, 'response': 0.0}] * 5
-        )
-        df = pd.DataFrame(rows)
-
-        fig = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times',
-                                     aggregation='subject')
-        ax_c = fig.axes[0]
-        line = ax_c.containers[0].lines[0]
-        plotted_mean = line.get_ydata()[0]
-        assert np.isclose(plotted_mean, 0.5), (
-            f"Subject mean should be 0.5, got {plotted_mean}"
-        )
-        plt.close(fig)
+        fig_pool = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times',
+                                          aggregation='pool')
+        fig_subj = plot_relative_contrast(df.copy(), 'response', 'VTA-DA', 'stimOn_times',
+                                          aggregation='subject')
+        pool_mean = fig_pool.axes[0].containers[0].lines[0].get_ydata()[0]
+        subj_mean = fig_subj.axes[0].containers[0].lines[0].get_ydata()[0]
+        # Grand mean is preserved by subject-mean removal
+        expected = df['response'].mean()
+        assert np.isclose(pool_mean, expected, atol=0.01), (
+            f"Pool mean {pool_mean} != expected {expected}")
+        assert np.isclose(subj_mean, expected, atol=0.01), (
+            f"Subject mean {subj_mean} != expected {expected}")
+        plt.close(fig_pool)
+        plt.close(fig_subj)
 
     def test_pool_is_default_aggregation(self):
         """Default aggregation should be 'pool'."""
@@ -904,21 +912,23 @@ class TestPlotLMMSummary:
         assert len(fig.axes) >= 5
         plt.close(fig)
 
-    def test_r2_panel_has_dots(self):
-        """First panel should have scatter points for R²."""
+    def test_r2_panel_has_bars(self):
+        """R² panel should use side-by-side bars (two patches per target)."""
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
         ax_r2 = fig.axes[0]
-        assert len(ax_r2.collections) > 0 or len(ax_r2.lines) > 0
+        # 2 targets × 2 bars each = 4 patches
+        patches = [p for p in ax_r2.patches if p.get_width() > 0]
+        assert len(patches) == 4, f"Expected 4 bars, got {len(patches)}"
         plt.close(fig)
 
     def test_interaction_panels_have_errorbars(self):
-        """Panels 2–4 should have errorbars."""
+        """Bottom row (axes[2:5]) should have errorbars."""
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
-        for ax in fig.axes[1:4]:
+        for ax in fig.axes[2:5]:
             assert len(ax.containers) > 0 or len(ax.collections) > 0
         plt.close(fig)
 
@@ -927,10 +937,10 @@ class TestPlotLMMSummary:
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
-        # Panel 1 (contrast:reward) — y-factor is contrast
+        # axes[2] = contrast×reward — y-factor is contrast
         # VTA-DA has contrast p=1e-10 (sig, filled)
         # DR-5HT has contrast p=0.06 (not sig, open)
-        ax = fig.axes[1]
+        ax = fig.axes[2]
         fillstyles = set()
         for container in ax.containers:
             fillstyles.add(container[0].get_fillstyle())
@@ -943,9 +953,9 @@ class TestPlotLMMSummary:
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
-        # Panel 2 (contrast:side) — interaction is log_contrast:side
+        # axes[3] = contrast×side — interaction is log_contrast:side
         # VTA-DA p=0.3 (not sig → dashed), DR-5HT p=0.7 (not sig → dashed)
-        ax = fig.axes[2]
+        ax = fig.axes[3]
         linestyles = set()
         for line in ax.lines:
             ls = line.get_linestyle()
@@ -956,12 +966,21 @@ class TestPlotLMMSummary:
         plt.close(fig)
 
     def test_heatmap_panel_present(self):
-        """Fifth panel should contain a coefficient heatmap."""
+        """Heatmap should be in the top row (second panel, axes[1])."""
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
-        ax_hm = fig.axes[4]
-        assert len(ax_hm.images) > 0, "Expected heatmap image in panel 5"
+        ax_hm = fig.axes[1]
+        assert len(ax_hm.images) > 0, "Expected heatmap image in top row (axes[1])"
+        plt.close(fig)
+
+    def test_interaction_panels_in_bottom_row(self):
+        """Three interaction plots should be in the bottom row (axes[2:5])."""
+        from iblnm.vis import plot_lmm_summary
+        group = self._make_mock_group()
+        fig = plot_lmm_summary(group, 'stimOn')
+        for ax in fig.axes[2:5]:
+            assert len(ax.containers) > 0 or len(ax.collections) > 0
         plt.close(fig)
 
 
@@ -1416,6 +1435,7 @@ class TestPlotMeanResponseTraces:
         plt.close(fig)
 
 
+
 # =============================================================================
 # Per-Cohort CCA Summary Plot
 # =============================================================================
@@ -1522,25 +1542,43 @@ class TestPlotCohortCCASummary:
 
 
 def _make_mock_glm_pca_result():
-    """Synthetic GLMPCAResult for testing plot functions."""
+    """Synthetic GLMPCAResult with some subjects contributing multiple sessions."""
     from iblnm.analysis import GLMPCAResult
     rng = np.random.default_rng(42)
-    n = 15
-    targets = np.array(['VTA-DA'] * 8 + ['DR-5HT'] * 4 + ['LC-NE'] * 3)
+    # 8 VTA-DA recordings from 5 subjects (s1 has 3 sessions, s2 has 2)
+    # 4 DR-5HT recordings from 3 subjects (s6 has 2)
+    # 3 LC-NE recordings from 3 subjects
+    eids =    ['e0','e1','e2','e3','e4','e5','e6','e7','e8','e9','e10','e11','e12','e13','e14']
+    subjects = ['s1','s1','s1','s2','s2','s3','s4','s5','s6','s6','s7', 's8', 's9','s10','s11']
+    targets = (['VTA-DA'] * 8 + ['DR-5HT'] * 4 + ['LC-NE'] * 3)
+    n = len(eids)
     index = pd.MultiIndex.from_tuples(
-        [(f'e{i}', targets[i], 0) for i in range(n)],
+        [(eids[i], targets[i], 0) for i in range(n)],
         names=['eid', 'target_NM', 'fiber_idx'],
     )
     return GLMPCAResult(
         scores=rng.normal(size=(n, 3)),
         components=rng.normal(size=(3, 6)),
         explained_variance_ratio=np.array([0.45, 0.25, 0.15]),
-        feature_names=['log_contrast', 'side', 'feedback',
-                       'log_contrast:side', 'log_contrast:feedback',
-                       'side:feedback'],
-        target_labels=targets,
+        feature_names=['log_contrast', 'side', 'reward',
+                       'log_contrast:side', 'log_contrast:reward',
+                       'side:reward'],
+        target_labels=np.array(targets),
         index=index,
     )
+
+
+def _make_mock_recordings():
+    """Recordings DataFrame matching _make_mock_glm_pca_result eids."""
+    eids =    ['e0','e1','e2','e3','e4','e5','e6','e7','e8','e9','e10','e11','e12','e13','e14']
+    subjects = ['s1','s1','s1','s2','s2','s3','s4','s5','s6','s6','s7', 's8', 's9','s10','s11']
+    targets = (['VTA-DA'] * 8 + ['DR-5HT'] * 4 + ['LC-NE'] * 3)
+    return pd.DataFrame({
+        'eid': eids,
+        'subject': subjects,
+        'target_NM': targets,
+        'fiber_idx': [0] * len(eids),
+    })
 
 
 class TestPlotGlmPcaWeights:
@@ -1591,3 +1629,224 @@ class TestPlotGlmPcaScores:
         collections = ax.collections
         assert len(collections) > 0
         plt.close(fig)
+
+
+class TestPlotGlmPcaSummary:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_glm_pca_summary
+        result = _make_mock_glm_pca_result()
+        recs = _make_mock_recordings()
+        fig = plot_glm_pca_summary(result, recs)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_layout_has_three_rows(self):
+        """Weights heatmap row + violin row + subject-mean row = 3 rows."""
+        from iblnm.vis import plot_glm_pca_summary
+        result = _make_mock_glm_pca_result()
+        recs = _make_mock_recordings()
+        fig = plot_glm_pca_summary(result, recs)
+        # 1 heatmap + 1 colorbar + 3 violins + 3 subject-mean = 8 axes
+        # (colorbar count may vary, just check >= 7)
+        assert len(fig.axes) >= 7
+        plt.close(fig)
+
+    def test_subject_means_aggregated(self):
+        """Subject-mean axes should have one point per subject, not per session."""
+        from iblnm.vis import plot_glm_pca_summary
+        result = _make_mock_glm_pca_result()
+        recs = _make_mock_recordings()
+        fig = plot_glm_pca_summary(result, recs)
+        # Find first subject-mean axis by title
+        subject_ax = next(
+            ax for ax in fig.axes if 'subject means' in ax.get_title())
+        # VTA-DA has 5 unique subjects, DR-5HT has 3, LC-NE has 3 → 11 total
+        assert len(subject_ax.containers) == 11
+        plt.close(fig)
+
+    def test_kw_annotation_includes_h_statistic(self):
+        """KW annotation should show H= value and n.s./scientific p, matching psychometric figure format."""
+        from iblnm.vis import plot_glm_pca_summary
+        result = _make_mock_glm_pca_result()
+        recs = _make_mock_recordings()
+        stats = pd.DataFrame([
+            {'pc': 1, 'target_a': None, 'target_b': None,
+             'kruskal_h': 4.2, 'kruskal_p': 0.12,
+             'mwu_u': np.nan, 'mwu_p': np.nan},
+        ])
+        fig = plot_glm_pca_summary(result, recs, n_pcs=1, stats=stats)
+        # Find the violin axis (row 1) and check annotation text
+        texts = []
+        for ax in fig.axes:
+            for txt in ax.texts:
+                texts.append(txt.get_text())
+        assert any('H=4.2' in t for t in texts), (
+            f"Expected 'H=4.2' in annotations, got: {texts}"
+        )
+        assert any('n.s.' in t for t in texts), (
+            f"Expected 'n.s.' in annotations for p=0.12, got: {texts}"
+        )
+        plt.close(fig)
+
+    def test_significance_brackets_are_lines(self):
+        """Significant pairwise comparisons should draw bracket lines, not text."""
+        from matplotlib.lines import Line2D
+        from iblnm.vis import plot_glm_pca_summary
+        # Use a result where groups are well-separated so some pairs are significant
+        from iblnm.analysis import GLMPCAResult
+        rng = np.random.default_rng(99)
+        n = 30
+        # 3 groups with very different PC1 scores
+        targets = np.array(['VTA-DA'] * 10 + ['DR-5HT'] * 10 + ['LC-NE'] * 10)
+        scores = np.zeros((n, 2))
+        scores[:10, 0] = rng.normal(5, 0.1, 10)   # VTA-DA far positive
+        scores[10:20, 0] = rng.normal(-5, 0.1, 10) # DR-5HT far negative
+        scores[20:, 0] = rng.normal(0, 0.1, 10)    # LC-NE near zero
+        scores[:, 1] = rng.normal(0, 1, n)
+        eids = [f'e{i}' for i in range(n)]
+        subjects = [f's{i}' for i in range(n)]
+        index = pd.MultiIndex.from_tuples(
+            [(eids[i], targets[i], 0) for i in range(n)],
+            names=['eid', 'target_NM', 'fiber_idx'],
+        )
+        result = GLMPCAResult(
+            scores=scores,
+            components=rng.normal(size=(2, 4)),
+            explained_variance_ratio=np.array([0.6, 0.3]),
+            feature_names=['a', 'b', 'c', 'd'],
+            target_labels=targets,
+            index=index,
+        )
+        recs = pd.DataFrame({
+            'eid': eids, 'subject': subjects,
+            'target_NM': list(targets), 'fiber_idx': [0] * n,
+        })
+        fig = plot_glm_pca_summary(result, recs, n_pcs=2)
+        # Find a subject-mean axis — it should have bracket lines
+        subject_ax = next(
+            ax for ax in fig.axes if 'subject means' in ax.get_title())
+        bracket_lines = [
+            l for l in subject_ax.get_lines()
+            if len(l.get_xdata()) == 2 and l.get_color() == 'k'
+        ]
+        assert len(bracket_lines) > 0
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# plot_rt_by_contrast
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def df_rt():
+    """Synthetic RT data: two target-NMs, three contrast levels, multiple trials."""
+    rng = np.random.default_rng(42)
+    n = 120
+    return pd.DataFrame({
+        'target_NM': rng.choice(['VTA-DA', 'LC-NE'], n),
+        'contrast': rng.choice([6.25, 25.0, 100.0], n),
+        'response_time': rng.uniform(0.1, 2.0, n),
+        'subject': rng.choice(['s1', 's2', 's3'], n),
+    })
+
+
+class TestPlotRtByContrast:
+    def test_returns_axes(self, df_rt):
+        from iblnm.vis import plot_rt_by_contrast
+        ax = plot_rt_by_contrast(df_rt)
+        assert isinstance(ax, plt.Axes)
+        plt.close('all')
+
+    def test_xaxis_uses_log_ticks_on_linear_scale(self, df_rt):
+        """Axis should be linear (data pre-transformed) with log-formatted tick labels."""
+        from iblnm.vis import plot_rt_by_contrast
+        ax = plot_rt_by_contrast(df_rt)
+        assert ax.get_xscale() == 'linear'
+        # Tick labels should show real-time values (e.g. '0.1', '1'), not log values
+        labels = [t.get_text() for t in ax.get_xticklabels() if t.get_text()]
+        assert len(labels) > 0
+        plt.close('all')
+
+    def test_violin_xdata_is_log_transformed(self, df_rt):
+        """Violin x-extents should be in log space (negative values present for sub-1s RTs)."""
+        from iblnm.vis import plot_rt_by_contrast
+        ax = plot_rt_by_contrast(df_rt)
+        # df_rt has response_time in [0.1, 2.0]; log10 of those is in [-1, 0.3]
+        # so violin bodies must span negative x values
+        x_mins = []
+        for pc in ax.collections:
+            for path in pc.get_paths():
+                x_mins.append(path.vertices[:, 0].min())
+        assert any(x < 0 for x in x_mins), (
+            "Expected log-transformed x values (sub-1 s RTs → negative log)"
+        )
+
+    def test_yticks_at_contrast_levels(self, df_rt):
+        """Y-ticks should be at the integer indices of sorted contrast levels."""
+        from iblnm.vis import plot_rt_by_contrast
+        ax = plot_rt_by_contrast(df_rt)
+        tick_labels = [t.get_text() for t in ax.get_yticklabels()]
+        # All three contrasts should appear as tick labels
+        for c in ['6.25', '25.0', '100.0']:
+            assert any(c in lbl for lbl in tick_labels), (
+                f"Contrast {c} not found in ytick labels: {tick_labels}"
+            )
+        plt.close('all')
+
+    def test_each_target_nm_gets_own_offset(self, df_rt):
+        """Two target-NMs at the same contrast should produce violins at different y positions."""
+        from iblnm.vis import plot_rt_by_contrast
+        ax = plot_rt_by_contrast(df_rt)
+        # violinplot bodies are PolyCollections; extract their y-centre positions
+        y_centers = set()
+        for pc in ax.collections:
+            verts = pc.get_paths()
+            for path in verts:
+                y_centers.add(round(path.vertices[:, 1].mean(), 4))
+        # With 2 target-NMs and 3 contrast levels, offsets produce >3 distinct centres
+        assert len(y_centers) > 3
+        plt.close('all')
+
+    def test_accepts_ax_argument(self, df_rt):
+        from iblnm.vis import plot_rt_by_contrast
+        fig, ax = plt.subplots()
+        result = plot_rt_by_contrast(df_rt, ax=ax)
+        assert result is ax
+        plt.close('all')
+
+    def test_empty_data_no_crash(self):
+        from iblnm.vis import plot_rt_by_contrast
+        df_empty = pd.DataFrame(
+            columns=['target_NM', 'contrast', 'response_time', 'subject']
+        )
+        ax = plot_rt_by_contrast(df_empty)
+        assert isinstance(ax, plt.Axes)
+        plt.close('all')
+
+
+class TestSessionOverviewMatrixSubjectOrder:
+
+    @pytest.fixture
+    def df_sessions(self):
+        return pd.DataFrame({
+            'subject': ['C', 'C', 'A', 'A', 'B', 'B'],
+            'session_n': [0, 1, 0, 1, 0, 1],
+            'session_type': ['biased'] * 6,
+        })
+
+    def test_rows_follow_subject_order(self, df_sessions):
+        from iblnm.vis import session_overview_matrix
+        order = ['B', 'A', 'C']
+        ax = session_overview_matrix(df_sessions, highlight='all',
+                                     subject_order=order)
+        labels = [t.get_text() for t in ax.get_yticklabels()]
+        assert labels == order
+        plt.close('all')
+
+    def test_default_order_is_alphabetical(self, df_sessions):
+        from iblnm.vis import session_overview_matrix
+        ax = session_overview_matrix(df_sessions, highlight='all')
+        labels = [t.get_text() for t in ax.get_yticklabels()]
+        assert labels == ['A', 'B', 'C']
+        plt.close('all')

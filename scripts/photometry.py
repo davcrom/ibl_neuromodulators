@@ -17,12 +17,13 @@ import pandas as pd
 from tqdm import tqdm
 
 from iblnm.config import (
-    SESSIONS_FPATH, QCPHOTOMETRY_FPATH, PHOTOMETRY_LOG_FPATH,
+    SESSIONS_FPATH, SESSIONS_H5_DIR, QCPHOTOMETRY_FPATH, PHOTOMETRY_LOG_FPATH,
+    QUERY_DATABASE_LOG_FPATH, TASK_LOG_FPATH, PERFORMANCE_FPATH,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE,
-    RESPONSE_EVENTS,
+    RESPONSE_EVENTS, MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
 from iblnm.io import _get_default_connection
-from iblnm.util import LOG_COLUMNS
+from iblnm.util import collect_session_errors, resolve_duplicate_group, LOG_COLUMNS
 from iblnm.validation import make_log_entry
 from iblnm.data import PhotometrySession
 
@@ -133,29 +134,81 @@ if __name__ == '__main__':
     df_sessions = pd.read_parquet(SESSIONS_FPATH)
     print(f"Loaded {len(df_sessions)} sessions")
 
-    # ~# Merge error flags from upstream pipeline logs and drop sessions with fatal upstream errors
-    # ~df_sessions = collect_session_errors(df_sessions, [QUERY_DATABASE_LOG_FPATH])
-    # ~fatal_errors = {'InvalidSubject', 'InvalidSessionType'}
-    # ~df_sessions = df_sessions[
-        # ~df_sessions['logged_errors'].apply(lambda errs: not any(e in fatal_errors for e in errs))
-    # ~]
-
-    # Filter to sessions that are valid for photometry analysis
+    # Filter to sessions that responses.py will analyze:
+    # biased + ephys + qualifying training (performance + contrast filters)
     df_sessions = df_sessions[
         df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE) &
         ~df_sessions['subject'].isin(SUBJECTS_TO_EXCLUDE)
     ]
+    print(f"  After session type filter: {len(df_sessions)}")
 
-    print(f"Processing {len(df_sessions)} sessions after filtering")
+    # Attach upstream error logs (needed for dedup and QC filter)
+    df_sessions = collect_session_errors(
+        df_sessions,
+        [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH],
+    )
+
+    # Deduplicate: one session per (subject, day_n)
+    dup_log = []
+    df_sessions = (
+        df_sessions.groupby(['subject', 'day_n'], group_keys=False)
+        .apply(resolve_duplicate_group, exlog=dup_log, include_groups=True)
+        .reset_index(drop=True)
+    )
+    print(f"  After deduplication: {len(df_sessions)}")
+
+    # Apply basic QC filter
+    _qc_blockers = {
+        'MissingRawData', 'MissingExtractedData', 'InsufficientTrials',
+        'TrialsNotInPhotometryTime', 'QCValidationError', 'FewUniqueSamples',
+    }
+    df_sessions = df_sessions[
+        df_sessions['logged_errors'].apply(
+            lambda e: not any(err in _qc_blockers for err in e)
+        )
+    ]
+    print(f"  After basic QC filter: {len(df_sessions)}")
+
+    # Performance + contrast filter from performance table
+    if PERFORMANCE_FPATH.exists():
+        import numpy as np
+        df_perf = pd.read_parquet(
+            PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'],
+        )
+        df_sessions = df_sessions.merge(df_perf, on='eid', how='left')
+
+        # Performance: training must meet threshold; biased/ephys pass through
+        is_training = df_sessions['session_type'] == 'training'
+        meets_perf = df_sessions['fraction_correct'] >= MIN_TRAINING_PERFORMANCE
+        df_sessions = df_sessions[~is_training | meets_perf]
+
+        # Contrasts: exact match required for all session types
+        required_set = set(REQUIRED_CONTRASTS)
+        df_sessions = df_sessions[df_sessions['contrasts'].apply(
+            lambda c: set(c) == required_set
+            if isinstance(c, (list, np.ndarray)) else False
+        )]
+        df_sessions = df_sessions.drop(columns=['fraction_correct', 'contrasts'])
+        print(f"  After performance + contrast filter: {len(df_sessions)}")
+    else:
+        print(f"  WARNING: {PERFORMANCE_FPATH} not found, skipping performance filter")
+
+    # Skip sessions that already have H5 files
+    from pathlib import Path
+    existing_h5 = {p.stem for p in Path(SESSIONS_H5_DIR).glob('*.h5')}
+    n_before = len(df_sessions)
+    df_sessions = df_sessions[~df_sessions['eid'].isin(existing_h5)]
+    print(f"  Skipping {n_before - len(df_sessions)} sessions with existing H5 files")
+    print(f"Processing {len(df_sessions)} sessions")
 
     one = _get_default_connection()
     df_qc, df_log = run_photometry_pipeline(df_sessions, one=one)
 
     QCPHOTOMETRY_FPATH.parent.mkdir(parents=True, exist_ok=True)
     df_qc.to_parquet(QCPHOTOMETRY_FPATH)
-    df_log.to_parquet(PHOTOMETRY_LOG_FPATH)
     print(f"\nSaved QC results to {QCPHOTOMETRY_FPATH}")
-    print(f"Saved error log to {PHOTOMETRY_LOG_FPATH}")
+    # NOTE: not saving error log to avoid overwriting the complete log with a
+    # partial subset (see issue #2). Print errors for inspection instead.
     if len(df_log) > 0:
         print(f"  {len(df_log)} sessions with errors")
         print(f"  Error types:\n{df_log['error_type'].value_counts().to_string()}")

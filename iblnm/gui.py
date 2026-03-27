@@ -26,7 +26,6 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySession
 from iblnm.io import _get_default_connection
-from iblnm.util import collect_session_errors
 
 DEMO_EID = '2025366a-c9aa-4b6c-97be-8af40eda6410'
 
@@ -345,47 +344,3 @@ class PhotometrySessionViewer:
         self._draw_region(self._current_region)
         return fig
 
-
-# ======================================================================== #
-# Main                                                                      #
-# ======================================================================== #
-
-if __name__ == '__main__':
-    eid = sys.argv[1] if len(sys.argv) > 1 else DEMO_EID
-
-    df = pd.read_parquet(SESSIONS_FPATH)
-    df = collect_session_errors(df, [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH])
-    fatal_errors = {'InvalidNeuromodulator', 'InvalidTarget', 'InvalidTargetNM'}
-    df = df[df['logged_errors'].apply(
-        lambda errs: not any(e in fatal_errors for e in errs)
-    )]
-    row = df[df['eid'] == eid].iloc[0]
-
-    one = _get_default_connection()
-    ps  = PhotometrySession(row, one=one)
-
-    h5_path = SESSIONS_H5_DIR / f'{eid}.h5'
-    if h5_path.exists():
-        # Load raw bands first (load_photometry overwrites photometry dict),
-        # then layer preprocessed + trials + responses from H5 on top.
-        try:
-            ps.load_photometry()
-        except Exception as e:
-            print(f"Warning: could not load raw photometry — {e}")
-        ps.load_h5(h5_path)
-        if not (hasattr(ps, 'responses') and ps.responses is not None):
-            print("No responses in H5, extracting...")
-            ps.load_trials()
-            ps.extract_responses()
-            ps.save_h5(mode='a')
-    else:
-        print(f"No H5 for {eid}, running pipeline...")
-        ps.load_trials()
-        ps.load_photometry()
-        ps.preprocess()
-        ps.extract_responses()
-        ps.save_h5()
-
-    viewer = PhotometrySessionViewer(ps)
-    viewer.plot()
-    plt.show()

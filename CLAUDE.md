@@ -55,6 +55,14 @@ scripts/ ← orchestration (filtering, iteration, figure layout)
 `scripts/` contains analysis-specific orchestration. Never put generic
 functions in scripts.
 
+**Group object rule**: All data loading and session filtering in scripts MUST
+flow through `PhotometrySessionGroup`. Never load parquet/HDF5 files and
+filter them independently with ad-hoc merges against session metadata — this
+risks silently bypassing the canonical filters (`filter_recordings`,
+exclusions, etc.). The group object is the single source of truth for which
+sessions are in scope. Scripts that currently do ad-hoc merges against
+`rec_meta` are known exceptions (FIXME), not patterns to follow.
+
 **analysis.py vs data.py rule**: `analysis.py` contains pure functions that
 take arrays/DataFrames and return results. `data.py` contains the
 `PhotometrySessionGroup` class whose methods unpack `self` attributes, call

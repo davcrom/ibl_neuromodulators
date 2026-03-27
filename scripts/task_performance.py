@@ -16,13 +16,12 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH, FIGURE_DPI,
-    MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
-    TARGETNMS_TO_ANALYZE,
+    TARGETNMS_TO_ANALYZE, RESPONSES_FPATH, TRIAL_TIMING_FPATH,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.util import derive_target_nm
-from iblnm.vis import plot_psychometric_curves_50, plot_parameter_box, TARGETNM_COLORS
+from iblnm.vis import plot_psychometric_curves_50, plot_rt_by_contrast, TARGETNM_COLORS
 
 plt.ion()
 
@@ -73,8 +72,6 @@ if __name__ == '__main__':
     group = PhotometrySessionGroup(df_recordings, one=one)
     group.filter_recordings(
         session_types=('biased', 'ephys', 'training'),
-        min_performance=MIN_TRAINING_PERFORMANCE,
-        required_contrasts=REQUIRED_CONTRASTS,
     )
     print(f"  Recordings (session x region): {len(group)}")
 
@@ -99,7 +96,7 @@ if __name__ == '__main__':
     print(f"  {len(df_performance)} session-target rows after merge")
 
     # =====================================================================
-    # Psychometric figure — rows: target-NM, cols: curve + 4 parameters
+    # Psychometric figure — 2x3 grid of curves
     # =====================================================================
     output_dir = PROJECT_ROOT / 'figures/task_performance'
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -111,51 +108,22 @@ if __name__ == '__main__':
         print("No targets with performance data to plot.")
         raise SystemExit(0)
 
-    n_rows = len(targets)
-    n_cols = 1 + len(PSYCH_PARAMS)  # psychometric curve + 4 parameters
-
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(3 * n_cols, 3 * n_rows),
-        squeeze=False,
-        gridspec_kw={'width_ratios': [2] + [1] * len(PSYCH_PARAMS)},
-    )
+    fig, axes = plt.subplots(2, 3, figsize=(12, 8), squeeze=False)
 
     print("\nGenerating 50-50 psychometric figure...")
-    for row, target_nm in enumerate(targets):
-        df_target = df_performance[
-            df_performance['target_NM'] == target_nm
-        ]
-        color = TARGETNM_COLORS.get(target_nm, 'gray')
+    for i, target_nm in enumerate(targets[:6]):
+        ax = axes[i // 3, i % 3]
+        df_target = df_performance[df_performance['target_NM'] == target_nm]
+        plot_psychometric_curves_50(df_target, target_nm=target_nm, ax=ax)
+        n_sessions = len(df_target)
+        n_subjects = df_target['subject'].nunique()
+        ax.text(0.05, 0.85, f'{n_sessions} sessions\n{n_subjects} mice',
+                transform=ax.transAxes)
+        ax.set_title(target_nm)
 
-        # Column 0: psychometric curve
-        plot_psychometric_curves_50(df_target, target_nm=target_nm,
-                                    ax=axes[row, 0])
-        axes[row, 0].set_title(target_nm if row == 0 else '')
-        axes[row, 0].set_ylabel(target_nm)
-
-        # Columns 1–4: parameter boxplots
-        for col, param in enumerate(PSYCH_PARAMS, start=1):
-            param_col = f'psych_50_{param}'
-            if param_col in df_target.columns:
-                plot_parameter_box(df_target, param_col, axes[row, col],
-                                   color=color)
-            if row == 0:
-                axes[row, col].set_title(param.replace('_', ' '))
-
-    # Unify y-limits per parameter column across all targets;
-    # lapse_left and lapse_right share the same scale
-    lapse_cols = [i + 1 for i, p in enumerate(PSYCH_PARAMS) if 'lapse' in p]
-    other_cols = [i + 1 for i, p in enumerate(PSYCH_PARAMS) if 'lapse' not in p]
-
-    for col_group in [lapse_cols] + [[c] for c in other_cols]:
-        ymin = min(axes[r, c].get_ylim()[0]
-                   for r in range(n_rows) for c in col_group)
-        ymax = max(axes[r, c].get_ylim()[1]
-                   for r in range(n_rows) for c in col_group)
-        for r in range(n_rows):
-            for c in col_group:
-                axes[r, c].set_ylim(ymin, ymax)
+    # Hide unused panels
+    for i in range(len(targets), 6):
+        axes[i // 3, i % 3].set_visible(False)
 
     fig.tight_layout()
     fig.savefig(output_dir / 'psychometric_50.svg',
@@ -276,6 +244,7 @@ if __name__ == '__main__':
     # Variance stabilization analysis — at what training performance level
     # does psych parameter variance match biased+ephys?
     # =====================================================================
+    """
     print("\n--- Variance stabilization analysis ---")
 
     # Reload performance unfiltered (need all training sessions)
@@ -434,5 +403,42 @@ if __name__ == '__main__':
     fig_stab.savefig(output_dir / 'variance_mean_stabilization.svg',
                      dpi=FIGURE_DPI, bbox_inches='tight')
     print(f"Saved: {output_dir / 'variance_mean_stabilization.svg'}")
+    """
+    # =====================================================================
+    # RT distributions by contrast
+    # =====================================================================
+    if RESPONSES_FPATH.exists() and TRIAL_TIMING_FPATH.exists():
+        print("\nGenerating RT-by-contrast figure...")
+        df_resp = pd.read_parquet(RESPONSES_FPATH,
+                                  columns=['eid', 'subject', 'target_NM',
+                                           'trial', 'contrast', 'choice',
+                                           'probabilityLeft', 'event'])
+        # FIXME: here we need to ensure we only consider sessions that pass the filter!
+        df_resp = df_resp.merge(rec_meta, on=['subject', 'eid', 'target_NM'], how='inner')
+        df_timing = pd.read_parquet(TRIAL_TIMING_FPATH,
+                                    columns=['eid', 'trial', 'response_time'])
+
+        # One row per trial (drop event duplicates before merging)
+        df_trial = (
+            df_resp
+            .drop_duplicates(subset=['eid', 'trial', 'target_NM'])
+            .merge(df_timing, on=['eid', 'trial'], how='inner')
+        )
+
+        # Unbiased trials only, no no-go, no false-starts
+        df_trial = df_trial.query(
+            'probabilityLeft == 0.5 and choice != 0'
+        ).copy()
+        # Keep only target-NMs in analysis set
+        df_trial = df_trial[df_trial['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
+
+        fig_rt, ax_rt = plt.subplots(figsize=(5, 5))
+        plot_rt_by_contrast(df_trial, ax=ax_rt)
+        fig_rt.tight_layout()
+        fig_rt.savefig(output_dir / 'rt_by_contrast.svg',
+                       dpi=FIGURE_DPI, bbox_inches='tight')
+        print(f"Saved: {output_dir / 'rt_by_contrast.svg'}")
+    else:
+        print("\nSkipping RT figure: responses.pqt or trial_timing.pqt not found.")
 
     print("\nDone!")

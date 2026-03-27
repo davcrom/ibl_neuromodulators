@@ -134,7 +134,7 @@ if df_existing is not None:
 # Normalise list columns to Python lists throughout (concat can produce numpy arrays)
 df_sessions = enforce_schema(df_sessions, SESSION_SCHEMA)
 
-
+# FIXME: extended QC should also only process new sessions
 # Fetch extended QC if requested
 df_qc = None
 if args.extended_qc:
@@ -148,6 +148,8 @@ if args.extended_qc:
 # Save sessions
 df_sessions.to_parquet(SESSIONS_FPATH, index=False)
 
+# FIXME: QC and error log should both append new sessions to existing
+# and add timestamps for the date added
 # Save QC if fetched
 if df_qc is not None:
     df2pqt(df_qc, SESSIONS_QC_FPATH)

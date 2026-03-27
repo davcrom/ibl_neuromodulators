@@ -10,7 +10,8 @@ from iblphotometry.qc import qc_signals
 from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
-    EVENT_COMPLETENESS_THRESHOLD, MIN_NTRIALS, N_UNIQUE_SAMPLES_THRESHOLD,
+    BASELINE_WINDOW, EVENT_COMPLETENESS_THRESHOLD, MIN_NTRIALS,
+    N_UNIQUE_SAMPLES_THRESHOLD,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, RESPONSE_EVENTS, RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR, TARGET_FS, TRIAL_COLUMNS, WHEEL_FS,
@@ -597,7 +598,7 @@ class PhotometrySession(PhotometrySessionLoader):
             dims (region, event, trial, time). Defaults to self.responses.
         window : tuple(float, float), optional
             Baseline window in seconds [t_start, t_end). Defaults to
-            (RESPONSE_WINDOW[0], 0.0).
+            BASELINE_WINDOW from config.
 
         Returns
         -------
@@ -607,7 +608,7 @@ class PhotometrySession(PhotometrySessionLoader):
         if responses is None:
             responses = self.responses
         if window is None:
-            window = (self.RESPONSE_WINDOW[0], 0.0)
+            window = BASELINE_WINDOW
         tpts = responses.coords['time'].values
         i0 = np.searchsorted(tpts, window[0])
         i1 = np.searchsorted(tpts, window[1])
@@ -663,6 +664,40 @@ class PhotometrySession(PhotometrySessionLoader):
     # =========================================================================
     # Task Performance Methods
     # =========================================================================
+
+    def get_trial_timings(self) -> pd.DataFrame:
+        """Compute per-trial reaction, movement, and response times."""
+        trials = self.trials
+        n = len(trials)
+
+        if ('firstMovement_times' in trials.columns
+                and 'stimOn_times' in trials.columns):
+            reaction_time = (trials['firstMovement_times'].values
+                             - trials['stimOn_times'].values)
+        else:
+            reaction_time = np.full(n, np.nan)
+
+        if ('feedback_times' in trials.columns
+                and 'firstMovement_times' in trials.columns):
+            movement_time = (trials['feedback_times'].values
+                             - trials['firstMovement_times'].values)
+        else:
+            movement_time = np.full(n, np.nan)
+
+        if ('feedback_times' in trials.columns
+                and 'stimOn_times' in trials.columns):
+            response_time = (trials['feedback_times'].values
+                             - trials['stimOn_times'].values)
+        else:
+            response_time = np.full(n, np.nan)
+
+        return pd.DataFrame({
+            'eid': self.eid,
+            'trial': range(n),
+            'reaction_time': reaction_time,
+            'movement_time': movement_time,
+            'response_time': response_time,
+        })
 
     def basic_performance(self) -> dict:
         """Compute session-level performance metrics (all session types)."""
@@ -907,15 +942,16 @@ class PhotometrySessionGroup:
         log_fpaths : list of Path or pd.DataFrame, optional
             Error log sources for collect_session_errors. Defaults to
             [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH].
-        min_performance : float, optional
-            Minimum ``fraction_correct`` for training sessions. Training
-            recordings below this threshold are dropped. Requires
-            ``PERFORMANCE_FPATH`` to exist. No effect on biased/ephys.
+        min_performance : float or dict, optional
+            Minimum ``fraction_correct``. If a float, applies to all session
+            types. If a dict, maps ``{session_type: threshold}`` so each type
+            can have its own cutoff. Defaults to ``{'training': 0.75}``.
+            Requires ``PERFORMANCE_FPATH`` to exist.
         required_contrasts : set of float, optional
-            Contrast levels (percent) that training sessions must contain.
-            Training recordings from sessions missing any required contrast
-            are dropped. Checked from H5 trial data at extraction time when
-            provided via :meth:`get_response_magnitudes`.
+            Contrast levels (percent) that sessions must contain. Sessions
+            whose contrast set does not exactly match are dropped. Defaults
+            to config.REQUIRED_CONTRASTS. Requires ``PERFORMANCE_FPATH`` to
+            exist (contrasts column). Pass ``None`` to skip.
 
         Returns
         -------
@@ -924,6 +960,7 @@ class PhotometrySessionGroup:
         from iblnm.config import (
             SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
             QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
+            PERFORMANCE_FPATH, MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
         )
         from iblnm.util import collect_session_errors
 
@@ -945,6 +982,10 @@ class PhotometrySessionGroup:
                 'TrialsNotInPhotometryTime', 'QCValidationError',
                 'AmbiguousRegionMapping',
             }
+        if min_performance is None:
+            min_performance = {'training': MIN_TRAINING_PERFORMANCE}
+        if required_contrasts is None:
+            required_contrasts = REQUIRED_CONTRASTS
 
         df = self.recordings
 
@@ -968,21 +1009,45 @@ class PhotometrySessionGroup:
         if 'target_NM' in df.columns:
             df = df.loc[df['target_NM'].isin(targetnms)]
 
-        # Filter training sessions by performance
-        if min_performance is not None:
-            from iblnm.config import PERFORMANCE_FPATH
-            if PERFORMANCE_FPATH.exists():
-                df_perf = pd.read_parquet(
-                    PERFORMANCE_FPATH, columns=['eid', 'fraction_correct'],
-                )
-                df = df.merge(df_perf, on='eid', how='left')
-                is_training = df['session_type'] == 'training'
-                meets_perf = df['fraction_correct'] >= min_performance
-                df = df[~is_training | meets_perf]
+        # Filter by performance and/or contrast set from performance table
+        need_perf = min_performance is not False
+        need_contrasts = required_contrasts is not False
+        if (need_perf or need_contrasts) and len(df) > 0 and PERFORMANCE_FPATH.exists():
+            import pyarrow.parquet as pq
+            available = set(pq.read_schema(PERFORMANCE_FPATH).names)
+            perf_cols = ['eid']
+            if need_perf and 'fraction_correct' in available:
+                perf_cols.append('fraction_correct')
+            else:
+                need_perf = False
+            if need_contrasts and 'contrasts' in available:
+                perf_cols.append('contrasts')
+            else:
+                need_contrasts = False
+            df_perf = pd.read_parquet(PERFORMANCE_FPATH, columns=perf_cols)
+            df = df.merge(df_perf, on='eid', how='left')
+
+            # Performance filter
+            if need_perf:
+                if isinstance(min_performance, dict):
+                    keep = pd.Series(True, index=df.index)
+                    for stype, threshold in min_performance.items():
+                        is_type = df['session_type'] == stype
+                        meets = df['fraction_correct'] >= threshold
+                        keep = keep & (~is_type | meets)
+                    df = df[keep]
+                else:
+                    df = df[df['fraction_correct'] >= min_performance]
                 df = df.drop(columns='fraction_correct')
 
-        # Store required_contrasts for downstream use in get_response_magnitudes
-        self._required_contrasts = required_contrasts
+            # Contrast set filter (exact match)
+            if need_contrasts:
+                required_set = set(required_contrasts)
+                df = df[df['contrasts'].apply(
+                    lambda c: set(c) == required_set
+                    if isinstance(c, (list, np.ndarray)) else False
+                )]
+                df = df.drop(columns='contrasts')
 
         self.recordings = df.copy().reset_index(drop=True)
         return self
@@ -1032,7 +1097,6 @@ class PhotometrySessionGroup:
         from pathlib import Path
         from tqdm import tqdm
 
-        required_contrasts = getattr(self, '_required_contrasts', None)
         skipped_eids = set()
         cache = {}
 
@@ -1054,14 +1118,6 @@ class PhotometrySessionGroup:
                     or getattr(ps, 'trials', None) is None):
                 continue
 
-            # Skip training sessions without the full contrast set
-            if (required_contrasts is not None
-                    and rec.get('session_type') == 'training'):
-                session_contrasts = set(ps.trials['contrast'].unique())
-                if not session_contrasts >= required_contrasts:
-                    skipped_eids.add(eid)
-                    continue
-
             available_regions = list(ps.responses.coords['region'].values)
             if brain_region not in available_regions:
                 continue
@@ -1081,6 +1137,7 @@ class PhotometrySessionGroup:
                 'target_NM': rec['target_NM'],
                 'brain_region': brain_region,
                 'hemisphere': hemisphere,
+                'fiber_idx': int(rec['fiber_idx']) if 'fiber_idx' in rec.index else 0,
             }
 
             for event in RESPONSE_EVENTS:
@@ -1165,12 +1222,23 @@ class PhotometrySessionGroup:
                 else:
                     movement_time = np.full(n_trials, np.nan)
 
+                if ('feedback_times' in trials.columns
+                        and 'stimOn_times' in trials.columns):
+                    response_time = (
+                        trials['feedback_times'].values
+                        - trials['stimOn_times'].values
+                    )
+                else:
+                    response_time = np.full(n_trials, np.nan)
+
+                # FIXME: find a way to do this without looping... so inefficient
                 for t in range(n_trials):
                     timing_rows.append({
                         'eid': eid,
                         'trial': t,
                         'reaction_time': reaction_time[t],
                         'movement_time': movement_time[t],
+                        'response_time': response_time[t]
                     })
 
             for t in range(n_trials):
@@ -1225,6 +1293,20 @@ class PhotometrySessionGroup:
             meta = entry['meta']
             trials = entry['trials']
 
+            # Apply canonical trial filters
+            if ('feedback_times' in trials.columns
+                    and 'stimOn_times' in trials.columns):
+                response_time = (trials['feedback_times'].values
+                                 - trials['stimOn_times'].values)
+            else:
+                response_time = np.full(len(trials), np.nan)
+            keep = (
+                (trials['probabilityLeft'] == 0.5)
+                & (trials['choice'] != 0)
+                & (response_time > 0.05)
+            )
+            trials = trials[keep]
+
             for (contrast, fb), idx in trials.groupby(
                     ['contrast', 'feedbackType']).groups.items():
                 trial_mask = idx.values
@@ -1239,6 +1321,7 @@ class PhotometrySessionGroup:
                         'subject': meta['subject'],
                         'target_NM': meta['target_NM'],
                         'brain_region': meta['brain_region'],
+                        'fiber_idx': meta['fiber_idx'],
                         'event': meta['event'],
                         'contrast': contrast,
                         'feedbackType': fb,
@@ -1365,7 +1448,22 @@ class PhotometrySessionGroup:
         if self.response_magnitudes is None:
             self.get_response_magnitudes()
 
-        coefs, ses = fit_response_glm(self.response_magnitudes, event_name,
+        # FIXME: this method should iterate over sessions, filter trials and select the event type,  not the underlying function
+        events = self.response_magnitudes.copy()
+        if self.trial_timing is not None:
+            events = events.merge(
+                self.trial_timing[['eid', 'trial', 'response_time']],
+                on=['eid', 'trial'], how='left',
+            )
+            events = events.query('choice != 0 and response_time > 0.05')
+        else:
+            events = events.query('choice != 0')
+
+        if len(events) == 0:
+            self.glm_response_features = pd.DataFrame()
+            return pd.DataFrame()
+
+        coefs, ses = fit_response_glm(events, event_name,
                                        min_trials=min_trials,
                                        contrast_coding=contrast_coding)
 
@@ -1415,6 +1513,43 @@ class PhotometrySessionGroup:
             return None
 
         result = pca_glm_coefficients(
+            self.glm_response_features, n_components=n_components,
+            cohort_weighted=cohort_weighted)
+        self.glm_pca_result = result
+        return result
+
+    def ica_glm_coefficients(self, event_name='stimOn_times',
+                             contrast_coding='log', n_components=3,
+                             min_trials=20, cohort_weighted=False):
+        """Fit per-session GLM and run ICA on coefficients.
+
+        Parameters
+        ----------
+        event_name : str
+            Event to model.
+        contrast_coding : str
+            Contrast transform for the GLM ('log', 'linear', 'rank').
+        n_components : int
+            Number of independent components to extract.
+        min_trials : int
+            Minimum trials per recording for GLM fitting.
+        cohort_weighted : bool
+            If True, weight by 1/n_k so each target contributes equally.
+
+        Returns
+        -------
+        GLMPCAResult
+        """
+        from iblnm.analysis import ica_glm_coefficients
+
+        self.get_glm_response_features(
+            event_name=event_name, min_trials=min_trials,
+            contrast_coding=contrast_coding,
+        )
+        if self.glm_response_features is None or len(self.glm_response_features) == 0:
+            return None
+
+        result = ica_glm_coefficients(
             self.glm_response_features, n_components=n_components,
             cohort_weighted=cohort_weighted)
         self.glm_pca_result = result
@@ -1627,7 +1762,7 @@ class PhotometrySessionGroup:
         Y = Y.loc[shared]
 
         # Group by target_NM
-        target_nms = shared.get_level_values('target_NM')
+        target_nms = X.index.get_level_values('target_NM')
 
         results = {}
         data = {}
@@ -1803,6 +1938,7 @@ class PhotometrySessionGroup:
             Values: LMMResult objects with emm_reward, emm_side,
             emm_contrast, and contrast_slopes populated.
         """
+        # CHECK: why imports inside functions? isn't this poor form?
         from tqdm import tqdm
         from iblnm.analysis import (
             fit_response_lmm, compute_marginal_means,
@@ -1817,19 +1953,26 @@ class PhotometrySessionGroup:
             raise ValueError(
                 "response_magnitudes not populated. Call get_response_magnitudes() first."
             )
+        # ~ if self.trial_timing is None:
+            # ~ raise ValueError(
+                # ~ "trial_timing not populated. Call get_response_magnitudes() first."
+            # ~ )
+
         if self.trial_timing is None:
             raise ValueError(
                 "trial_timing not populated. Call get_response_magnitudes() first."
             )
 
+        # FIXME: do this once insead of several different places (see
+        # plotting in responses.py)
         df = add_relative_contrast(self.response_magnitudes.copy())
         df = df.merge(
-            self.trial_timing[['eid', 'trial', 'reaction_time']],
+            self.trial_timing[['eid', 'trial', 'response_time']],
             on=['eid', 'trial'], how='left',
         )
         df = df.query('probabilityLeft == 0.5')
         df = df.dropna(subset=[response_col])
-        df = df.query('choice != 0 and reaction_time > 0.05')
+        df = df.query('choice != 0 and response_time > 0.05')
 
         # Identify valid groups
         groups = {}

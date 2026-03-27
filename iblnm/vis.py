@@ -51,7 +51,8 @@ def set_plotsize(w, h=None, ax=None):
     ax.figure.set_size_inches(figw, figh)
 
 
-def session_overview_matrix(df, columns='session_n', highlight='good', ax=None):
+def session_overview_matrix(df, columns='session_n', highlight='good', ax=None,
+                            subject_order=None):
     """
     Plot a matrix of sessions per subject, colored by session type.
 
@@ -114,6 +115,10 @@ def session_overview_matrix(df, columns='session_n', highlight='good', ax=None):
         aggfunc='first',
         fill_value=0
     )
+
+    if subject_order is not None:
+        subject_matrix = subject_matrix.reindex(subject_order).fillna(0)
+        overlay_matrix = overlay_matrix.reindex(subject_order).fillna(0)
 
     # Get session types present in the data
     present_session_types = [st for st in SESSIONTYPE2FLOAT.keys() if st in df['session_type'].values]
@@ -1245,7 +1250,7 @@ def create_psychometric_figure(
 
 
 def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
-                           window_label=None, aggregation='pool'):
+                           window_label=None, aggregation='pool', min_trials=10):
     """Plot response magnitude by contrast, split into contra and ipsi panels.
 
     The contra panel x-axis is inverted so that the highest contrast is on the
@@ -1298,7 +1303,20 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
 
     # Compute contrasts from the full dataset so both panels share the same x-axis
     contrasts = sorted(df_group['contrast'].unique()) if len(df_group) > 0 else []
-    xpos = np.array(contrasts, dtype=float)
+    ranks = list(range(len(contrasts)))
+    rank_map = dict(zip(contrasts, ranks))
+
+    # Subject-mean removal: subtract per-subject mean, add grand mean
+    if len(df_group) > 0:
+        grand_mean = df_group[response_col].mean()
+        subj_means = df_group.groupby('subject')[response_col].transform('mean')
+        df_group = df_group.copy()
+        df_group[response_col] = df_group[response_col] - subj_means + grand_mean
+
+    # Remove subject × side × feedback × contrast conditions with too few trials
+    group_cols = ['subject', 'side', 'feedbackType', 'contrast']
+    trial_counts = df_group.groupby(group_cols)[response_col].transform('count')
+    df_group = df_group[trial_counts > min_trials]
 
     for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
         df_side = df_group[df_group['side'] == side]
@@ -1313,20 +1331,22 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
                 df_c = df_fb[df_fb['contrast'] == c]
                 if aggregation == 'pool':
                     vals = df_c[response_col].dropna()
-                    means.append(vals.mean())
-                    sems.append(scipy_sem(vals, nan_policy='omit') if len(vals) > 1 else np.nan)
+                    means.append(vals.mean() if len(vals) > 0 else np.nan)
+                    sems.append(scipy_sem(vals, nan_policy='omit') if len(vals) > 0 else np.nan)
                 else:
                     subj_means = df_c.groupby('subject')[response_col].mean()
-                    means.append(subj_means.mean())
-                    sems.append(scipy_sem(subj_means, nan_policy='omit') if len(subj_means) > 1 else np.nan)
+                    means.append(subj_means.mean() if len(subj_means) > 0 else np.nan)
+                    sems.append(scipy_sem(subj_means, nan_policy='omit') if len(subj_means) > 0 else np.nan)
 
             label = 'correct' if feedback == 1 else 'incorrect'
+            xpos = np.array([rank_map[c] for c in contrasts])
             ax.errorbar(xpos, means, yerr=np.array(sems, dtype=float),
                         marker='o', color=color, linestyle=ls, label=label)
 
-        ax.set_xticks(xpos if len(xpos) else [])
+        ax.set_xticks(ranks)
         ax.set_xticklabels([f'{c:g}' for c in contrasts])
-        ax.set_xlabel('Contrast (%)')
+        ax.set_xlabel('Contrast level')
+        ax.set_yticks([-1, 0, 1, 2])
         ax.axhline(0, ls='--', color='gray', lw=0.5)
 
     # Invert contra axis so highest contrast is on the far left
@@ -1335,7 +1355,7 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
     ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
 
-    ax_c.set_ylabel('z-score')
+    ax_c.set_ylabel('$\Delta$ activity (z-score)')
     ax_i.tick_params(left=False)
     ax_i.spines['left'].set_visible(False)
     ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
@@ -1343,6 +1363,217 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     return fig
 
+## Broken trial number thresholding logic
+def plot_relative_contrast_per_subject(df_group, response_col, target_nm, event,
+                                        window_label=None, min_trials=10):
+    """Per-subject contrast response curves, same layout as plot_relative_contrast.
+
+    Each subject gets its own line (correct=solid, incorrect=dashed).
+    Grand mean overlaid in black.
+    """
+    fig, (ax_c, ax_i) = plt.subplots(1, 2, sharey=True,
+                                      gridspec_kw={'wspace': 0.05},
+                                      layout='constrained')
+
+    event_label = event.replace('_times', '')
+    _window = window_label or ''
+    n_sessions = df_group['eid'].nunique() if 'eid' in df_group.columns else '?'
+    subjects = sorted(df_group['subject'].unique())
+    n_subjects = len(subjects)
+    fig.suptitle(
+        f'{target_nm} — {event_label} ({_window})\n'
+        f'{n_sessions} sessions, {n_subjects} subjects',
+        fontsize=10,
+    )
+
+    contrasts = sorted(df_group['contrast'].unique()) if len(df_group) > 0 else []
+    ranks = list(range(len(contrasts)))
+    rank_map = dict(zip(contrasts, ranks))
+
+    cmap = plt.cm.tab20
+    subj_colors = {s: cmap(i % 20) for i, s in enumerate(subjects)}
+
+    # Subject-mean removal: subtract per-subject mean, add grand mean
+    if len(df_group) > 0:
+        grand_mean = df_group[response_col].mean()
+        subj_means = df_group.groupby('subject')[response_col].transform('mean')
+        df_group = df_group.copy()
+        df_group[response_col] = df_group[response_col] - subj_means + grand_mean
+
+    # Remove subject × side × feedback × contrast conditions with too few trials
+    group_cols = ['subject', 'side', 'feedbackType', 'contrast']
+    trial_counts = df_group.groupby(group_cols)[response_col].transform('count')
+    df_group = df_group[trial_counts > min_trials]
+
+    for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
+        df_side = df_group[df_group['side'] == side]
+
+        for feedback, ls in ((1, '-'), (-1, '--')):
+            df_fb = df_side[df_side['feedbackType'] == feedback]
+
+            for subj in subjects:
+                df_s = df_fb[df_fb['subject'] == subj]
+                if len(df_s) == 0:
+                    continue
+                means = []
+                for c in contrasts:
+                    vals = df_s.loc[df_s['contrast'] == c, response_col].dropna()
+                    means.append(vals.mean() if len(vals) > 0 else np.nan)
+                xpos = np.array([rank_map[c] for c in contrasts])
+                ax.plot(xpos, means, marker='.', markersize=3,
+                        color=subj_colors[subj], linestyle=ls,
+                        alpha=0.4, linewidth=0.8)
+
+            # Grand mean (mean of subject means)
+            if len(df_fb) > 0:
+                grand_means, sems = [], []
+                for c in contrasts:
+                    subj_means = df_fb[df_fb['contrast'] == c].groupby(
+                        'subject')[response_col].apply(
+                            lambda x: np.mean(x) if len(x) > 0 else np.nan
+                            )
+                    grand_means.append(subj_means.mean())
+                    sems.append(scipy_sem(subj_means, nan_policy='omit') if len(subj_means) > 0 else np.nan)
+                xpos = np.array([rank_map[c] for c in contrasts])
+                label = 'correct' if feedback == 1 else 'incorrect'
+                # ~ ax.plot(xpos, grand_means, marker='o',
+                        # ~ color='black', linestyle=ls, linewidth=2, label=label)
+                ax.errorbar(xpos, grand_means, yerr=np.array(sems, dtype=float),
+                        marker='o', color='black', linestyle=ls, label=label)
+
+        ax.set_xticks(ranks)
+        ax.set_xticklabels([f'{c:g}' for c in contrasts])
+        ax.set_xlabel('Contrast level')
+        ax.set_yticks([-1, 0, 1, 2])
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+
+    ax_c.invert_xaxis()
+    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
+    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
+    ax_c.set_ylabel('$\Delta$ activity (z-score)')
+    ax_i.tick_params(left=False)
+    ax_i.spines['left'].set_visible(False)
+    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
+    ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+    return fig
+    
+
+## From ChatGPT
+# ~ def plot_relative_contrast_per_subject(df_group, response_col, target_nm, event,
+                                       # ~ window_label=None, min_trials=10):
+    # ~ """Per-subject contrast response curves, same layout as plot_relative_contrast.
+
+    # ~ Each subject gets its own line (correct=solid, incorrect=dashed).
+    # ~ Grand mean overlaid in black.
+    # ~ """
+    # ~ fig, (ax_c, ax_i) = plt.subplots(
+        # ~ 1, 2, sharey=True,
+        # ~ gridspec_kw={'wspace': 0.05},
+        # ~ layout='constrained'
+    # ~ )
+
+    # ~ event_label = event.replace('_times', '')
+    # ~ _window = window_label or ''
+    # ~ n_sessions = df_group['eid'].nunique() if 'eid' in df_group.columns else '?'
+    # ~ subjects = sorted(df_group['subject'].unique())
+    # ~ n_subjects = len(subjects)
+
+    # ~ fig.suptitle(
+        # ~ f'{target_nm} — {event_label} ({_window})\n'
+        # ~ f'{n_sessions} sessions, {n_subjects} subjects',
+        # ~ fontsize=10,
+    # ~ )
+
+    # ~ contrasts = sorted(df_group['contrast'].unique()) if len(df_group) > 0 else []
+    # ~ ranks = list(range(len(contrasts)))
+    # ~ rank_map = dict(zip(contrasts, ranks))
+
+    # ~ cmap = plt.cm.tab20
+    # ~ subj_colors = {s: cmap(i % 20) for i, s in enumerate(subjects)}
+
+    # ~ # Subject-mean removal: subtract per-subject mean, add grand mean
+    # ~ if len(df_group) > 0:
+        # ~ grand_mean = df_group[response_col].mean()
+        # ~ subj_means = df_group.groupby('subject')[response_col].transform('mean')
+        # ~ df_group = df_group.copy()
+        # ~ df_group[response_col] = df_group[response_col] - subj_means + grand_mean
+
+    # ~ for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
+        # ~ df_side = df_group[df_group['side'] == side]
+
+        # ~ for feedback, ls in ((1, '-'), (-1, '--')):
+            # ~ df_fb = df_side[df_side['feedbackType'] == feedback]
+
+            # ~ # --- subject lines ---
+            # ~ for subj in subjects:
+                # ~ df_s = df_fb[df_fb['subject'] == subj]
+                # ~ if len(df_s) == 0:
+                    # ~ continue
+
+                # ~ means = []
+                # ~ for c in contrasts:
+                    # ~ vals = df_s.loc[df_s['contrast'] == c, response_col].dropna()
+                    # ~ means.append(vals.mean() if len(vals) > min_trials else np.nan)
+
+                # ~ xpos = np.array([rank_map[c] for c in contrasts])
+
+                # ~ ax.plot(
+                    # ~ xpos, means,
+                    # ~ marker='.',
+                    # ~ markersize=3,
+                    # ~ color=subj_colors[subj],
+                    # ~ linestyle=ls,
+                    # ~ alpha=0.4,
+                    # ~ linewidth=0.8
+                # ~ )
+
+            # ~ # --- grand mean (mean of subject means) ---
+            # ~ if len(df_fb) > 0:
+                # ~ grand_means = []
+                # ~ for c in contrasts:
+                    # ~ subj_means = (
+                        # ~ df_fb[df_fb['contrast'] == c]
+                        # ~ .groupby('subject')[response_col]
+                        # ~ .apply(lambda x: np.mean(x) if len(x) > min_trials else np.nan)
+                    # ~ )
+                    # ~ grand_means.append(subj_means.mean())
+
+                # ~ xpos = np.array([rank_map[c] for c in contrasts])
+                # ~ label = 'correct' if feedback == 1 else 'incorrect'
+
+                # ~ ax.plot(
+                    # ~ xpos, grand_means,
+                    # ~ marker='o',
+                    # ~ color='black',
+                    # ~ linestyle=ls,
+                    # ~ linewidth=2,
+                    # ~ label=label
+                # ~ )
+
+        # ~ ax.set_xticks(ranks)
+        # ~ ax.set_xticklabels([f'{c:g}' for c in contrasts])
+        # ~ ax.set_xlabel('Contrast (rank)')
+        # ~ ax.axhline(0, ls='--', color='gray', lw=0.5)
+
+    # ~ ax_c.invert_xaxis()
+
+    # ~ ax_c.text(0.05, 0.02, 'Contra', ha='left',
+              # ~ transform=ax_c.transAxes, fontsize=9)
+    # ~ ax_i.text(0.95, 0.02, 'Ipsi', ha='right',
+              # ~ transform=ax_i.transAxes, fontsize=9)
+
+    # ~ ax_c.set_ylabel('z-score')
+
+    # ~ ax_i.tick_params(left=False)
+    # ~ ax_i.spines['left'].set_visible(False)
+
+    # ~ ax_i.legend(frameon=False, loc='upper left',
+                # ~ bbox_to_anchor=(1, 1), fontsize=8)
+
+    # ~ ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+
+    # ~ return fig
+    
 
 def plot_confusion_matrix(confusion, fig=None):
     """Plot a confusion matrix as an annotated heatmap.
@@ -2077,9 +2308,15 @@ def plot_lmm_summary(group, event, fig=None):
     lmm_results = group.lmm_results
 
     if fig is None:
-        fig, axes = plt.subplots(1, 5, figsize=(18, 4),
-                                 gridspec_kw={'width_ratios': [1, 1, 1, 1, 1.8]},
-                                 layout='constrained')
+        fig = plt.figure(figsize=(14, 8), layout='constrained')
+        gs = fig.add_gridspec(2, 6)
+        axes = [
+            fig.add_subplot(gs[0, :2]),   # R²
+            fig.add_subplot(gs[0, 2:]),   # coefficient heatmap
+            fig.add_subplot(gs[1, :2]),   # contrast × reward
+            fig.add_subplot(gs[1, 2:4]),  # contrast × side
+            fig.add_subplot(gs[1, 4:]),   # reward × side
+        ]
     else:
         axes = fig.axes[:5]
 
@@ -2089,53 +2326,38 @@ def plot_lmm_summary(group, event, fig=None):
         tnm for (tnm, ev) in lmm_results if ev == event
     ))
 
-    # Count sessions and subjects per target from recordings
-    target_counts = {}
-    if hasattr(group, 'recordings') and group.recordings is not None:
-        recs = group.recordings
-        for tnm in targets:
-            recs_t = recs[recs['target_NM'] == tnm]
-            target_counts[tnm] = (recs_t['eid'].nunique(),
-                                  recs_t['subject'].nunique())
-
-    # --- Panel 1: R² dots ---
+    # --- Panel 1: R² side-by-side bars ---
+    bar_w = 0.35
     for i, tnm in enumerate(targets):
         key = (tnm, event)
         if key not in lmm_results:
             continue
         ve = lmm_results[key].variance_explained
         color = TARGETNM_COLORS.get(tnm, f'C{i}')
-        ax_r2.scatter(i, ve['marginal'], color=color, marker='o', s=50,
-                      zorder=3)
-        ax_r2.scatter(i, ve['conditional'], color=color, marker='s', s=50,
-                      zorder=3)
-        ax_r2.plot([i, i], [ve['marginal'], ve['conditional']],
-                   color=color, lw=1.5, zorder=2)
+        ax_r2.bar(i - bar_w / 2, ve['marginal'], width=bar_w,
+                  color=color, alpha=0.5, label='Fixed' if i == 0 else '')
+        ax_r2.bar(i + bar_w / 2, ve['conditional'], width=bar_w,
+                  color=color, alpha=1.0, label='Fixed + random' if i == 0 else '')
 
     ax_r2.set_xticks(range(len(targets)))
     ax_r2.set_xticklabels(targets, rotation=45, ha='right', fontsize=7)
     ax_r2.set_ylabel('R²')
     ax_r2.set_ylim(0, min(1, ax_r2.get_ylim()[1] * 1.2))
     ax_r2.set_title('Variance explained')
-    ax_r2.legend(
-        [Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6),
-         Line2D([0], [0], marker='s', color='gray', ls='none', markersize=6)],
-        ['Fixed', 'Fixed + random'],
-        frameon=False, fontsize=7, loc='upper left',
-    )
+    ax_r2.legend(frameon=False, fontsize=7, loc='upper left')
 
     # --- Panels 2–4: Interaction plots ---
     _interaction_specs = [
         # (ax_idx, attr, y_label, title, x_labels, y_main_coef)
-        (1, 'interaction_contrast_reward', 'Contrast slope',
+        (2, 'interaction_contrast_reward', 'Contrast slope',
          'Contrast × reward',
          {'incorrect': 'incorrect', 'correct': 'correct'},
          'log_contrast'),
-        (2, 'interaction_contrast_side', 'Contrast slope',
+        (3, 'interaction_contrast_side', 'Contrast slope',
          'Contrast × side',
          {'contra': 'contra', 'ipsi': 'ipsi'},
          'log_contrast'),
-        (3, 'interaction_reward_side', 'Reward effect',
+        (4, 'interaction_reward_side', 'Reward effect',
          'Reward × side',
          {'contra': 'contra', 'ipsi': 'ipsi'},
          'reward'),
@@ -2202,35 +2424,42 @@ def plot_lmm_summary(group, event, fig=None):
                     rotation=90,
                 )
 
-    # Per-target N sessions / N mice next to each target's R² dots
-    for i, tnm in enumerate(targets):
-        if tnm in target_counts:
-            ns, nm = target_counts[tnm]
-            ax_r2.annotate(
-                f'n={ns}/{nm}', xy=(i, 1), xycoords=('data', 'axes fraction'),
-                fontsize=6, ha='center', va='top', color='k',
-            )
-
     # Legend on interaction panels
-    handles = [Line2D([0], [0], marker='o', color=TARGETNM_COLORS.get(t, f'C{i}'),
-                       ls='none', markersize=5) for i, t in enumerate(targets)]
-    axes[3].legend(handles, targets, frameon=False, fontsize=6,
-                   loc='upper left', bbox_to_anchor=(1, 1))
+    target_handles = [
+        Line2D([0], [0], marker='o', color=TARGETNM_COLORS.get(t, f'C{i}'),
+               ls='none', markersize=5)
+        for i, t in enumerate(targets)
+    ]
+    encoding_handles = [
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
+               fillstyle='full'),
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
+               fillstyle='none'),
+        Line2D([0], [0], color='gray', ls='-', lw=1.2),
+        Line2D([0], [0], color='gray', ls='--', lw=1.2),
+    ]
+    encoding_labels = ['main effect p<0.05', 'main effect n.s.',
+                       'interaction p<0.05', 'interaction n.s.']
+    axes[4].legend(
+        target_handles + encoding_handles,
+        targets + encoding_labels,
+        frameon=False, fontsize=6, loc='upper left', bbox_to_anchor=(1, 1),
+    )
 
-    # --- Panel 5: Coefficient heatmap ---
-    ax_hm = axes[4]
+    # --- Panel 2 (top right): Coefficient heatmap ---
+    ax_hm = axes[1]
     _term_order = [
-        'side', 'reward', 'log_contrast',
-        'side:reward', 'log_contrast:side',
-        'log_contrast:reward', 'log_contrast:side:reward',
+        'log_contrast', 'side', 'reward',
+        'log_contrast:side', 'log_contrast:reward',
+        'side:reward', 'log_contrast:side:reward',
     ]
     _short = {
+        'log_contrast': 'contrast',
         'side': 'side',
         'reward': 'reward',
-        'log_contrast': 'contrast',
-        'side:reward': 'side×rew',
         'log_contrast:side': 'con×side',
         'log_contrast:reward': 'con×rew',
+        'side:reward': 'side×rew',
         'log_contrast:side:reward': 'con×side×rew',
     }
 
@@ -2256,15 +2485,7 @@ def plot_lmm_summary(group, event, fig=None):
                     coef_matrix[i, j] = sdf.loc[term, 'Coef.']
                     pval_matrix[i, j] = sdf.loc[term, 'P>|z|']
 
-        # Use global vmax from lmm_coefficients if available, else local
-        if (hasattr(group, 'lmm_coefficients')
-                and group.lmm_coefficients is not None
-                and len(group.lmm_coefficients) > 0):
-            df_all = group.lmm_coefficients
-            df_no_int = df_all[df_all['term'] != 'Intercept']
-            vmax = df_no_int['Coef.'].abs().max()
-        else:
-            vmax = np.nanmax(np.abs(coef_matrix))
+        vmax = np.nanmax(np.abs(coef_matrix))
 
         im = ax_hm.imshow(coef_matrix, aspect='auto', cmap='RdBu_r',
                            vmin=-vmax, vmax=vmax)
@@ -2516,22 +2737,37 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
                 if len(df_c) == 0:
                     continue
 
-                # Filter: min_trials per subject
+                # Filter: drop recordings where the subject has too few trials
                 if 'n_trials' in df_c.columns:
                     trials_per_subj = df_c.groupby('subject')['n_trials'].first()
-                    if (trials_per_subj < min_trials).any():
+                    bad_subjects = trials_per_subj[trials_per_subj < min_trials].index
+                    df_c = df_c[~df_c['subject'].isin(bad_subjects)]
+                    if len(df_c) == 0:
                         continue
 
-                # Pivot to (recording, time) matrix
-                recordings = df_c['eid'].unique()
+                # Pivot to (recording, time) matrix — group by
+                # (eid, fiber_idx) to distinguish bilateral recordings
+                has_fiber = 'fiber_idx' in df_c.columns
+                if has_fiber:
+                    rec_keys = list(df_c.groupby(['eid', 'fiber_idx']).groups.keys())
+                elif 'brain_region' in df_c.columns:
+                    rec_keys = list(df_c.groupby(['eid', 'brain_region']).groups.keys())
+                else:
+                    rec_keys = [(eid,) for eid in df_c['eid'].unique()]
                 time_vals = np.array(sorted(df_c['time'].unique()))
-                n_recs = len(recordings)
+                n_recs = len(rec_keys)
                 n_time = len(time_vals)
 
                 trace_matrix = np.full((n_recs, n_time), np.nan)
                 subjects_arr = []
-                for i, eid in enumerate(recordings):
-                    rec_data = df_c[df_c['eid'] == eid].sort_values('time')
+                for i, key in enumerate(rec_keys):
+                    if has_fiber:
+                        rec_data = df_c[(df_c['eid'] == key[0]) & (df_c['fiber_idx'] == key[1])]
+                    elif 'brain_region' in df_c.columns and len(key) == 2:
+                        rec_data = df_c[(df_c['eid'] == key[0]) & (df_c['brain_region'] == key[1])]
+                    else:
+                        rec_data = df_c[df_c['eid'] == key[0]]
+                    rec_data = rec_data.sort_values('time')
                     trace_matrix[i] = rec_data['response'].values
                     subjects_arr.append(rec_data['subject'].iloc[0])
                 subjects_arr = np.array(subjects_arr)
@@ -2591,18 +2827,27 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
     axes[0, 0].legend(title='Contrast', fontsize=7, title_fontsize=8,
                       loc='upper left')
 
-    # N sessions / N mice label on last column, top row
+    # N trials / N sessions / N mice label on last column, top row
     n_sessions = df['eid'].nunique()
     n_mice = df['subject'].nunique()
+    if 'n_trials' in df.columns:
+        n_trials = int(
+            df.groupby(['eid', 'event', 'contrast', 'feedbackType'])
+            ['n_trials'].first().sum()
+        )
+        count_text = f'{n_trials} trials\n{n_sessions} sessions\n{n_mice} mice'
+    else:
+        count_text = f'{n_sessions} sessions\n{n_mice} mice'
     axes[0, -1].annotate(
-        f'n={n_sessions}/{n_mice}',
-        xy=(1, 1), xycoords='axes fraction',
-        fontsize=6, ha='right', va='top', color='k',
+        count_text,
+        xy=(0.95, 0.92), xycoords='axes fraction',
+        fontsize=8, ha='right', va='top', color='k',
     )
 
     fig.suptitle(target_nm, fontsize=12)
     fig.tight_layout()
     return fig
+
 
 
 # =============================================================================
@@ -2696,8 +2941,8 @@ def plot_glm_pca_weights(pca_result, fig=None):
     short = {
         'log_contrast': 'contrast',
         'log_contrast:side': 'contrast×side',
-        'log_contrast:feedback': 'contrast×reward',
-        'side:feedback': 'side×reward',
+        'log_contrast:reward': 'contrast×reward',
+        'side:reward': 'side×reward',
     }
     xlabels = [short.get(f, f) for f in pca_result.feature_names]
     ylabels = [
@@ -2786,6 +3031,183 @@ def plot_glm_pca_scores(pca_result, n_pcs=3, stats=None, fig=None):
                 ax.annotate(f'KW {label}', xy=(1, 1),
                             xycoords='axes fraction', fontsize=7,
                             ha='right', va='top', color='k')
+
+    return fig
+
+
+def plot_glm_pca_summary(pca_result, recordings, n_pcs=3, stats=None,
+                         comp_label='PC'):
+    """Combined weights heatmap, violin scores, and subject-mean panels.
+
+    Layout (3 rows):
+        Row 0: PCA weights heatmap (spans full width).
+        Row 1: Violin score distributions per target-NM (one panel per PC).
+        Row 2: Subject-mean +/- 95% CI per target-NM (one panel per PC),
+                with KW / post-hoc annotation.
+
+    Parameters
+    ----------
+    pca_result : GLMPCAResult
+    recordings : pd.DataFrame
+        Must contain 'eid' and 'subject' to map recordings to subjects.
+    n_pcs : int
+        Number of PCs to plot.
+    stats : pd.DataFrame, optional
+        Output from ``pca_score_stats`` (recording-level). Used for violin
+        KW annotation.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    from iblnm.analysis import pca_subject_score_stats
+
+    n_pcs = min(n_pcs, pca_result.scores.shape[1])
+    targets = sorted(set(pca_result.target_labels))
+
+    subject_means, subject_stats = pca_subject_score_stats(
+        pca_result, recordings)
+
+    fig = plt.figure(figsize=(4 * n_pcs, 12), layout='constrained')
+    gs = fig.add_gridspec(3, n_pcs, height_ratios=[1, 1.5, 1.5])
+
+    # --- Row 0: Weights heatmap ---
+    ax_hm = fig.add_subplot(gs[0, :])
+    data = pca_result.components
+    vmax = np.abs(data).max()
+    im = ax_hm.imshow(data, aspect='auto', cmap='RdBu_r',
+                       vmin=-vmax, vmax=vmax)
+    short = {
+        'log_contrast': 'contrast',
+        'log_contrast:side': 'contrast×side',
+        'log_contrast:reward': 'contrast×reward',
+        'side:reward': 'side×reward',
+    }
+    xlabels = [short.get(f, f) for f in pca_result.feature_names]
+    ylabels = [
+        f'{comp_label}{i+1} ({pca_result.explained_variance_ratio[i]:.0%})'
+        for i in range(n_pcs)
+    ]
+    ax_hm.set_xticks(range(len(xlabels)))
+    ax_hm.set_xticklabels(xlabels, rotation=45, ha='right')
+    ax_hm.set_yticks(range(n_pcs))
+    ax_hm.set_yticklabels(ylabels)
+    for i in range(n_pcs):
+        for j in range(len(xlabels)):
+            val = data[i, j]
+            color = 'white' if abs(val) > 0.5 * vmax else 'black'
+            ax_hm.text(j, i, f'{val:.2f}', ha='center', va='center',
+                       fontsize=8, color=color)
+    fig.colorbar(im, ax=ax_hm, shrink=0.8, label='Loading')
+
+    colors = [TARGETNM_COLORS.get(t, 'gray') for t in targets]
+
+    # --- Row 1: Violin plots ---
+    for pc_idx in range(n_pcs):
+        ax = fig.add_subplot(gs[1, pc_idx])
+        scores_pc = pca_result.scores[:, pc_idx]
+        data_per_target = []
+        positions = list(range(len(targets)))
+
+        for target in targets:
+            mask = pca_result.target_labels == target
+            data_per_target.append(scores_pc[mask])
+
+        parts = ax.violinplot(data_per_target, positions=positions,
+                              showmedians=True, showextrema=False)
+        for i, body in enumerate(parts['bodies']):
+            body.set_facecolor(colors[i])
+            body.set_alpha(0.6)
+        parts['cmedians'].set_color('black')
+        parts['cmedians'].set_linewidth(1.5)
+
+        pct = pca_result.explained_variance_ratio[pc_idx]
+        ax.set_title(f'{comp_label}{pc_idx + 1} ({pct:.0%})')
+        ax.set_xticks(positions)
+        ax.set_xticklabels([t.split('-')[0] for t in targets],
+                           rotation=45, ha='right', fontsize=8)
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+        if pc_idx == 0:
+            ax.set_ylabel(f'{comp_label} score')
+
+        if stats is not None:
+            kw = stats[(stats['pc'] == pc_idx + 1) & stats['target_a'].isna()]
+            if len(kw):
+                p = kw['kruskal_p'].iloc[0]
+                h = kw['kruskal_h'].iloc[0]
+                if p >= 0.05:
+                    label = f'H={h:.1f}, p={p:.3f} n.s.'
+                else:
+                    label = f'H={h:.1f}, p={p:.1e}'
+                ax.annotate(label, xy=(1, 1),
+                            xycoords='axes fraction', fontsize=7,
+                            ha='right', va='top', color='k')
+
+    # --- Row 2: Subject means +/- 95% CI ---
+    for pc_idx in range(n_pcs):
+        ax = fig.add_subplot(gs[2, pc_idx])
+        pc_num = pc_idx + 1
+        sm = subject_means[subject_means['pc'] == pc_num]
+
+        for i, target in enumerate(targets):
+            sm_t = sm[sm['target_NM'] == target]
+            n_subj = len(sm_t)
+            # Jitter subjects around the target x-position
+            jitter = np.linspace(-0.25, 0.25, n_subj) if n_subj > 1 else [0.0]
+            for j, (_, row) in enumerate(sm_t.iterrows()):
+                ax.errorbar(
+                    i + jitter[j], row['mean'],
+                    yerr=1.96 * row['sem'],
+                    fmt='o', capsize=0, color=colors[i], markersize=4,
+                    zorder=3,
+                )
+
+        ax.set_xticks(range(len(targets)))
+        ax.set_xticklabels([t.split('-')[0] for t in targets],
+                           rotation=45, ha='right', fontsize=8)
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+        ax.set_title(f'{comp_label}{pc_num} subject means')
+        if pc_idx == 0:
+            ax.set_ylabel(f'Mean {comp_label} score')
+
+        # Annotate subject-level KW
+        kw = subject_stats[
+            (subject_stats['pc'] == pc_num) & subject_stats['target_a'].isna()
+        ]
+        if len(kw):
+            p = kw['kruskal_p'].iloc[0]
+            h = kw['kruskal_h'].iloc[0]
+            if p >= 0.05:
+                label = f'H={h:.1f}, p={p:.3f} n.s.'
+            else:
+                label = f'H={h:.1f}, p={p:.1e}'
+            ax.annotate(label, xy=(1, 1),
+                        xycoords='axes fraction', fontsize=7,
+                        ha='right', va='top', color='k')
+
+        # Draw significance brackets for pairwise comparisons
+        pw = subject_stats[
+            (subject_stats['pc'] == pc_num)
+            & subject_stats['target_a'].notna()
+            & (subject_stats['mwu_p'] < 0.05)
+        ].sort_values('mwu_p')
+        if len(pw):
+            target_to_x = {t: i for i, t in enumerate(targets)}
+            y_max = ax.get_ylim()[1]
+            dy = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.06
+            y_bar = y_max + dy
+            for _, row in pw.iterrows():
+                x0 = target_to_x[row['target_a']]
+                x1 = target_to_x[row['target_b']]
+                stars = _pval_to_stars(row['mwu_p'])
+                # Horizontal bar with small vertical ticks
+                ax.plot([x0, x1], [y_bar, y_bar], color='k', lw=0.8)
+                ax.plot([x0, x0], [y_bar - dy * 0.3, y_bar], color='k', lw=0.8)
+                ax.plot([x1, x1], [y_bar - dy * 0.3, y_bar], color='k', lw=0.8)
+                ax.text((x0 + x1) / 2, y_bar, stars,
+                        ha='center', va='bottom', fontsize=8)
+                y_bar += dy * 1.5
+            ax.set_ylim(ax.get_ylim()[0], y_bar + dy * 0.5)
 
     return fig
 
@@ -2948,5 +3370,89 @@ def _plot_weight_heatmap_pair(cohort_results, targets, ax):
 
     ax.set_title('CC1 weight profiles')
     ax.figure.colorbar(im, ax=ax, shrink=0.8, label='Weight')
+
+
+def plot_rt_by_contrast(df, ax=None):
+    """Horizontal boxplots of response time by contrast, one offset per target-NM.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain ``response_time``, ``contrast``, and ``target_NM`` columns.
+        Contrasts should be absolute (unsigned).
+    ax : plt.Axes, optional
+        Axes to draw on. Created if not provided.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 5))
+
+    if df.empty:
+        ax.set_xlabel('Response time (s)')
+        ax.set_ylabel('Contrast (%)')
+        return ax
+
+    contrasts = sorted(df['contrast'].unique())
+    target_nms = [t for t in TARGETNM_COLORS if t in df['target_NM'].unique()]
+    n_targets = len(target_nms)
+
+    # Spread offsets symmetrically around each integer contrast tick
+    box_height = 0.6 / max(n_targets, 1)
+    offsets = np.linspace(-0.25, 0.25, n_targets) if n_targets > 1 else np.array([0.0])
+
+    for i, target_nm in enumerate(target_nms):
+        color = TARGETNM_COLORS.get(target_nm, 'gray')
+        df_t = df[df['target_NM'] == target_nm]
+
+        for j, contrast in enumerate(contrasts):
+            rt_vals = df_t.loc[df_t['contrast'] == contrast, 'response_time'].dropna().values
+            if len(rt_vals) == 0:
+                continue
+            # Log-transform before KDE so violin shape is correct in log space
+            log_vals = np.log10(rt_vals[rt_vals > 0])
+            if len(log_vals) == 0:
+                continue
+            y_pos = j + offsets[i]
+            vp = ax.violinplot(
+                log_vals,
+                positions=[y_pos],
+                orientation='horizontal',
+                widths=box_height * 0.8,
+                showmedians=True,
+                showextrema=False,
+            )
+            for violin in vp['bodies']:
+                violin.set_color(color)
+                violin.set_linewidth(0.8)
+            vp['cmedians'].set_color(color)
+
+    # Linear axis with log-formatted tick labels
+    all_vals = df.loc[df['response_time'] > 0, 'response_time'].dropna()
+    if len(all_vals):
+        log_min = np.floor(np.log10(all_vals.min()))
+        log_max = np.ceil(np.log10(all_vals.max()))
+        tick_powers = np.arange(log_min, log_max + 1)
+        ax.set_xticks(tick_powers)
+        ax.set_xticklabels([str(10 ** int(p)) if p >= 0 else str(round(10 ** p, 3))
+                            for p in tick_powers])
+
+    ax.set_yticks(range(len(contrasts)))
+    ax.set_yticklabels([str(c) for c in contrasts])
+    ax.set_ylim(-0.6, len(contrasts) - 0.4)
+    ax.set_xlabel('Response time (s)')
+    ax.set_ylabel('Contrast (%)')
+
+    # Legend
+    handles = [
+        plt.Line2D([0], [0], color=TARGETNM_COLORS.get(t, 'gray'), linewidth=1.5, label=t)
+        for t in target_nms
+    ]
+    if handles:
+        ax.legend(handles=handles, fontsize=7, loc='upper left')
+
+    return ax
 
 

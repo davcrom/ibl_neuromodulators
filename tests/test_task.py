@@ -435,6 +435,188 @@ class TestComputeTrialContrasts:
 
 
 # =============================================================================
-# I/O Tests
+# run_task_pipeline Tests
 # =============================================================================
+
+class TestRunTaskPipelineContrasts:
+    """run_task_pipeline should store the session's contrast set."""
+
+    def test_contrasts_column_present(self, mock_trials_training, monkeypatch):
+        import scripts.task as task_mod
+        from scripts.task import run_task_pipeline
+        from iblnm.task import compute_trial_contrasts
+
+        class FakePS:
+            def __init__(self, *a, **kw):
+                self.trials = None
+                self.session_type = 'training'
+                self.eid = 'test-eid'
+
+            def load_trials(self):
+                self.trials = mock_trials_training.copy()
+                ct = compute_trial_contrasts(self.trials)
+                self.trials['contrast'] = ct['contrast']
+
+            def validate_n_trials(self):
+                pass
+
+            def validate_event_completeness(self):
+                pass
+
+            def basic_performance(self):
+                return {'fraction_correct': 0.8}
+
+            def block_performance(self):
+                return {}
+
+            def get_trial_timings(self):
+                n = len(self.trials)
+                return pd.DataFrame({
+                    'eid': self.eid, 'trial': range(n),
+                    'reaction_time': np.nan, 'movement_time': np.nan,
+                    'response_time': np.nan,
+                })
+
+        monkeypatch.setattr(task_mod, 'PhotometrySession', FakePS)
+
+        df_sessions = pd.DataFrame([{
+            'eid': 'test-eid', 'subject': 'test-subj',
+            'start_time': '2024-01-01T10:00:00', 'number': 1,
+            'session_type': 'training', 'task_protocol': 'proto',
+        }])
+        df_perf, _, _ = run_task_pipeline(df_sessions, one=None, verbose=False)
+        assert 'contrasts' in df_perf.columns
+        assert isinstance(df_perf['contrasts'].iloc[0], list)
+        assert all(c >= 0 for c in df_perf['contrasts'].iloc[0])
+
+    def test_contrasts_values_match_trials(self, monkeypatch):
+        """Contrasts should be the sorted unique percent values from trials."""
+        import scripts.task as task_mod
+        from scripts.task import run_task_pipeline
+        from iblnm.task import compute_trial_contrasts
+
+        # Build trials with known contrasts: only 0, 0.25, 1.0
+        n = 60
+        np.random.seed(0)
+        sides = np.random.choice([-1, 1], size=n)
+        contrasts_frac = np.random.choice([0, 0.25, 1.0], size=n)
+        trials = pd.DataFrame({
+            'contrastLeft': np.where(sides == -1, contrasts_frac, np.nan),
+            'contrastRight': np.where(sides == 1, contrasts_frac, np.nan),
+            'choice': sides,
+            'feedbackType': np.ones(n, dtype=int),
+            'probabilityLeft': np.full(n, 0.5),
+        })
+
+        class FakePS:
+            def __init__(self, *a, **kw):
+                self.trials = None
+                self.session_type = 'training'
+                self.eid = 'eid-1'
+
+            def load_trials(self):
+                self.trials = trials.copy()
+                ct = compute_trial_contrasts(self.trials)
+                self.trials['contrast'] = ct['contrast']
+
+            def validate_n_trials(self):
+                pass
+
+            def validate_event_completeness(self):
+                pass
+
+            def basic_performance(self):
+                return {'fraction_correct': 0.9}
+
+            def block_performance(self):
+                return {}
+
+            def get_trial_timings(self):
+                nn = len(self.trials)
+                return pd.DataFrame({
+                    'eid': self.eid, 'trial': range(nn),
+                    'reaction_time': np.nan, 'movement_time': np.nan,
+                    'response_time': np.nan,
+                })
+
+        monkeypatch.setattr(task_mod, 'PhotometrySession', FakePS)
+
+        df_sessions = pd.DataFrame([{
+            'eid': 'eid-1', 'subject': 'subj', 'start_time': '2024-01-01T10:00:00',
+            'number': 1, 'session_type': 'training', 'task_protocol': 'proto',
+        }])
+        df_perf, _, _ = run_task_pipeline(df_sessions, one=None, verbose=False)
+        assert df_perf['contrasts'].iloc[0] == sorted([0.0, 25.0, 100.0])
+
+
+class TestRunTaskPipelineTrialTiming:
+
+    def test_returns_trial_timing_dataframe(self, monkeypatch):
+        import scripts.task as task_mod
+        from scripts.task import run_task_pipeline
+        from iblnm.task import compute_trial_contrasts
+
+        n = 30
+        np.random.seed(0)
+        sides = np.random.choice([-1, 1], size=n)
+        contrasts_frac = np.random.choice([0, 0.25, 1.0], size=n)
+        stim = np.sort(np.random.uniform(100, 500, n))
+        move = stim + 0.2
+        feedback = move + 0.15
+
+        trials = pd.DataFrame({
+            'contrastLeft': np.where(sides == -1, contrasts_frac, np.nan),
+            'contrastRight': np.where(sides == 1, contrasts_frac, np.nan),
+            'choice': sides,
+            'feedbackType': np.ones(n, dtype=int),
+            'probabilityLeft': np.full(n, 0.5),
+            'stimOn_times': stim,
+            'firstMovement_times': move,
+            'feedback_times': feedback,
+        })
+
+        class FakePS:
+            def __init__(self, *a, **kw):
+                self.trials = None
+                self.session_type = 'training'
+                self.eid = 'eid-1'
+
+            def load_trials(self):
+                self.trials = trials.copy()
+                ct = compute_trial_contrasts(self.trials)
+                self.trials['contrast'] = ct['contrast']
+
+            def validate_n_trials(self):
+                pass
+
+            def validate_event_completeness(self):
+                pass
+
+            def basic_performance(self):
+                return {'fraction_correct': 0.9}
+
+            def block_performance(self):
+                return {}
+
+            def get_trial_timings(self):
+                return pd.DataFrame({
+                    'eid': self.eid,
+                    'trial': range(len(self.trials)),
+                    'reaction_time': move - stim,
+                    'movement_time': feedback - move,
+                    'response_time': feedback - stim,
+                })
+
+        monkeypatch.setattr(task_mod, 'PhotometrySession', FakePS)
+
+        df_sessions = pd.DataFrame([{
+            'eid': 'eid-1', 'subject': 'subj', 'start_time': '2024-01-01T10:00:00',
+            'number': 1, 'session_type': 'training', 'task_protocol': 'proto',
+        }])
+        _, _, df_timing = run_task_pipeline(df_sessions, one=None, verbose=False)
+        assert isinstance(df_timing, pd.DataFrame)
+        assert set(df_timing.columns) >= {'eid', 'trial', 'reaction_time',
+                                           'movement_time', 'response_time'}
+        assert len(df_timing) == n
+        assert (df_timing['eid'] == 'eid-1').all()
 

@@ -1,12 +1,13 @@
 """
 Dataset Overview
 
-Produces five session overview matrices:
+Produces six session overview matrices:
 1. All registered sessions (post-metadata and session-type filtering)
 2. Sessions with raw data (task + photometry)
 3. Sessions with complete data (extracted + sufficient trials + TIPT)
 4. Sessions passing basic photometry QC
 5. Video-ready sessions (extracted task data + video QC pass)
+6. QC-passing sessions only, exploded by target, sorted by target then first session date
 
 All flags are derived from upstream error logs and video.pqt.
 No write-back to any upstream file.
@@ -20,7 +21,7 @@ from iblnm.config import (
     TASK_LOG_FPATH,
     ERRORS_FPATH, FIGURE_DPI,
     SUBJECTS_TO_EXCLUDE, SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
-    VIDEO_FPATH,
+    TARGETNMS_TO_ANALYZE, VIDEO_FPATH,
 )
 from iblnm.util import (
     resolve_duplicate_group,
@@ -167,6 +168,69 @@ _save_matrix(df_sessions, lambda df: df['video_ready'],
              f'Video-ready sessions (n={n_video})',
              '5_video_ready.svg')
 
+# Matrix 6: QC-passing sessions only, exploded by target
+df_sessions = derive_target_nm(df_sessions)
+df_qc = (
+    df_sessions[df_sessions['passes_basic_qc']]
+    .explode(['target_NM', 'brain_region', 'hemisphere'])
+    .loc[lambda df: df['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
+    .copy()
+)
+# One row per subject-NM-session (collapse bilateral fibers for the same NM)
+df_qc['NM'] = df_qc['target_NM'].str.split('-').str[-1]
+df_qc = df_qc.drop_duplicates(subset=['subject', 'NM', 'session_n'])
+df_qc['subject'] = df_qc['subject'] + ' (' + df_qc['NM'] + ')'
+
+# Dense sequential session index per subject (no gaps)
+df_qc = df_qc.sort_values('session_n')
+df_qc['_dense_session_n'] = df_qc.groupby('subject').cumcount()
+
+# Sort by NM (preserving TARGETNMS_TO_ANALYZE order), then by first session start_time
+nm_order = list(dict.fromkeys(t.split('-')[-1] for t in TARGETNMS_TO_ANALYZE))
+nm_rank = {nm: i for i, nm in enumerate(nm_order)}
+first_start = df_qc.groupby('subject')['start_time'].min()
+subject_order = (
+    df_qc[['subject', 'NM']].drop_duplicates()
+    .assign(
+        _nm_rank=lambda df: df['NM'].map(nm_rank),
+        _first_start=lambda df: df['subject'].map(first_start),
+    )
+    .sort_values(['_nm_rank', '_first_start'])
+    ['subject'].tolist()
+)
+
+n_qc_sessions = df_qc['eid'].nunique()
+n_qc_mice = df_qc['subject'].str.extract(r'^(.+?) \(')[0].nunique()
+ax = session_overview_matrix(df_qc, columns='_dense_session_n', highlight='all',
+                             subject_order=subject_order)
+ax.set_title(f'QC-passing sessions by target (n={n_qc_sessions})', fontsize=28)
+ax.set_xlabel('Sessions', fontsize=28)
+ax.set_ylabel('Mice', fontsize=28, labelpad=60)
+ax.tick_params(axis='x', labelsize=28)
+cbar = ax.images[0].colorbar
+if cbar is not None:
+    cbar.ax.tick_params(labelsize=28)
+ax.text(1.0, -0.02, f'{n_qc_sessions} sessions, {n_qc_mice} mice',
+        transform=ax.transAxes, ha='right', va='top', fontsize=28)
+
+# Replace subject labels with one NM label per group
+ax.set_yticks([])
+nm_subjects = {nm: [] for nm in nm_order}
+for i, subj in enumerate(subject_order):
+    nm = subj.rsplit('(', 1)[-1].rstrip(')')
+    nm_subjects[nm].append(i)
+for nm, rows in nm_subjects.items():
+    if rows:
+        mid = (rows[0] + rows[-1]) / 2
+        ax.text(-0.01, mid, nm, transform=ax.get_yaxis_transform(),
+                ha='right', va='center', fontsize=28)
+        if rows[0] > 0:
+            ax.axhline(rows[0] - 0.5, color='black', linewidth=1.5)
+
+set_plotsize(w=48, h=32, ax=ax)
+ax.get_figure().savefig(figures_dir / '6_qc_sessions_by_target.svg',
+                        dpi=FIGURE_DPI, bbox_inches='tight')
+
 
 # =============================================================================
 # Dataset Summary
@@ -186,10 +250,6 @@ print(f"  Video-ready: {n_video}")
 # Target-NM Barplots (per recording, QC-passing sessions only)
 # =============================================================================
 
-# Derive target_NM and NM from brain_region
-# (brain_region already filled and corrected in query_database.py)
-df_sessions = derive_target_nm(df_sessions)
-
 # Explode to one row per recording (brain_region / target_NM are parallel lists)
 df_recordings = (
     df_sessions[df_sessions['passes_basic_qc']]
@@ -205,13 +265,41 @@ if len(df_recordings) > 0:
     ax = target_overview_barplot(df_recordings)
     ax.set_title(f'Complete recordings by target ({n_rec} recordings, {n_ses} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
-    ax.get_figure().savefig(figures_dir / '6_target_overview.svg',
+    ax.get_figure().savefig(figures_dir / '7_target_overview.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
 
     ax = mouse_overview_barplot(df_recordings)
     ax.set_title(f'Mice by target ({n_rec} recordings, {n_ses} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
-    ax.get_figure().savefig(figures_dir / '7_mouse_overview.svg',
+    ax.get_figure().savefig(figures_dir / '8_mouse_overview.svg',
+                            dpi=FIGURE_DPI, bbox_inches='tight')
+
+    df_rec_analyze = df_recordings[df_recordings['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
+    n_rec_a = len(df_rec_analyze)
+    n_ses_a = df_rec_analyze['eid'].nunique()
+    ax = mouse_overview_barplot(df_rec_analyze, min_biased_ephys=1, min_ephys=1)
+    ax.set_title(f'Mice by target, ≥1 session ({n_rec_a} recordings, {n_ses_a} sessions)',
+                 fontsize=28)
+    ax.set_xlabel(ax.get_xlabel(), fontsize=28)
+    ax.set_ylabel(ax.get_ylabel(), fontsize=28)
+    ax.tick_params(axis='both', labelsize=28)
+    ax.legend(fontsize=28)
+    for t in ax.texts:
+        t.set_fontsize(14)
+    set_plotsize(w=24, h=12, ax=ax)
+    ax.get_figure().savefig(figures_dir / '9_mouse_overview_min1.svg',
+                            dpi=FIGURE_DPI, bbox_inches='tight')
+
+    ax = target_overview_barplot(df_rec_analyze)
+    ax.set_title(ax.get_title(), fontsize=28)
+    ax.set_xlabel(ax.get_xlabel(), fontsize=28)
+    ax.set_ylabel(ax.get_ylabel(), fontsize=28)
+    ax.tick_params(axis='both', labelsize=28)
+    ax.legend(fontsize=28)
+    for t in ax.texts:
+        t.set_fontsize(14)
+    set_plotsize(w=24, h=12, ax=ax)
+    ax.get_figure().savefig(figures_dir / '10_target_overview_analyze.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
 else:
     print("No complete recordings to plot.")

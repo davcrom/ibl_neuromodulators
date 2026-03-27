@@ -1628,18 +1628,20 @@ def _make_glm_events(n=200, eid='eid1', brain_region='VTA', hemisphere='l',
     rng = np.random.default_rng(seed)
     contrast = rng.choice([0, 6.25, 12.5, 25, 100], n)
     stim_side = rng.choice(['left', 'right'], n)
-    feedback = rng.choice([-1, 1], n)
+    feedback_type = rng.choice([-1, 1], n)
     log_c = contrast_transform(contrast)
     contra_side = {'l': 'right', 'r': 'left'}[hemisphere]
-    is_contra = (stim_side == contra_side).astype(float)
-    response = (2 + 0.5 * log_c + 1.0 * is_contra + 0.3 * feedback
+    # Deviation coding ±0.5, matching fit_response_glm
+    side = np.where(stim_side == contra_side, 0.5, -0.5)
+    reward = np.where(feedback_type == 1, 0.5, -0.5)
+    response = (2 + 0.5 * log_c + 1.0 * side + 0.3 * reward
                 + rng.normal(0, 0.5, n))
     return pd.DataFrame({
         'eid': eid, 'brain_region': brain_region, 'hemisphere': hemisphere,
         'target_NM': target_nm, 'event': 'stimOn_times',
         'contrast': contrast, 'stim_side': stim_side,
         'signed_contrast': np.where(stim_side == 'left', -contrast, contrast),
-        'feedbackType': feedback, 'probabilityLeft': 0.5,
+        'feedbackType': feedback_type, 'probabilityLeft': 0.5,
         'response_early': response,
     })
 
@@ -1648,14 +1650,14 @@ def _make_glm_coefs(seed=42):
     """Synthetic GLM coefficient matrix with known structure.
 
     Two cohorts: A (20 sessions) and B (5 sessions).
-    A has high log_contrast, low feedback.
-    B has low log_contrast, high feedback.
+    A has high log_contrast, low reward.
+    B has low log_contrast, high reward.
     This guarantees PC1 separates the two groups.
     """
     rng = np.random.default_rng(seed)
     coef_names = [
-        'log_contrast', 'side', 'feedback',
-        'log_contrast:side', 'log_contrast:feedback', 'side:feedback',
+        'log_contrast', 'side', 'reward',
+        'log_contrast:side', 'log_contrast:reward', 'side:reward',
     ]
     n_a, n_b = 20, 5
     rows = []
@@ -1663,7 +1665,7 @@ def _make_glm_coefs(seed=42):
     for i in range(n_a):
         rows.append([2.0 + rng.normal(0, 0.3),   # log_contrast: high
                      rng.normal(0, 0.2),
-                     0.1 + rng.normal(0, 0.2),    # feedback: low
+                     0.1 + rng.normal(0, 0.2),    # reward: low
                      rng.normal(0, 0.1),
                      rng.normal(0, 0.1),
                      rng.normal(0, 0.1)])
@@ -1671,7 +1673,7 @@ def _make_glm_coefs(seed=42):
     for i in range(n_b):
         rows.append([0.1 + rng.normal(0, 0.3),    # log_contrast: low
                      rng.normal(0, 0.2),
-                     2.0 + rng.normal(0, 0.2),    # feedback: high
+                     2.0 + rng.normal(0, 0.2),    # reward: high
                      rng.normal(0, 0.1),
                      rng.normal(0, 0.1),
                      rng.normal(0, 0.1)])
@@ -1792,6 +1794,66 @@ class TestPcaScoreStats:
         assert kw_p < 0.01
 
 
+class TestIcaGlmCoefficients:
+
+    def test_returns_result_with_expected_attributes(self):
+        from iblnm.analysis import ica_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = ica_glm_coefficients(coefs, n_components=3)
+        assert hasattr(result, 'scores')
+        assert hasattr(result, 'components')
+        assert hasattr(result, 'explained_variance_ratio')
+        assert hasattr(result, 'feature_names')
+        assert hasattr(result, 'target_labels')
+
+    def test_scores_shape(self):
+        from iblnm.analysis import ica_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = ica_glm_coefficients(coefs, n_components=3)
+        assert result.scores.shape == (25, 3)
+
+    def test_components_shape(self):
+        from iblnm.analysis import ica_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = ica_glm_coefficients(coefs, n_components=3)
+        assert result.components.shape == (3, 6)
+
+    def test_variance_explained_positive(self):
+        """Post-hoc variance explained should be positive for each IC."""
+        from iblnm.analysis import ica_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = ica_glm_coefficients(coefs, n_components=3)
+        assert all(v > 0 for v in result.explained_variance_ratio)
+
+    def test_ordered_by_variance(self):
+        """Components should be sorted by descending variance explained."""
+        from iblnm.analysis import ica_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = ica_glm_coefficients(coefs, n_components=3)
+        ve = result.explained_variance_ratio
+        assert all(ve[i] >= ve[i + 1] for i in range(len(ve) - 1))
+
+    def test_drops_intercept_if_present(self):
+        from iblnm.analysis import ica_glm_coefficients
+        coefs = _make_glm_coefs()
+        coefs.insert(0, 'intercept', 1.0)
+        result = ica_glm_coefficients(coefs, n_components=3)
+        assert 'intercept' not in result.feature_names
+
+    def test_some_ic_separates_groups(self):
+        """With known group structure, at least one IC should separate A and B."""
+        from iblnm.analysis import ica_glm_coefficients
+        coefs = _make_glm_coefs()
+        result = ica_glm_coefficients(coefs, n_components=2)
+        # Check all ICs — at least one should show clear separation
+        max_sep = max(
+            abs(result.scores[result.target_labels == 'A', i].mean()
+                - result.scores[result.target_labels == 'B', i].mean())
+            for i in range(2)
+        )
+        assert max_sep > 1.0
+
+
 class TestFitResponseGLM:
     def test_known_coefficients(self):
         """Synthetic data with known linear relationship recovers coefficients."""
@@ -1800,15 +1862,17 @@ class TestFitResponseGLM:
         n = 400
         contrast = rng.choice([0, 6.25, 12.5, 25, 100], n)
         stim_side = rng.choice(['left', 'right'], n)
-        is_contra = (stim_side == 'right').astype(float)  # hemisphere='l'
-        feedback = rng.choice([-1, 1], n).astype(float)
+        # Deviation coding ±0.5, matching fit_response_glm
+        side = np.where(stim_side == 'right', 0.5, -0.5)  # hemisphere='l'
+        feedback_type = rng.choice([-1, 1], n)
+        reward = np.where(feedback_type == 1, 0.5, -0.5)
         log_c = contrast_transform(contrast)
 
         # 7 known coefficients
         true_beta = np.array([2.0, 0.5, 1.0, 0.3, -0.2, 0.1, 0.4])
         X = np.column_stack([
-            np.ones(n), log_c, is_contra, feedback,
-            log_c * is_contra, log_c * feedback, is_contra * feedback,
+            np.ones(n), log_c, side, reward,
+            log_c * side, log_c * reward, side * reward,
         ])
         response = X @ true_beta + rng.normal(0, 0.1, n)
 
@@ -1817,7 +1881,7 @@ class TestFitResponseGLM:
             'target_NM': 'VTA-DA', 'event': 'stimOn_times',
             'contrast': contrast, 'stim_side': stim_side,
             'signed_contrast': np.where(stim_side == 'left', -contrast, contrast),
-            'feedbackType': feedback.astype(int),
+            'feedbackType': feedback_type,
             'probabilityLeft': 0.5,
             'response_early': response,
         })
@@ -1874,13 +1938,13 @@ class TestFitResponseGLM:
             fit_response_glm(events, 'nonexistent_event')
 
     def test_column_names(self):
-        """Output columns match expected coefficient names."""
+        """Output columns use 'reward' (not 'feedback') for consistency with LMM."""
         from iblnm.analysis import fit_response_glm
         events = _make_glm_events(n=200, seed=0)
         coefs, ses = fit_response_glm(events, 'stimOn_times')
-        expected = ['intercept', 'log_contrast', 'side', 'feedback',
-                    'log_contrast:side', 'log_contrast:feedback',
-                    'side:feedback']
+        expected = ['intercept', 'log_contrast', 'side', 'reward',
+                    'log_contrast:side', 'log_contrast:reward',
+                    'side:reward']
         assert list(coefs.columns) == expected
         assert list(ses.columns) == expected
 

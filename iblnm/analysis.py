@@ -597,6 +597,85 @@ def pca_glm_coefficients(coefs, n_components=3, cohort_weighted=False):
     )
 
 
+def ica_glm_coefficients(coefs, n_components=3, cohort_weighted=False):
+    """ICA on per-session GLM coefficient vectors.
+
+    Drops the intercept column if present, standardizes each coefficient
+    (z-score across sessions), then fits FastICA. Components are sorted by
+    descending post-hoc variance explained (fraction of total variance in the
+    standardized data captured by each IC's projection).
+
+    Parameters
+    ----------
+    coefs : pd.DataFrame
+        (n_recordings, n_coefficients) indexed by ``(eid, target_NM, fiber_idx)``.
+    n_components : int
+        Number of independent components to extract.
+    cohort_weighted : bool
+        If True, weight sessions by 1/n_k so each target_NM contributes
+        equally. Scores are computed by projecting unweighted data.
+
+    Returns
+    -------
+    GLMPCAResult
+        Same container as PCA, with post-hoc variance explained per IC.
+    """
+    from sklearn.decomposition import FastICA
+
+    if 'intercept' in coefs.columns:
+        coefs = coefs.drop(columns='intercept')
+
+    feature_names = list(coefs.columns)
+    target_labels = coefs.index.get_level_values('target_NM').values
+
+    X = coefs.values.astype(float)
+
+    # Standardize each feature
+    mu = np.nanmean(X, axis=0)
+    sigma = np.nanstd(X, axis=0)
+    sigma[sigma == 0] = 1.0
+    X_std = (X - mu) / sigma
+
+    if cohort_weighted:
+        unique_targets, counts = np.unique(target_labels, return_counts=True)
+        size_map = dict(zip(unique_targets, counts))
+        weights = np.array([1.0 / size_map[t] for t in target_labels])
+        weights = weights * len(weights) / weights.sum()
+        sqrt_w = np.sqrt(weights)[:, np.newaxis]
+        X_for_ica = X_std * sqrt_w
+    else:
+        X_for_ica = X_std
+
+    n_components = min(n_components, X_std.shape[1])
+    ica = FastICA(n_components=n_components, random_state=0, max_iter=1000)
+    ica.fit(X_for_ica)
+    components = ica.components_
+
+    # Project unweighted standardized data onto ICs
+    scores = X_std @ np.linalg.pinv(components)
+
+    # Post-hoc variance explained per IC
+    total_var = np.sum(np.var(X_std, axis=0))
+    var_per_ic = np.array([np.var(scores[:, i]) * np.sum(components[i] ** 2)
+                           for i in range(n_components)])
+    explained_variance_ratio = var_per_ic / total_var
+
+    # Sort by descending variance explained
+    order = np.argsort(-explained_variance_ratio)
+    scores = scores[:, order]
+    components = components[order]
+    explained_variance_ratio = explained_variance_ratio[order]
+
+    return GLMPCAResult(
+        scores=scores,
+        components=components,
+        explained_variance_ratio=explained_variance_ratio,
+        feature_names=feature_names,
+        target_labels=target_labels,
+        index=coefs.index,
+    )
+
+
 def pca_score_stats(pca_result):
     """Kruskal-Wallis and pairwise Mann-Whitney U tests on PC scores.
 
@@ -653,12 +732,103 @@ def pca_score_stats(pca_result):
     return pd.DataFrame(rows)
 
 
+def pca_subject_score_stats(pca_result, recordings):
+    """Subject-level KW and pairwise Mann-Whitney U on PC scores.
+
+    Averages scores per subject before testing, so each subject contributes
+    one observation regardless of how many recordings it has.
+
+    Parameters
+    ----------
+    pca_result : GLMPCAResult
+    recordings : pd.DataFrame
+        Must contain 'eid' and 'subject' columns to map recordings to subjects.
+
+    Returns
+    -------
+    subject_means : pd.DataFrame
+        Columns: subject, target_NM, pc, mean, sem.
+    stats : pd.DataFrame
+        Same schema as ``pca_score_stats`` output.
+    """
+    from itertools import combinations
+    from scipy.stats import kruskal, mannwhitneyu
+
+    # Map eid → subject
+    eid_to_subject = recordings.drop_duplicates('eid').set_index('eid')['subject']
+    eids = pca_result.index.get_level_values('eid')
+    subjects = eid_to_subject.reindex(eids).values
+
+    n_pcs = pca_result.scores.shape[1]
+    targets = sorted(set(pca_result.target_labels))
+
+    # Build per-recording long table, then aggregate
+    df = pd.DataFrame({
+        'subject': subjects,
+        'target_NM': pca_result.target_labels,
+    })
+    for pc_idx in range(n_pcs):
+        df[f'pc{pc_idx + 1}'] = pca_result.scores[:, pc_idx]
+
+    # Subject means and SEM
+    mean_rows = []
+    for (subj, tnm), g in df.groupby(['subject', 'target_NM']):
+        for pc_idx in range(n_pcs):
+            col = f'pc{pc_idx + 1}'
+            mean_rows.append({
+                'subject': subj,
+                'target_NM': tnm,
+                'pc': pc_idx + 1,
+                'mean': g[col].mean(),
+                'sem': g[col].sem() if len(g) > 1 else 0.0,
+            })
+    subject_means = pd.DataFrame(mean_rows)
+
+    # Stats on subject means
+    stat_rows = []
+    for pc_idx in range(n_pcs):
+        pc_num = pc_idx + 1
+        sm = subject_means[subject_means['pc'] == pc_num]
+        groups = {t: sm.loc[sm['target_NM'] == t, 'mean'].values
+                  for t in targets}
+
+        group_arrays = [g for g in groups.values() if len(g) >= 2]
+        if len(group_arrays) >= 2:
+            h, p = kruskal(*group_arrays)
+        else:
+            h, p = np.nan, np.nan
+        stat_rows.append({
+            'pc': pc_num, 'kruskal_h': h, 'kruskal_p': p,
+            'target_a': None, 'target_b': None,
+            'mwu_u': np.nan, 'mwu_p': np.nan,
+        })
+
+        for ta, tb in combinations(targets, 2):
+            ga, gb = groups[ta], groups[tb]
+            if len(ga) >= 2 and len(gb) >= 2:
+                u, mp = mannwhitneyu(ga, gb, alternative='two-sided')
+            else:
+                u, mp = np.nan, np.nan
+            stat_rows.append({
+                'pc': pc_num, 'kruskal_h': h, 'kruskal_p': p,
+                'target_a': ta, 'target_b': tb,
+                'mwu_u': u, 'mwu_p': mp,
+            })
+
+    stats = pd.DataFrame(stat_rows)
+    return subject_means, stats
+
+
 def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
     """Fit per-recording OLS models and return coefficients as features.
 
     For each recording in the events DataFrame, fits:
-    ``response_early ~ 1 + log_contrast + side + feedback
-    + log_contrast:side + log_contrast:feedback + side:feedback``
+    ``response_early ~ 1 + log_contrast + side + reward
+    + log_contrast:side + log_contrast:reward + side:reward``
+
+    Uses deviation coding (±0.5) for side and reward, consistent with the LMM:
+        side:   contra = +0.5, ipsi = −0.5
+        reward: correct = +0.5, incorrect = −0.5
 
     Only unbiased-block trials (probabilityLeft == 0.5) are used.
 
@@ -696,6 +866,7 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
             f"Available: {list(available_events)}"
         )
 
+    # FIXME: these filters need to go in the method that calls this fitting function
     # Filter to requested event and unbiased blocks
     df = events[events['event'] == event_name].copy()
     df = df[df['probabilityLeft'] == 0.5]
@@ -705,13 +876,14 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
         df = add_relative_contrast(df)
 
     coef_names = [
-        'intercept', 'log_contrast', 'side', 'feedback',
-        'log_contrast:side', 'log_contrast:feedback', 'side:feedback',
+        'intercept', 'log_contrast', 'side', 'reward',
+        'log_contrast:side', 'log_contrast:reward', 'side:reward',
     ]
 
     coef_rows = {}
     se_rows = {}
 
+    # FIXME: this loop should be in the group method, not in the function
     for (eid, brain_region), grp in df.groupby(['eid', 'brain_region']):
         # Drop NaN responses
         valid = grp.dropna(subset=['response_early'])
@@ -720,17 +892,18 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
 
         y = valid['response_early'].values
         log_c = _transform(valid['contrast'].values)
-        side = (valid['side'] == 'contra').astype(float).values
-        feedback = valid['feedbackType'].values.astype(float)
+        # Deviation coding ±0.5, matching fit_response_lmm
+        side = np.where(valid['side'] == 'contra', 0.5, -0.5)
+        reward = np.where(valid['feedbackType'] == 1, 0.5, -0.5)
 
         X = np.column_stack([
             np.ones(len(y)),
             log_c,
             side,
-            feedback,
+            reward,
             log_c * side,
-            log_c * feedback,
-            side * feedback,
+            log_c * reward,
+            side * reward,
         ])
 
         # Check rank
