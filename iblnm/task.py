@@ -483,3 +483,28 @@ def compute_bias_shift(fit_20: dict, fit_80: dict) -> float:
     return fit_80['bias'] - fit_20['bias']
 
 
+def sort_trials_by_type(trials):
+    """Return sort indices for a response matrix: incorrect then correct, each group by descending contrast.
+
+    Designed for use with ``imshow(origin='lower')``: first indices appear at
+    the bottom of the heatmap, last at the top. Incorrect trials at the bottom,
+    correct at the top; within each group the highest-contrast trials come first.
+
+    Parameters
+    ----------
+    trials : pd.DataFrame
+        Must have 'feedbackType' (1 = correct, -1 = incorrect) and 'contrast'.
+
+    Returns
+    -------
+    np.ndarray of int
+        Positional indices into the trial axis.
+    """
+    pos = np.arange(len(trials))
+    correct = (trials['feedbackType'] == 1).values
+    contrast = trials['contrast'].values
+
+    correct_idx = pos[correct][np.argsort(-contrast[correct])] if correct.any() else pos[correct]
+    incorrect_idx = pos[~correct][np.argsort(-contrast[~correct])] if (~correct).any() else pos[~correct]
+
+    return np.concatenate([incorrect_idx, correct_idx])

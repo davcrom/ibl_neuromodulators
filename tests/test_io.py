@@ -98,3 +98,10 @@ class TestGetBrainRegion:
         result = get_brain_region(mock_session, one=mock_one)
         assert result['brain_region'] == []
         assert result['hemisphere'] == []
+
+    def test_experiment_desc_uses_exact_filename(self, mock_session, mock_one):
+        """load_dataset is called with the exact filename, not a wildcard pattern."""
+        mock_one.load_dataset.return_value = {'devices': {}}
+        get_brain_region(mock_session, one=mock_one)
+        first_call_dataset = mock_one.load_dataset.call_args_list[0][0][1]
+        assert first_call_dataset == '_ibl_experiment.description.yaml'

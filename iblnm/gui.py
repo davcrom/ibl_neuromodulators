@@ -26,6 +26,7 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySession
 from iblnm.io import _get_default_connection
+from iblnm.task import sort_trials_by_type
 
 DEMO_EID = '2025366a-c9aa-4b6c-97be-8af40eda6410'
 
@@ -57,6 +58,7 @@ class PhotometrySessionViewer:
         self._baseline_on = False
         self._mask_on = False
         self._events_on = False
+        self._sort_on = False
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
@@ -72,6 +74,10 @@ class PhotometrySessionViewer:
     def _has_responses(self):
         return (hasattr(self.session, 'responses')
                 and self.session.responses is not None)
+
+    def _has_trials(self):
+        return (hasattr(self.session, 'trials')
+                and self.session.trials is not None)
 
     def _events(self):
         """Return events sorted by EVENT_ORDER; unknowns appended at the end."""
@@ -149,6 +155,8 @@ class PhotometrySessionViewer:
         controls = [('events', 'Events')]
         if self._has_responses():
             controls += [('baseline', 'Baseline'), ('mask', 'Mask events')]
+        if self._has_responses() and self._has_trials():
+            controls.append(('sort', 'Sort'))
 
         region_w = len(regions) * btn_w + max(len(regions) - 1, 0) * gap
         ctrl_w   = (len(controls) * btn_w + max(len(controls) - 1, 0) * gap
@@ -173,8 +181,10 @@ class PhotometrySessionViewer:
                     btn.on_clicked(self._toggle_events)
                 elif key == 'baseline':
                     btn.on_clicked(self._toggle_baseline)
-                else:
+                elif key == 'mask':
                     btn.on_clicked(self._toggle_mask)
+                else:
+                    btn.on_clicked(self._toggle_sort)
                 self._buttons[key] = btn
 
     def _add_event_lines(self, ax):
@@ -217,6 +227,12 @@ class PhotometrySessionViewer:
         self._mask_on = not self._mask_on
         color = '#a0c4ff' if self._mask_on else '#e8e8e8'
         self._buttons['mask'].ax.set_facecolor(color)
+        self._switch_region(self._current_region)
+
+    def _toggle_sort(self, _):
+        self._sort_on = not self._sort_on
+        color = '#a0c4ff' if self._sort_on else '#e8e8e8'
+        self._buttons['sort'].ax.set_facecolor(color)
         self._switch_region(self._current_region)
 
     def _get_transformed_responses(self):
@@ -283,6 +299,52 @@ class PhotometrySessionViewer:
         ax.set_title(f'Preprocessed — {region}', fontsize=8)
         ax.set_xlim(t[0], t[-1])
 
+    def _draw_heatmap(self, ax, raw, resp, tpts):
+        """Draw RdBu_r heatmap with NaN masking and zero-line."""
+        mask = np.isnan(resp)
+        heat_data = np.ma.array(raw, mask=mask)
+        vmax = max(3 * np.nanstd(raw), 1e-6)
+        cmap = plt.get_cmap('RdBu_r').copy()
+        cmap.set_bad(color='white')
+        ax.imshow(
+            heat_data, aspect='auto', origin='lower', cmap=cmap,
+            vmin=-vmax, vmax=vmax,
+            extent=[tpts[0], tpts[-1], 0, raw.shape[0]],
+        )
+        ax.axvline(0, color='k', lw=0.7, ls='--')
+        ax.set_ylabel('Trial', fontsize=7)
+        ax.tick_params(labelbottom=False)
+
+    def _plot_psth_by_type(self, ax, resp, trials, tpts, event_color):
+        """Mean traces split by feedback type × contrast.
+
+        Correct trials: event color at alpha proportional to contrast.
+        Incorrect trials: gray at alpha proportional to contrast.
+        """
+        correct = (trials['feedbackType'] == 1).values
+        contrast_vals = trials['contrast'].values
+        contrasts = sorted(trials['contrast'].unique())
+        max_c = contrasts[-1] if contrasts[-1] > 0 else 1.0
+
+        for c in contrasts:
+            c_mask = np.isclose(contrast_vals, c)
+            alpha = 0.25 + 0.75 * (c / max_c)
+
+            corr_mask = c_mask & correct
+            if corr_mask.sum() > 0:
+                ax.plot(tpts, np.nanmean(resp[corr_mask], axis=0),
+                        color=event_color, alpha=alpha, lw=1)
+
+            incorr_mask = c_mask & ~correct
+            if incorr_mask.sum() > 0:
+                ax.plot(tpts, np.nanmean(resp[incorr_mask], axis=0),
+                        color='gray', alpha=alpha, lw=1)
+
+        ax.axhline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
+        ax.axvline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
+        ax.set_ylabel('z-score', fontsize=7)
+        ax.set_xlabel('Time (s)', fontsize=7)
+
     def _plot_responses(self, ax_heat, ax_mean, event, region):
         ax_heat.cla()
         ax_mean.cla()
@@ -290,33 +352,30 @@ class PhotometrySessionViewer:
         tpts = self.session.responses.coords['time'].values
         raw  = self.session.responses.sel(region=region, event=event).values  # (n_trials, n_times)
         resp = self._get_transformed_responses().sel(region=region, event=event).values
-
-        # Heatmap — raw signal; blank cells that are NaN in transformed response
-        mask = np.isnan(resp)
-        heat_data = np.ma.array(raw, mask=mask)
-        vmax = max(3 * np.nanstd(raw), 1e-6)
-        cmap = plt.get_cmap('RdBu_r').copy()
-        cmap.set_bad(color='white')
-        ax_heat.imshow(
-            heat_data, aspect='auto', origin='lower', cmap=cmap,
-            vmin=-vmax, vmax=vmax,
-            extent=[tpts[0], tpts[-1], 0, raw.shape[0]],
-        )
-        ax_heat.axvline(0, color='k', lw=0.7, ls='--')
-        ax_heat.set_ylabel('Trial', fontsize=7)
-        ax_heat.set_title(event.replace('_times', ''), fontsize=8)
-        ax_heat.tick_params(labelbottom=False)
-
-        # Mean ± SEM — transformed
-        mean = np.nanmean(resp, axis=0)
-        err  = scipy_sem(resp, axis=0, nan_policy='omit')
         color = EVENT_COLORS.get(event, 'black')
-        ax_mean.plot(tpts, mean, color=color, lw=1)
-        ax_mean.fill_between(tpts, mean - err, mean + err, color=color, alpha=0.3)
-        ax_mean.axhline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
-        ax_mean.axvline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
-        ax_mean.set_ylabel('z-score', fontsize=7)
-        ax_mean.set_xlabel('Time (s)', fontsize=7)
+
+        if self._sort_on and self._has_trials():
+            trials = self.session.trials
+            sort_idx = sort_trials_by_type(trials)
+            n_incorrect = (~(trials['feedbackType'] == 1).values).sum()
+
+            self._draw_heatmap(ax_heat, raw[sort_idx], resp[sort_idx], tpts)
+            ax_heat.axhline(n_incorrect, color='k', lw=0.8, ls='-')
+            ax_heat.set_title(event.replace('_times', ''), fontsize=8)
+
+            self._plot_psth_by_type(ax_mean, resp, trials, tpts, color)
+        else:
+            self._draw_heatmap(ax_heat, raw, resp, tpts)
+            ax_heat.set_title(event.replace('_times', ''), fontsize=8)
+
+            mean = np.nanmean(resp, axis=0)
+            err  = scipy_sem(resp, axis=0, nan_policy='omit')
+            ax_mean.plot(tpts, mean, color=color, lw=1)
+            ax_mean.fill_between(tpts, mean - err, mean + err, color=color, alpha=0.3)
+            ax_mean.axhline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
+            ax_mean.axvline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
+            ax_mean.set_ylabel('z-score', fontsize=7)
+            ax_mean.set_xlabel('Time (s)', fontsize=7)
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #

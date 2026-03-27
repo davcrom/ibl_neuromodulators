@@ -102,7 +102,7 @@ def get_brain_region(session, one=None):
 
     # Try experiment description
     try:
-        session_desc = one.load_dataset(session['eid'], '*experiment.desc*')
+        session_desc = one.load_dataset(session['eid'], '_ibl_experiment.description.yaml')
         fibers = session_desc.get('devices', {}).get('neurophotometrics', {}).get('fibers', {})
         regions = [fiber.get('location', '') for fiber in fibers.values()]
         session['brain_region'] = regions
