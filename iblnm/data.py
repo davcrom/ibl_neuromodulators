@@ -36,12 +36,13 @@ class PhotometrySession(PhotometrySessionLoader):
         Initialize a PhotometrySession from a pandas Series.
 
         Parameters:
-            session_series (pd.Series): A pandas Series containing session metadata
+            session_series (pd.Series): A pandas Series containing session metadata.
+                Required fields: eid, subject, start_time, number.
+                All other fields are optional and default to safe empty values.
         """
         self.eid = session_series['eid']
         self.subject = session_series['subject']
 
-        # Parse start_time as datetime if it's a string
         start_time = session_series['start_time']
         if isinstance(start_time, str):
             self.start_time = datetime.fromisoformat(start_time)
@@ -53,14 +54,26 @@ class PhotometrySession(PhotometrySessionLoader):
         self.projects = session_series.get('projects', [])
         self.url = session_series.get('url')
         self.session_n = session_series.get('session_n')
-        self.task_protocol = session_series['task_protocol']
-        self.session_type = session_series['session_type']
+        self.task_protocol = session_series.get('task_protocol', '')
+        self.session_type = session_series.get('session_type', '')
         self.NM = session_series.get('NM')
-        self.datasets = session_series.get('datasets', [])
+        self.strain = session_series.get('strain')
+        self.line = session_series.get('line')
+        self.genotype = session_series.get('genotype')
+        self.users = list(session_series.get('users', []))
+        self.end_time = session_series.get('end_time')
+        self.datasets = list(session_series.get('datasets', []))
+        self.session_length = session_series.get('session_length')
+        self.day_n = session_series.get('day_n')
+
         raw_br = session_series.get('brain_region', [])
         self.brain_region = list(raw_br) if isinstance(raw_br, (list, np.ndarray)) else []
         raw_hm = session_series.get('hemisphere', [])
         self.hemisphere = list(raw_hm) if isinstance(raw_hm, (list, np.ndarray)) else []
+        raw_tnm = session_series.get('target_NM', [])
+        self.target_NM = list(raw_tnm) if isinstance(raw_tnm, (list, np.ndarray)) else []
+
+        self.errors = []
 
         super().__init__(*args, eid=self.eid, **kwargs)
         if not isinstance(self.photometry, dict):
@@ -89,22 +102,211 @@ class PhotometrySession(PhotometrySessionLoader):
 
 
     def to_dict(self) -> dict:
-        """Convert the session to a dictionary."""
+        """Convert the session metadata to a dictionary."""
         return {
             'eid': self.eid,
             'subject': self.subject,
             'start_time': self.start_time.isoformat(),
             'number': self.number,
-            'lab': self.lab,
+            'task_protocol': self.task_protocol,
+            'session_type': self.session_type,
             'projects': self.projects,
+            'lab': self.lab,
             'url': self.url,
-            'task_protocol': self.task_protocol
+            'session_n': self.session_n,
+            'NM': self.NM,
+            'strain': self.strain,
+            'line': self.line,
+            'genotype': self.genotype,
+            'users': self.users,
+            'end_time': self.end_time,
+            'brain_region': self.brain_region,
+            'hemisphere': self.hemisphere,
+            'target_NM': self.target_NM,
+            'datasets': self.datasets,
+            'session_length': self.session_length,
+            'day_n': self.day_n,
         }
 
 
     def to_series(self) -> pd.Series:
         return pd.Series(self.to_dict())
 
+    @classmethod
+    def from_h5(cls, fpath, one=None):
+        """Construct a PhotometrySession from a saved H5 file.
+
+        Reads the /metadata group to build the session Series, then loads
+        all other available groups (errors, signal, trials, responses, wheel).
+
+        Parameters
+        ----------
+        fpath : Path or str
+            Path to the HDF5 file.
+        one : one.api.One, optional
+            ONE connection instance. Not required for cached data access.
+        """
+        import h5py
+
+        # Read metadata to build the init Series
+        with h5py.File(fpath, 'r') as f:
+            if 'metadata' not in f:
+                raise ValueError(f"H5 file has no /metadata group: {fpath}")
+            grp = f['metadata']
+            data = {}
+            for attr, is_list in cls._METADATA_FIELDS:
+                if is_list:
+                    if attr in grp:
+                        data[attr] = [v.decode() if isinstance(v, bytes) else v
+                                      for v in grp[attr][:]]
+                    else:
+                        data[attr] = []
+                else:
+                    if attr in grp.attrs:
+                        val = grp.attrs[attr]
+                        if isinstance(val, bytes):
+                            val = val.decode()
+                        if val == '__none__':
+                            val = None
+                        data[attr] = val
+
+        series = pd.Series(data)
+        if one is not None:
+            ps = cls(series, one=one, load_data=False)
+        else:
+            # Bypass parent __init__ which requires ONE connection.
+            # All attributes are set manually from the H5 metadata.
+            ps = object.__new__(cls)
+            ps.one = None
+            ps.session_path = ''
+            ps.eid = series.get('eid', '')
+            ps.revision = ''
+            ps.photometry = {}
+            ps.qc = pd.DataFrame()
+            ps.errors = []
+            # Set all metadata attrs from series
+            ps.subject = series.get('subject', '')
+            start_time = series.get('start_time', '')
+            if isinstance(start_time, str) and start_time:
+                ps.start_time = datetime.fromisoformat(start_time)
+            else:
+                ps.start_time = start_time
+            ps.number = int(series.get('number', 0))
+            ps.lab = series.get('lab')
+            ps.projects = list(series.get('projects', []))
+            ps.url = series.get('url')
+            ps.session_n = series.get('session_n')
+            ps.task_protocol = series.get('task_protocol', '')
+            ps.session_type = series.get('session_type', '')
+            ps.NM = series.get('NM')
+            ps.strain = series.get('strain')
+            ps.line = series.get('line')
+            ps.genotype = series.get('genotype')
+            ps.users = list(series.get('users', []))
+            ps.end_time = series.get('end_time')
+            ps.datasets = list(series.get('datasets', []))
+            ps.session_length = series.get('session_length')
+            ps.day_n = series.get('day_n')
+            raw_br = series.get('brain_region', [])
+            ps.brain_region = list(raw_br) if isinstance(raw_br, (list, np.ndarray)) else []
+            raw_hm = series.get('hemisphere', [])
+            ps.hemisphere = list(raw_hm) if isinstance(raw_hm, (list, np.ndarray)) else []
+            raw_tnm = series.get('target_NM', [])
+            ps.target_NM = list(raw_tnm) if isinstance(raw_tnm, (list, np.ndarray)) else []
+
+        # Load remaining groups
+        ps.load_h5(fpath, groups=['errors', 'signal', 'trials', 'responses', 'wheel'])
+        return ps
+
+    def from_alyx(self):
+        """Enrich session metadata by querying Alyx.
+
+        Calls io and validation functions to populate subject info,
+        brain regions, datasets, session type, and target NM. All errors
+        are logged to self.errors rather than raised.
+
+        Returns self for chaining.
+        """
+        from iblnm.io import (
+            get_subject_info, get_session_dict, get_brain_region, get_datasets,
+        )
+        from iblnm.validation import (
+            validate_subject, validate_strain, validate_line,
+            validate_neuromodulator, validate_brain_region, validate_hemisphere,
+            validate_datasets, fill_hemisphere_from_fiber_insertion_table,
+        )
+        from iblnm.util import get_session_type, get_targetNM, get_session_length
+
+        exlog = []
+        s = self.to_series()
+
+        # Subject info (strain, line, genotype, NM)
+        s = get_subject_info(s, one=self.one, exlog=exlog)
+        validate_subject(s, exlog=exlog)
+        validate_strain(s, exlog=exlog)
+        validate_line(s, exlog=exlog)
+        validate_neuromodulator(s, exlog=exlog)
+
+        # Session metadata (users, lab, end_time)
+        s = get_session_dict(s, one=self.one, exlog=exlog)
+
+        # Brain regions and hemispheres
+        s = get_brain_region(s, one=self.one, exlog=exlog)
+        s = fill_hemisphere_from_fiber_insertion_table(s, exlog=exlog)
+        validate_brain_region(s, exlog=exlog)
+        validate_hemisphere(s, exlog=exlog)
+
+        # Datasets
+        s = get_datasets(s, one=self.one, exlog=exlog)
+        validate_datasets(s, exlog=exlog)
+
+        # Derived fields
+        s = get_session_type(s, exlog=exlog)
+        s = get_targetNM(s, exlog=exlog)
+        s = get_session_length(s, exlog=exlog)
+
+        # Update self from enriched series
+        for attr, _ in self._METADATA_FIELDS:
+            if attr in s.index:
+                val = s[attr]
+                if attr == 'start_time' and isinstance(val, str):
+                    val = datetime.fromisoformat(val)
+                setattr(self, attr, val)
+
+        # Normalize list attrs
+        for attr in ('brain_region', 'hemisphere', 'target_NM',
+                     'users', 'datasets', 'projects'):
+            val = getattr(self, attr, [])
+            if isinstance(val, np.ndarray):
+                setattr(self, attr, list(val))
+            elif not isinstance(val, list):
+                setattr(self, attr, [])
+
+        self.errors.extend(exlog)
+        return self
+
+    def log_error(self, error):
+        """Log an exception to the session's error list.
+
+        Parameters
+        ----------
+        error : Exception
+            The exception to log. Type, message, and traceback are captured.
+        """
+        from iblnm.validation import make_log_entry
+        self.errors.append(make_log_entry(self.eid, error=error))
+
+    # Metadata fields: (attr_name, is_list)
+    # Scalars are stored as H5 attrs, lists as H5 datasets.
+    _METADATA_FIELDS = [
+        ('eid', False), ('subject', False), ('start_time', False),
+        ('number', False), ('task_protocol', False), ('session_type', False),
+        ('lab', False), ('NM', False), ('strain', False), ('line', False),
+        ('genotype', False), ('end_time', False), ('session_length', False),
+        ('day_n', False), ('session_n', False), ('url', False),
+        ('projects', True), ('users', True), ('brain_region', True),
+        ('hemisphere', True), ('target_NM', True), ('datasets', True),
+    ]
 
     def load_trials(self):
         try:
@@ -315,7 +517,7 @@ class PhotometrySession(PhotometrySessionLoader):
             Output path. Defaults to SESSIONS_H5_DIR / {eid}.h5.
         groups : sequence of str, optional
             Which data groups to write. Any subset of:
-            'signal', 'trials', 'responses', 'wheel'.
+            'metadata', 'errors', 'signal', 'trials', 'responses', 'wheel'.
             None applies mode-based defaults:
               mode='w' → ('signal',)
               mode='a' → all available among ('trials', 'responses', 'wheel')
@@ -340,6 +542,42 @@ class PhotometrySession(PhotometrySessionLoader):
                 ) if available]
 
         with h5py.File(fpath, mode) as f:
+            if 'metadata' in groups:
+                if 'metadata' in f:
+                    del f['metadata']
+                grp = f.create_group('metadata')
+                for attr, is_list in self._METADATA_FIELDS:
+                    val = getattr(self, attr, None)
+                    if is_list:
+                        items = list(val) if val else []
+                        grp.create_dataset(
+                            attr,
+                            data=[s.encode() if isinstance(s, str) else s
+                                  for s in items],
+                            dtype=h5py.string_dtype() if items else h5py.string_dtype(),
+                        )
+                    else:
+                        if attr == 'start_time' and hasattr(val, 'isoformat'):
+                            val = val.isoformat()
+                        if val is None:
+                            grp.attrs[attr] = '__none__'
+                        elif isinstance(val, str):
+                            grp.attrs[attr] = val
+                        else:
+                            grp.attrs[attr] = val
+
+            if 'errors' in groups:
+                if 'errors' in f:
+                    del f['errors']
+                grp = f.create_group('errors')
+                if self.errors:
+                    for col in ('eid', 'error_type', 'error_message', 'traceback'):
+                        vals = [str(e.get(col, '') or '') for e in self.errors]
+                        grp.create_dataset(col, data=vals,
+                                           dtype=h5py.string_dtype())
+                # Empty group signals "no errors" — distinguishable from
+                # "errors not yet written" (no group at all).
+
             if 'signal' in groups:
                 f.attrs['eid'] = self.eid
                 f.attrs['subject'] = self.subject
@@ -405,13 +643,46 @@ class PhotometrySession(PhotometrySessionLoader):
             Path to the HDF5 file.
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
-            'signal', 'trials', 'responses', 'wheel'.
+            'metadata', 'errors', 'signal', 'trials', 'responses', 'wheel'.
             None loads all groups present in the file.
         """
         import h5py
         import xarray as xr
 
         with h5py.File(fpath, 'r') as f:
+            if (groups is None or 'metadata' in groups) and 'metadata' in f:
+                grp = f['metadata']
+                for attr, is_list in self._METADATA_FIELDS:
+                    if is_list:
+                        if attr in grp:
+                            vals = [v.decode() if isinstance(v, bytes) else v
+                                    for v in grp[attr][:]]
+                            setattr(self, attr, vals)
+                    else:
+                        if attr in grp.attrs:
+                            val = grp.attrs[attr]
+                            if isinstance(val, bytes):
+                                val = val.decode()
+                            if val == '__none__':
+                                val = None
+                            if attr == 'start_time' and isinstance(val, str):
+                                val = datetime.fromisoformat(val)
+                            setattr(self, attr, val)
+
+            if (groups is None or 'errors' in groups) and 'errors' in f:
+                err_grp = f['errors']
+                if 'error_type' in err_grp:
+                    n = len(err_grp['error_type'])
+                    self.errors = []
+                    for i in range(n):
+                        entry = {}
+                        for col in ('eid', 'error_type', 'error_message', 'traceback'):
+                            val = err_grp[col][i]
+                            entry[col] = val.decode() if isinstance(val, bytes) else val
+                        self.errors.append(entry)
+                else:
+                    self.errors = []
+
             if (groups is None or 'signal' in groups) and 'preprocessed' in f:
                 times = f['times'][:]
                 preprocessed = {}
@@ -920,6 +1191,54 @@ class PhotometrySessionGroup:
         self.wheel_lmm_results = None
         self.wheel_lmm_summary = None
 
+    @classmethod
+    def from_catalog(cls, catalog_path, one, h5_dir=None,
+                     filter_recordings=True, **filter_kwargs):
+        """Build a group from a session catalog parquet.
+
+        Reads the catalog, validates parallel list columns, explodes to
+        one row per recording, adds fiber_idx, and optionally applies
+        standard filters.
+
+        Parameters
+        ----------
+        catalog_path : Path or str
+            Path to sessions parquet (one row per session, with list columns
+            for brain_region, hemisphere, target_NM).
+        one : one.api.One
+            ONE connection instance.
+        h5_dir : Path, optional
+            Directory containing {eid}.h5 files.
+        filter_recordings : bool
+            If True (default), call self.filter_recordings(**filter_kwargs).
+        **filter_kwargs
+            Passed to filter_recordings (session_types, targetnms, etc.).
+        """
+        from iblnm.util import validate_parallel_lists, derive_target_nm
+
+        df = pd.read_parquet(catalog_path)
+
+        # Derive target_NM if missing
+        if 'target_NM' not in df.columns or df['target_NM'].apply(
+            lambda x: isinstance(x, list) and len(x) == 0
+        ).all():
+            df = derive_target_nm(df)
+
+        # Validate and drop sessions with mismatched parallel list lengths
+        parallel_cols = ['brain_region', 'hemisphere', 'target_NM']
+        df = validate_parallel_lists(df, parallel_cols)
+
+        # Explode to one row per recording
+        df_recordings = df.explode(parallel_cols).copy()
+        df_recordings['fiber_idx'] = df_recordings.groupby('eid').cumcount()
+
+        group = cls(df_recordings, one=one, h5_dir=h5_dir)
+
+        if filter_recordings:
+            group.filter_recordings(**filter_kwargs)
+
+        return group
+
     def filter_recordings(self, session_types=None, exclude_subjects=None,
                           qc_blockers=None, targetnms=None,
                           log_fpaths=None,
@@ -1079,6 +1398,69 @@ class PhotometrySessionGroup:
             if eid in filtered['eid'].values:
                 new_group._sessions[eid] = ps
         return new_group
+
+    def process(self, fn, workers=1):
+        """Apply a function to each unique session in the group.
+
+        For each session, instantiates a PhotometrySession (from H5 if
+        available, otherwise from the recording row), calls fn(ps), catches
+        any exception as a fatal error, and always flushes accumulated
+        errors to the session's H5 file.
+
+        Parameters
+        ----------
+        fn : callable
+            Function taking a PhotometrySession and returning a result.
+            Non-fatal errors should be logged via ps.log_error() inside fn.
+            Fatal errors can be raised and will be caught by process().
+        workers : int
+            Number of parallel workers. 1 = sequential.
+
+        Returns
+        -------
+        list
+            Results from fn, one per unique session. None for failed sessions.
+        """
+        from pathlib import Path
+        from iblnm.validation import make_log_entry
+
+        # Get unique sessions
+        unique_eids = self.recordings['eid'].unique()
+        eid_to_row = {}
+        for eid in unique_eids:
+            mask = self.recordings['eid'] == eid
+            eid_to_row[eid] = self.recordings[mask].iloc[0]
+
+        if workers > 1:
+            return self._process_parallel(fn, eid_to_row, workers)
+
+        results = []
+        for eid, row in eid_to_row.items():
+            h5_path = Path(self.h5_dir) / f'{eid}.h5'
+            if h5_path.exists():
+                ps = PhotometrySession.from_h5(h5_path, one=self.one)
+            else:
+                ps = PhotometrySession(row, one=self.one, load_data=False)
+
+            try:
+                result = fn(ps)
+                results.append(result)
+            except Exception as e:
+                ps.log_error(e)
+                results.append(None)
+            finally:
+                # Always flush errors to H5
+                if h5_path.exists() or ps.errors:
+                    ps.save_h5(h5_path, groups=['errors'],
+                               mode='a' if h5_path.exists() else 'w')
+        return results
+
+    def _process_parallel(self, fn, eid_to_row, workers):
+        """Parallel implementation of process(). Not yet implemented."""
+        raise NotImplementedError(
+            "Parallel process() requires serializable functions. "
+            "Use workers=1 for now."
+        )
 
     def load_response_traces(self):
         """Load and cache per-trial response traces from H5 files.

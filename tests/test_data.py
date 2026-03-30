@@ -111,6 +111,485 @@ def mock_photometry_session(mock_session_series, mock_photometry_data):
 
     return session
 
+@pytest.fixture
+def minimal_session_series():
+    """Minimal session metadata — only fields available from REST list."""
+    return pd.Series({
+        'eid': 'test-eid-minimal',
+        'subject': 'test_mouse',
+        'start_time': '2024-01-01T10:00:00',
+        'number': 1,
+    })
+
+
+@pytest.fixture
+def full_session_series():
+    """Full session metadata — all SESSION_SCHEMA fields populated."""
+    return pd.Series({
+        'eid': 'test-eid-full',
+        'subject': 'test_mouse',
+        'start_time': '2024-01-01T10:00:00',
+        'number': 1,
+        'lab': 'test_lab',
+        'projects': ['test_project'],
+        'url': 'https://example.com',
+        'session_n': 3,
+        'task_protocol': '_iblrig_tasks_biasedChoiceWorld',
+        'session_type': 'biased',
+        'NM': 'DA',
+        'strain': 'Thy1-GCaMP6s',
+        'line': 'Thy1',
+        'genotype': 'Thy1-GCaMP6s/wt',
+        'users': ['user1', 'user2'],
+        'end_time': '2024-01-01T11:00:00',
+        'brain_region': ['VTA', 'SNc'],
+        'hemisphere': ['l', 'r'],
+        'target_NM': ['VTA-DA', 'SNc-DA'],
+        'datasets': ['_ibl_trials.table.pqt'],
+        'session_length': 3600,
+        'day_n': 5,
+    })
+
+
+# =============================================================================
+# Init and Serialization Tests
+# =============================================================================
+
+class TestInit:
+    """Tests for PhotometrySession.__init__."""
+
+    def test_minimal_init(self, minimal_session_series):
+        """Init with only required fields; optional fields get defaults."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+
+        assert ps.eid == 'test-eid-minimal'
+        assert ps.subject == 'test_mouse'
+        assert ps.number == 1
+        # Optional fields should have safe defaults
+        assert ps.task_protocol == ''
+        assert ps.session_type == ''
+        assert ps.NM is None
+        assert ps.strain is None
+        assert ps.line is None
+        assert ps.genotype is None
+        assert ps.users == []
+        assert ps.end_time is None
+        assert ps.brain_region == []
+        assert ps.hemisphere == []
+        assert ps.target_NM == []
+        assert ps.datasets == []
+        assert ps.session_length is None
+        assert ps.day_n is None
+        assert ps.errors == []
+
+    def test_full_init(self, full_session_series):
+        """Init with all fields populated."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+
+        assert ps.eid == 'test-eid-full'
+        assert ps.strain == 'Thy1-GCaMP6s'
+        assert ps.line == 'Thy1'
+        assert ps.genotype == 'Thy1-GCaMP6s/wt'
+        assert ps.NM == 'DA'
+        assert ps.users == ['user1', 'user2']
+        assert ps.end_time == '2024-01-01T11:00:00'
+        assert ps.target_NM == ['VTA-DA', 'SNc-DA']
+        assert ps.session_length == 3600
+        assert ps.day_n == 5
+        assert ps.session_type == 'biased'
+        assert ps.task_protocol == '_iblrig_tasks_biasedChoiceWorld'
+
+    def test_errors_initialized_empty(self, mock_session_series):
+        """errors list is initialized empty."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        assert ps.errors == []
+        assert isinstance(ps.errors, list)
+
+
+class TestToDict:
+    """Tests for PhotometrySession.to_dict and to_series."""
+
+    def test_to_dict_includes_all_metadata(self, full_session_series):
+        """to_dict includes all metadata fields."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        d = ps.to_dict()
+
+        assert d['eid'] == 'test-eid-full'
+        assert d['subject'] == 'test_mouse'
+        assert d['strain'] == 'Thy1-GCaMP6s'
+        assert d['line'] == 'Thy1'
+        assert d['genotype'] == 'Thy1-GCaMP6s/wt'
+        assert d['NM'] == 'DA'
+        assert d['brain_region'] == ['VTA', 'SNc']
+        assert d['hemisphere'] == ['l', 'r']
+        assert d['target_NM'] == ['VTA-DA', 'SNc-DA']
+        assert d['users'] == ['user1', 'user2']
+        assert d['session_type'] == 'biased'
+        assert d['datasets'] == ['_ibl_trials.table.pqt']
+        assert d['session_length'] == 3600
+
+    def test_to_series_roundtrip(self, full_session_series):
+        """to_series produces a Series that can reconstruct the session."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps1 = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        s = ps1.to_series()
+        ps2 = PhotometrySession(s, one=mock_one, load_data=False)
+
+        assert ps2.eid == ps1.eid
+        assert ps2.strain == ps1.strain
+        assert ps2.brain_region == ps1.brain_region
+        assert ps2.target_NM == ps1.target_NM
+        assert ps2.session_type == ps1.session_type
+
+
+# =============================================================================
+# H5 Metadata and Error Persistence Tests
+# =============================================================================
+
+class TestH5Metadata:
+    """Tests for metadata save/load in H5."""
+
+    def test_save_load_metadata_roundtrip(self, full_session_series, tmp_path):
+        """Metadata survives H5 roundtrip with all field types."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        ps.save_h5(fpath, groups=['metadata'])
+        ps2 = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        # Clear fields that should be restored from H5
+        ps2.strain = None
+        ps2.brain_region = []
+        ps2.load_h5(fpath, groups=['metadata'])
+
+        assert ps2.eid == ps.eid
+        assert ps2.subject == ps.subject
+        assert ps2.strain == 'Thy1-GCaMP6s'
+        assert ps2.line == 'Thy1'
+        assert ps2.genotype == 'Thy1-GCaMP6s/wt'
+        assert ps2.NM == 'DA'
+        assert ps2.brain_region == ['VTA', 'SNc']
+        assert ps2.hemisphere == ['l', 'r']
+        assert ps2.target_NM == ['VTA-DA', 'SNc-DA']
+        assert ps2.users == ['user1', 'user2']
+        assert ps2.session_type == 'biased'
+        assert ps2.session_length == 3600
+        assert ps2.day_n == 5
+        assert ps2.number == 1
+
+    def test_save_metadata_creates_metadata_group(self, full_session_series, tmp_path):
+        """H5 file contains a /metadata group."""
+        import h5py
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        ps.save_h5(fpath, groups=['metadata'])
+        with h5py.File(fpath, 'r') as f:
+            assert 'metadata' in f
+            assert f['metadata'].attrs['eid'] == 'test-eid-full'
+            assert f['metadata'].attrs['strain'] == 'Thy1-GCaMP6s'
+            # List fields stored as datasets
+            assert list(f['metadata']['brain_region'][:]) == [b'VTA', b'SNc']
+
+    def test_load_metadata_backward_compat(self, mock_session_series, tmp_path):
+        """load_h5 with groups=['metadata'] on old H5 (no /metadata) is a no-op."""
+        import h5py
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        fpath = tmp_path / 'old.h5'
+        # Create old-style H5 with root attrs only
+        with h5py.File(fpath, 'w') as f:
+            f.attrs['eid'] = 'test-eid-123'
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps.load_h5(fpath, groups=['metadata'])  # should not raise
+        assert ps.eid == 'test-eid-123'
+
+    def test_metadata_none_values_handled(self, minimal_session_series, tmp_path):
+        """None scalar values are stored and restored correctly."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        ps.save_h5(fpath, groups=['metadata'])
+        ps2 = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        ps2.strain = 'should_be_overwritten'
+        ps2.load_h5(fpath, groups=['metadata'])
+        assert ps2.strain is None
+        assert ps2.brain_region == []
+
+
+class TestLogError:
+    """Tests for PhotometrySession.log_error."""
+
+    def test_log_error_accumulates(self, mock_session_series):
+        """Multiple errors are accumulated in order."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import InvalidStrain, InvalidLine
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+
+        try:
+            raise InvalidStrain("bad strain")
+        except InvalidStrain as e:
+            ps.log_error(e)
+        try:
+            raise InvalidLine("bad line")
+        except InvalidLine as e:
+            ps.log_error(e)
+
+        assert len(ps.errors) == 2
+        assert ps.errors[0]['error_type'] == 'InvalidStrain'
+        assert ps.errors[1]['error_type'] == 'InvalidLine'
+        assert ps.errors[0]['eid'] == 'test-eid-123'
+
+    def test_log_error_preserves_traceback(self, mock_session_series):
+        """Traceback string is captured."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+
+        try:
+            raise ValueError("test error")
+        except ValueError as e:
+            ps.log_error(e)
+
+        assert ps.errors[0]['traceback'] is not None
+        assert 'ValueError' in ps.errors[0]['traceback']
+
+
+class TestH5Errors:
+    """Tests for error save/load in H5."""
+
+    def test_save_load_errors_roundtrip(self, mock_session_series, tmp_path):
+        """Errors survive H5 roundtrip."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import InvalidStrain
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        try:
+            raise InvalidStrain("bad strain")
+        except InvalidStrain as e:
+            ps.log_error(e)
+
+        ps.save_h5(fpath, groups=['metadata', 'errors'])
+
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps2.load_h5(fpath, groups=['errors'])
+        assert len(ps2.errors) == 1
+        assert ps2.errors[0]['error_type'] == 'InvalidStrain'
+        assert ps2.errors[0]['error_message'] == 'bad strain'
+        assert 'InvalidStrain' in ps2.errors[0]['traceback']
+
+    def test_save_errors_empty_list(self, mock_session_series, tmp_path):
+        """Saving with no errors creates empty /errors group."""
+        import h5py
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        ps.save_h5(fpath, groups=['metadata', 'errors'])
+        with h5py.File(fpath, 'r') as f:
+            assert 'errors' in f
+
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps2.load_h5(fpath, groups=['errors'])
+        assert ps2.errors == []
+
+    def test_save_errors_append_mode(self, mock_session_series, tmp_path):
+        """Errors can be saved in append mode to existing H5."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        # First write metadata
+        ps.save_h5(fpath, groups=['metadata'])
+        # Then append errors
+        try:
+            raise ValueError("test")
+        except ValueError as e:
+            ps.log_error(e)
+        ps.save_h5(fpath, groups=['errors'], mode='a')
+
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps2.load_h5(fpath, groups=['metadata', 'errors'])
+        assert ps2.strain is None  # metadata loaded
+        assert len(ps2.errors) == 1  # errors loaded
+
+
+class TestFromAlyx:
+    """Tests for PhotometrySession.from_alyx instance method."""
+
+    def _setup_mock_one(self, mock_one):
+        """Configure mock ONE to return valid session data."""
+        # get_session_dict: sessions/read
+        mock_one.alyx.rest.return_value = {
+            'users': ['alice'],
+            'lab': 'cortexlab',
+            'end_time': '2024-01-01T11:00:00',
+            'data_dataset_session_related': [
+                {'name': '_ibl_trials.table.pqt'},
+            ],
+        }
+        # get_subject_info: subjects/list
+        def rest_side_effect(endpoint, action, **kwargs):
+            if endpoint == 'subjects':
+                return [{
+                    'strain': 'Ai148xDATCre',
+                    'line': 'Ai148xDat',
+                    'genotype': 'Ai148xDATCre/wt',
+                }]
+            if endpoint == 'sessions' and action == 'read':
+                return {
+                    'users': ['alice'], 'lab': 'cortexlab',
+                    'end_time': '2024-01-01T11:00:00',
+                    'data_dataset_session_related': [
+                        {'name': '_ibl_trials.table.pqt'},
+                    ],
+                }
+            return []
+        mock_one.alyx.rest.side_effect = rest_side_effect
+        # get_brain_region: load_dataset
+        mock_one.load_dataset.return_value = {
+            'devices': {'neurophotometrics': {'fibers': {
+                'G0': {'location': 'VTA-l'},
+            }}}
+        }
+        # get_datasets: list_datasets
+        mock_one.list_datasets.return_value = [
+            '_ibl_trials.table.pqt',
+            '_iblrig_taskData.raw.jsonable',
+        ]
+
+    def test_from_alyx_populates_metadata(self, mock_session_series):
+        """from_alyx enriches session with Alyx data."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        self._setup_mock_one(mock_one)
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps.from_alyx()
+
+        assert ps.strain == 'Ai148xDATCre'
+        assert ps.line == 'Ai148xDat'
+        assert ps.genotype == 'Ai148xDATCre/wt'
+        assert ps.NM == 'DA'
+        assert ps.lab == 'cortexlab'
+        assert ps.brain_region == ['VTA-l']
+
+    def test_from_alyx_logs_validation_errors(self, mock_session_series):
+        """Validation failures are logged, not raised."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        self._setup_mock_one(mock_one)
+        # Make subject info return unknown strain
+        def rest_side_effect(endpoint, action, **kwargs):
+            if endpoint == 'subjects':
+                return [{
+                    'strain': 'UNKNOWN_STRAIN',
+                    'line': 'UNKNOWN_LINE',
+                    'genotype': 'xx',
+                }]
+            if endpoint == 'sessions' and action == 'read':
+                return {
+                    'users': ['alice'], 'lab': 'cortexlab',
+                    'end_time': '2024-01-01T11:00:00',
+                    'data_dataset_session_related': [],
+                }
+            return []
+        mock_one.alyx.rest.side_effect = rest_side_effect
+
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps.from_alyx()
+
+        # Errors logged but not raised
+        error_types = [e['error_type'] for e in ps.errors]
+        assert 'InvalidStrain' in error_types
+        assert 'InvalidLine' in error_types
+
+    def test_from_alyx_returns_self(self, mock_session_series):
+        """from_alyx returns self for chaining."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        self._setup_mock_one(mock_one)
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        result = ps.from_alyx()
+        assert result is ps
+
+
+class TestFromH5:
+    """Tests for PhotometrySession.from_h5 classmethod."""
+
+    def test_from_h5_restores_metadata(self, full_session_series, tmp_path):
+        """from_h5 creates session with correct metadata."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession.from_h5(fpath)
+        assert ps2.eid == 'test-eid-full'
+        assert ps2.subject == 'test_mouse'
+        assert ps2.strain == 'Thy1-GCaMP6s'
+        assert ps2.brain_region == ['VTA', 'SNc']
+        assert ps2.target_NM == ['VTA-DA', 'SNc-DA']
+        assert ps2.session_type == 'biased'
+        assert ps2.number == 1
+
+    def test_from_h5_restores_errors(self, mock_session_series, tmp_path):
+        """from_h5 loads errors from H5."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+        try:
+            raise ValueError("test error")
+        except ValueError as e:
+            ps.log_error(e)
+        ps.save_h5(fpath, groups=['metadata', 'errors'])
+
+        ps2 = PhotometrySession.from_h5(fpath)
+        assert len(ps2.errors) == 1
+        assert ps2.errors[0]['error_type'] == 'ValueError'
+
+    def test_from_h5_with_one(self, full_session_series, tmp_path):
+        """from_h5 accepts an optional ONE connection."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession.from_h5(fpath, one=mock_one)
+        assert ps2.one is mock_one
+
+    def test_from_h5_without_one(self, full_session_series, tmp_path):
+        """from_h5 works without ONE for cached data."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession.from_h5(fpath)
+        assert ps2.eid == 'test-eid-full'
+
 
 # =============================================================================
 # Load Method Tests
@@ -1350,6 +1829,153 @@ def _make_recordings_df(n_eids=2, regions_per=2):
                 'task_protocol': 'biased_protocol',
             })
     return pd.DataFrame(rows)
+
+
+class TestFromCatalog:
+    """Tests for PhotometrySessionGroup.from_catalog."""
+
+    def _make_catalog(self, tmp_path):
+        """Write a minimal catalog parquet with parallel list columns."""
+        df = pd.DataFrame([
+            {
+                'eid': 'eid-1', 'subject': 'mouse_A',
+                'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
+                'number': 1, 'task_protocol': 'biased_protocol',
+                'brain_region': ['VTA', 'SNc'], 'hemisphere': ['l', 'r'],
+                'target_NM': ['VTA-DA', 'SNc-DA'], 'NM': 'DA',
+            },
+            {
+                'eid': 'eid-2', 'subject': 'mouse_B',
+                'session_type': 'training', 'start_time': '2024-01-02T10:00:00',
+                'number': 1, 'task_protocol': 'training_protocol',
+                'brain_region': ['DR'], 'hemisphere': ['l'],
+                'target_NM': ['DR-5HT'], 'NM': '5HT',
+            },
+            {   # Mismatched lengths — should be dropped
+                'eid': 'eid-3', 'subject': 'mouse_C',
+                'session_type': 'biased', 'start_time': '2024-01-03T10:00:00',
+                'number': 1, 'task_protocol': 'biased_protocol',
+                'brain_region': ['VTA'], 'hemisphere': [],
+                'target_NM': ['VTA-DA'], 'NM': 'DA',
+            },
+        ])
+        fpath = tmp_path / 'sessions.pqt'
+        df.to_parquet(fpath, index=False)
+        return fpath
+
+    def test_explodes_parallel_columns(self, tmp_path):
+        """from_catalog explodes parallel list columns into recordings."""
+        from iblnm.data import PhotometrySessionGroup
+        fpath = self._make_catalog(tmp_path)
+        group = PhotometrySessionGroup.from_catalog(
+            fpath, one=MagicMock(), filter_recordings=False,
+        )
+        # eid-1 has 2 regions, eid-2 has 1, eid-3 dropped (mismatched)
+        assert len(group) == 3
+        assert 'fiber_idx' in group.recordings.columns
+
+    def test_drops_mismatched_parallel_lists(self, tmp_path):
+        """Sessions with mismatched brain_region/hemisphere/target_NM are dropped."""
+        from iblnm.data import PhotometrySessionGroup
+        fpath = self._make_catalog(tmp_path)
+        group = PhotometrySessionGroup.from_catalog(
+            fpath, one=MagicMock(), filter_recordings=False,
+        )
+        assert 'eid-3' not in group.recordings['eid'].values
+
+    def test_filter_recordings_applied(self, tmp_path):
+        """When filter_recordings=True, standard filters are applied."""
+        from iblnm.data import PhotometrySessionGroup
+        fpath = self._make_catalog(tmp_path)
+        group = PhotometrySessionGroup.from_catalog(
+            fpath, one=MagicMock(),
+            session_types=('biased',),
+            filter_recordings=True,
+        )
+        assert all(group.recordings['session_type'] == 'biased')
+
+
+class TestGroupProcess:
+    """Tests for PhotometrySessionGroup.process."""
+
+    def _make_group_with_h5(self, tmp_path):
+        """Create a group backed by H5 files with metadata."""
+        from iblnm.data import PhotometrySession, PhotometrySessionGroup
+
+        mock_one = MagicMock()
+        for i, eid in enumerate(['eid-0', 'eid-1']):
+            series = pd.Series({
+                'eid': eid, 'subject': f'subj-{i}',
+                'start_time': '2024-01-01T10:00:00', 'number': 1,
+                'session_type': 'biased', 'task_protocol': 'biased_protocol',
+                'brain_region': ['VTA'], 'hemisphere': ['l'],
+                'target_NM': ['VTA-DA'],
+            })
+            ps = PhotometrySession(series, one=mock_one, load_data=False)
+            ps.save_h5(tmp_path / f'{eid}.h5', groups=['metadata', 'errors'])
+
+        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        group = PhotometrySessionGroup(recs, one=mock_one, h5_dir=tmp_path)
+        return group
+
+    def test_process_collects_results(self, tmp_path):
+        """process returns results from each session."""
+        group = self._make_group_with_h5(tmp_path)
+        results = group.process(lambda ps: ps.eid)
+        assert set(results) == {'eid-0', 'eid-1'}
+
+    def test_process_catches_fatal_errors(self, tmp_path):
+        """Fatal errors are caught and logged; processing continues."""
+        group = self._make_group_with_h5(tmp_path)
+        call_count = 0
+
+        def failing_fn(ps):
+            nonlocal call_count
+            call_count += 1
+            if ps.eid == 'eid-0':
+                raise ValueError("intentional failure")
+            return ps.eid
+
+        results = group.process(failing_fn)
+        assert call_count == 2  # both sessions processed
+        assert 'eid-1' in results  # successful result present
+        assert any(r is None for r in results)  # failed result is None
+
+    def test_process_writes_errors_to_h5(self, tmp_path):
+        """Errors are written to the session's H5 file."""
+        import h5py
+        group = self._make_group_with_h5(tmp_path)
+
+        def failing_fn(ps):
+            raise ValueError("test failure")
+
+        group.process(failing_fn)
+
+        # Check that errors were written to H5
+        with h5py.File(tmp_path / 'eid-0.h5', 'r') as f:
+            assert 'errors' in f
+            assert len(f['errors']['error_type']) > 0
+
+    def test_process_preserves_nonfatal_errors(self, tmp_path):
+        """Non-fatal errors logged via ps.log_error are persisted."""
+        import h5py
+        from iblnm.validation import FewUniqueSamples
+        group = self._make_group_with_h5(tmp_path)
+
+        def fn_with_nonfatal(ps):
+            try:
+                raise FewUniqueSamples("low samples")
+            except FewUniqueSamples as e:
+                ps.log_error(e)
+            return 'ok'
+
+        results = group.process(fn_with_nonfatal)
+        assert all(r == 'ok' for r in results)
+
+        # Check non-fatal error was written to H5
+        with h5py.File(tmp_path / 'eid-0.h5', 'r') as f:
+            error_types = [v.decode() for v in f['errors']['error_type'][:]]
+            assert 'FewUniqueSamples' in error_types
 
 
 class TestPhotometrySessionGroup:

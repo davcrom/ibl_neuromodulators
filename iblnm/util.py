@@ -83,6 +83,97 @@ def collect_session_errors(df_sessions: pd.DataFrame, log_sources) -> pd.DataFra
     return df_sessions
 
 
+def collect_catalog(h5_dir):
+    """Build a session catalog DataFrame from H5 metadata groups.
+
+    Reads the /metadata group from each .h5 file in h5_dir. Files without
+    a /metadata group are skipped. The resulting DataFrame is passed through
+    enforce_schema to ensure all SESSION_SCHEMA columns are present.
+
+    Parameters
+    ----------
+    h5_dir : Path or str
+        Directory containing {eid}.h5 files.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per session with all SESSION_SCHEMA columns.
+    """
+    import h5py
+    from iblnm.config import SESSION_SCHEMA
+    from iblnm.data import PhotometrySession
+
+    h5_dir = Path(h5_dir)
+    rows = []
+    for fpath in sorted(h5_dir.glob('*.h5')):
+        with h5py.File(fpath, 'r') as f:
+            if 'metadata' not in f:
+                continue
+            grp = f['metadata']
+            row = {}
+            for attr, is_list in PhotometrySession._METADATA_FIELDS:
+                if is_list:
+                    if attr in grp:
+                        row[attr] = [v.decode() if isinstance(v, bytes) else v
+                                     for v in grp[attr][:]]
+                    else:
+                        row[attr] = []
+                else:
+                    if attr in grp.attrs:
+                        val = grp.attrs[attr]
+                        if isinstance(val, bytes):
+                            val = val.decode()
+                        if val == '__none__':
+                            val = None
+                        row[attr] = val
+            rows.append(row)
+
+    if not rows:
+        return enforce_schema(pd.DataFrame(), SESSION_SCHEMA)
+    return enforce_schema(pd.DataFrame(rows), SESSION_SCHEMA)
+
+
+def collect_errors(h5_dir):
+    """Aggregate error logs from all H5 files in a directory.
+
+    Reads the /errors group from each .h5 file. Files without an /errors
+    group or with an empty /errors group are skipped.
+
+    Parameters
+    ----------
+    h5_dir : Path or str
+        Directory containing {eid}.h5 files.
+
+    Returns
+    -------
+    pd.DataFrame
+        Error log with LOG_COLUMNS schema.
+    """
+    import h5py
+
+    h5_dir = Path(h5_dir)
+    rows = []
+    for fpath in sorted(h5_dir.glob('*.h5')):
+        with h5py.File(fpath, 'r') as f:
+            if 'errors' not in f:
+                continue
+            err_grp = f['errors']
+            if 'error_type' not in err_grp:
+                continue
+            n = len(err_grp['error_type'])
+            for i in range(n):
+                entry = {}
+                for col in LOG_COLUMNS:
+                    val = err_grp[col][i]
+                    entry[col] = val.decode() if isinstance(val, bytes) else val
+                rows.append(entry)
+
+    if not rows:
+        return pd.DataFrame(columns=LOG_COLUMNS)
+    return pd.DataFrame(rows, columns=LOG_COLUMNS)
+
+
 def enforce_schema(df, schema):
     """Ensure DataFrame columns match a schema with correct types and defaults.
 

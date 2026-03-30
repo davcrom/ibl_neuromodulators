@@ -14,6 +14,8 @@ from iblnm.util import (
     get_session_type,
     get_targetNM,
     collect_session_errors,
+    collect_catalog,
+    collect_errors,
     fill_brain_region_from_fibers,
     LOG_COLUMNS,
 )
@@ -996,3 +998,103 @@ class TestFillBrainRegionFromFibers:
         })
         result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
         assert len(result['brain_region'].iloc[0]) == len(result['hemisphere'].iloc[0])
+
+
+def _write_session_h5(h5_dir, eid, subject, session_type='biased',
+                      brain_region=None, errors=None):
+    """Helper: write a minimal H5 with metadata and optional errors."""
+    from unittest.mock import MagicMock
+    from iblnm.data import PhotometrySession
+
+    series = pd.Series({
+        'eid': eid,
+        'subject': subject,
+        'start_time': '2024-01-01T10:00:00',
+        'number': 1,
+        'session_type': session_type,
+        'brain_region': brain_region or [],
+        'hemisphere': [],
+        'target_NM': [],
+    })
+    mock_one = MagicMock()
+    ps = PhotometrySession(series, one=mock_one, load_data=False)
+    if errors:
+        for err in errors:
+            try:
+                raise err
+            except Exception as e:
+                ps.log_error(e)
+    fpath = h5_dir / f'{eid}.h5'
+    ps.save_h5(fpath, groups=['metadata', 'errors'])
+
+
+class TestCollectCatalog:
+    """Tests for collect_catalog."""
+
+    def test_collects_metadata_from_h5_files(self, tmp_path):
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', 'biased')
+        _write_session_h5(tmp_path, 'eid-2', 'mouse_B', 'training')
+        _write_session_h5(tmp_path, 'eid-3', 'mouse_A', 'ephys')
+
+        df = collect_catalog(tmp_path)
+        assert len(df) == 3
+        assert set(df['eid']) == {'eid-1', 'eid-2', 'eid-3'}
+        assert set(df['subject']) == {'mouse_A', 'mouse_B'}
+
+    def test_empty_directory(self, tmp_path):
+        df = collect_catalog(tmp_path)
+        assert len(df) == 0
+
+    def test_skips_h5_without_metadata(self, tmp_path):
+        import h5py
+        # Create old-style H5 with no /metadata
+        with h5py.File(tmp_path / 'old.h5', 'w') as f:
+            f.attrs['eid'] = 'old-eid'
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A')
+
+        df = collect_catalog(tmp_path)
+        assert len(df) == 1
+        assert df.iloc[0]['eid'] == 'eid-1'
+
+    def test_schema_enforced(self, tmp_path):
+        """Catalog DataFrame has all SESSION_SCHEMA columns."""
+        from iblnm.config import SESSION_SCHEMA
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A')
+        df = collect_catalog(tmp_path)
+        for col in SESSION_SCHEMA:
+            assert col in df.columns
+
+
+class TestCollectErrors:
+    """Tests for collect_errors."""
+
+    def test_collects_errors_from_h5_files(self, tmp_path):
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[ValueError("bad value")])
+        _write_session_h5(tmp_path, 'eid-2', 'mouse_B',
+                          errors=[TypeError("bad type"), KeyError("missing")])
+
+        df = collect_errors(tmp_path)
+        assert len(df) == 3
+        assert set(df['eid']) == {'eid-1', 'eid-2'}
+        assert set(df['error_type']) == {'ValueError', 'TypeError', 'KeyError'}
+
+    def test_no_errors(self, tmp_path):
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A')
+        df = collect_errors(tmp_path)
+        assert len(df) == 0
+
+    def test_has_log_columns(self, tmp_path):
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[ValueError("test")])
+        df = collect_errors(tmp_path)
+        assert list(df.columns) == LOG_COLUMNS
+
+    def test_skips_h5_without_errors_group(self, tmp_path):
+        import h5py
+        with h5py.File(tmp_path / 'old.h5', 'w') as f:
+            f.attrs['eid'] = 'old-eid'
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[ValueError("test")])
+        df = collect_errors(tmp_path)
+        assert len(df) == 1

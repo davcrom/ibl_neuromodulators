@@ -7,9 +7,7 @@ import pytest
 
 import scripts.session_viewer as sv
 from scripts.session_viewer import (
-    build_session_from_rest,
-    find_session_by_eid,
-    find_session_by_subject,
+    find_session,
     load_session_data,
     print_session_errors,
 )
@@ -28,149 +26,129 @@ def mock_one():
 
 
 @pytest.fixture
-def patch_pipeline(monkeypatch):
-    """Patch all pipeline io/util/validate functions to no-ops."""
-    identity = lambda s, one=None, exlog=None: s
-    noop = lambda s, exlog=None: None
-    monkeypatch.setattr(sv, 'get_subject_info', identity)
-    monkeypatch.setattr(sv, 'get_session_dict', identity)
-    monkeypatch.setattr(sv, 'get_brain_region', identity)
-    monkeypatch.setattr(sv, 'fill_hemisphere_from_fiber_insertion_table', identity)
-    monkeypatch.setattr(sv, 'get_datasets', identity)
-    monkeypatch.setattr(sv, 'get_session_type', identity)
-    monkeypatch.setattr(sv, 'get_targetNM', identity)
-    monkeypatch.setattr(sv, 'get_session_length', identity)
-    monkeypatch.setattr(sv, 'validate_subject', noop)
-    monkeypatch.setattr(sv, 'validate_strain', noop)
-    monkeypatch.setattr(sv, 'validate_line', noop)
-    monkeypatch.setattr(sv, 'validate_neuromodulator', noop)
-    monkeypatch.setattr(sv, 'validate_brain_region', noop)
-    monkeypatch.setattr(sv, 'validate_hemisphere', noop)
-    monkeypatch.setattr(sv, 'validate_datasets', noop)
+def eid_args():
+    """Namespace mimicking parse_args() with --eid."""
+    return MagicMock(eid='aaa', subject=None, session_index=-1)
+
+
+@pytest.fixture
+def subject_args():
+    """Namespace mimicking parse_args() with subject."""
+    return MagicMock(eid=None, subject='ZFM-01', session_index=-1)
 
 
 # =========================================================================
-# build_session_from_rest
+# find_session
 # =========================================================================
 
-def test_build_session_from_rest_renames_id(mock_one, patch_pipeline):
-    """'id' key must be renamed to 'eid' in the output Series."""
-    result = build_session_from_rest(
-        {'id': 'xyz-eid', 'subject': 'ZFM-99', 'start_time': '2024-01-01'}, mock_one
-    )
-    assert result['eid'] == 'xyz-eid'
-    assert 'id' not in result.index
-
-
-def test_build_session_from_rest_captures_errors(mock_one, monkeypatch):
-    """Validation errors are collected into logged_errors and _rest_errors."""
-    identity = lambda s, one=None, exlog=None: s
-    noop = lambda s, exlog=None: None
-    for name in ('get_subject_info', 'get_session_dict', 'get_brain_region',
-                 'fill_hemisphere_from_fiber_insertion_table', 'get_datasets',
-                 'get_session_type', 'get_targetNM', 'get_session_length'):
-        monkeypatch.setattr(sv, name, identity)
-    for name in ('validate_subject', 'validate_line', 'validate_neuromodulator',
-                 'validate_brain_region', 'validate_hemisphere', 'validate_datasets'):
-        monkeypatch.setattr(sv, name, noop)
-
-    def erroring_strain(session, exlog=None):
-        if exlog is not None:
-            exlog.append({
-                'eid': session.get('eid', ''),
-                'error_type': 'InvalidStrain',
-                'error_message': 'Strain unknown not valid',
-                'traceback': '',
-            })
-    monkeypatch.setattr(sv, 'validate_strain', erroring_strain)
-
-    result = build_session_from_rest(
-        {'id': 'abc', 'subject': 'ZFM-99', 'start_time': '2024-01-01'}, mock_one
-    )
-    assert result['logged_errors'] == ['InvalidStrain']
-    assert len(result['_rest_errors']) == 1
-    assert result['_rest_errors'][0]['error_message'] == 'Strain unknown not valid'
-
-
-def test_build_session_from_rest_no_errors_empty_lists(mock_one, patch_pipeline):
-    """When no validation errors occur, logged_errors and _rest_errors are empty."""
-    result = build_session_from_rest(
-        {'id': 'abc', 'subject': 'ZFM-99', 'start_time': '2024-01-01'}, mock_one
-    )
-    assert result['logged_errors'] == []
-    assert result['_rest_errors'] == []
-
-
-# =========================================================================
-# find_session_by_eid
-# =========================================================================
-
-def test_find_session_by_eid_queries_rest(mock_one, patch_pipeline):
-    """Always queries REST; returns the built session for the given EID."""
+def test_find_session_by_eid(mock_one, eid_args):
+    """Queries REST by eid and returns a PhotometrySession."""
     mock_one.alyx.rest.return_value = [
-        {'id': 'aaa', 'subject': 'ZFM-99', 'start_time': '2024-01-01'}
+        {'id': 'aaa', 'subject': 'ZFM-99', 'start_time': '2024-01-01',
+         'number': 1}
     ]
-    result = find_session_by_eid('aaa', mock_one)
-    assert result['eid'] == 'aaa'
+    with patch.object(sv, 'PhotometrySession') as MockPS:
+        mock_ps = MagicMock()
+        MockPS.return_value = mock_ps
+
+        result = find_session(eid_args, mock_one)
+
     mock_one.alyx.rest.assert_called_once_with(
         'sessions', 'list', id='aaa', project='ibl_fibrephotometry'
     )
+    mock_ps.from_alyx.assert_called_once()
+    assert result is mock_ps
 
 
-def test_find_session_by_eid_not_found_exits(mock_one):
+def test_find_session_by_eid_not_found_exits(mock_one, eid_args):
     """REST returns nothing → sys.exit."""
     with pytest.raises(SystemExit):
-        find_session_by_eid('missing', mock_one)
+        find_session(eid_args, mock_one)
 
 
-# =========================================================================
-# find_session_by_subject
-# =========================================================================
-
-def test_find_session_by_subject_returns_last(mock_one, patch_pipeline):
-    """Default index=-1 returns the most recent session for a subject."""
+def test_find_session_by_subject_returns_last(mock_one, subject_args):
+    """Default index=-1 returns the most recent session."""
     mock_one.alyx.rest.return_value = [
-        {'id': 'r1', 'subject': 'ZFM-01', 'start_time': '2023-01-01'},
-        {'id': 'r2', 'subject': 'ZFM-01', 'start_time': '2023-06-01'},
+        {'id': 'r1', 'subject': 'ZFM-01', 'start_time': '2023-01-01',
+         'number': 1},
+        {'id': 'r2', 'subject': 'ZFM-01', 'start_time': '2023-06-01',
+         'number': 1},
     ]
-    result = find_session_by_subject('ZFM-01', -1, mock_one)
-    assert result['eid'] == 'r2'
+    with patch.object(sv, 'PhotometrySession') as MockPS:
+        mock_ps = MagicMock()
+        MockPS.return_value = mock_ps
+
+        find_session(subject_args, mock_one)
+
+    # Should have been called with the later session (r2 at index -1)
+    row_arg = MockPS.call_args[0][0]
+    assert row_arg['eid'] == 'r2'
 
 
-def test_find_session_by_subject_returns_first(mock_one, patch_pipeline):
+def test_find_session_by_subject_returns_first(mock_one, subject_args):
     """Index=0 returns the earliest session."""
+    subject_args.session_index = 0
     mock_one.alyx.rest.return_value = [
-        {'id': 'r1', 'subject': 'ZFM-01', 'start_time': '2023-01-01'},
-        {'id': 'r2', 'subject': 'ZFM-01', 'start_time': '2023-06-01'},
+        {'id': 'r1', 'subject': 'ZFM-01', 'start_time': '2023-01-01',
+         'number': 1},
+        {'id': 'r2', 'subject': 'ZFM-01', 'start_time': '2023-06-01',
+         'number': 1},
     ]
-    result = find_session_by_subject('ZFM-01', 0, mock_one)
-    assert result['eid'] == 'r1'
+    with patch.object(sv, 'PhotometrySession') as MockPS:
+        mock_ps = MagicMock()
+        MockPS.return_value = mock_ps
+
+        find_session(subject_args, mock_one)
+
+    row_arg = MockPS.call_args[0][0]
+    assert row_arg['eid'] == 'r1'
 
 
-def test_find_session_by_subject_not_found_exits(mock_one):
+def test_find_session_by_subject_not_found_exits(mock_one, subject_args):
     """REST returns nothing → sys.exit."""
     with pytest.raises(SystemExit):
-        find_session_by_subject('ZFM-99', -1, mock_one)
+        find_session(subject_args, mock_one)
 
 
-def test_find_session_by_subject_index_out_of_range_exits(mock_one, patch_pipeline):
+def test_find_session_by_subject_index_out_of_range_exits(mock_one, subject_args):
     """Index beyond the number of sessions → sys.exit."""
+    subject_args.session_index = 99
     mock_one.alyx.rest.return_value = [
-        {'id': 'r1', 'subject': 'ZFM-01', 'start_time': '2023-01-01'},
+        {'id': 'r1', 'subject': 'ZFM-01', 'start_time': '2023-01-01',
+         'number': 1},
     ]
     with pytest.raises(SystemExit):
-        find_session_by_subject('ZFM-01', 99, mock_one)
+        find_session(subject_args, mock_one)
 
 
-def test_find_session_by_subject_queries_with_subject_kwarg(mock_one, patch_pipeline):
+def test_find_session_by_subject_queries_with_subject_kwarg(mock_one, subject_args):
     """REST is called with subject= kwarg."""
     mock_one.alyx.rest.return_value = [
-        {'id': 'r1', 'subject': 'ZFM-01', 'start_time': '2023-01-01'},
+        {'id': 'r1', 'subject': 'ZFM-01', 'start_time': '2023-01-01',
+         'number': 1},
     ]
-    find_session_by_subject('ZFM-01', 0, mock_one)
+    with patch.object(sv, 'PhotometrySession') as MockPS:
+        MockPS.return_value = MagicMock()
+        find_session(subject_args, mock_one)
+
     mock_one.alyx.rest.assert_called_once_with(
         'sessions', 'list', subject='ZFM-01', project='ibl_fibrephotometry'
     )
+
+
+def test_find_session_calls_from_alyx(mock_one, eid_args):
+    """find_session must call from_alyx() on the PhotometrySession."""
+    mock_one.alyx.rest.return_value = [
+        {'id': 'aaa', 'subject': 'ZFM-99', 'start_time': '2024-01-01',
+         'number': 1}
+    ]
+    with patch.object(sv, 'PhotometrySession') as MockPS:
+        mock_ps = MagicMock()
+        MockPS.return_value = mock_ps
+
+        find_session(eid_args, mock_one)
+
+    mock_ps.from_alyx.assert_called_once()
 
 
 # =========================================================================
@@ -179,21 +157,20 @@ def test_find_session_by_subject_queries_with_subject_kwarg(mock_one, patch_pipe
 
 def test_print_session_errors_no_errors(capsys):
     """Session with no errors prints nothing."""
-    session = pd.Series({'eid': 'aaa', '_rest_errors': []})
-    print_session_errors(session)
+    ps = MagicMock()
+    ps.errors = []
+    print_session_errors(ps)
     assert capsys.readouterr().out == ''
 
 
-def test_print_session_errors_prints_rest_errors(capsys):
-    """Errors in _rest_errors are printed in [ErrorType] message format."""
-    session = pd.Series({
-        'eid': 'aaa',
-        '_rest_errors': [
-            {'eid': 'aaa', 'error_type': 'InvalidStrain',
-             'error_message': 'bad strain', 'traceback': ''},
-        ],
-    })
-    print_session_errors(session)
+def test_print_session_errors_prints_errors(capsys):
+    """Errors are printed in [ErrorType] message format."""
+    ps = MagicMock()
+    ps.errors = [
+        {'eid': 'aaa', 'error_type': 'InvalidStrain',
+         'error_message': 'bad strain', 'traceback': ''},
+    ]
+    print_session_errors(ps)
     out = capsys.readouterr().out
     assert '[InvalidStrain]' in out
     assert 'bad strain' in out
@@ -206,6 +183,7 @@ def test_print_session_errors_prints_rest_errors(capsys):
 def _make_mock_ps(load_trials_side_effect=None):
     """Build a mock PhotometrySession."""
     ps = MagicMock()
+    ps.eid = 'test-eid'
     ps.trials = None
     if load_trials_side_effect:
         ps.load_trials.side_effect = load_trials_side_effect
@@ -216,63 +194,66 @@ def _make_mock_ps(load_trials_side_effect=None):
     return ps
 
 
-@pytest.fixture
-def session_row(tmp_path):
-    return pd.Series({'eid': 'test-eid', 'subject': 'ZFM-01'})
+def test_load_session_data_from_h5(monkeypatch, tmp_path):
+    """When H5 exists, load_h5 is called."""
+    ps = _make_mock_ps()
+    h5_path = tmp_path / 'test-eid.h5'
+    h5_path.touch()
+    monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
+
+    result = load_session_data(ps)
+
+    assert result is ps
+    ps.load_h5.assert_called_once_with(h5_path)
 
 
-def test_load_session_data_missing_raw_data_continues(session_row, monkeypatch, tmp_path):
+def test_load_session_data_missing_raw_data_continues(monkeypatch, tmp_path):
     """MissingRawData from load_trials prints a warning but does not raise."""
     ps = _make_mock_ps(load_trials_side_effect=MissingRawData("no raw data"))
-    monkeypatch.setattr(sv, 'PhotometrySession', lambda row, one: ps)
     monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)  # no H5 exists
 
-    result = load_session_data(session_row, MagicMock())
+    result = load_session_data(ps)
 
     assert result is ps
     ps.extract_responses.assert_not_called()
 
 
-def test_load_session_data_missing_extracted_data_continues(session_row, monkeypatch, tmp_path):
+def test_load_session_data_missing_extracted_data_continues(monkeypatch, tmp_path):
     """MissingExtractedData from load_trials prints a warning but does not raise."""
     ps = _make_mock_ps(load_trials_side_effect=MissingExtractedData("not extracted"))
-    monkeypatch.setattr(sv, 'PhotometrySession', lambda row, one: ps)
     monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
-    result = load_session_data(session_row, MagicMock())
+    result = load_session_data(ps)
 
     assert result is ps
     ps.extract_responses.assert_not_called()
 
 
-def test_load_session_data_with_trials_calls_extract_responses(session_row, monkeypatch, tmp_path):
+def test_load_session_data_with_trials_calls_extract_responses(monkeypatch, tmp_path):
     """When trials load successfully, extract_responses is called."""
     ps = _make_mock_ps()
-    monkeypatch.setattr(sv, 'PhotometrySession', lambda row, one: ps)
     monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
-    load_session_data(session_row, MagicMock())
+    load_session_data(ps)
 
     ps.extract_responses.assert_called_once()
 
 
-def test_load_session_data_missing_photometry_exits(session_row, monkeypatch, tmp_path):
+def test_load_session_data_missing_photometry_exits(monkeypatch, tmp_path):
     """MissingRawData from load_photometry → sys.exit."""
     ps = _make_mock_ps()
     ps.load_photometry.side_effect = MissingRawData("no photometry")
-    monkeypatch.setattr(sv, 'PhotometrySession', lambda row, one: ps)
     monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
     with pytest.raises(SystemExit):
-        load_session_data(session_row, MagicMock())
+        load_session_data(ps)
 
 
-def test_load_session_data_missing_extracted_photometry_exits(session_row, monkeypatch, tmp_path):
+def test_load_session_data_missing_extracted_photometry_exits(monkeypatch, tmp_path):
     """MissingExtractedData from load_photometry → sys.exit."""
     ps = _make_mock_ps()
     ps.load_photometry.side_effect = MissingExtractedData("not extracted")
-    monkeypatch.setattr(sv, 'PhotometrySession', lambda row, one: ps)
     monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
     with pytest.raises(SystemExit):
-        load_session_data(session_row, MagicMock())
+        load_session_data(ps)
