@@ -14,7 +14,8 @@ from iblnm.config import (
     N_UNIQUE_SAMPLES_THRESHOLD,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, RESPONSE_EVENTS, RESPONSE_WINDOW,
-    RESPONSE_WINDOWS, SESSIONS_H5_DIR, TARGET_FS, TRIAL_COLUMNS, WHEEL_FS,
+    RESPONSE_WINDOWS, SESSIONS_H5_DIR, TARGETNMS_TO_ANALYZE, TARGET_FS,
+    TRIAL_COLUMNS, WHEEL_FS,
 )
 from iblnm.analysis import get_responses, compute_response_magnitude
 from iblnm import task
@@ -59,7 +60,9 @@ class PhotometrySession(PhotometrySessionLoader):
         self.NM = session_series.get('NM')
         self.strain = session_series.get('strain')
         self.line = session_series.get('line')
-        self.genotype = session_series.get('genotype')
+        raw_gt = session_series.get('genotype', [])
+        self.genotype = list(raw_gt) if isinstance(raw_gt, (list, np.ndarray)) else (
+            [raw_gt] if raw_gt else [])
         self.users = list(session_series.get('users', []))
         self.end_time = session_series.get('end_time')
         self.datasets = list(session_series.get('datasets', []))
@@ -166,7 +169,9 @@ class PhotometrySession(PhotometrySessionLoader):
                         val = grp.attrs[attr]
                         if isinstance(val, bytes):
                             val = val.decode()
-                        if val == '__none__':
+                        elif hasattr(val, 'item'):
+                            val = val.item()  # numpy scalar → native
+                        if isinstance(val, str) and val == '__none__':
                             val = None
                         data[attr] = val
 
@@ -201,7 +206,9 @@ class PhotometrySession(PhotometrySessionLoader):
             ps.NM = series.get('NM')
             ps.strain = series.get('strain')
             ps.line = series.get('line')
-            ps.genotype = series.get('genotype')
+            raw_gt = series.get('genotype', [])
+            ps.genotype = list(raw_gt) if isinstance(raw_gt, (list, np.ndarray)) else (
+                [raw_gt] if raw_gt else [])
             ps.users = list(series.get('users', []))
             ps.end_time = series.get('end_time')
             ps.datasets = list(series.get('datasets', []))
@@ -233,7 +240,7 @@ class PhotometrySession(PhotometrySessionLoader):
         from iblnm.validation import (
             validate_subject, validate_strain, validate_line,
             validate_neuromodulator, validate_brain_region, validate_hemisphere,
-            validate_datasets, fill_hemisphere_from_fiber_insertion_table,
+            validate_datasets,
         )
         from iblnm.util import get_session_type, get_targetNM, get_session_length
 
@@ -252,7 +259,6 @@ class PhotometrySession(PhotometrySessionLoader):
 
         # Brain regions and hemispheres
         s = get_brain_region(s, one=self.one, exlog=exlog)
-        s = fill_hemisphere_from_fiber_insertion_table(s, exlog=exlog)
         validate_brain_region(s, exlog=exlog)
         validate_hemisphere(s, exlog=exlog)
 
@@ -271,14 +277,18 @@ class PhotometrySession(PhotometrySessionLoader):
                 val = s[attr]
                 if attr == 'start_time' and isinstance(val, str):
                     val = datetime.fromisoformat(val)
+                elif hasattr(val, 'item'):
+                    val = val.item()  # numpy scalar → native Python type
                 setattr(self, attr, val)
 
         # Normalize list attrs
         for attr in ('brain_region', 'hemisphere', 'target_NM',
-                     'users', 'datasets', 'projects'):
+                     'users', 'datasets', 'projects', 'genotype'):
             val = getattr(self, attr, [])
             if isinstance(val, np.ndarray):
                 setattr(self, attr, list(val))
+            elif isinstance(val, str):
+                setattr(self, attr, [val] if val else [])
             elif not isinstance(val, list):
                 setattr(self, attr, [])
 
@@ -302,7 +312,7 @@ class PhotometrySession(PhotometrySessionLoader):
         ('eid', False), ('subject', False), ('start_time', False),
         ('number', False), ('task_protocol', False), ('session_type', False),
         ('lab', False), ('NM', False), ('strain', False), ('line', False),
-        ('genotype', False), ('end_time', False), ('session_length', False),
+        ('genotype', True), ('end_time', False), ('session_length', False),
         ('day_n', False), ('session_n', False), ('url', False),
         ('projects', True), ('users', True), ('brain_region', True),
         ('hemisphere', True), ('target_NM', True), ('datasets', True),
@@ -508,7 +518,7 @@ class PhotometrySession(PhotometrySessionLoader):
         )
         return self.responses
 
-    def save_h5(self, fpath=None, groups=None, band='GCaMP_preprocessed', mode='w'):
+    def save_h5(self, fpath=None, groups=None, band='GCaMP_preprocessed', mode='a'):
         """Save session data to HDF5.
 
         Parameters
@@ -517,12 +527,11 @@ class PhotometrySession(PhotometrySessionLoader):
             Output path. Defaults to SESSIONS_H5_DIR / {eid}.h5.
         groups : sequence of str, optional
             Which data groups to write. Any subset of:
-            'metadata', 'errors', 'signal', 'trials', 'responses', 'wheel'.
-            None applies mode-based defaults:
-              mode='w' → ('signal',)
-              mode='a' → all available among ('trials', 'responses', 'wheel')
+            'metadata', 'errors', 'signal', 'trials', 'responses', 'wheel',
+            'photometry_qc_metrics'.
+            None auto-detects all available data groups.
         mode : str
-            HDF5 file open mode ('w' creates/truncates, 'a' appends).
+            HDF5 file open mode ('a' creates/appends, 'w' truncates).
         """
         import h5py
         from pathlib import Path
@@ -532,14 +541,14 @@ class PhotometrySession(PhotometrySessionLoader):
         fpath.parent.mkdir(parents=True, exist_ok=True)
 
         if groups is None:
-            if mode == 'w':
-                groups = ('signal',)
-            else:
-                groups = [g for g, available in (
-                    ('trials',    hasattr(self, 'trials') and self.trials is not None),
-                    ('responses', hasattr(self, 'responses') and self.responses is not None),
-                    ('wheel',     hasattr(self, 'wheel_velocity') and self.wheel_velocity is not None),
-                ) if available]
+            groups = [g for g, available in (
+                ('signal',    band in self.photometry),
+                ('trials',    hasattr(self, 'trials') and self.trials is not None),
+                ('responses', hasattr(self, 'responses') and self.responses is not None),
+                ('wheel',     hasattr(self, 'wheel_velocity') and self.wheel_velocity is not None),
+                ('photometry_qc_metrics', hasattr(self, 'qc') and self.qc is not None
+                 and len(self.qc) > 0),
+            ) if available]
 
         with h5py.File(fpath, mode) as f:
             if 'metadata' in groups:
@@ -570,9 +579,16 @@ class PhotometrySession(PhotometrySessionLoader):
                 if 'errors' in f:
                     del f['errors']
                 grp = f.create_group('errors')
-                if self.errors:
+                seen = set()
+                unique_errors = []
+                for e in self.errors:
+                    key = (e.get('eid', ''), e.get('error_type', ''), e.get('error_message', ''))
+                    if key not in seen:
+                        seen.add(key)
+                        unique_errors.append(e)
+                if unique_errors:
                     for col in ('eid', 'error_type', 'error_message', 'traceback'):
-                        vals = [str(e.get(col, '') or '') for e in self.errors]
+                        vals = [str(e.get(col, '') or '') for e in unique_errors]
                         grp.create_dataset(col, data=vals,
                                            dtype=h5py.string_dtype())
                 # Empty group signals "no errors" — distinguishable from
@@ -586,6 +602,10 @@ class PhotometrySession(PhotometrySessionLoader):
                 f.attrs['fs'] = TARGET_FS
                 f.attrs['response_window'] = self.RESPONSE_WINDOW
 
+                if 'times' in f:
+                    del f['times']
+                if 'preprocessed' in f:
+                    del f['preprocessed']
                 preprocessed = self.photometry[band]
                 f.create_dataset('times', data=preprocessed.index.values)
                 grp = f.create_group('preprocessed')
@@ -634,6 +654,16 @@ class PhotometrySession(PhotometrySessionLoader):
                 grp.attrs['t0_event'] = getattr(self, '_wheel_t0_event', 'stimOn_times')
                 grp.attrs['t1_event'] = getattr(self, '_wheel_t1_event', 'feedback_times')
 
+            if 'photometry_qc_metrics' in groups and hasattr(self, 'qc') and self.qc is not None and len(self.qc) > 0:
+                if 'photometry_qc_metrics' in f:
+                    del f['photometry_qc_metrics']
+                grp = f.create_group('photometry_qc_metrics')
+                for col in self.qc.columns:
+                    vals = self.qc[col].values
+                    if vals.dtype == object:
+                        vals = vals.astype('S')
+                    grp.create_dataset(col, data=vals)
+
     def load_h5(self, fpath, groups=None):
         """Load session data from HDF5 file.
 
@@ -643,7 +673,8 @@ class PhotometrySession(PhotometrySessionLoader):
             Path to the HDF5 file.
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
-            'metadata', 'errors', 'signal', 'trials', 'responses', 'wheel'.
+            'metadata', 'errors', 'signal', 'trials', 'responses', 'wheel',
+            'photometry_qc_metrics'.
             None loads all groups present in the file.
         """
         import h5py
@@ -663,7 +694,9 @@ class PhotometrySession(PhotometrySessionLoader):
                             val = grp.attrs[attr]
                             if isinstance(val, bytes):
                                 val = val.decode()
-                            if val == '__none__':
+                            elif hasattr(val, 'item'):
+                                val = val.item()
+                            if isinstance(val, str) and val == '__none__':
                                 val = None
                             if attr == 'start_time' and isinstance(val, str):
                                 val = datetime.fromisoformat(val)
@@ -731,6 +764,16 @@ class PhotometrySession(PhotometrySessionLoader):
                 self.wheel_fs = f['wheel'].attrs['fs']
                 self._wheel_t0_event = f['wheel'].attrs['t0_event']
                 self._wheel_t1_event = f['wheel'].attrs['t1_event']
+
+            if (groups is None or 'photometry_qc_metrics' in groups) and 'photometry_qc_metrics' in f:
+                grp = f['photometry_qc_metrics']
+                data = {}
+                for col in grp:
+                    vals = grp[col][:]
+                    if vals.dtype.kind == 'S':
+                        vals = vals.astype(str)
+                    data[col] = vals
+                self.qc = pd.DataFrame(data)
 
     def _append_qc(self, brain_region: str, band: str, metrics: dict) -> None:
         """Append or update a QC row in the DataFrame."""
@@ -1152,6 +1195,36 @@ class PhotometrySession(PhotometrySessionLoader):
         return vec
 
 
+def _process_worker(eid, row_dict, h5_dir, fn, kwargs):
+    """Worker function for parallel process(). Runs in a subprocess.
+
+    Creates its own ONE connection, builds a PhotometrySession, calls
+    fn(ps, **kwargs), and flushes errors to H5.
+    """
+    from pathlib import Path
+    from iblnm.io import _get_default_connection
+
+    one = _get_default_connection()
+    h5_path = Path(h5_dir) / f'{eid}.h5'
+
+    if h5_path.exists():
+        ps = PhotometrySession.from_h5(h5_path, one=one)
+    else:
+        row = pd.Series(row_dict)
+        ps = PhotometrySession(row, one=one, load_data=False)
+
+    try:
+        result = fn(ps, **kwargs)
+    except Exception as e:
+        ps.log_error(e)
+        result = None
+    finally:
+        if h5_path.exists() or ps.errors:
+            ps.save_h5(h5_path, groups=['errors'])
+
+    return result
+
+
 class PhotometrySessionGroup:
     """Collection of recordings spanning multiple sessions.
 
@@ -1165,11 +1238,14 @@ class PhotometrySessionGroup:
         Directory containing {eid}.h5 files.
     """
 
-    def __init__(self, recordings, one, h5_dir=None):
-        self.recordings = recordings.reset_index(drop=True)
+    def __init__(self, sessions, one, h5_dir=None):
+        self._catalog = sessions.reset_index(drop=True)
+        self._filter_mask = pd.Series(True, index=self._catalog.index)
+        self._dedup_mask = pd.Series(True, index=self._catalog.index)
+        self._recordings_targetnms = None
         self.one = one
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
-        self._sessions = {}  # eid → PhotometrySession
+        self._sessions = {}  # eid → PhotometrySession cache
         self.response_traces = None
         self.response_traces_tpts = None
         self.mean_traces = None
@@ -1192,108 +1268,103 @@ class PhotometrySessionGroup:
         self.wheel_lmm_summary = None
 
     @classmethod
-    def from_catalog(cls, catalog_path, one, h5_dir=None,
-                     filter_recordings=True, **filter_kwargs):
-        """Build a group from a session catalog parquet.
+    def from_catalog(cls, catalog, one, h5_dir=None):
+        """Build a group from a session catalog DataFrame.
 
-        Reads the catalog, validates parallel list columns, explodes to
-        one row per recording, adds fiber_idx, and optionally applies
-        standard filters.
+        Validates parallel list columns. Call ``filter_sessions`` separately.
 
         Parameters
         ----------
-        catalog_path : Path or str
-            Path to sessions parquet (one row per session, with list columns
-            for brain_region, hemisphere, target_NM).
+        catalog : pd.DataFrame
+            Session catalog (one row per session, with list columns for
+            brain_region, hemisphere, target_NM). Enrich with
+            ``collect_session_errors`` before passing if you need error-based
+            filtering.
         one : one.api.One
             ONE connection instance.
         h5_dir : Path, optional
             Directory containing {eid}.h5 files.
-        filter_recordings : bool
-            If True (default), call self.filter_recordings(**filter_kwargs).
-        **filter_kwargs
-            Passed to filter_recordings (session_types, targetnms, etc.).
         """
-        from iblnm.util import validate_parallel_lists, derive_target_nm
+        from iblnm.config import SESSION_SCHEMA
+        from iblnm.util import enforce_schema, validate_parallel_lists
 
-        df = pd.read_parquet(catalog_path)
+        df = enforce_schema(catalog.copy(), SESSION_SCHEMA)
 
-        # Derive target_NM if missing
-        if 'target_NM' not in df.columns or df['target_NM'].apply(
-            lambda x: isinstance(x, list) and len(x) == 0
-        ).all():
-            df = derive_target_nm(df)
-
-        # Validate and drop sessions with mismatched parallel list lengths
         parallel_cols = ['brain_region', 'hemisphere', 'target_NM']
         df = validate_parallel_lists(df, parallel_cols)
 
-        # Explode to one row per recording
-        df_recordings = df.explode(parallel_cols).copy()
-        df_recordings['fiber_idx'] = df_recordings.groupby('eid').cumcount()
+        return cls(df, one=one, h5_dir=h5_dir)
 
-        group = cls(df_recordings, one=one, h5_dir=h5_dir)
+    @property
+    def sessions(self):
+        """Session-level view: _catalog rows passing both dedup and filter masks."""
+        combined = self._dedup_mask & self._filter_mask
+        return self._catalog[combined].copy().reset_index(drop=True)
 
-        if filter_recordings:
-            group.filter_recordings(**filter_kwargs)
+    @property
+    def recordings(self):
+        """Recording-level view: sessions exploded to one row per region.
 
-        return group
+        Reflects the current filter and dedup masks. Filters to
+        _recordings_targetnms (set by filter_sessions) when not None.
+        """
+        parallel_cols = ['brain_region', 'hemisphere', 'target_NM']
+        df = self.sessions.explode(parallel_cols).copy()
+        df['fiber_idx'] = df.groupby('eid').cumcount()
+        if self._recordings_targetnms is not None:
+            df = df[df['target_NM'].isin(self._recordings_targetnms)]
+        return df.reset_index(drop=True)
 
-    def filter_recordings(self, session_types=None, exclude_subjects=None,
-                          qc_blockers=None, targetnms=None,
-                          log_fpaths=None,
-                          min_performance=None, required_contrasts=None):
-        """Filter recordings by session type, QC, subjects, and target-NM.
+    def filter_sessions(self, session_types=None, exclude_subjects=None,
+                        qc_blockers=None, targetnms=TARGETNMS_TO_ANALYZE,
+                        min_performance=None, required_contrasts=None,
+                        lab=None, start_time_min=None):
+        """Compute a boolean filter mask over _catalog. Non-destructive.
 
-        Attaches upstream error logs (if log_fpaths provided), then removes
-        recordings that fail any filter. Modifies ``self.recordings`` in place.
+        Stores a new _filter_mask on each call. Access filtered data via the
+        ``sessions`` and ``recordings`` properties. Call multiple times to get
+        different filtered views.
 
         Parameters
         ----------
-        session_types : tuple of str, optional
-            Session types to keep. Defaults to ``('biased', 'ephys')``.
+        session_types : tuple of str, False, or None
+            Session types to keep. None → ('biased', 'ephys'). False → skip.
         exclude_subjects : list of str, optional
             Subjects to exclude. Defaults to config.SUBJECTS_TO_EXCLUDE.
         qc_blockers : set of str, optional
-            Error types that block a recording. Defaults to standard set.
-        targetnms : list of str, optional
-            Target-NM values to retain. Defaults to config.TARGETNMS_TO_ANALYZE.
-        log_fpaths : list of Path or pd.DataFrame, optional
-            Error log sources for collect_session_errors. Defaults to
-            [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH].
-        min_performance : float or dict, optional
-            Minimum ``fraction_correct``. If a float, applies to all session
-            types. If a dict, maps ``{session_type: threshold}`` so each type
-            can have its own cutoff. Defaults to ``{'training': 0.75}``.
-            Requires ``PERFORMANCE_FPATH`` to exist.
-        required_contrasts : set of float, optional
-            Contrast levels (percent) that sessions must contain. Sessions
-            whose contrast set does not exactly match are dropped. Defaults
-            to config.REQUIRED_CONTRASTS. Requires ``PERFORMANCE_FPATH`` to
-            exist (contrasts column). Pass ``None`` to skip.
+            Error types that block a session. Defaults to standard set.
+            Silently skipped if ``logged_errors`` is not present on the catalog.
+        targetnms : list of str or None
+            Target-NM values to retain in sessions and recordings.
+            Defaults to config.TARGETNMS_TO_ANALYZE. Pass None to skip.
+        min_performance : float, dict, or False
+            Minimum fraction_correct. False skips. None → {'training': threshold}.
+            Requires 'fraction_correct' to be present in the catalog (add via
+            merge_performance before from_catalog).
+        required_contrasts : set of float or False
+            Required contrast set. False skips. None → REQUIRED_CONTRASTS.
+            Requires 'contrasts' to be present in the catalog.
+        lab : str, optional
+            Keep only sessions from this lab.
+        start_time_min : str or date, optional
+            Keep only subjects whose first session is >= this date.
 
         Returns
         -------
-        self
+        None
         """
         from iblnm.config import (
-            SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
-            QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
-            PERFORMANCE_FPATH, MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
+            SUBJECTS_TO_EXCLUDE,
+            MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
         )
-        from iblnm.util import collect_session_errors
 
+        # Resolve defaults
         if session_types is None:
             session_types = ('biased', 'ephys')
+        elif session_types is False:
+            session_types = None
         if exclude_subjects is None:
             exclude_subjects = SUBJECTS_TO_EXCLUDE
-        if targetnms is None:
-            targetnms = TARGETNMS_TO_ANALYZE
-        if log_fpaths is None:
-            log_fpaths = [
-                QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH,
-                TASK_LOG_FPATH,
-            ]
         if qc_blockers is None:
             qc_blockers = {
                 'MissingExtractedData', 'MissingRawData',
@@ -1306,70 +1377,107 @@ class PhotometrySessionGroup:
         if required_contrasts is None:
             required_contrasts = REQUIRED_CONTRASTS
 
-        df = self.recordings
+        df = self._catalog
+        true = pd.Series(True, index=df.index)
 
-        # Attach upstream error logs
-        df = collect_session_errors(df, log_fpaths)
+        # Build individual masks
+        type_mask = df['session_type'].isin(session_types) if session_types is not None else true
+        subject_mask = ~df['subject'].isin(exclude_subjects) if exclude_subjects else true
+        lab_mask = (df['lab'] == lab) if (lab is not None and 'lab' in df.columns) else true
 
-        # Filter by session type and excluded subjects
-        df = df[
-            df['session_type'].isin(session_types)
-            & ~df['subject'].isin(exclude_subjects)
-        ]
+        if start_time_min is not None and 'start_time' in df.columns:
+            dt_series = pd.to_datetime(df['start_time'], format='ISO8601')
+            first_per_row = dt_series.groupby(df['subject']).transform('min')
+            start_mask = first_per_row >= pd.Timestamp(start_time_min)
+        else:
+            start_mask = true
 
-        # Filter by QC blockers
-        df = df[
-            df['logged_errors'].apply(
+        if qc_blockers and 'logged_errors' in df.columns:
+            qc_mask = df['logged_errors'].apply(
                 lambda e: not any(err in qc_blockers for err in e)
             )
-        ]
+        else:
+            qc_mask = true
 
-        # Filter by target-NM
-        if 'target_NM' in df.columns:
-            df = df.loc[df['target_NM'].isin(targetnms)]
+        if targetnms is not None and 'target_NM' in df.columns:
+            targetnms_set = set(targetnms)
+            target_mask = df['target_NM'].apply(
+                lambda ts: any(t in targetnms_set for t in ts)
+                if isinstance(ts, (list, np.ndarray)) else ts in targetnms_set
+            )
+        else:
+            target_mask = true
 
-        # Filter by performance and/or contrast set from performance table
-        need_perf = min_performance is not False
-        need_contrasts = required_contrasts is not False
-        if (need_perf or need_contrasts) and len(df) > 0 and PERFORMANCE_FPATH.exists():
-            import pyarrow.parquet as pq
-            available = set(pq.read_schema(PERFORMANCE_FPATH).names)
-            perf_cols = ['eid']
-            if need_perf and 'fraction_correct' in available:
-                perf_cols.append('fraction_correct')
+        if min_performance is not False and 'fraction_correct' in df.columns:
+            if isinstance(min_performance, dict):
+                perf_mask = true.copy()
+                for stype, threshold in min_performance.items():
+                    is_type = df['session_type'] == stype
+                    meets = df['fraction_correct'] >= threshold
+                    perf_mask = perf_mask & (~is_type | meets)
             else:
-                need_perf = False
-            if need_contrasts and 'contrasts' in available:
-                perf_cols.append('contrasts')
-            else:
-                need_contrasts = False
-            df_perf = pd.read_parquet(PERFORMANCE_FPATH, columns=perf_cols)
-            df = df.merge(df_perf, on='eid', how='left')
+                perf_mask = df['fraction_correct'] >= min_performance
+        else:
+            perf_mask = true
 
-            # Performance filter
-            if need_perf:
-                if isinstance(min_performance, dict):
-                    keep = pd.Series(True, index=df.index)
-                    for stype, threshold in min_performance.items():
-                        is_type = df['session_type'] == stype
-                        meets = df['fraction_correct'] >= threshold
-                        keep = keep & (~is_type | meets)
-                    df = df[keep]
-                else:
-                    df = df[df['fraction_correct'] >= min_performance]
-                df = df.drop(columns='fraction_correct')
+        if required_contrasts is not False and 'contrasts' in df.columns:
+            required_set = set(required_contrasts)
+            contrast_mask = df['contrasts'].apply(
+                lambda c: set(c) == required_set
+                if isinstance(c, (list, np.ndarray)) else False
+            )
+        else:
+            contrast_mask = true
 
-            # Contrast set filter (exact match)
-            if need_contrasts:
-                required_set = set(required_contrasts)
-                df = df[df['contrasts'].apply(
-                    lambda c: set(c) == required_set
-                    if isinstance(c, (list, np.ndarray)) else False
-                )]
-                df = df.drop(columns='contrasts')
+        mask = type_mask & subject_mask & lab_mask & start_mask & qc_mask & target_mask & perf_mask & contrast_mask
 
-        self.recordings = df.copy().reset_index(drop=True)
-        return self
+        self._filter_mask = mask
+        self._recordings_targetnms = targetnms
+
+        n = len(df)
+        lines = [f"filter_sessions: {n} -> {int(mask.sum())}"]
+        for label, m in [
+            ('session_type', type_mask), ('excluded_subjects', subject_mask),
+            ('lab', lab_mask), ('start_time', start_mask),
+            ('qc_errors', qc_mask), ('target_NM', target_mask),
+            ('performance', perf_mask), ('contrasts', contrast_mask),
+        ]:
+            removed = n - int(m.sum())
+            if removed:
+                lines.append(f"  -{removed:4d} {label}")
+        print('\n'.join(lines))
+        return None
+
+    def deduplicate(self):
+        """Compute _dedup_mask by resolving duplicate (subject, day_n) sessions.
+
+        Operates on _catalog (full unfiltered table). True duplicates are
+        logged as TrueDuplicateSession entries; one row is kept as fallback.
+        Updates self.recordings to match.
+
+        Returns
+        -------
+        self
+        """
+        from iblnm.util import resolve_duplicate_group
+
+        if 'logged_errors' not in self._catalog.columns:
+            self._catalog['logged_errors'] = [[] for _ in range(len(self._catalog))]
+
+        exlog = []
+        df_kept = (
+            self._catalog.groupby(['subject', 'day_n'], group_keys=False)
+            .apply(resolve_duplicate_group, exlog=exlog, include_groups=False)
+        )
+        if isinstance(df_kept, pd.DataFrame):
+            kept_eids = set(df_kept['eid'])
+        else:
+            kept_eids = {df_kept['eid']} if isinstance(df_kept, pd.Series) else set()
+
+        self._dedup_mask = self._catalog['eid'].isin(kept_eids)
+        return pd.DataFrame(exlog) if exlog else pd.DataFrame(
+            columns=['eid', 'error_type', 'error_message', 'traceback']
+        )
 
     def __len__(self):
         return len(self.recordings)
@@ -1399,22 +1507,26 @@ class PhotometrySessionGroup:
                 new_group._sessions[eid] = ps
         return new_group
 
-    def process(self, fn, workers=1):
+    def process(self, fn, workers=1, **kwargs):
         """Apply a function to each unique session in the group.
 
         For each session, instantiates a PhotometrySession (from H5 if
-        available, otherwise from the recording row), calls fn(ps), catches
-        any exception as a fatal error, and always flushes accumulated
+        available, otherwise from the recording row), calls fn(ps, **kwargs),
+        catches any exception as a fatal error, and always flushes accumulated
         errors to the session's H5 file.
 
         Parameters
         ----------
         fn : callable
-            Function taking a PhotometrySession and returning a result.
-            Non-fatal errors should be logged via ps.log_error() inside fn.
-            Fatal errors can be raised and will be caught by process().
+            Function taking a PhotometrySession (plus any **kwargs) and
+            returning a result. Must be a top-level function (picklable)
+            when workers > 1. Non-fatal errors should be logged via
+            ps.log_error() inside fn. Fatal errors can be raised and will
+            be caught by process().
         workers : int
             Number of parallel workers. 1 = sequential.
+        **kwargs
+            Extra keyword arguments forwarded to fn(ps, **kwargs).
 
         Returns
         -------
@@ -1422,20 +1534,15 @@ class PhotometrySessionGroup:
             Results from fn, one per unique session. None for failed sessions.
         """
         from pathlib import Path
-        from iblnm.validation import make_log_entry
-
-        # Get unique sessions
-        unique_eids = self.recordings['eid'].unique()
-        eid_to_row = {}
-        for eid in unique_eids:
-            mask = self.recordings['eid'] == eid
-            eid_to_row[eid] = self.recordings[mask].iloc[0]
+        from tqdm import tqdm
 
         if workers > 1:
-            return self._process_parallel(fn, eid_to_row, workers)
+            return self._process_parallel(fn, workers, **kwargs)
 
         results = []
-        for eid, row in eid_to_row.items():
+        for _, row in tqdm(self.sessions.iterrows(), total=len(self.sessions),
+                           desc="Processing"):
+            eid = row['eid']
             h5_path = Path(self.h5_dir) / f'{eid}.h5'
             if h5_path.exists():
                 ps = PhotometrySession.from_h5(h5_path, one=self.one)
@@ -1443,7 +1550,7 @@ class PhotometrySessionGroup:
                 ps = PhotometrySession(row, one=self.one, load_data=False)
 
             try:
-                result = fn(ps)
+                result = fn(ps, **kwargs)
                 results.append(result)
             except Exception as e:
                 ps.log_error(e)
@@ -1451,16 +1558,94 @@ class PhotometrySessionGroup:
             finally:
                 # Always flush errors to H5
                 if h5_path.exists() or ps.errors:
-                    ps.save_h5(h5_path, groups=['errors'],
-                               mode='a' if h5_path.exists() else 'w')
+                    ps.save_h5(h5_path, groups=['errors'])
         return results
 
-    def _process_parallel(self, fn, eid_to_row, workers):
-        """Parallel implementation of process(). Not yet implemented."""
-        raise NotImplementedError(
-            "Parallel process() requires serializable functions. "
-            "Use workers=1 for now."
-        )
+    def _process_parallel(self, fn, workers, **kwargs):
+        """Parallel implementation of process().
+
+        Each worker creates its own ONE connection and PhotometrySession.
+        fn must be a picklable top-level function (not a lambda or closure).
+        """
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        from tqdm import tqdm
+
+        # Serialize rows as dicts for pickling
+        tasks = {row['eid']: row.to_dict()
+                 for _, row in self.sessions.iterrows()}
+
+        results = [None] * len(tasks)
+        eid_list = list(tasks.keys())
+        eid_to_idx = {eid: i for i, eid in enumerate(eid_list)}
+
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    _process_worker, eid, row_dict,
+                    str(self.h5_dir), fn, kwargs,
+                ): eid
+                for eid, row_dict in tasks.items()
+            }
+            for future in tqdm(as_completed(futures), total=len(futures),
+                               desc="Processing"):
+                eid = futures[future]
+                try:
+                    results[eid_to_idx[eid]] = future.result()
+                except Exception as e:
+                    print(f"\n  FATAL: {eid}: {type(e).__name__}: {e}")
+
+        return results
+
+    # -----------------------------------------------------------------
+    # Parquet loaders — populate group attributes from saved files
+    # -----------------------------------------------------------------
+
+    def _load_parquet(self, path):
+        """Read a parquet file and filter rows to current recordings.
+
+        Returns None if the file does not exist.
+        """
+        from pathlib import Path
+        path = Path(path)
+        if not path.exists():
+            return None
+        df = pd.read_parquet(path)
+        eids = set(self.recordings['eid'])
+        return df[df['eid'].isin(eids)].copy()
+
+    def load_response_magnitudes(self, path):
+        """Load response magnitudes from parquet, filtered to current recordings."""
+        self.response_magnitudes = self._load_parquet(path)
+
+    def load_trial_timing(self, path):
+        """Load trial timing from parquet, filtered to current recordings."""
+        self.trial_timing = self._load_parquet(path)
+
+    def load_peak_velocity(self, path):
+        """Load peak velocity from parquet, filtered to current recordings."""
+        self.peak_velocity = self._load_parquet(path)
+
+    def load_mean_traces(self, path):
+        """Load mean traces from parquet, filtered to current recordings."""
+        self.mean_traces = self._load_parquet(path)
+
+    def load_response_features(self, path):
+        """Load response features from parquet, filtered to current recordings."""
+        from pathlib import Path
+        path = Path(path)
+        if not path.exists():
+            self.response_features = None
+            return
+        df = pd.read_parquet(path)
+        if 'eid' in df.columns:
+            df = df.set_index(['eid', 'target_NM', 'fiber_idx'])
+        eids = set(self.recordings['eid'])
+        df = df[df.index.get_level_values('eid').isin(eids)]
+        self.response_features = df
+
+    # -----------------------------------------------------------------
+    # Trace loading and extraction
+    # -----------------------------------------------------------------
 
     def load_response_traces(self):
         """Load and cache per-trial response traces from H5 files.
@@ -1479,7 +1664,6 @@ class PhotometrySessionGroup:
         from pathlib import Path
         from tqdm import tqdm
 
-        skipped_eids = set()
         cache = {}
 
         for rec, ps in tqdm(self, total=len(self),
@@ -1489,8 +1673,6 @@ class PhotometrySessionGroup:
             hemisphere = rec['hemisphere']
             h5_path = Path(self.h5_dir) / f'{eid}.h5'
 
-            if eid in skipped_eids:
-                continue
             if not h5_path.exists():
                 continue
 
@@ -1534,11 +1716,6 @@ class PhotometrySessionGroup:
                     'meta': {**meta, 'event': event},
                     'trials': ps.trials.copy(),
                 }
-
-        if skipped_eids:
-            self.recordings = self.recordings[
-                ~self.recordings['eid'].isin(skipped_eids)
-            ].reset_index(drop=True)
 
         self.response_traces = cache
         return self
@@ -1750,7 +1927,6 @@ class PhotometrySessionGroup:
         kwargs.setdefault('min_trials', 1)
 
         from pathlib import Path
-        import logging
 
         rows = {}
         has_fiber_idx = 'fiber_idx' in self.recordings.columns
@@ -1766,7 +1942,7 @@ class PhotometrySessionGroup:
             if not hasattr(ps, 'responses') or not hasattr(ps, 'trials'):
                 h5_path = Path(self.h5_dir) / f'{eid}.h5'
                 if not h5_path.exists():
-                    logging.warning(f"H5 file not found: {h5_path}")
+                    print(f"  H5 file not found: {h5_path}")
                     continue
                 ps.load_h5(h5_path, groups=['trials', 'responses'])
 

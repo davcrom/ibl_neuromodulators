@@ -18,20 +18,20 @@ Usage:
 """
 import argparse
 
-import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH,
+    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_TIMING_FPATH, PEAK_VELOCITY_FPATH,
     RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
-    RESPONSE_EVENTS, FIGURE_DPI, ANALYSIS_CONTRASTS,
+    RESPONSE_EVENTS, FIGURE_DPI, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.task import add_relative_contrast
-from iblnm.util import derive_target_nm
+from iblnm.util import collect_session_errors
 from iblnm.vis import (
     plot_relative_contrast, plot_relative_contrast_per_subject,
     plot_similarity_matrix,
@@ -354,50 +354,22 @@ if __name__ == '__main__':
         d.mkdir(parents=True, exist_ok=True)
 
     # =====================================================================
-    # Load sessions
+    # Load sessions and create group
     # =====================================================================
     print(f"Loading sessions from {SESSIONS_FPATH}")
-    df_sessions = pd.read_parquet(SESSIONS_FPATH)
-    print(f"  Total sessions: {len(df_sessions)}")
+    df = pd.read_parquet(SESSIONS_FPATH)
+    df = collect_session_errors(
+        df, [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH])
+    if PERFORMANCE_FPATH.exists():
+        perf = pd.read_parquet(
+            PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
+        df = df.merge(perf, on='eid', how='left')
 
-    # Derive target_NM and NM from brain_region
-    # (brain_region already filled and corrected in query_database.py)
-    df_sessions = derive_target_nm(df_sessions)
-
-    # TEMPFIX: drop sessions where brain_region, hemisphere, and target_NM
-    # have different numbers of entries. This happens because brain_region
-    # and hemisphere are populated independently in query_database.py, so
-    # some sessions end up with e.g. brain_region=['VTA'] but hemisphere=[].
-    # These cannot be exploded into one row per recording.
-    _parallel_cols = ['target_NM', 'brain_region', 'hemisphere']
-    _lengths_match = df_sessions[_parallel_cols].apply(
-        lambda row: len(set(
-            len(v) if isinstance(v, (list, np.ndarray)) else 1
-            for v in row
-        )) == 1,
-        axis=1,
-    )
-    n_mismatched = (~_lengths_match).sum()
-    if n_mismatched > 0:
-        _bad = df_sessions.loc[~_lengths_match, ['eid', 'subject', 'brain_region', 'hemisphere']]
-        print(f"  Dropping {n_mismatched} sessions with mismatched brain_region/hemisphere lengths:")
-        for _, row in _bad.iterrows():
-            print(f"    {row['subject']} {row['eid']}: "
-                  f"brain_region={row['brain_region']}, hemisphere={row['hemisphere']}")
-        df_sessions = df_sessions[_lengths_match].copy()
-
-    # Explode to one row per recording (brain_region x hemisphere x target_NM)
-    # Add fiber_idx to distinguish bilateral same-target recordings
-    df_recordings = df_sessions.explode(_parallel_cols).copy()
-    df_recordings['fiber_idx'] = df_recordings.groupby('eid').cumcount()
-
-    # =====================================================================
-    # Create group and apply standard filters
-    # =====================================================================
     one = _get_default_connection()
-    group = PhotometrySessionGroup(df_recordings, one=one)
-    group.filter_recordings(
+    group = PhotometrySessionGroup.from_catalog(df, one=one)
+    group.filter_sessions(
         session_types=('biased', 'ephys', 'training'),
+        targetnms=TARGETNMS_TO_ANALYZE,
     )
     print(f"  Recordings (session x region): {len(group)}")
 
@@ -412,34 +384,11 @@ if __name__ == '__main__':
             print(f"Error: {RESPONSE_MATRIX_FPATH} not found. Run without --plot first.")
             raise SystemExit(1)
 
-        # FIXME: here we need to load via a method in the group object that filters sessions
-        print(f"Loading response magnitudes from {RESPONSES_FPATH}")
-        df_responses = pd.read_parquet(RESPONSES_FPATH)
-        df_responses = df_responses[df_responses['eid'].isin(group.recordings['eid'])]
-        group.response_magnitudes = df_responses
-
-        if TRIAL_TIMING_FPATH.exists():
-            print(f"Loading trial timing from {TRIAL_TIMING_FPATH}")
-            df_timing = pd.read_parquet(TRIAL_TIMING_FPATH)
-            df_timing = df_timing[df_timing['eid'].isin(group.recordings['eid'])]
-            group.trial_timing = df_timing
-
-        if PEAK_VELOCITY_FPATH.exists():
-            print(f"Loading peak velocity from {PEAK_VELOCITY_FPATH}")
-            df_velocity = pd.read_parquet(PEAK_VELOCITY_FPATH)
-            df_velocity = df_velocity[df_velocity['eid'].isin(group.recordings['eid'])]
-            group.peak_velocity = df_velocity
-
-        print(f"Loading response matrix from {RESPONSE_MATRIX_FPATH}")
-        df_respmat = pd.read_parquet(RESPONSE_MATRIX_FPATH).reset_index()
-        df_respmat = df_respmat[df_respmat['eid'].isin(group.recordings['eid'])]
-        group.response_features = df_respmat.set_index(['eid', 'target_NM', 'fiber_idx'])
-
-        if MEAN_TRACES_FPATH.exists():
-            print(f"Loading mean traces from {MEAN_TRACES_FPATH}")
-            df_traces = pd.read_parquet(MEAN_TRACES_FPATH)
-            df_traces = df_traces[df_traces['eid'].isin(group.recordings['eid'])]
-            group.mean_traces = df_traces
+        group.load_response_magnitudes(RESPONSES_FPATH)
+        group.load_trial_timing(TRIAL_TIMING_FPATH)
+        group.load_peak_velocity(PEAK_VELOCITY_FPATH)
+        group.load_response_features(RESPONSE_MATRIX_FPATH)
+        group.load_mean_traces(MEAN_TRACES_FPATH)
 
     else:
         # =================================================================
@@ -484,22 +433,11 @@ if __name__ == '__main__':
               f"to {RESPONSE_MATRIX_FPATH}")
 
     # =====================================================================
-    # Filter to analysis contrasts (excludes 50%)
-    # =====================================================================
-    # CHECK: this should be handled by a session-level filter?
-    if group.response_magnitudes is not None:
-        group.response_magnitudes = group.response_magnitudes[
-            group.response_magnitudes['contrast'].isin(ANALYSIS_CONTRASTS)
-        ].copy()
-
-    # =====================================================================
     # Mean response traces per target-NM (first figures)
     # =====================================================================
     if group.mean_traces is not None and len(group.mean_traces) > 0:
         print("\nGenerating mean response trace plots...")
-        traces_df = group.mean_traces[
-            group.mean_traces['contrast'].isin(ANALYSIS_CONTRASTS)
-        ]
+        traces_df = group.mean_traces
         targets = sorted(traces_df['target_NM'].unique())
         for target in targets:
             fig = plot_mean_response_traces(traces_df, target)

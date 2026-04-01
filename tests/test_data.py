@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from unittest.mock import MagicMock, patch
 
-from iblnm.config import contrast_transform
+from iblnm.util import contrast_transform
 
 
 # =============================================================================
@@ -139,7 +139,7 @@ def full_session_series():
         'NM': 'DA',
         'strain': 'Thy1-GCaMP6s',
         'line': 'Thy1',
-        'genotype': 'Thy1-GCaMP6s/wt',
+        'genotype': ['Thy1-GCaMP6s/wt'],
         'users': ['user1', 'user2'],
         'end_time': '2024-01-01T11:00:00',
         'brain_region': ['VTA', 'SNc'],
@@ -173,7 +173,7 @@ class TestInit:
         assert ps.NM is None
         assert ps.strain is None
         assert ps.line is None
-        assert ps.genotype is None
+        assert ps.genotype == []
         assert ps.users == []
         assert ps.end_time is None
         assert ps.brain_region == []
@@ -193,7 +193,7 @@ class TestInit:
         assert ps.eid == 'test-eid-full'
         assert ps.strain == 'Thy1-GCaMP6s'
         assert ps.line == 'Thy1'
-        assert ps.genotype == 'Thy1-GCaMP6s/wt'
+        assert ps.genotype == ['Thy1-GCaMP6s/wt']
         assert ps.NM == 'DA'
         assert ps.users == ['user1', 'user2']
         assert ps.end_time == '2024-01-01T11:00:00'
@@ -226,7 +226,7 @@ class TestToDict:
         assert d['subject'] == 'test_mouse'
         assert d['strain'] == 'Thy1-GCaMP6s'
         assert d['line'] == 'Thy1'
-        assert d['genotype'] == 'Thy1-GCaMP6s/wt'
+        assert d['genotype'] == ['Thy1-GCaMP6s/wt']
         assert d['NM'] == 'DA'
         assert d['brain_region'] == ['VTA', 'SNc']
         assert d['hemisphere'] == ['l', 'r']
@@ -276,7 +276,7 @@ class TestH5Metadata:
         assert ps2.subject == ps.subject
         assert ps2.strain == 'Thy1-GCaMP6s'
         assert ps2.line == 'Thy1'
-        assert ps2.genotype == 'Thy1-GCaMP6s/wt'
+        assert ps2.genotype == ['Thy1-GCaMP6s/wt']
         assert ps2.NM == 'DA'
         assert ps2.brain_region == ['VTA', 'SNc']
         assert ps2.hemisphere == ['l', 'r']
@@ -329,6 +329,49 @@ class TestH5Metadata:
         ps2.load_h5(fpath, groups=['metadata'])
         assert ps2.strain is None
         assert ps2.brain_region == []
+
+    def test_genotype_list_roundtrip(self, tmp_path):
+        """genotype (a list from Alyx) survives H5 save/load and from_h5."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        row = pd.Series({
+            'eid': 'gt-test', 'subject': 'ZFM-01',
+            'start_time': '2024-01-01T10:00:00', 'number': 1,
+            'genotype': ['ChAT-IRES-Cre +/-', 'Ai148-G6f +/-'],
+        })
+        ps = PhotometrySession(row, one=mock_one, load_data=False)
+        assert ps.genotype == ['ChAT-IRES-Cre +/-', 'Ai148-G6f +/-']
+
+        fpath = tmp_path / 'gt-test.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        # load_h5 path
+        ps2 = PhotometrySession(row, one=mock_one, load_data=False)
+        ps2.genotype = []
+        ps2.load_h5(fpath, groups=['metadata'])
+        assert ps2.genotype == ['ChAT-IRES-Cre +/-', 'Ai148-G6f +/-']
+
+        # from_h5 path (no ONE)
+        ps3 = PhotometrySession.from_h5(fpath)
+        assert ps3.genotype == ['ChAT-IRES-Cre +/-', 'Ai148-G6f +/-']
+
+    def test_genotype_empty_list_roundtrip(self, tmp_path):
+        """Empty genotype list survives H5 roundtrip."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        row = pd.Series({
+            'eid': 'gt-empty', 'subject': 'ZFM-01',
+            'start_time': '2024-01-01T10:00:00', 'number': 1,
+            'genotype': [],
+        })
+        ps = PhotometrySession(row, one=mock_one, load_data=False)
+        assert ps.genotype == []
+
+        fpath = tmp_path / 'gt-empty.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession.from_h5(fpath)
+        assert ps2.genotype == []
 
 
 class TestLogError:
@@ -411,6 +454,28 @@ class TestH5Errors:
         ps2.load_h5(fpath, groups=['errors'])
         assert ps2.errors == []
 
+    def test_save_deduplicates_errors(self, mock_session_series, tmp_path):
+        """Duplicate errors (same eid/type/message) are written only once."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import InvalidStrain
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        # Log the same error three times (simulates repeated pipeline runs)
+        for _ in range(3):
+            try:
+                raise InvalidStrain("bad strain")
+            except InvalidStrain as e:
+                ps.log_error(e)
+
+        ps.save_h5(fpath, groups=['metadata', 'errors'])
+
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps2.load_h5(fpath, groups=['errors'])
+        assert len(ps2.errors) == 1
+        assert ps2.errors[0]['error_type'] == 'InvalidStrain'
+
     def test_save_errors_append_mode(self, mock_session_series, tmp_path):
         """Errors can be saved in append mode to existing H5."""
         from iblnm.data import PhotometrySession
@@ -487,7 +552,7 @@ class TestFromAlyx:
 
         assert ps.strain == 'Ai148xDATCre'
         assert ps.line == 'Ai148xDat'
-        assert ps.genotype == 'Ai148xDATCre/wt'
+        assert ps.genotype == ['Ai148xDATCre/wt']
         assert ps.NM == 'DA'
         assert ps.lab == 'cortexlab'
         assert ps.brain_region == ['VTA-l']
@@ -1179,6 +1244,29 @@ class TestSaveLoadH5:
         assert 'stimOn_times' in session.trials.columns
         np.testing.assert_allclose(session.trials['stimOn_times'].values, saved_stim)
 
+    def test_save_load_qc_roundtrip(self, mock_session_series, tmp_path):
+        """photometry_qc_metrics group survives H5 roundtrip."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps.qc = pd.DataFrame({
+            'eid': [ps.eid, ps.eid],
+            'brain_region': ['VTA', 'SNc'],
+            'band': ['GCaMP', 'GCaMP'],
+            'n_band_inversions': [0, 2],
+            'bleaching_tau': [150.5, 200.3],
+        })
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata', 'photometry_qc_metrics'])
+
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        assert ps2.qc.empty
+        ps2.load_h5(fpath, groups=['photometry_qc_metrics'])
+        assert len(ps2.qc) == 2
+        assert list(ps2.qc['brain_region']) == ['VTA', 'SNc']
+        assert list(ps2.qc['n_band_inversions']) == [0, 2]
+        np.testing.assert_allclose(ps2.qc['bleaching_tau'], [150.5, 200.3])
+
     def test_load_h5_roundtrip(self, mock_photometry_session, tmp_path):
         """load_h5 should restore preprocessed signal from saved file."""
         session = mock_photometry_session
@@ -1810,8 +1898,29 @@ class TestBlockPerformance:
 # PhotometrySessionGroup Tests
 # =============================================================================
 
+def _make_sessions_df(n_eids=2, regions_per=2):
+    """Helper to build a session-level DataFrame with list columns."""
+    rows = []
+    region_names = ['VTA-r', 'DR-l', 'SNc-r', 'LC-l']
+    target_names = ['target-0', 'target-1', 'target-2', 'target-3']
+    for i in range(n_eids):
+        rows.append({
+            'eid': f'eid-{i}',
+            'subject': f'subj-{i % 2}',
+            'brain_region': [region_names[j] for j in range(regions_per)],
+            'hemisphere': [region_names[j][-1] for j in range(regions_per)],
+            'target_NM': [target_names[j] for j in range(regions_per)],
+            'NM': f'NM-0',
+            'session_type': 'biased',
+            'start_time': '2024-01-01T10:00:00',
+            'number': 1,
+            'task_protocol': 'biased_protocol',
+        })
+    return pd.DataFrame(rows)
+
+
 def _make_recordings_df(n_eids=2, regions_per=2):
-    """Helper to build a recordings DataFrame."""
+    """Helper to build a recordings DataFrame (exploded)."""
     rows = []
     region_names = ['VTA-r', 'DR-l', 'SNc-r', 'LC-l']
     for i in range(n_eids):
@@ -1834,9 +1943,9 @@ def _make_recordings_df(n_eids=2, regions_per=2):
 class TestFromCatalog:
     """Tests for PhotometrySessionGroup.from_catalog."""
 
-    def _make_catalog(self, tmp_path):
-        """Write a minimal catalog parquet with parallel list columns."""
-        df = pd.DataFrame([
+    def _make_catalog(self):
+        """Return a minimal catalog DataFrame with parallel list columns."""
+        return pd.DataFrame([
             {
                 'eid': 'eid-1', 'subject': 'mouse_A',
                 'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
@@ -1859,40 +1968,106 @@ class TestFromCatalog:
                 'target_NM': ['VTA-DA'], 'NM': 'DA',
             },
         ])
-        fpath = tmp_path / 'sessions.pqt'
-        df.to_parquet(fpath, index=False)
-        return fpath
 
-    def test_explodes_parallel_columns(self, tmp_path):
-        """from_catalog explodes parallel list columns into recordings."""
+    def test_validates_parallel_columns(self):
+        """from_catalog validates parallel list columns and drops mismatched."""
         from iblnm.data import PhotometrySessionGroup
-        fpath = self._make_catalog(tmp_path)
-        group = PhotometrySessionGroup.from_catalog(
-            fpath, one=MagicMock(), filter_recordings=False,
-        )
-        # eid-1 has 2 regions, eid-2 has 1, eid-3 dropped (mismatched)
-        assert len(group) == 3
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        # eid-3 dropped (mismatched), eid-1 and eid-2 kept
+        assert len(group.sessions) == 2
+        assert 'eid-3' not in group.sessions['eid'].values
+
+    def test_recordings_from_catalog(self):
+        """recordings produces one row per region after from_catalog."""
+        from iblnm.data import PhotometrySessionGroup
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        group.filter_sessions(session_types=False, targetnms=None,
+                              qc_blockers=set(),
+                              min_performance=False, required_contrasts=False)
+        # eid-1 has 2 regions, eid-2 has 1
+        assert len(group.recordings) == 3
         assert 'fiber_idx' in group.recordings.columns
 
-    def test_drops_mismatched_parallel_lists(self, tmp_path):
-        """Sessions with mismatched brain_region/hemisphere/target_NM are dropped."""
+    def test_filter_reflected_in_recordings(self):
+        """Filtering by session type is reflected in recordings."""
         from iblnm.data import PhotometrySessionGroup
-        fpath = self._make_catalog(tmp_path)
-        group = PhotometrySessionGroup.from_catalog(
-            fpath, one=MagicMock(), filter_recordings=False,
-        )
-        assert 'eid-3' not in group.recordings['eid'].values
-
-    def test_filter_recordings_applied(self, tmp_path):
-        """When filter_recordings=True, standard filters are applied."""
-        from iblnm.data import PhotometrySessionGroup
-        fpath = self._make_catalog(tmp_path)
-        group = PhotometrySessionGroup.from_catalog(
-            fpath, one=MagicMock(),
-            session_types=('biased',),
-            filter_recordings=True,
-        )
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        group.filter_sessions(session_types=('biased',), targetnms=None,
+                              qc_blockers=set(),
+                              min_performance=False, required_contrasts=False)
         assert all(group.recordings['session_type'] == 'biased')
+
+    def test_from_catalog_enforces_schema(self):
+        """from_catalog fills missing schema columns with typed defaults."""
+        from iblnm.data import PhotometrySessionGroup
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        # 'lab' is in SESSION_SCHEMA but absent from the catalog fixture
+        assert 'lab' in group._catalog.columns
+
+    def test_recordings_reflects_refilter(self):
+        """recordings updates automatically when filter_sessions is re-called."""
+        from iblnm.data import PhotometrySessionGroup
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        group.filter_sessions(session_types=('biased',), targetnms=None,
+                              qc_blockers=set(),
+                              min_performance=False, required_contrasts=False)
+        assert all(group.recordings['session_type'] == 'biased')
+
+        group.filter_sessions(session_types=('training',), targetnms=None,
+                              qc_blockers=set(),
+                              min_performance=False, required_contrasts=False)
+        assert all(group.recordings['session_type'] == 'training')
+
+
+class TestDeduplicate:
+    """Tests for PhotometrySessionGroup.deduplicate."""
+
+    def test_keeps_one_per_subject_day(self):
+        """Deduplicate keeps one session per (subject, day_n)."""
+        from iblnm.data import PhotometrySessionGroup
+        df = pd.DataFrame([
+            {'eid': 'e1', 'subject': 'A', 'day_n': 0, 'session_type': 'biased',
+             'brain_region': ['VTA'], 'hemisphere': ['l'], 'target_NM': ['VTA-DA'],
+             'logged_errors': []},
+            {'eid': 'e2', 'subject': 'A', 'day_n': 0, 'session_type': 'biased',
+             'brain_region': ['VTA'], 'hemisphere': ['l'], 'target_NM': ['VTA-DA'],
+             'logged_errors': ['MissingRawData']},
+            {'eid': 'e3', 'subject': 'A', 'day_n': 1, 'session_type': 'biased',
+             'brain_region': ['VTA'], 'hemisphere': ['l'], 'target_NM': ['VTA-DA'],
+             'logged_errors': []},
+        ])
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.deduplicate()
+        assert set(group.recordings['eid']) == {'e1', 'e3'}
+
+    def test_keeps_multi_region_recordings(self):
+        """Deduplicate preserves all recordings for the kept session."""
+        from iblnm.data import PhotometrySessionGroup
+        df = pd.DataFrame([
+            {'eid': 'e1', 'subject': 'A', 'day_n': 0, 'session_type': 'biased',
+             'brain_region': ['VTA', 'SNc'], 'hemisphere': ['l', 'r'],
+             'target_NM': ['VTA-DA', 'SNc-DA'], 'logged_errors': []},
+            {'eid': 'e2', 'subject': 'A', 'day_n': 0, 'session_type': 'biased',
+             'brain_region': ['VTA'], 'hemisphere': ['l'], 'target_NM': ['VTA-DA'],
+             'logged_errors': ['MissingRawData']},
+        ])
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.deduplicate()
+        assert len(group.recordings) == 2
+        assert set(group.recordings['brain_region']) == {'VTA', 'SNc'}
+
+    def test_returns_self(self):
+        """Deduplicate returns self for chaining."""
+        from iblnm.data import PhotometrySessionGroup
+        df = pd.DataFrame([
+            {'eid': 'e1', 'subject': 'A', 'day_n': 0, 'session_type': 'biased',
+             'brain_region': ['VTA'], 'hemisphere': ['l'], 'target_NM': ['VTA-DA'],
+             'logged_errors': []},
+        ])
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        result = group.deduplicate()
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.columns) == ['eid', 'error_type', 'error_message', 'traceback']
 
 
 class TestGroupProcess:
@@ -2455,244 +2630,378 @@ class TestDecodeTarget:
 
 
 # =============================================================================
-# filter_recordings Tests
+# filter_sessions Tests
 # =============================================================================
 
-class TestFilterRecordings:
+class TestFilterSessions:
 
     def test_filters_session_types(self):
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=1)
-        recs.loc[0, 'session_type'] = 'habituation'
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        group.filter_recordings(
-            session_types=('biased',),
-            log_fpaths=[],
-            targetnms=['target-0', 'target-1'],
+        df = _make_sessions_df(n_eids=2, regions_per=1)
+        df.loc[0, 'session_type'] = 'habituation'
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            session_types=('biased',), qc_blockers=set(),
+            targetnms=None,
+            min_performance=False, required_contrasts=False,
         )
-        assert 'eid-0' not in group.recordings['eid'].values
+        assert 'eid-0' not in group.sessions['eid'].values
 
     def test_excludes_subjects(self):
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=1)
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        group.filter_recordings(
-            exclude_subjects=['subj-0'],
-            log_fpaths=[],
-            targetnms=['target-0', 'target-1'],
+        df = _make_sessions_df(n_eids=2, regions_per=1)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            exclude_subjects=['subj-0'], qc_blockers=set(),
+            targetnms=None,
+            min_performance=False, required_contrasts=False,
         )
-        assert 'subj-0' not in group.recordings['subject'].values
+        assert 'subj-0' not in group.sessions['subject'].values
 
     def test_filters_qc_blockers(self):
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=1)
+        from iblnm.util import collect_session_errors
+        df = _make_sessions_df(n_eids=2, regions_per=1)
         error_log = pd.DataFrame([{
             'eid': 'eid-0',
             'error_type': 'MissingExtractedData',
             'error_message': 'test',
             'traceback': '',
         }])
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        group.filter_recordings(
-            log_fpaths=[error_log],
-            targetnms=['target-0', 'target-1'],
+        df = collect_session_errors(df, [error_log])
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            targetnms=None,
+            min_performance=False, required_contrasts=False,
         )
-        assert 'eid-0' not in group.recordings['eid'].values
+        assert 'eid-0' not in group.sessions['eid'].values
 
-    def test_filters_targetnms(self):
+    def test_filters_sessions_without_valid_targets(self):
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=2)
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        group.filter_recordings(
-            log_fpaths=[],
+        df = _make_sessions_df(n_eids=2, regions_per=2)
+        # eid-0 has ['target-0', 'target-1'], eid-1 same
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            qc_blockers=set(),
             targetnms=['target-0'],
+            min_performance=False, required_contrasts=False,
         )
-        assert all(group.recordings['target_NM'] == 'target-0')
+        # Both sessions have target-0, so both survive
+        assert len(group.sessions) == 2
+
+    def test_drops_session_with_no_valid_targets(self):
+        from iblnm.data import PhotometrySessionGroup
+        df = _make_sessions_df(n_eids=2, regions_per=1)
+        # eid-0 has ['target-0'], eid-1 has ['target-0']
+        # Change eid-1 to have only invalid target
+        df.at[1, 'target_NM'] = ['target-invalid']
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            qc_blockers=set(),
+            targetnms=['target-0'],
+            min_performance=False, required_contrasts=False,
+        )
+        assert 'eid-1' not in group.sessions['eid'].values
+        assert 'eid-0' in group.sessions['eid'].values
 
     def test_empty_after_filtering(self):
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=1)
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        group.filter_recordings(
+        df = _make_sessions_df(n_eids=2, regions_per=1)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
             session_types=('ephys',),  # none match
-            log_fpaths=[],
-            targetnms=['target-0'],
+            qc_blockers=set(),
+            targetnms=None,
+            min_performance=False, required_contrasts=False,
         )
-        assert len(group) == 0
+        assert len(group.sessions) == 0
 
-    def test_returns_self(self):
+    def test_returns_none(self):
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        result = group.filter_recordings(
-            log_fpaths=[],
-            targetnms=['target-0'],
+        df = _make_sessions_df(n_eids=1, regions_per=1)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        result = group.filter_sessions(
+            qc_blockers=set(),
+            targetnms=None,
+            min_performance=False, required_contrasts=False,
         )
-        assert result is group
+        assert result is None
 
-    def test_min_performance_float_applies_to_all(self, tmp_path):
+    def test_min_performance_float_applies_to_all(self):
         """Float min_performance filters all session types."""
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=3, regions_per=1)
-        recs['session_type'] = ['training', 'biased', 'ephys']
+        df = _make_sessions_df(n_eids=3, regions_per=1)
+        df['session_type'] = ['training', 'biased', 'ephys']
+        df['fraction_correct'] = [0.6, 0.8, 0.5]
+        df['contrasts'] = [[0, 6.25, 12.5, 25, 100]] * 3
 
-        df_perf = pd.DataFrame({
-            'eid': ['eid-0', 'eid-1', 'eid-2'],
-            'fraction_correct': [0.6, 0.8, 0.5],
-            'contrasts': [[0, 6.25, 12.5, 25, 100]] * 3,
-        })
-        perf_path = tmp_path / 'performance.pqt'
-        df_perf.to_parquet(perf_path)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            targetnms=None,
+            min_performance=0.7,
+            required_contrasts=None,
+        )
 
-        import iblnm.config as cfg
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        orig = cfg.PERFORMANCE_FPATH
-        try:
-            cfg.PERFORMANCE_FPATH = perf_path
-            group.filter_recordings(
-                log_fpaths=[],
-                targetnms=['target-0'],
-                min_performance=0.7,
-                required_contrasts=None,
-            )
-        finally:
-            cfg.PERFORMANCE_FPATH = orig
-
-        remaining = set(group.recordings['eid'].values)
+        remaining = set(group.sessions['eid'].values)
         assert 'eid-1' in remaining  # 0.8 >= 0.7
         assert 'eid-0' not in remaining  # 0.6 < 0.7
         assert 'eid-2' not in remaining  # 0.5 < 0.7
 
-    def test_min_performance_dict_applies_per_type(self, tmp_path):
+    def test_min_performance_dict_applies_per_type(self):
         """Dict min_performance applies thresholds per session type."""
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=3, regions_per=1)
-        recs['session_type'] = ['training', 'biased', 'biased']
+        df = _make_sessions_df(n_eids=3, regions_per=1)
+        df['session_type'] = ['training', 'biased', 'biased']
+        df['fraction_correct'] = [0.6, 0.7, 0.9]
+        df['contrasts'] = [[0, 6.25, 12.5, 25, 100]] * 3
 
-        df_perf = pd.DataFrame({
-            'eid': ['eid-0', 'eid-1', 'eid-2'],
-            'fraction_correct': [0.6, 0.7, 0.9],
-            'contrasts': [[0, 6.25, 12.5, 25, 100]] * 3,
-        })
-        perf_path = tmp_path / 'performance.pqt'
-        df_perf.to_parquet(perf_path)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            session_types=('training', 'biased'),
+            targetnms=None,
+            min_performance={'training': 0.5, 'biased': 0.8},
+            required_contrasts=None,
+        )
 
-        import iblnm.config as cfg
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        orig = cfg.PERFORMANCE_FPATH
-        try:
-            cfg.PERFORMANCE_FPATH = perf_path
-            group.filter_recordings(
-                session_types=('training', 'biased'),
-                log_fpaths=[],
-                targetnms=['target-0'],
-                min_performance={'training': 0.5, 'biased': 0.8},
-                required_contrasts=None,
-            )
-        finally:
-            cfg.PERFORMANCE_FPATH = orig
-
-        remaining = set(group.recordings['eid'].values)
+        remaining = set(group.sessions['eid'].values)
         assert 'eid-0' in remaining  # training 0.6 >= 0.5
         assert 'eid-1' not in remaining  # biased 0.7 < 0.8
         assert 'eid-2' in remaining  # biased 0.9 >= 0.8
 
-    def test_required_contrasts_exact_match(self, tmp_path):
+    def test_required_contrasts_exact_match(self):
         """required_contrasts filters sessions whose contrast set doesn't match exactly."""
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=3, regions_per=1)
+        df = _make_sessions_df(n_eids=3, regions_per=1)
+        df['fraction_correct'] = [0.9, 0.9, 0.9]
+        df['contrasts'] = [
+            [0, 6.25, 12.5, 25, 100],
+            [0, 6.25, 12.5, 25, 50, 100],
+            [0, 6.25, 25, 100],
+        ]
 
-        df_perf = pd.DataFrame({
-            'eid': ['eid-0', 'eid-1', 'eid-2'],
-            'fraction_correct': [0.9, 0.9, 0.9],
-            'contrasts': [
-                [0, 6.25, 12.5, 25, 100],   # exact match
-                [0, 6.25, 12.5, 25, 50, 100],  # superset — should be dropped
-                [0, 6.25, 25, 100],           # subset — should be dropped
-            ],
-        })
-        perf_path = tmp_path / 'performance.pqt'
-        df_perf.to_parquet(perf_path)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            targetnms=None,
+            min_performance=None,
+            required_contrasts={0, 6.25, 12.5, 25, 100},
+        )
 
-        import iblnm.config as cfg
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        orig = cfg.PERFORMANCE_FPATH
-        try:
-            cfg.PERFORMANCE_FPATH = perf_path
-            group.filter_recordings(
-                log_fpaths=[],
-                targetnms=['target-0'],
-                min_performance=None,
-                required_contrasts={0, 6.25, 12.5, 25, 100},
-            )
-        finally:
-            cfg.PERFORMANCE_FPATH = orig
-
-        remaining = set(group.recordings['eid'].values)
+        remaining = set(group.sessions['eid'].values)
         assert remaining == {'eid-0'}
 
-    def test_required_contrasts_applies_to_all_session_types(self, tmp_path):
+    def test_required_contrasts_applies_to_all_session_types(self):
         """Contrast filtering applies to biased and ephys, not just training."""
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=1)
-        recs['session_type'] = ['biased', 'ephys']
+        df = _make_sessions_df(n_eids=2, regions_per=1)
+        df['session_type'] = ['biased', 'ephys']
+        df['fraction_correct'] = [0.9, 0.9]
+        df['contrasts'] = [
+            [0, 6.25, 12.5, 25, 100],
+            [0, 6.25, 12.5, 25, 50, 100],
+        ]
 
-        df_perf = pd.DataFrame({
-            'eid': ['eid-0', 'eid-1'],
-            'fraction_correct': [0.9, 0.9],
-            'contrasts': [
-                [0, 6.25, 12.5, 25, 100],  # match
-                [0, 6.25, 12.5, 25, 50, 100],  # no match
-            ],
-        })
-        perf_path = tmp_path / 'performance.pqt'
-        df_perf.to_parquet(perf_path)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            session_types=('biased', 'ephys'),
+            targetnms=None,
+            min_performance=None,
+            required_contrasts={0, 6.25, 12.5, 25, 100},
+        )
 
-        import iblnm.config as cfg
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        orig = cfg.PERFORMANCE_FPATH
-        try:
-            cfg.PERFORMANCE_FPATH = perf_path
-            group.filter_recordings(
-                session_types=('biased', 'ephys'),
-                log_fpaths=[],
-                targetnms=['target-0', 'target-1'],
-                min_performance=None,
-                required_contrasts={0, 6.25, 12.5, 25, 100},
-            )
-        finally:
-            cfg.PERFORMANCE_FPATH = orig
-
-        remaining = set(group.recordings['eid'].values)
+        remaining = set(group.sessions['eid'].values)
         assert remaining == {'eid-0'}
 
-    def test_no_required_contrasts_stashed(self, tmp_path):
-        """_required_contrasts should not be set on the group."""
+    def test_catalog_unchanged_after_filter(self):
+        """_catalog retains all rows after filter_sessions."""
         from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        df = _make_sessions_df(n_eids=4, regions_per=1)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            session_types=('ephys',),  # none match (all are biased)
+            qc_blockers=set(), targetnms=None,
+            min_performance=False, required_contrasts=False,
+        )
+        assert len(group._catalog) == 4
 
-        df_perf = pd.DataFrame({
-            'eid': ['eid-0'],
-            'fraction_correct': [0.9],
-            'contrasts': [[0, 6.25, 12.5, 25, 100]],
-        })
-        perf_path = tmp_path / 'performance.pqt'
-        df_perf.to_parquet(perf_path)
+    def test_filter_sessions_returns_different_views(self):
+        """Calling filter_sessions again changes the sessions view."""
+        from iblnm.data import PhotometrySessionGroup
+        df = _make_sessions_df(n_eids=4, regions_per=1)
+        df['session_type'] = ['biased', 'biased', 'ephys', 'ephys']
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            session_types=('biased',), qc_blockers=set(),
+            targetnms=None, min_performance=False, required_contrasts=False,
+        )
+        assert len(group.sessions) == 2
+        group.filter_sessions(
+            session_types=('ephys',), qc_blockers=set(),
+            targetnms=None, min_performance=False, required_contrasts=False,
+        )
+        assert len(group.sessions) == 2
+        assert set(group.sessions['session_type']) == {'ephys'}
 
-        import iblnm.config as cfg
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        orig = cfg.PERFORMANCE_FPATH
-        try:
-            cfg.PERFORMANCE_FPATH = perf_path
-            group.filter_recordings(
-                log_fpaths=[],
-                targetnms=['target-0'],
-                required_contrasts={0, 6.25, 12.5, 25, 100},
-            )
-        finally:
-            cfg.PERFORMANCE_FPATH = orig
+    def test_sessions_snapshot_is_independent(self):
+        """Snapshot of group.sessions is not affected by subsequent filter calls."""
+        from iblnm.data import PhotometrySessionGroup
+        df = _make_sessions_df(n_eids=4, regions_per=1)
+        df['session_type'] = ['biased', 'biased', 'ephys', 'ephys']
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            session_types=('biased',), qc_blockers=set(),
+            targetnms=None, min_performance=False, required_contrasts=False,
+        )
+        snapshot = group.sessions
+        group.filter_sessions(
+            session_types=('ephys',), qc_blockers=set(),
+            targetnms=None, min_performance=False, required_contrasts=False,
+        )
+        assert set(snapshot['session_type']) == {'biased'}
 
-        assert not hasattr(group, '_required_contrasts')
+    def test_lab_filter(self):
+        """lab parameter keeps only sessions from that lab."""
+        from iblnm.data import PhotometrySessionGroup
+        df = _make_sessions_df(n_eids=4, regions_per=1)
+        df['lab'] = ['mainenlab', 'mainenlab', 'cortexlab', 'cortexlab']
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            lab='mainenlab', qc_blockers=set(),
+            session_types=False, targetnms=None,
+            min_performance=False, required_contrasts=False,
+        )
+        assert set(group.sessions['lab']) == {'mainenlab'}
+        assert len(group.sessions) == 2
+
+    def test_start_time_min_filter(self):
+        """start_time_min excludes subjects whose first session is before the cutoff."""
+        from iblnm.data import PhotometrySessionGroup
+        df = _make_sessions_df(n_eids=4, regions_per=1)
+        df['subject'] = ['subj-0', 'subj-0', 'subj-1', 'subj-1']
+        df['start_time'] = ['2023-06-01T10:00:00', '2023-07-01T10:00:00',
+                            '2024-01-15T10:00:00', '2024-02-01T10:00:00']
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            start_time_min='2024-01-01', qc_blockers=set(),
+            session_types=False, targetnms=None,
+            min_performance=False, required_contrasts=False,
+        )
+        assert 'subj-0' not in group.sessions['subject'].values
+        assert 'subj-1' in group.sessions['subject'].values
+        assert len(group.sessions) == 2
+
+
+# =============================================================================
+# Loader method tests
+# =============================================================================
+
+class TestLoaderMethods:
+    """Tests for PhotometrySessionGroup.load_* methods."""
+
+    def _make_group(self, n_eids=2, regions_per=1):
+        from iblnm.data import PhotometrySessionGroup
+        df = _make_sessions_df(n_eids=n_eids, regions_per=regions_per)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            session_types=False, qc_blockers=set(), targetnms=None,
+            min_performance=False, required_contrasts=False,
+        )
+        return group
+
+    def test_load_response_magnitudes(self, tmp_path):
+        group = self._make_group()
+        df = pd.DataFrame([
+            {'eid': 'eid-0', 'trial': 0, 'response_early': 1.0},
+            {'eid': 'eid-0', 'trial': 1, 'response_early': 2.0},
+            {'eid': 'eid-1', 'trial': 0, 'response_early': 3.0},
+            {'eid': 'eid-99', 'trial': 0, 'response_early': 4.0},  # not in group
+        ])
+        path = tmp_path / 'responses.pqt'
+        df.to_parquet(path, index=False)
+
+        group.load_response_magnitudes(path)
+        assert len(group.response_magnitudes) == 3
+        assert 'eid-99' not in group.response_magnitudes['eid'].values
+
+    def test_load_trial_timing(self, tmp_path):
+        group = self._make_group()
+        df = pd.DataFrame([
+            {'eid': 'eid-0', 'trial': 0, 'reaction_time': 0.1},
+            {'eid': 'eid-99', 'trial': 0, 'reaction_time': 0.2},
+        ])
+        path = tmp_path / 'timing.pqt'
+        df.to_parquet(path, index=False)
+
+        group.load_trial_timing(path)
+        assert len(group.trial_timing) == 1
+        assert group.trial_timing['eid'].iloc[0] == 'eid-0'
+
+    def test_load_peak_velocity(self, tmp_path):
+        group = self._make_group()
+        df = pd.DataFrame([
+            {'eid': 'eid-0', 'trial': 0, 'peak_velocity': 5.0},
+            {'eid': 'eid-99', 'trial': 0, 'peak_velocity': 6.0},
+        ])
+        path = tmp_path / 'velocity.pqt'
+        df.to_parquet(path, index=False)
+
+        group.load_peak_velocity(path)
+        assert len(group.peak_velocity) == 1
+
+    def test_load_mean_traces(self, tmp_path):
+        group = self._make_group()
+        df = pd.DataFrame([
+            {'eid': 'eid-0', 'target_NM': 'target-0', 'time': 0.0, 'response': 1.0},
+            {'eid': 'eid-99', 'target_NM': 'target-X', 'time': 0.0, 'response': 2.0},
+        ])
+        path = tmp_path / 'traces.pqt'
+        df.to_parquet(path, index=False)
+
+        group.load_mean_traces(path)
+        assert len(group.mean_traces) == 1
+
+    def test_load_response_features(self, tmp_path):
+        group = self._make_group(regions_per=1)
+        df = pd.DataFrame({
+            'eid': ['eid-0', 'eid-1', 'eid-99'],
+            'target_NM': ['target-0', 'target-0', 'target-X'],
+            'fiber_idx': [0, 0, 0],
+            'feat_a': [1.0, 2.0, 3.0],
+            'feat_b': [4.0, 5.0, 6.0],
+        }).set_index(['eid', 'target_NM', 'fiber_idx'])
+        path = tmp_path / 'features.pqt'
+        df.to_parquet(path)
+
+        group.load_response_features(path)
+        assert len(group.response_features) == 2
+        assert 'eid-99' not in group.response_features.index.get_level_values('eid')
+
+    def test_load_missing_file_is_noop(self, tmp_path):
+        group = self._make_group()
+        group.load_response_magnitudes(tmp_path / 'nonexistent.pqt')
+        assert group.response_magnitudes is None
+
+    def test_load_filters_to_current_recordings(self, tmp_path):
+        """After re-filtering, loaded data reflects the new session set."""
+        from iblnm.data import PhotometrySessionGroup
+        df = _make_sessions_df(n_eids=3, regions_per=1)
+        df['session_type'] = ['biased', 'biased', 'ephys']
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            session_types=('biased',), qc_blockers=set(), targetnms=None,
+            min_performance=False, required_contrasts=False,
+        )
+
+        resp = pd.DataFrame([
+            {'eid': 'eid-0', 'trial': 0, 'response_early': 1.0},
+            {'eid': 'eid-1', 'trial': 0, 'response_early': 2.0},
+            {'eid': 'eid-2', 'trial': 0, 'response_early': 3.0},
+        ])
+        path = tmp_path / 'responses.pqt'
+        resp.to_parquet(path, index=False)
+
+        group.load_response_magnitudes(path)
+        assert len(group.response_magnitudes) == 2
+        assert 'eid-2' not in group.response_magnitudes['eid'].values
 
 
 # =============================================================================
