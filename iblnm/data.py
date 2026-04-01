@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -1871,7 +1873,9 @@ class PhotometrySessionGroup:
                 trial_mask = idx.values
                 if len(trial_mask) == 0:
                     continue
-                mean_trace = np.nanmean(traces[trial_mask], axis=0)
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', RuntimeWarning)
+                    mean_trace = np.nanmean(traces[trial_mask], axis=0)
                 n_trials = int(np.sum(~np.isnan(traces[trial_mask, 0])))
 
                 for i, t in enumerate(tpts):
