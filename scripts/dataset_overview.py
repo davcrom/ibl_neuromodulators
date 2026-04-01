@@ -1,132 +1,183 @@
 """
 Dataset Overview
 
-Produces six session overview matrices:
-1. All registered sessions (post-metadata and session-type filtering)
-2. Sessions with raw data (task + photometry)
-3. Sessions with complete data (extracted + sufficient trials + TIPT)
-4. Sessions passing basic photometry QC
-5. Video-ready sessions (extracted task data + video QC pass)
-6. QC-passing sessions only, exploded by target, sorted by target then first session date
+Produces session overview matrices and target barplots from the session catalog.
 
-All flags are derived from upstream error logs and video.pqt.
-No write-back to any upstream file.
+Plots 1–4: session matrices (all, raw data, complete, QC-passing)
+Plot 5: video-ready matrix (if VIDEO_FPATH exists)
+Plots 6–7: target/mouse barplots (QC-passing, VALID_TARGETNMS)
+Plots 8–9: target/mouse barplots (QC-passing, TARGETNMS_TO_ANALYZE)
+Recording capacity projection
+
+Usage:
+    python scripts/dataset_overview.py [--session_split {session_type,proficient}]
+                                       [--session_x {session_n,day_n}]
 """
+import argparse
+import sys
+from datetime import date, timedelta
+
+import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH,
-    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH,
-    TASK_LOG_FPATH,
-    ERRORS_FPATH, FIGURE_DPI,
-    SUBJECTS_TO_EXCLUDE, SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
+    PROJECT_ROOT, SESSIONS_FPATH, FIGURE_DPI,
+    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
+    PERFORMANCE_FPATH, ERRORS_FPATH,
+    SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
     TARGETNMS_TO_ANALYZE, VIDEO_FPATH,
+    SESSIONTYPE2FLOAT, SESSIONTYPE2COLOR,
+    MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
+from iblnm.data import PhotometrySessionGroup
 from iblnm.util import (
-    resolve_duplicate_group,
-    concat_logs, deduplicate_log,
-    collect_session_errors, derive_target_nm, LOG_COLUMNS,
+    concat_logs, deduplicate_log, collect_session_errors,
 )
 from iblnm.vis import (
-    session_overview_matrix, target_overview_barplot, mouse_overview_barplot, set_plotsize
+    session_overview_matrix, target_overview_barplot, mouse_overview_barplot, set_plotsize,
 )
 
-plt.ion()
+# ---- Color maps for --session_split options ----
 
-# Create output directory
+SESSION_TYPE_FLOAT_MAP = SESSIONTYPE2FLOAT
+SESSION_TYPE_COLOR_MAP = SESSIONTYPE2COLOR
+
+PROFICIENT_FLOAT_MAP = {
+    'not_proficient': 0.33,
+    'proficient': 0.80,
+}
+PROFICIENT_COLOR_MAP = {
+    'not_proficient': 'cornflowerblue',
+    'proficient': 'hotpink',
+}
+
+# ---- Error filter sets ----
+
+RAW_DATA_BLOCKERS = {'MissingRawData'}
+COMPLETE_DATA_BLOCKERS = RAW_DATA_BLOCKERS | {
+    'MissingExtractedData', 'InsufficientTrials', 'TrialsNotInPhotometryTime',
+}
+QC_BLOCKERS = COMPLETE_DATA_BLOCKERS | {'QCValidationError', 'FewUniqueSamples'}
+VIDEO_QC_COLS = [
+    'qc_videoLeft_timestamps', 'qc_videoLeft_dropped_frames', 'qc_videoLeft_pin_state',
+]
+VIDEO_QC_BLOCKERS = QC_BLOCKERS | {'VideoQCFail'}
+
+PROJECTION_DEADLINE = date(2026, 7, 31)
+PROJECTION_CAPACITY_PER_DAY = 16
+PROJECTION_TARGET_N = 3  # proficient sessions per mouse
+
+LOG_FPATHS = [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH]
+
+
+# ---- Helper functions ----
+
+def _compute_proficient_label(df):
+    """Binary proficiency label. Requires fraction_correct and contrasts columns.
+
+    Training sessions meeting the performance threshold and full contrast set are
+    'proficient'. Biased and ephys sessions are always 'proficient'. All other
+    training sessions are 'not_proficient'.
+    """
+    required = set(REQUIRED_CONTRASTS)
+    is_training = df['session_type'] == 'training'
+    has_full_contrasts = df['contrasts'].apply(
+        lambda c: set(c) == required if isinstance(c, (list, np.ndarray)) else False
+    )
+    meets_perf = df['fraction_correct'].fillna(0) >= MIN_TRAINING_PERFORMANCE
+    is_proficient = (~is_training) | (is_training & has_full_contrasts & meets_perf)
+    return is_proficient.map({True: 'proficient', False: 'not_proficient'})
+
+
+def _count_weekdays(start, end):
+    """Count business days between start and end (exclusive of end)."""
+    total = (end - start).days
+    if total <= 0:
+        return 0
+    weeks, rem = divmod(total, 7)
+    wd = weeks * 5
+    cur = start + timedelta(days=weeks * 7)
+    for _ in range(rem):
+        if cur.weekday() < 5:
+            wd += 1
+        cur += timedelta(days=1)
+    return wd
+
+
+# ---- argparse ----
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--session_split', choices=['session_type', 'proficient'],
+                    default='session_type')
+parser.add_argument('--session_x', choices=['session_n', 'day_n'],
+                    default='session_n')
+args = parser.parse_args()
+
+if args.session_split == 'proficient':
+    if not PERFORMANCE_FPATH.exists():
+        print(f"Performance file not found: {PERFORMANCE_FPATH}")
+        sys.exit(1)
+    split_col = 'proficient_label'
+    float_map = PROFICIENT_FLOAT_MAP
+    color_map = PROFICIENT_COLOR_MAP
+else:
+    split_col = 'session_type'
+    float_map = SESSION_TYPE_FLOAT_MAP
+    color_map = SESSION_TYPE_COLOR_MAP
+
+# ---- Output directory ----
+
 figures_dir = PROJECT_ROOT / 'figures/dataset_overview'
 figures_dir.mkdir(parents=True, exist_ok=True)
 
+plt.ion()
 
-# =============================================================================
-# Load Data
-# =============================================================================
+# ---- Load and enrich ----
 
-print(f"Loading sessions from {SESSIONS_FPATH}")
-df_sessions = pd.read_parquet(SESSIONS_FPATH)
-n_total = len(df_sessions)
+if not SESSIONS_FPATH.exists():
+    print(f"Sessions file not found: {SESSIONS_FPATH}")
+    sys.exit(1)
 
-# Attach all upstream error logs (needed for filtering and dedup)
-df_sessions = collect_session_errors(
-    df_sessions,
-    [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH],
+df = pd.read_parquet(SESSIONS_FPATH)
+df = collect_session_errors(df, LOG_FPATHS)
+if PERFORMANCE_FPATH.exists():
+    perf = pd.read_parquet(PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
+    df = df.merge(perf, on='eid', how='left')
+
+if 'fraction_correct' in df.columns and 'contrasts' in df.columns:
+    df['proficient_label'] = _compute_proficient_label(df)
+
+# Merge video QC flags if available
+if VIDEO_FPATH.exists():
+    df_video = pd.read_parquet(VIDEO_FPATH, columns=['eid'] + VIDEO_QC_COLS)
+    df = df.merge(df_video, on='eid', how='left')
+    df['_passes_video_qc'] = (
+        df['qc_videoLeft_timestamps'].eq('PASS')
+        & df['qc_videoLeft_dropped_frames'].eq('PASS')
+        & df['qc_videoLeft_pin_state'].isin(['PASS', 'WARNING'])
+    )
+    df['_video_qc_blocker'] = df['_passes_video_qc'].apply(
+        lambda p: [] if p else ['VideoQCFail']
+    )
+    df['logged_errors'] = df.apply(
+        lambda row: row['logged_errors'] + row['_video_qc_blocker']
+        if isinstance(row['logged_errors'], list) else row['_video_qc_blocker'],
+        axis=1,
+    )
+    df = df.drop(columns=['_passes_video_qc', '_video_qc_blocker'])
+
+group = PhotometrySessionGroup.from_catalog(df, one=None)
+dedup_errors = group.deduplicate()
+
+# ---- Base filter kwargs ----
+
+_base = dict(
+    session_types=SESSION_TYPES_TO_ANALYZE,
+    min_performance=False,
+    required_contrasts=False,
 )
-
-# Filter: remove sessions with fatal metadata errors
-# ~fatal_errors = {'InvalidNeuromodulator', 'InvalidBrainRegion', 'InvalidTargetNM'}
-# ~df_sessions = df_sessions[
-    # ~df_sessions['logged_errors'].apply(lambda errs: not any(e in fatal_errors for e in errs))
-# ~].copy()
-# ~n_after_fatal = len(df_sessions)
-
-
-# Filter to sessions that are valid for task analysis
-df_sessions = df_sessions[
-    df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE) &
-    ~df_sessions['subject'].isin(SUBJECTS_TO_EXCLUDE)
-]
-n_after_type = len(df_sessions)
-
-# Deduplicate: one session per (subject, day_n), prefer sessions without disqualifying errors
-dup_log = []
-df_sessions = (
-    df_sessions.groupby(['subject', 'day_n'], group_keys=False)
-    .apply(resolve_duplicate_group, exlog=dup_log, include_groups=True)
-    .reset_index(drop=True)
-)
-df_dup_log = pd.DataFrame(dup_log) if dup_log else pd.DataFrame(columns=LOG_COLUMNS)
-n_after_dedup = len(df_sessions)
-
-print("\nSession counts:")
-print(f"  Registered: {n_total}")
-print(f"  After session type filter: {n_after_type} (-{n_total - n_after_type})")
-print(f"  After deduplication: {n_after_dedup} (-{n_after_type - n_after_dedup})")
-
-
-# =============================================================================
-# Derive flags from error logs
-# =============================================================================
-
-_errs = df_sessions['logged_errors']
-
-# Matrix 2: raw data present (task + photometry)
-df_sessions['has_raw_data'] = _errs.apply(
-    lambda e: 'MissingRawData' not in e)
-
-# Matrix 3: complete data (raw data present + extracted + sufficient trials + TIPT)
-# MissingRawData must be included: photometry.py exits early when raw data is absent,
-# so MissingExtractedData / InsufficientTrials / TrialsNotInPhotometryTime are never
-# logged for those sessions — omitting it causes complete_data > raw_data (wrong).
-_complete_blockers = {'MissingRawData', 'MissingExtractedData', 'InsufficientTrials',
-                      'TrialsNotInPhotometryTime'}
-df_sessions['has_complete_data'] = _errs.apply(
-    lambda e: not any(err in _complete_blockers for err in e))
-
-# Matrix 4: passes basic photometry QC
-_qc_blockers = _complete_blockers | {'QCValidationError', 'FewUniqueSamples'}
-df_sessions['passes_basic_qc'] = _errs.apply(
-    lambda e: not any(err in _qc_blockers for err in e))
-
-# Matrix 5: video-ready (extracted task data + video QC pass)
-_extraction_blockers = {'MissingRawData', 'MissingExtractedData'}
-df_sessions['has_extracted_task'] = _errs.apply(
-    lambda e: not any(err in _extraction_blockers for err in e))
-
-_VIDEO_QC_PROBLEM_COLS = [
-    'qc_videoLeft_timestamps',
-    'qc_videoLeft_dropped_frames',
-    'qc_videoLeft_pin_state',
-]
-df_video = pd.read_parquet(VIDEO_FPATH, columns=['eid'] + _VIDEO_QC_PROBLEM_COLS)
-df_sessions = df_sessions.merge(df_video, on='eid', how='left')
-df_sessions['passes_video_qc'] = (
-    df_sessions['qc_videoLeft_timestamps'].eq('PASS')
-    & df_sessions['qc_videoLeft_dropped_frames'].eq('PASS')
-    & df_sessions['qc_videoLeft_pin_state'].isin(['PASS', 'WARNING'])
-)
-df_sessions['video_ready'] = df_sessions['has_extracted_task'] & df_sessions['passes_video_qc']
-
+xcol = args.session_x
 
 # =============================================================================
 # Session Overview Matrices
@@ -134,186 +185,171 @@ df_sessions['video_ready'] = df_sessions['has_extracted_task'] & df_sessions['pa
 
 print("\nGenerating session matrices...")
 
-n_raw = df_sessions['has_raw_data'].sum()
-n_complete = df_sessions['has_complete_data'].sum()
-n_qc = df_sessions['passes_basic_qc'].sum()
-n_video = df_sessions['video_ready'].sum()
+# The catalog for each matrix is derived from structural filters only (no QC).
+# QC filters are then applied to determine which sessions are shown at 100% opacity.
+print("\n[Matrix universe: structural filters, no QC]")
+group.filter_sessions(**_base, qc_blockers=set(), targetnms=VALID_TARGETNMS)
+df_all = group.sessions.copy()
+grp = PhotometrySessionGroup.from_catalog(df_all, one=None)
 
-
-def _save_matrix(df, highlight, title, filename):
-    ax = session_overview_matrix(df, highlight=highlight)
-    ax.set_title(title)
-    set_plotsize(w=48, h=32, ax=ax)
-    ax.get_figure().savefig(figures_dir / filename, dpi=FIGURE_DPI, bbox_inches='tight')
-    return ax
-
-
-_save_matrix(df_sessions, 'all',
-             f'All registered sessions (n={n_after_dedup})',
-             '1_all_sessions.svg')
-
-_save_matrix(df_sessions, lambda df: df['has_raw_data'],
-             f'Sessions with raw data (n={n_raw})',
-             '2_raw_data.svg')
-
-_save_matrix(df_sessions, lambda df: df['has_complete_data'],
-             f'Sessions with complete data (n={n_complete})',
-             '3_complete_data.svg')
-
-_save_matrix(df_sessions, lambda df: df['passes_basic_qc'],
-             f'Sessions passing basic QC (n={n_qc})',
-             '4_passes_qc.svg')
-
-_save_matrix(df_sessions, lambda df: df['video_ready'],
-             f'Video-ready sessions (n={n_video})',
-             '5_video_ready.svg')
-
-# Matrix 6: QC-passing sessions only, exploded by target
-df_sessions = derive_target_nm(df_sessions)
-df_qc = (
-    df_sessions[df_sessions['passes_basic_qc']]
-    .explode(['target_NM', 'brain_region', 'hemisphere'])
-    .loc[lambda df: df['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
-    .copy()
-)
-# One row per subject-NM-session (collapse bilateral fibers for the same NM)
-df_qc['NM'] = df_qc['target_NM'].str.split('-').str[-1]
-df_qc = df_qc.drop_duplicates(subset=['subject', 'NM', 'session_n'])
-df_qc['subject'] = df_qc['subject'] + ' (' + df_qc['NM'] + ')'
-
-# Dense sequential session index per subject (no gaps)
-df_qc = df_qc.sort_values('session_n')
-df_qc['_dense_session_n'] = df_qc.groupby('subject').cumcount()
-
-# Sort by NM (preserving TARGETNMS_TO_ANALYZE order), then by first session start_time
-nm_order = list(dict.fromkeys(t.split('-')[-1] for t in TARGETNMS_TO_ANALYZE))
-nm_rank = {nm: i for i, nm in enumerate(nm_order)}
-first_start = df_qc.groupby('subject')['start_time'].min()
-subject_order = (
-    df_qc[['subject', 'NM']].drop_duplicates()
-    .assign(
-        _nm_rank=lambda df: df['NM'].map(nm_rank),
-        _first_start=lambda df: df['subject'].map(first_start),
-    )
-    .sort_values(['_nm_rank', '_first_start'])
-    ['subject'].tolist()
-)
-
-n_qc_sessions = df_qc['eid'].nunique()
-n_qc_mice = df_qc['subject'].str.extract(r'^(.+?) \(')[0].nunique()
-ax = session_overview_matrix(df_qc, columns='_dense_session_n', highlight='all',
-                             subject_order=subject_order)
-ax.set_title(f'QC-passing sessions by target (n={n_qc_sessions})', fontsize=28)
-ax.set_xlabel('Sessions', fontsize=28)
-ax.set_ylabel('Mice', fontsize=28, labelpad=60)
-ax.tick_params(axis='x', labelsize=28)
-cbar = ax.images[0].colorbar
-if cbar is not None:
-    cbar.ax.tick_params(labelsize=28)
-ax.text(1.0, -0.02, f'{n_qc_sessions} sessions, {n_qc_mice} mice',
-        transform=ax.transAxes, ha='right', va='top', fontsize=28)
-
-# Replace subject labels with one NM label per group
-ax.set_yticks([])
-nm_subjects = {nm: [] for nm in nm_order}
-for i, subj in enumerate(subject_order):
-    nm = subj.rsplit('(', 1)[-1].rstrip(')')
-    nm_subjects[nm].append(i)
-for nm, rows in nm_subjects.items():
-    if rows:
-        mid = (rows[0] + rows[-1]) / 2
-        ax.text(-0.01, mid, nm, transform=ax.get_yaxis_transform(),
-                ha='right', va='center', fontsize=28)
-        if rows[0] > 0:
-            ax.axhline(rows[0] - 0.5, color='black', linewidth=1.5)
-
+print("\n[Plot 1: All sessions]")
+grp.filter_sessions(session_types=False, qc_blockers=set(), targetnms=False,
+                    min_performance=False, required_contrasts=False)
+ax = session_overview_matrix(grp, columns=xcol, color_by=split_col,
+                             split_float_map=float_map, split_color_map=color_map)
+ax.set_title(f'All sessions (n={len(grp.sessions)})')
 set_plotsize(w=48, h=32, ax=ax)
-ax.get_figure().savefig(figures_dir / '6_qc_sessions_by_target.svg',
-                        dpi=FIGURE_DPI, bbox_inches='tight')
+ax.get_figure().savefig(figures_dir / '1_all_sessions.svg', dpi=FIGURE_DPI, bbox_inches='tight')
+plt.close('all')
 
+print("\n[Plot 2: Raw data]")
+grp.filter_sessions(session_types=False, qc_blockers=RAW_DATA_BLOCKERS, targetnms=False,
+                    min_performance=False, required_contrasts=False)
+ax = session_overview_matrix(grp, columns=xcol, color_by=split_col,
+                             split_float_map=float_map, split_color_map=color_map)
+ax.set_title(f'Raw data (n={len(grp.sessions)})')
+set_plotsize(w=48, h=32, ax=ax)
+ax.get_figure().savefig(figures_dir / '2_raw_data.svg', dpi=FIGURE_DPI, bbox_inches='tight')
+plt.close('all')
+
+print("\n[Plot 3: Complete data]")
+grp.filter_sessions(session_types=False, qc_blockers=COMPLETE_DATA_BLOCKERS, targetnms=False,
+                    min_performance=False, required_contrasts=False)
+ax = session_overview_matrix(grp, columns=xcol, color_by=split_col,
+                             split_float_map=float_map, split_color_map=color_map)
+ax.set_title(f'Complete data (n={len(grp.sessions)})')
+set_plotsize(w=48, h=32, ax=ax)
+ax.get_figure().savefig(figures_dir / '3_complete_data.svg', dpi=FIGURE_DPI, bbox_inches='tight')
+plt.close('all')
+
+print("\n[Plot 4: QC-passing]")
+grp.filter_sessions(session_types=False, qc_blockers=QC_BLOCKERS, targetnms=False,
+                    min_performance=False, required_contrasts=False)
+ax = session_overview_matrix(grp, columns=xcol, color_by=split_col,
+                             split_float_map=float_map, split_color_map=color_map)
+ax.set_title(f'QC-passing (n={len(grp.sessions)})')
+set_plotsize(w=48, h=32, ax=ax)
+ax.get_figure().savefig(figures_dir / '4_passes_qc.svg', dpi=FIGURE_DPI, bbox_inches='tight')
+plt.close('all')
+
+if VIDEO_FPATH.exists():
+    print("\n[Plot 5: Video-ready]")
+    grp.filter_sessions(session_types=False, qc_blockers=VIDEO_QC_BLOCKERS, targetnms=False,
+                        min_performance=False, required_contrasts=False)
+    ax = session_overview_matrix(grp, columns=xcol, color_by=split_col,
+                                 split_float_map=float_map, split_color_map=color_map)
+    ax.set_title(f'Video-ready (n={len(grp.sessions)})')
+    set_plotsize(w=48, h=32, ax=ax)
+    ax.get_figure().savefig(figures_dir / '5_video_ready.svg', dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close('all')
 
 # =============================================================================
-# Dataset Summary
+# Target/Mouse Barplots
 # =============================================================================
 
-print(f"\n{'='*50}")
-print("Dataset Summary")
-print(f"{'='*50}")
-print(f"Total sessions (after filtering): {n_after_dedup}")
-print(f"  Has raw data: {n_raw}")
-print(f"  Has complete data: {n_complete}")
-print(f"  Passes basic QC: {n_qc}")
-print(f"  Video-ready: {n_video}")
+# QC-passing, all valid targets
+print("\n[Plots 6-7: Barplots — QC-passing, valid targets]")
+grp.filter_sessions(session_types=False, qc_blockers=QC_BLOCKERS, targetnms=VALID_TARGETNMS,
+                    min_performance=False, required_contrasts=False)
+n_rec = len(grp.recordings)
+n_ses = grp.sessions['eid'].nunique()
 
-
-# =============================================================================
-# Target-NM Barplots (per recording, QC-passing sessions only)
-# =============================================================================
-
-# Explode to one row per recording (brain_region / target_NM are parallel lists)
-df_recordings = (
-    df_sessions[df_sessions['passes_basic_qc']]
-    .explode(['target_NM', 'brain_region', 'hemisphere'])
-    .loc[lambda df: df['target_NM'].isin(VALID_TARGETNMS)]
-    .copy()
-)
-
-if len(df_recordings) > 0:
-    n_rec = len(df_recordings)
-    n_ses = df_recordings['eid'].nunique()
-
-    ax = target_overview_barplot(df_recordings)
-    ax.set_title(f'Complete recordings by target ({n_rec} recordings, {n_ses} sessions)')
+if n_rec > 0:
+    ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map)
+    ax.set_title(f'Recordings by target ({n_rec} recordings, {n_ses} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
-    ax.get_figure().savefig(figures_dir / '7_target_overview.svg',
+    ax.get_figure().savefig(figures_dir / '6_target_overview.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close('all')
 
-    ax = mouse_overview_barplot(df_recordings)
+    ax = mouse_overview_barplot(grp.recordings, min_sessions=1,
+                                color_by=split_col, split_color_map=color_map)
     ax.set_title(f'Mice by target ({n_rec} recordings, {n_ses} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
-    ax.get_figure().savefig(figures_dir / '8_mouse_overview.svg',
+    ax.get_figure().savefig(figures_dir / '7_mouse_overview.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close('all')
 
-    df_rec_analyze = df_recordings[df_recordings['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
-    n_rec_a = len(df_rec_analyze)
-    n_ses_a = df_rec_analyze['eid'].nunique()
-    ax = mouse_overview_barplot(df_rec_analyze, min_biased_ephys=1, min_ephys=1)
-    ax.set_title(f'Mice by target, ≥1 session ({n_rec_a} recordings, {n_ses_a} sessions)',
-                 fontsize=28)
-    ax.set_xlabel(ax.get_xlabel(), fontsize=28)
-    ax.set_ylabel(ax.get_ylabel(), fontsize=28)
-    ax.tick_params(axis='both', labelsize=28)
-    ax.legend(fontsize=28)
-    for t in ax.texts:
-        t.set_fontsize(14)
-    set_plotsize(w=24, h=12, ax=ax)
-    ax.get_figure().savefig(figures_dir / '9_mouse_overview_min1.svg',
-                            dpi=FIGURE_DPI, bbox_inches='tight')
+# QC-passing, analysis-ready targets only
+print("\n[Plots 8-9: Barplots — QC-passing, analysis targets]")
+grp.filter_sessions(session_types=False, qc_blockers=QC_BLOCKERS, targetnms=TARGETNMS_TO_ANALYZE,
+                    min_performance=False, required_contrasts=False)
+n_rec_a = len(grp.recordings)
+n_ses_a = grp.sessions['eid'].nunique()
 
-    ax = target_overview_barplot(df_rec_analyze)
-    ax.set_title(ax.get_title(), fontsize=28)
-    ax.set_xlabel(ax.get_xlabel(), fontsize=28)
-    ax.set_ylabel(ax.get_ylabel(), fontsize=28)
-    ax.tick_params(axis='both', labelsize=28)
-    ax.legend(fontsize=28)
-    for t in ax.texts:
-        t.set_fontsize(14)
+if n_rec_a > 0:
+    ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map)
+    ax.set_title(f'Analysis-ready by target ({n_rec_a} recordings, {n_ses_a} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
-    ax.get_figure().savefig(figures_dir / '10_target_overview_analyze.svg',
+    ax.get_figure().savefig(figures_dir / '8_target_overview_analyze.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close('all')
+
+    ax = mouse_overview_barplot(grp.recordings, min_sessions=1,
+                                color_by=split_col, split_color_map=color_map)
+    ax.set_title(f'Mice (analysis-ready, n={n_ses_a} sessions)')
+    set_plotsize(w=24, h=12, ax=ax)
+    ax.get_figure().savefig(figures_dir / '9_mouse_overview_analyze.svg',
+                            dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close('all')
+
+# =============================================================================
+# Recording Capacity Projection
+# =============================================================================
+
+_proj_base = dict(
+    lab='mainenlab',
+    start_time_min='2024-01-01',
+    session_types=SESSION_TYPES_TO_ANALYZE,
+    targetnms=VALID_TARGETNMS,
+    min_performance=False,
+    required_contrasts=False,
+)
+
+print("\n[Capacity projection: all sessions]")
+group.filter_sessions(**_proj_base, qc_blockers=set())
+n_total_mice = group.sessions['subject'].nunique()
+total_sessions = len(group.sessions)
+
+print("\n[Capacity projection: QC-passing]")
+group.filter_sessions(**_proj_base, qc_blockers=QC_BLOCKERS)
+df_qc = group.sessions
+
+if 'proficient_label' in df_qc.columns:
+    is_proficient = df_qc['proficient_label'] == 'proficient'
 else:
-    print("No complete recordings to plot.")
+    is_proficient = df_qc['session_type'].isin({'biased', 'ephys'})
+
+df_proj_proficient = df_qc[is_proficient]
+n_proficient_per_subject = df_proj_proficient.groupby('subject')['eid'].nunique()
+subjects_reached = n_proficient_per_subject[
+    n_proficient_per_subject >= PROJECTION_TARGET_N].index
+
+n_reached = len(subjects_reached)
+effective_sessions = total_sessions / n_reached if n_reached > 0 else float('nan')
+
+weekdays = _count_weekdays(date.today(), PROJECTION_DEADLINE)
+total_slots = weekdays * PROJECTION_CAPACITY_PER_DAY
+n_mice_projected = int(total_slots / effective_sessions) if effective_sessions > 0 else 0
+
+print(f"\n{'='*70}")
+print("Recording Capacity Projection")
+print(f"{'='*70}")
+print(f"Mainenlab mice (started 2024+): {n_total_mice}")
+print(f"Reached >={PROJECTION_TARGET_N} proficient sessions: {n_reached}/{n_total_mice}")
+print(f"Effective sessions/mouse: {effective_sessions:.1f}")
+print(f"Deadline: {PROJECTION_DEADLINE}, capacity: {PROJECTION_CAPACITY_PER_DAY}/day")
+print(f"Weekdays available: {weekdays}")
+print(f"Total slots: {total_slots}")
+print(f"Projected mice reaching target: {n_mice_projected}")
 
 
 # =============================================================================
 # Save unified error log
 # =============================================================================
 
-upstream_logs = [pd.read_parquet(p) for p in
-                 [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH]
-                 if p.exists()]
-df_errors = deduplicate_log(concat_logs(upstream_logs + [df_dup_log]))
-
+upstream_logs = [pd.read_parquet(p) for p in LOG_FPATHS if p.exists()] + [dedup_errors]
+df_errors = deduplicate_log(concat_logs(upstream_logs))
 ERRORS_FPATH.parent.mkdir(parents=True, exist_ok=True)
 df_errors.to_parquet(ERRORS_FPATH)
 print(f"\nSaved {len(df_errors)} error entries to {ERRORS_FPATH}")

@@ -1245,7 +1245,7 @@ class PhotometrySessionGroup:
         self._catalog = sessions.reset_index(drop=True)
         self._filter_mask = pd.Series(True, index=self._catalog.index)
         self._dedup_mask = pd.Series(True, index=self._catalog.index)
-        self._recordings_targetnms = None
+        self._recordings_targetnms = False
         self.one = one
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
         self._sessions = {}  # eid → PhotometrySession cache
@@ -1309,12 +1309,12 @@ class PhotometrySessionGroup:
         """Recording-level view: sessions exploded to one row per region.
 
         Reflects the current filter and dedup masks. Filters to
-        _recordings_targetnms (set by filter_sessions) when not None.
+        _recordings_targetnms (set by filter_sessions) when not False.
         """
         parallel_cols = ['brain_region', 'hemisphere', 'target_NM']
         df = self.sessions.explode(parallel_cols).copy()
         df['fiber_idx'] = df.groupby('eid').cumcount()
-        if self._recordings_targetnms is not None:
+        if self._recordings_targetnms is not False:
             df = df[df['target_NM'].isin(self._recordings_targetnms)]
         return df.reset_index(drop=True)
 
@@ -1331,27 +1331,27 @@ class PhotometrySessionGroup:
         ``sessions`` and ``recordings`` properties. Call multiple times to get
         different filtered views.
 
+        All filter parameters accept ``False`` to skip that filter.
+
         Parameters
         ----------
         session_types : tuple of str or False
             Session types to keep. Defaults to config.SESSION_TYPES_TO_ANALYZE.
-            False → skip.
-        exclude_subjects : list of str
+        exclude_subjects : list of str or False
             Subjects to exclude. Defaults to config.SUBJECTS_TO_EXCLUDE.
-            Pass ``[]`` to skip.
-        qc_blockers : set of str
+        qc_blockers : set of str or False
             Error types that block a session. Defaults to
-            config.ANALYSIS_QC_BLOCKERS. Pass ``set()`` to skip.
-            Silently skipped if ``logged_errors`` is not present on the catalog.
-        targetnms : list of str or None
+            config.ANALYSIS_QC_BLOCKERS. Silently skipped if
+            ``logged_errors`` is not present on the catalog.
+        targetnms : list of str or False
             Target-NM values to retain in sessions and recordings.
-            Defaults to config.TARGETNMS_TO_ANALYZE. Pass None to skip.
+            Defaults to config.TARGETNMS_TO_ANALYZE.
         min_performance : float, dict, or False
             Minimum fraction_correct. Defaults to config.MIN_PERFORMANCE.
-            False → skip. Requires 'fraction_correct' in the catalog.
+            Requires 'fraction_correct' in the catalog.
         required_contrasts : frozenset of float or False
             Required contrast set. Defaults to config.REQUIRED_CONTRASTS.
-            False → skip. Requires 'contrasts' in the catalog.
+            Requires 'contrasts' in the catalog.
         lab : str, optional
             Keep only sessions from this lab.
         start_time_min : str or date, optional
@@ -1361,16 +1361,12 @@ class PhotometrySessionGroup:
         -------
         None
         """
-        # Resolve False → None for session_types (disables the filter)
-        if session_types is False:
-            session_types = None
-
         df = self._catalog
         true = pd.Series(True, index=df.index)
 
-        # Build individual masks
-        type_mask = df['session_type'].isin(session_types) if session_types is not None else true
-        subject_mask = ~df['subject'].isin(exclude_subjects) if exclude_subjects else true
+        # Build individual masks — False skips any filter
+        type_mask = df['session_type'].isin(session_types) if session_types is not False else true
+        subject_mask = ~df['subject'].isin(exclude_subjects) if exclude_subjects is not False else true
         lab_mask = (df['lab'] == lab) if (lab is not None and 'lab' in df.columns) else true
 
         if start_time_min is not None and 'start_time' in df.columns:
@@ -1380,14 +1376,14 @@ class PhotometrySessionGroup:
         else:
             start_mask = true
 
-        if qc_blockers and 'logged_errors' in df.columns:
+        if qc_blockers is not False and 'logged_errors' in df.columns:
             qc_mask = df['logged_errors'].apply(
                 lambda e: not any(err in qc_blockers for err in e)
             )
         else:
             qc_mask = true
 
-        if targetnms is not None and 'target_NM' in df.columns:
+        if targetnms is not False and 'target_NM' in df.columns:
             targetnms_set = set(targetnms)
             target_mask = df['target_NM'].apply(
                 lambda ts: any(t in targetnms_set for t in ts)

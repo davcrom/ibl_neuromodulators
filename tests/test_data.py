@@ -1981,7 +1981,7 @@ class TestFromCatalog:
         """recordings produces one row per region after from_catalog."""
         from iblnm.data import PhotometrySessionGroup
         group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
-        group.filter_sessions(session_types=False, targetnms=None,
+        group.filter_sessions(session_types=False, targetnms=False,
                               qc_blockers=set(),
                               min_performance=False, required_contrasts=False)
         # eid-1 has 2 regions, eid-2 has 1
@@ -1992,7 +1992,7 @@ class TestFromCatalog:
         """Filtering by session type is reflected in recordings."""
         from iblnm.data import PhotometrySessionGroup
         group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
-        group.filter_sessions(session_types=('biased',), targetnms=None,
+        group.filter_sessions(session_types=('biased',), targetnms=False,
                               qc_blockers=set(),
                               min_performance=False, required_contrasts=False)
         assert all(group.recordings['session_type'] == 'biased')
@@ -2008,12 +2008,12 @@ class TestFromCatalog:
         """recordings updates automatically when filter_sessions is re-called."""
         from iblnm.data import PhotometrySessionGroup
         group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
-        group.filter_sessions(session_types=('biased',), targetnms=None,
+        group.filter_sessions(session_types=('biased',), targetnms=False,
                               qc_blockers=set(),
                               min_performance=False, required_contrasts=False)
         assert all(group.recordings['session_type'] == 'biased')
 
-        group.filter_sessions(session_types=('training',), targetnms=None,
+        group.filter_sessions(session_types=('training',), targetnms=False,
                               qc_blockers=set(),
                               min_performance=False, required_contrasts=False)
         assert all(group.recordings['session_type'] == 'training')
@@ -2642,7 +2642,7 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             session_types=('biased',), qc_blockers=set(),
-            targetnms=None,
+            targetnms=False,
             min_performance=False, required_contrasts=False,
         )
         assert 'eid-0' not in group.sessions['eid'].values
@@ -2653,7 +2653,7 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             exclude_subjects=['subj-0'], qc_blockers=set(),
-            targetnms=None,
+            targetnms=False,
             min_performance=False, required_contrasts=False,
         )
         assert 'subj-0' not in group.sessions['subject'].values
@@ -2671,7 +2671,7 @@ class TestFilterSessions:
         df = collect_session_errors(df, [error_log])
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
-            targetnms=None,
+            targetnms=False,
             min_performance=False, required_contrasts=False,
         )
         assert 'eid-0' not in group.sessions['eid'].values
@@ -2711,7 +2711,7 @@ class TestFilterSessions:
         group.filter_sessions(
             session_types=('ephys',),  # none match
             qc_blockers=set(),
-            targetnms=None,
+            targetnms=False,
             min_performance=False, required_contrasts=False,
         )
         assert len(group.sessions) == 0
@@ -2722,7 +2722,7 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         result = group.filter_sessions(
             qc_blockers=set(),
-            targetnms=None,
+            targetnms=False,
             min_performance=False, required_contrasts=False,
         )
         assert result is None
@@ -2737,7 +2737,7 @@ class TestFilterSessions:
 
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
-            targetnms=None,
+            targetnms=False,
             min_performance=0.7,
             required_contrasts=False,
         )
@@ -2758,7 +2758,7 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             session_types=('training', 'biased'),
-            targetnms=None,
+            targetnms=False,
             min_performance={'training': 0.5, 'biased': 0.8},
             required_contrasts=False,
         )
@@ -2781,7 +2781,7 @@ class TestFilterSessions:
 
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
-            targetnms=None,
+            targetnms=False,
             min_performance=False,
             required_contrasts={0, 6.25, 12.5, 25, 100},
         )
@@ -2803,7 +2803,7 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             session_types=('biased', 'ephys'),
-            targetnms=None,
+            targetnms=False,
             min_performance=False,
             required_contrasts={0, 6.25, 12.5, 25, 100},
         )
@@ -2818,7 +2818,7 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             session_types=('ephys',),  # none match (all are biased)
-            qc_blockers=set(), targetnms=None,
+            qc_blockers=set(), targetnms=False,
             min_performance=False, required_contrasts=False,
         )
         assert len(group._catalog) == 4
@@ -2831,12 +2831,12 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             session_types=('biased',), qc_blockers=set(),
-            targetnms=None, min_performance=False, required_contrasts=False,
+            targetnms=False, min_performance=False, required_contrasts=False,
         )
         assert len(group.sessions) == 2
         group.filter_sessions(
             session_types=('ephys',), qc_blockers=set(),
-            targetnms=None, min_performance=False, required_contrasts=False,
+            targetnms=False, min_performance=False, required_contrasts=False,
         )
         assert len(group.sessions) == 2
         assert set(group.sessions['session_type']) == {'ephys'}
@@ -2849,12 +2849,12 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             session_types=('biased',), qc_blockers=set(),
-            targetnms=None, min_performance=False, required_contrasts=False,
+            targetnms=False, min_performance=False, required_contrasts=False,
         )
         snapshot = group.sessions
         group.filter_sessions(
             session_types=('ephys',), qc_blockers=set(),
-            targetnms=None, min_performance=False, required_contrasts=False,
+            targetnms=False, min_performance=False, required_contrasts=False,
         )
         assert set(snapshot['session_type']) == {'biased'}
 
@@ -2866,7 +2866,7 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             lab='mainenlab', qc_blockers=set(),
-            session_types=False, targetnms=None,
+            session_types=False, targetnms=False,
             min_performance=False, required_contrasts=False,
         )
         assert set(group.sessions['lab']) == {'mainenlab'}
@@ -2882,7 +2882,7 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             start_time_min='2024-01-01', qc_blockers=set(),
-            session_types=False, targetnms=None,
+            session_types=False, targetnms=False,
             min_performance=False, required_contrasts=False,
         )
         assert 'subj-0' not in group.sessions['subject'].values
@@ -2902,7 +2902,7 @@ class TestLoaderMethods:
         df = _make_sessions_df(n_eids=n_eids, regions_per=regions_per)
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
-            session_types=False, qc_blockers=set(), targetnms=None,
+            session_types=False, qc_blockers=set(), targetnms=False,
             min_performance=False, required_contrasts=False,
         )
         return group
@@ -2987,7 +2987,7 @@ class TestLoaderMethods:
         df['session_type'] = ['biased', 'biased', 'ephys']
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
-            session_types=('biased',), qc_blockers=set(), targetnms=None,
+            session_types=('biased',), qc_blockers=set(), targetnms=False,
             min_performance=False, required_contrasts=False,
         )
 

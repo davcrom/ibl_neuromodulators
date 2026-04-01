@@ -58,7 +58,7 @@ functions in scripts.
 **Group object rule**: All data loading and session filtering in scripts MUST
 flow through `PhotometrySessionGroup`. Never load parquet/HDF5 files and
 filter them independently with ad-hoc merges against session metadata — this
-risks silently bypassing the canonical filters (`filter_recordings`,
+risks silently bypassing the canonical filters (`filter_sessions`,
 exclusions, etc.). The group object is the single source of truth for which
 sessions are in scope. Scripts that currently do ad-hoc merges against
 `rec_meta` are known exceptions (FIXME), not patterns to follow.
@@ -134,6 +134,25 @@ Access data attributes directly, not through getters. The class extends
 HDF5 round-trip: `save_h5(mode='w')` writes signal, `save_h5(mode='a')`
 appends trials/responses/wheel. `load_h5(fpath)` populates all available
 groups.
+
+### 3b. PhotometrySessionGroup Lifecycle
+
+```python
+group = PhotometrySessionGroup.from_catalog(SESSIONS_FPATH, one=one)
+group.filter_sessions(session_types=('biased', 'ephys'), targetnms=TARGETNMS_TO_ANALYZE)
+group.deduplicate()
+```
+
+- `group.sessions` — property: session-level rows passing both the filter mask
+  and the dedup mask. List columns: `brain_region`, `hemisphere`, `target_NM`.
+- `group.recordings` — property: one row per region, scalar columns, plus
+  `fiber_idx`. Derived by exploding `sessions` on the parallel list columns.
+  Filtered to `_recordings_targetnms` (set by `filter_sessions`). Always
+  reflects the current filter and dedup state.
+
+`from_catalog` applies `enforce_schema` and `validate_parallel_lists` before
+constructing the object. `filter_sessions(targetnms=TARGETNMS_TO_ANALYZE)` is
+the explicit default — pass `targetnms=False` to skip the target filter.
 
 ### 4. Parallel List Columns
 

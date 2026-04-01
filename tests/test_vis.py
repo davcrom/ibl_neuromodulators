@@ -1825,28 +1825,115 @@ class TestPlotRtByContrast:
         plt.close('all')
 
 
+def _make_group(subjects_targets, session_n_per_subject=2):
+    """Build a minimal PhotometrySessionGroup for vis tests.
+
+    Parameters
+    ----------
+    subjects_targets : list of (subject, target_NM, start_time)
+        One entry per unique (subject, target_NM) combination.
+    session_n_per_subject : int
+        Number of sessions per subject row.
+    """
+    from unittest.mock import MagicMock
+    from iblnm.data import PhotometrySessionGroup
+
+    rows = []
+    eid_counter = [0]
+
+    for subject, target_nm, start_time in subjects_targets:
+        for sn in range(session_n_per_subject):
+            eid = f'eid-{eid_counter[0]}'
+            eid_counter[0] += 1
+            rows.append({
+                'eid': eid,
+                'subject': subject,
+                'session_n': sn,
+                'session_type': 'biased',
+                'start_time': start_time,
+                'brain_region': ['VTA'],
+                'hemisphere': ['l'],
+                'target_NM': [target_nm],
+            })
+
+    df = pd.DataFrame(rows)
+    group = PhotometrySessionGroup(df, one=MagicMock())
+    group.filter_sessions(
+        session_types=False, qc_blockers=set(),
+        targetnms=False, min_performance=False, required_contrasts=False,
+    )
+    return group
+
+
 class TestSessionOverviewMatrixSubjectOrder:
 
-    @pytest.fixture
-    def df_sessions(self):
-        return pd.DataFrame({
-            'subject': ['C', 'C', 'A', 'A', 'B', 'B'],
-            'session_n': [0, 1, 0, 1, 0, 1],
-            'session_type': ['biased'] * 6,
-        })
-
-    def test_rows_follow_subject_order(self, df_sessions):
+    def test_subject_order_by_start_time(self):
+        """Subjects are ordered by their earliest start_time."""
         from iblnm.vis import session_overview_matrix
-        order = ['B', 'A', 'C']
-        ax = session_overview_matrix(df_sessions, highlight='all',
-                                     subject_order=order)
+        group = _make_group([
+            ('mouse_late', 'VTA-DA', '2024-06-01'),
+            ('mouse_early', 'VTA-DA', '2024-01-01'),
+            ('mouse_mid', 'VTA-DA', '2024-03-01'),
+        ])
+        ax = session_overview_matrix(group)
         labels = [t.get_text() for t in ax.get_yticklabels()]
-        assert labels == order
+        assert labels == ['mouse_early', 'mouse_mid', 'mouse_late']
         plt.close('all')
 
-    def test_default_order_is_alphabetical(self, df_sessions):
+    def test_one_row_per_subject(self):
+        """A subject recording from two targets gets one row."""
         from iblnm.vis import session_overview_matrix
-        ax = session_overview_matrix(df_sessions, highlight='all')
+        from unittest.mock import MagicMock
+        from iblnm.data import PhotometrySessionGroup
+
+        df = pd.DataFrame([{
+            'eid': 'eid-0',
+            'subject': 'multi',
+            'session_n': 0,
+            'session_type': 'biased',
+            'start_time': '2024-01-01',
+            'brain_region': ['VTA', 'DR'],
+            'hemisphere': ['l', 'r'],
+            'target_NM': ['VTA-DA', 'DR-5HT'],
+        }])
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            session_types=False, qc_blockers=set(),
+            targetnms=False, min_performance=False, required_contrasts=False,
+        )
+        ax = session_overview_matrix(group)
         labels = [t.get_text() for t in ax.get_yticklabels()]
-        assert labels == ['A', 'B', 'C']
+        assert labels == ['multi']
+        plt.close('all')
+
+    def test_catalog_faded_sessions_solid(self):
+        """_catalog sessions appear in base layer; only filtered sessions in overlay."""
+        from iblnm.vis import session_overview_matrix
+        from unittest.mock import MagicMock
+        from iblnm.data import PhotometrySessionGroup
+
+        # Two subjects; only one has logged_errors so it gets dropped by qc_blockers
+        df = pd.DataFrame([
+            {'eid': 'e0', 'subject': 'A', 'session_n': 0, 'session_type': 'biased',
+             'start_time': '2024-01-01', 'brain_region': ['VTA'], 'hemisphere': ['l'],
+             'target_NM': ['VTA-DA'], 'logged_errors': []},
+            {'eid': 'e1', 'subject': 'B', 'session_n': 0, 'session_type': 'biased',
+             'start_time': '2024-02-01', 'brain_region': ['VTA'], 'hemisphere': ['l'],
+             'target_NM': ['VTA-DA'], 'logged_errors': ['MissingRawData']},
+        ])
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(session_types=False, qc_blockers={'MissingRawData'},
+                              targetnms=False, min_performance=False, required_contrasts=False)
+
+        # _catalog has 2 subjects; sessions has 1
+        assert len(group._catalog) == 2
+        assert len(group.sessions) == 1
+
+        ax = session_overview_matrix(group)
+        # Both subjects appear on y-axis (from _catalog)
+        labels = [t.get_text() for t in ax.get_yticklabels()]
+        assert 'A' in labels
+        assert 'B' in labels
+        # Two images: base (faded) and overlay (solid)
+        assert len(ax.images) == 2
         plt.close('all')
