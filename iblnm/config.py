@@ -266,7 +266,8 @@ ANALYSIS_QC_BLOCKERS = {
 
 # Task performance parameters
 MIN_TRAINING_PERFORMANCE = 0.70  # minimum fraction_correct for training sessions
-REQUIRED_CONTRASTS = {0, 6.25, 12.5, 25, 100}  # percent; must match biased/ephys
+MIN_PERFORMANCE = {'training': MIN_TRAINING_PERFORMANCE}
+REQUIRED_CONTRASTS = frozenset({0, 6.25, 12.5, 25, 100})  # percent; must match biased/ephys
 MIN_BLOCK_LENGTH = 10  # minimum trials per bias block (flag sessions with shorter blocks)
 EVENT_TIMES = ['goCue_times', 'firstMovement_times', 'feedback_times']
 EVENT_COMPLETENESS_THRESHOLD = 0.9

@@ -2739,7 +2739,7 @@ class TestFilterSessions:
         group.filter_sessions(
             targetnms=None,
             min_performance=0.7,
-            required_contrasts=None,
+            required_contrasts=False,
         )
 
         remaining = set(group.sessions['eid'].values)
@@ -2760,7 +2760,7 @@ class TestFilterSessions:
             session_types=('training', 'biased'),
             targetnms=None,
             min_performance={'training': 0.5, 'biased': 0.8},
-            required_contrasts=None,
+            required_contrasts=False,
         )
 
         remaining = set(group.sessions['eid'].values)
@@ -2782,7 +2782,7 @@ class TestFilterSessions:
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             targetnms=None,
-            min_performance=None,
+            min_performance=False,
             required_contrasts={0, 6.25, 12.5, 25, 100},
         )
 
@@ -2804,7 +2804,7 @@ class TestFilterSessions:
         group.filter_sessions(
             session_types=('biased', 'ephys'),
             targetnms=None,
-            min_performance=None,
+            min_performance=False,
             required_contrasts={0, 6.25, 12.5, 25, 100},
         )
 

@@ -13,11 +13,12 @@ from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EVENT_COMPLETENESS_THRESHOLD,
-    MIN_NTRIALS, N_UNIQUE_SAMPLES_THRESHOLD,
+    MIN_NTRIALS, MIN_PERFORMANCE, N_UNIQUE_SAMPLES_THRESHOLD,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
-    QC_SLIDING_KWARGS, QC_SLIDING_METRICS, RESPONSE_EVENTS, RESPONSE_WINDOW,
-    RESPONSE_WINDOWS, SESSIONS_H5_DIR, TARGETNMS_TO_ANALYZE, TARGET_FS,
-    TRIAL_COLUMNS, WHEEL_FS,
+    QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
+    RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
+    SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
+    TARGET_FS, TRIAL_COLUMNS, WHEEL_FS,
 )
 from iblnm.analysis import get_responses, compute_response_magnitude
 from iblnm import task
@@ -1317,10 +1318,12 @@ class PhotometrySessionGroup:
             df = df[df['target_NM'].isin(self._recordings_targetnms)]
         return df.reset_index(drop=True)
 
-    def filter_sessions(self, session_types=None, exclude_subjects=None,
+    def filter_sessions(self, session_types=SESSION_TYPES_TO_ANALYZE,
+                        exclude_subjects=SUBJECTS_TO_EXCLUDE,
                         qc_blockers=ANALYSIS_QC_BLOCKERS,
                         targetnms=TARGETNMS_TO_ANALYZE,
-                        min_performance=None, required_contrasts=None,
+                        min_performance=MIN_PERFORMANCE,
+                        required_contrasts=REQUIRED_CONTRASTS,
                         lab=None, start_time_min=None):
         """Compute a boolean filter mask over _catalog. Non-destructive.
 
@@ -1330,10 +1333,12 @@ class PhotometrySessionGroup:
 
         Parameters
         ----------
-        session_types : tuple of str, False, or None
-            Session types to keep. None → ('biased', 'ephys'). False → skip.
-        exclude_subjects : list of str, optional
+        session_types : tuple of str or False
+            Session types to keep. Defaults to config.SESSION_TYPES_TO_ANALYZE.
+            False → skip.
+        exclude_subjects : list of str
             Subjects to exclude. Defaults to config.SUBJECTS_TO_EXCLUDE.
+            Pass ``[]`` to skip.
         qc_blockers : set of str
             Error types that block a session. Defaults to
             config.ANALYSIS_QC_BLOCKERS. Pass ``set()`` to skip.
@@ -1342,12 +1347,11 @@ class PhotometrySessionGroup:
             Target-NM values to retain in sessions and recordings.
             Defaults to config.TARGETNMS_TO_ANALYZE. Pass None to skip.
         min_performance : float, dict, or False
-            Minimum fraction_correct. False skips. None → {'training': threshold}.
-            Requires 'fraction_correct' to be present in the catalog (add via
-            merge_performance before from_catalog).
-        required_contrasts : set of float or False
-            Required contrast set. False skips. None → REQUIRED_CONTRASTS.
-            Requires 'contrasts' to be present in the catalog.
+            Minimum fraction_correct. Defaults to config.MIN_PERFORMANCE.
+            False → skip. Requires 'fraction_correct' in the catalog.
+        required_contrasts : frozenset of float or False
+            Required contrast set. Defaults to config.REQUIRED_CONTRASTS.
+            False → skip. Requires 'contrasts' in the catalog.
         lab : str, optional
             Keep only sessions from this lab.
         start_time_min : str or date, optional
@@ -1357,22 +1361,9 @@ class PhotometrySessionGroup:
         -------
         None
         """
-        from iblnm.config import (
-            SUBJECTS_TO_EXCLUDE,
-            MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
-        )
-
-        # Resolve defaults
-        if session_types is None:
-            session_types = ('biased', 'ephys')
-        elif session_types is False:
+        # Resolve False → None for session_types (disables the filter)
+        if session_types is False:
             session_types = None
-        if exclude_subjects is None:
-            exclude_subjects = SUBJECTS_TO_EXCLUDE
-        if min_performance is None:
-            min_performance = {'training': MIN_TRAINING_PERFORMANCE}
-        if required_contrasts is None:
-            required_contrasts = REQUIRED_CONTRASTS
 
         df = self._catalog
         true = pd.Series(True, index=df.index)
