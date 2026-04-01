@@ -26,7 +26,7 @@ from iblnm.config import (
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_TIMING_FPATH, PEAK_VELOCITY_FPATH,
     RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
-    RESPONSE_EVENTS, FIGURE_DPI, TARGETNMS_TO_ANALYZE,
+    RESPONSE_EVENTS, FIGURE_DPI, ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -369,6 +369,7 @@ if __name__ == '__main__':
     group = PhotometrySessionGroup.from_catalog(df, one=one)
     group.filter_sessions(
         session_types=('biased', 'ephys', 'training'),
+        qc_blockers=ANALYSIS_QC_BLOCKERS,
         targetnms=TARGETNMS_TO_ANALYZE,
     )
     print(f"  Recordings (session x region): {len(group)}")

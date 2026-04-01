@@ -12,8 +12,8 @@ from iblphotometry.qc import qc_signals
 from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
-    BASELINE_WINDOW, EVENT_COMPLETENESS_THRESHOLD, MIN_NTRIALS,
-    N_UNIQUE_SAMPLES_THRESHOLD,
+    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EVENT_COMPLETENESS_THRESHOLD,
+    MIN_NTRIALS, N_UNIQUE_SAMPLES_THRESHOLD,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, RESPONSE_EVENTS, RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR, TARGETNMS_TO_ANALYZE, TARGET_FS,
@@ -1318,7 +1318,8 @@ class PhotometrySessionGroup:
         return df.reset_index(drop=True)
 
     def filter_sessions(self, session_types=None, exclude_subjects=None,
-                        qc_blockers=None, targetnms=TARGETNMS_TO_ANALYZE,
+                        qc_blockers=ANALYSIS_QC_BLOCKERS,
+                        targetnms=TARGETNMS_TO_ANALYZE,
                         min_performance=None, required_contrasts=None,
                         lab=None, start_time_min=None):
         """Compute a boolean filter mask over _catalog. Non-destructive.
@@ -1333,8 +1334,9 @@ class PhotometrySessionGroup:
             Session types to keep. None → ('biased', 'ephys'). False → skip.
         exclude_subjects : list of str, optional
             Subjects to exclude. Defaults to config.SUBJECTS_TO_EXCLUDE.
-        qc_blockers : set of str, optional
-            Error types that block a session. Defaults to standard set.
+        qc_blockers : set of str
+            Error types that block a session. Defaults to
+            config.ANALYSIS_QC_BLOCKERS. Pass ``set()`` to skip.
             Silently skipped if ``logged_errors`` is not present on the catalog.
         targetnms : list of str or None
             Target-NM values to retain in sessions and recordings.
@@ -1367,13 +1369,6 @@ class PhotometrySessionGroup:
             session_types = None
         if exclude_subjects is None:
             exclude_subjects = SUBJECTS_TO_EXCLUDE
-        if qc_blockers is None:
-            qc_blockers = {
-                'MissingExtractedData', 'MissingRawData',
-                'InsufficientTrials', 'IncompleteEventTimes',
-                'TrialsNotInPhotometryTime', 'QCValidationError',
-                'AmbiguousRegionMapping',
-            }
         if min_performance is None:
             min_performance = {'training': MIN_TRAINING_PERFORMANCE}
         if required_contrasts is None:

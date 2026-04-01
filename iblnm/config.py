@@ -16,7 +16,7 @@ QCPHOTOMETRY_FPATH = PROJECT_ROOT / 'data/qc_photometry.pqt'
 PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
 RESPONSES_DIR = PROJECT_ROOT / 'data/responses'
 RESPONSES_FPATH = RESPONSES_DIR / 'responses.pqt'
-TRIAL_TIMING_FPATH = RESPONSES_DIR / 'trial_timing.pqt'
+TRIAL_TIMING_FPATH = PROJECT_ROOT / 'data/trial_timing.pqt'
 PEAK_VELOCITY_FPATH = RESPONSES_DIR / 'peak_velocity.pqt'
 RESPONSE_MATRIX_FPATH = RESPONSES_DIR / 'response_matrix.pqt'
 RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
@@ -256,6 +256,14 @@ RESPONSE_EVENTS = ['stimOn_times', 'firstMovement_times', 'feedback_times']
 MIN_NTRIALS = 90
 MIN_SESSIONLENGTH = 20 * 60  # seconds
 
+# Error types that block a session from analysis
+ANALYSIS_QC_BLOCKERS = {
+    'MissingExtractedData', 'MissingRawData',
+    'InsufficientTrials', 'IncompleteEventTimes',
+    'TrialsNotInPhotometryTime', 'QCValidationError',
+    'AmbiguousRegionMapping',
+}
+
 # Task performance parameters
 MIN_TRAINING_PERFORMANCE = 0.70  # minimum fraction_correct for training sessions
 REQUIRED_CONTRASTS = {0, 6.25, 12.5, 25, 100}  # percent; must match biased/ephys
@@ -379,76 +387,6 @@ PREPROCESSING_PIPELINES = {
 
 # Fraction of unique samples per window below which a channel is flagged as suspect
 N_UNIQUE_SAMPLES_THRESHOLD = 0.05
-
-# Contrast transform for LMM and plotting
-def contrast_transform(c):
-    """Map raw contrast to model scale: log(c + 1).
-
-    Legacy default transform. Use ``get_contrast_coding`` for switchable coding.
-    """
-    return np.log(np.asarray(c, dtype=float) + 1)
-
-
-def contrast_inverse(c_transformed):
-    """Inverse of contrast_transform: exp(x) - 1."""
-    return np.exp(np.asarray(c_transformed, dtype=float)) - 1
-
-
-def get_contrast_coding(coding='log'):
-    """Return (transform, inverse) functions for the given contrast coding.
-
-    Parameters
-    ----------
-    coding : str
-        One of 'log', 'linear', or 'rank'.
-
-    Returns
-    -------
-    transform : callable
-        Maps raw contrast values to model scale.
-    inverse : callable
-        Maps model-scale values back to raw contrast.
-    """
-    if coding == 'log':
-        return contrast_transform, contrast_inverse
-
-    if coding == 'linear':
-        def _identity(c):
-            return np.asarray(c, dtype=float)
-        return _identity, _identity
-
-    if coding == 'rank':
-        # Rank maps value → ordinal position. The map is built on first
-        # array call and reused for subsequent scalar lookups.
-        _rank_map = {}
-
-        def _rank_transform(c):
-            c = np.asarray(c, dtype=float)
-            scalar = c.ndim == 0
-            c = np.atleast_1d(c)
-            # Build/extend rank map when we see new values
-            vals = sorted(set(float(v) for v in c) | set(_rank_map.keys()))
-            if len(vals) > len(_rank_map):
-                _rank_map.clear()
-                _rank_map.update({v: float(i) for i, v in enumerate(vals)})
-            result = np.array([_rank_map[float(v)] for v in c])
-            return float(result[0]) if scalar else result
-
-        _inv_map = {}
-
-        def _rank_inverse(r):
-            if not _inv_map and _rank_map:
-                _inv_map.update({v: k for k, v in _rank_map.items()})
-            r = np.asarray(r, dtype=float)
-            scalar = r.ndim == 0
-            r = np.atleast_1d(r)
-            result = np.array([_inv_map[float(v)] for v in r])
-            return float(result[0]) if scalar else result
-
-        return _rank_transform, _rank_inverse
-
-    raise ValueError(f"Unknown contrast coding: {coding!r}. "
-                     f"Choose from 'log', 'linear', 'rank'.")
 
 
 # Analysis parameters
