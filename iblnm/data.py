@@ -1324,7 +1324,7 @@ class PhotometrySessionGroup:
                         targetnms=TARGETNMS_TO_ANALYZE,
                         min_performance=MIN_PERFORMANCE,
                         required_contrasts=REQUIRED_CONTRASTS,
-                        lab=None, start_time_min=None):
+                        lab=False, start_time_min=False):
         """Compute a boolean filter mask over _catalog. Non-destructive.
 
         Stores a new _filter_mask on each call. Access filtered data via the
@@ -1352,9 +1352,9 @@ class PhotometrySessionGroup:
         required_contrasts : frozenset of float or False
             Required contrast set. Defaults to config.REQUIRED_CONTRASTS.
             Requires 'contrasts' in the catalog.
-        lab : str, optional
+        lab : str or False
             Keep only sessions from this lab.
-        start_time_min : str or date, optional
+        start_time_min : str, date, or False
             Keep only subjects whose first session is >= this date.
 
         Returns
@@ -1367,9 +1367,9 @@ class PhotometrySessionGroup:
         # Build individual masks — False skips any filter
         type_mask = df['session_type'].isin(session_types) if session_types is not False else true
         subject_mask = ~df['subject'].isin(exclude_subjects) if exclude_subjects is not False else true
-        lab_mask = (df['lab'] == lab) if (lab is not None and 'lab' in df.columns) else true
+        lab_mask = (df['lab'] == lab) if (lab is not False and 'lab' in df.columns) else true
 
-        if start_time_min is not None and 'start_time' in df.columns:
+        if start_time_min is not False and 'start_time' in df.columns:
             dt_series = pd.to_datetime(df['start_time'], format='ISO8601')
             first_per_row = dt_series.groupby(df['subject']).transform('min')
             start_mask = first_per_row >= pd.Timestamp(start_time_min)
