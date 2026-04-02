@@ -826,10 +826,11 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
     """Fit per-recording OLS models and return coefficients as features.
 
     For each recording in the events DataFrame, fits:
-    ``response_early ~ 1 + log_contrast + side + reward
-    + log_contrast:side + log_contrast:reward + side:reward``
+    ``response_early ~ 1 + {coding}_contrast + side + reward
+    + {coding}_contrast:side + {coding}_contrast:reward + side:reward``
 
-    Uses deviation coding (±0.5) for side and reward, consistent with the LMM:
+    The contrast predictor is mean-centered per recording. Uses deviation
+    coding (±0.5) for side and reward, consistent with the LMM:
         side:   contra = +0.5, ipsi = −0.5
         reward: correct = +0.5, incorrect = −0.5
 
@@ -877,9 +878,10 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
     if 'side' not in df.columns:
         df = add_relative_contrast(df)
 
+    contrast_col = f'{contrast_coding}_contrast'
     coef_names = [
-        'intercept', 'log_contrast', 'side', 'reward',
-        'log_contrast:side', 'log_contrast:reward', 'side:reward',
+        'intercept', contrast_col, 'side', 'reward',
+        f'{contrast_col}:side', f'{contrast_col}:reward', 'side:reward',
     ]
 
     coef_rows = {}
@@ -893,18 +895,19 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
             continue
 
         y = valid['response_early'].values
-        log_c = _transform(valid['contrast'].values)
+        coded_c = _transform(valid['contrast'].values)
+        coded_c = coded_c - coded_c.mean()
         # Deviation coding ±0.5, matching fit_response_lmm
         side = np.where(valid['side'] == 'contra', 0.5, -0.5)
         reward = np.where(valid['feedbackType'] == 1, 0.5, -0.5)
 
         X = np.column_stack([
             np.ones(len(y)),
-            log_c,
+            coded_c,
             side,
             reward,
-            log_c * side,
-            log_c * reward,
+            coded_c * side,
+            coded_c * reward,
             side * reward,
         ])
 

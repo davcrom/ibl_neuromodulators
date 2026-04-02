@@ -1867,12 +1867,13 @@ class TestFitResponseGLM:
         feedback_type = rng.choice([-1, 1], n)
         reward = np.where(feedback_type == 1, 0.5, -0.5)
         log_c = contrast_transform(contrast)
+        log_c_centered = log_c - log_c.mean()
 
-        # 7 known coefficients
+        # 7 known coefficients (contrast predictor is centered)
         true_beta = np.array([2.0, 0.5, 1.0, 0.3, -0.2, 0.1, 0.4])
         X = np.column_stack([
-            np.ones(n), log_c, side, reward,
-            log_c * side, log_c * reward, side * reward,
+            np.ones(n), log_c_centered, side, reward,
+            log_c_centered * side, log_c_centered * reward, side * reward,
         ])
         response = X @ true_beta + rng.normal(0, 0.1, n)
 
