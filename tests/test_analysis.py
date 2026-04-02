@@ -2333,3 +2333,99 @@ class TestAnovaRM:
                           ['contrast', 'side', 'feedbackType'])
         assert (result['Pr(>F)'] >= 0).all()
         assert (result['Pr(>F)'] <= 1).all()
+
+
+# =============================================================================
+# kruskal_wallis_groups
+# =============================================================================
+
+class TestKruskalWallisGroups:
+
+    def test_matches_scipy_directly(self):
+        from iblnm.analysis import kruskal_wallis_groups
+        from scipy.stats import kruskal
+        rng = np.random.default_rng(0)
+        df = pd.DataFrame({
+            'group': ['A'] * 30 + ['B'] * 30 + ['C'] * 30,
+            'value': np.concatenate([
+                rng.normal(0, 1, 30),
+                rng.normal(2, 1, 30),
+                rng.normal(0, 1, 30),
+            ]),
+        })
+        H, p, groups = kruskal_wallis_groups(df, 'group', 'value')
+        H_expected, p_expected = kruskal(groups['A'], groups['B'], groups['C'])
+        assert np.isclose(H, H_expected)
+        assert np.isclose(p, p_expected)
+
+    def test_returns_groups_dict(self):
+        from iblnm.analysis import kruskal_wallis_groups
+        df = pd.DataFrame({
+            'g': ['x', 'x', 'y', 'y'],
+            'v': [1.0, 2.0, 3.0, 4.0],
+        })
+        _, _, groups = kruskal_wallis_groups(df, 'g', 'v')
+        assert set(groups.keys()) == {'x', 'y'}
+        assert list(groups['x']) == [1.0, 2.0]
+
+    def test_single_group_returns_nan(self):
+        from iblnm.analysis import kruskal_wallis_groups
+        df = pd.DataFrame({'g': ['a', 'a'], 'v': [1.0, 2.0]})
+        H, p, groups = kruskal_wallis_groups(df, 'g', 'v')
+        assert np.isnan(H)
+        assert np.isnan(p)
+
+    def test_drops_nan_values(self):
+        from iblnm.analysis import kruskal_wallis_groups
+        df = pd.DataFrame({
+            'g': ['a', 'a', 'b', 'b', 'b'],
+            'v': [1.0, np.nan, 3.0, 4.0, np.nan],
+        })
+        _, _, groups = kruskal_wallis_groups(df, 'g', 'v')
+        assert len(groups['a']) == 1
+        assert len(groups['b']) == 2
+
+
+# =============================================================================
+# pairwise_mannwhitney
+# =============================================================================
+
+class TestPairwiseMannwhitney:
+
+    def test_bonferroni_correction(self):
+        from iblnm.analysis import pairwise_mannwhitney
+        from scipy.stats import mannwhitneyu
+        rng = np.random.default_rng(42)
+        groups = {
+            'A': rng.normal(0, 1, 20),
+            'B': rng.normal(3, 1, 20),
+            'C': rng.normal(0, 1, 20),
+        }
+        results = pairwise_mannwhitney(groups)
+        # 3 pairs: A-B, A-C, B-C
+        assert len(results) == 3
+        # Check Bonferroni: p_corrected = min(p_raw * 3, 1.0)
+        for ga, gb, U, p_corr in results:
+            _, p_raw = mannwhitneyu(groups[ga], groups[gb],
+                                    alternative='two-sided')
+            assert np.isclose(p_corr, min(p_raw * 3, 1.0))
+
+    def test_p_capped_at_one(self):
+        from iblnm.analysis import pairwise_mannwhitney
+        # Two identical groups — p_raw ~ 1.0, corrected should not exceed 1.0
+        groups = {'A': np.ones(10), 'B': np.ones(10) + 1e-12}
+        results = pairwise_mannwhitney(groups)
+        for _, _, _, p_corr in results:
+            assert p_corr <= 1.0
+
+    def test_two_groups_no_correction_inflation(self):
+        from iblnm.analysis import pairwise_mannwhitney
+        from scipy.stats import mannwhitneyu
+        rng = np.random.default_rng(0)
+        groups = {'X': rng.normal(0, 1, 30), 'Y': rng.normal(0, 1, 30)}
+        results = pairwise_mannwhitney(groups)
+        assert len(results) == 1
+        # With 1 comparison, correction factor is 1
+        _, p_raw = mannwhitneyu(groups['X'], groups['Y'],
+                                alternative='two-sided')
+        assert np.isclose(results[0][3], p_raw)

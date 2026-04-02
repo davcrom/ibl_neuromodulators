@@ -2274,3 +2274,69 @@ def anova_rm(df, depvar, subject, within):
         result['method'] = 'ols'
 
     return result
+
+
+def kruskal_wallis_groups(df, group_col, value_col):
+    """Kruskal-Wallis H-test across groups defined by a categorical column.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data with at least ``group_col`` and ``value_col``.
+    group_col : str
+        Column defining groups.
+    value_col : str
+        Column with the numeric values to compare.
+
+    Returns
+    -------
+    H : float
+        Kruskal-Wallis H statistic (NaN if fewer than 2 non-empty groups).
+    p : float
+        p-value (NaN if fewer than 2 non-empty groups).
+    groups : dict[str, np.ndarray]
+        Mapping of group name to array of non-NaN values.
+    """
+    from scipy.stats import kruskal
+
+    groups = {}
+    for name, sub in df.groupby(group_col):
+        vals = sub[value_col].dropna().values
+        if len(vals) > 0:
+            groups[name] = vals
+
+    if len(groups) < 2:
+        return np.nan, np.nan, groups
+
+    H, p = kruskal(*groups.values())
+    return H, p, groups
+
+
+def pairwise_mannwhitney(groups, correction='bonferroni'):
+    """Pairwise Mann-Whitney U tests with multiple-comparison correction.
+
+    Parameters
+    ----------
+    groups : dict[str, np.ndarray]
+        Mapping of group name to array of values (from kruskal_wallis_groups).
+    correction : str
+        Correction method. Only 'bonferroni' is supported.
+
+    Returns
+    -------
+    list of (group_a, group_b, U_statistic, p_corrected)
+    """
+    from itertools import combinations
+    from scipy.stats import mannwhitneyu
+
+    names = list(groups.keys())
+    pairs = list(combinations(names, 2))
+    n_comparisons = len(pairs)
+
+    results = []
+    for a, b in pairs:
+        U, p_raw = mannwhitneyu(groups[a], groups[b], alternative='two-sided')
+        p_corr = min(p_raw * n_comparisons, 1.0)
+        results.append((a, b, U, p_corr))
+
+    return results
