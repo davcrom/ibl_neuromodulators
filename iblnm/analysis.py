@@ -1746,11 +1746,11 @@ def compute_marginal_means(lmm_result, factor):
     fe_cov = result.cov_params().loc[fe_names, fe_names].values
 
     _transform, _ = get_contrast_coding(lmm_result.contrast_coding)
+    cc = lmm_result.contrast_col
+    contrast_center = lmm_result.contrast_center
 
     predictions = lmm_result.predictions
     contrast_levels = sorted(predictions['contrast'].unique())
-    lc_values = [_transform(c) for c in contrast_levels]
-    mean_lc = np.mean(lc_values)
 
     # Factor level specs: (label, {column: value})
     if factor == 'reward':
@@ -1765,7 +1765,7 @@ def compute_marginal_means(lmm_result, factor):
         ]
     elif factor == 'contrast':
         level_specs = [
-            (c, {'log_contrast': _transform(c)})
+            (c, {cc: _transform(c) - contrast_center})
             for c in contrast_levels
         ]
     else:
@@ -1777,27 +1777,28 @@ def compute_marginal_means(lmm_result, factor):
     rows = []
     for label, factor_vals in level_specs:
         # Set factor to its level value, all other factors to 0 (grand mean)
-        lc = factor_vals.get('log_contrast', mean_lc)
+        # Centered contrast at grand mean = 0
+        lc = factor_vals.get(cc, 0.0)
         side = factor_vals.get('side', 0.0)
         reward = factor_vals.get('reward', 0.0)
 
         # Construct the design vector manually
         c = np.zeros(len(fe_names))
         c[idx['Intercept']] = 1.0
-        if 'log_contrast' in idx:
-            c[idx['log_contrast']] = lc
+        if cc in idx:
+            c[idx[cc]] = lc
         if 'side' in idx:
             c[idx['side']] = side
         if 'reward' in idx:
             c[idx['reward']] = reward
-        if 'log_contrast:side' in idx:
-            c[idx['log_contrast:side']] = lc * side
-        if 'log_contrast:reward' in idx:
-            c[idx['log_contrast:reward']] = lc * reward
+        if f'{cc}:side' in idx:
+            c[idx[f'{cc}:side']] = lc * side
+        if f'{cc}:reward' in idx:
+            c[idx[f'{cc}:reward']] = lc * reward
         if 'side:reward' in idx:
             c[idx['side:reward']] = side * reward
-        if 'log_contrast:side:reward' in idx:
-            c[idx['log_contrast:side:reward']] = lc * side * reward
+        if f'{cc}:side:reward' in idx:
+            c[idx[f'{cc}:side:reward']] = lc * side * reward
 
         mean_pred = float(c @ fe_params)
         se = float(np.sqrt(max(c @ fe_cov @ c, 0)))
