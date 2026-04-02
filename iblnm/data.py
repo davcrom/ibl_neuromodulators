@@ -1256,6 +1256,7 @@ class PhotometrySessionGroup:
         self.trial_timing = None
         self.peak_velocity = None
         self.response_features = None
+        self.performance = None
         self.psychometric_features = None
         self.similarity_matrix = None
         self.decoder = None
@@ -1596,6 +1597,10 @@ class PhotometrySessionGroup:
         df = pd.read_parquet(path)
         eids = set(self.recordings['eid'])
         return df[df['eid'].isin(eids)].copy()
+
+    def load_performance(self, path):
+        """Load performance data from parquet, filtered to in-scope eids."""
+        self.performance = self._load_parquet(path)
 
     def load_response_magnitudes(self, path):
         """Load response magnitudes from parquet, filtered to current recordings."""

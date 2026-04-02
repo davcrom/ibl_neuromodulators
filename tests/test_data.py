@@ -2975,6 +2975,21 @@ class TestLoaderMethods:
         assert len(group.response_features) == 2
         assert 'eid-99' not in group.response_features.index.get_level_values('eid')
 
+    def test_load_performance(self, tmp_path):
+        group = self._make_group(n_eids=3, regions_per=1)
+        df = pd.DataFrame([
+            {'eid': 'eid-0', 'fraction_correct': 0.85},
+            {'eid': 'eid-1', 'fraction_correct': 0.72},
+            {'eid': 'eid-2', 'fraction_correct': 0.91},
+            {'eid': 'eid-99', 'fraction_correct': 0.60},  # not in group
+        ])
+        path = tmp_path / 'performance.pqt'
+        df.to_parquet(path, index=False)
+
+        group.load_performance(path)
+        assert len(group.performance) == 3
+        assert 'eid-99' not in group.performance['eid'].values
+
     def test_load_missing_file_is_noop(self, tmp_path):
         group = self._make_group()
         group.load_response_magnitudes(tmp_path / 'nonexistent.pqt')
