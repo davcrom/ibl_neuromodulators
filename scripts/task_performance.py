@@ -10,18 +10,21 @@ with the full contrast set).
 Input:  metadata/sessions.pqt, data/performance.pqt
 Output: figures/task_performance/psychometric_50.svg
 """
-import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH, FIGURE_DPI,
-    TARGETNMS_TO_ANALYZE, RESPONSES_FPATH, TRIAL_TIMING_FPATH,
+    RESPONSES_FPATH, TRIAL_TIMING_FPATH,
+    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
+    ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.util import derive_target_nm
-from iblnm.vis import plot_psychometric_curves_50, plot_rt_by_contrast, TARGETNM_COLORS
+from iblnm.util import collect_session_errors
+from iblnm.vis import (
+    plot_psychometric_grid, plot_target_comparison, plot_rt_by_contrast,
+)
 
 plt.ion()
 
@@ -30,222 +33,80 @@ PSYCH_PARAMS = ['bias', 'threshold', 'lapse_left', 'lapse_right']
 
 if __name__ == '__main__':
     # =====================================================================
-    # Load sessions (identical to responses.py)
+    # Load sessions and create group (identical to responses.py)
     # =====================================================================
     print(f"Loading sessions from {SESSIONS_FPATH}")
-    df_sessions = pd.read_parquet(SESSIONS_FPATH)
-    print(f"  Total sessions: {len(df_sessions)}")
+    df = pd.read_parquet(SESSIONS_FPATH)
+    df = collect_session_errors(
+        df, [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH])
+    if PERFORMANCE_FPATH.exists():
+        perf = pd.read_parquet(
+            PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
+        df = df.merge(perf, on='eid', how='left')
 
-    df_sessions = derive_target_nm(df_sessions)
-
-    # Drop sessions where parallel list columns have mismatched lengths
-    _parallel_cols = ['target_NM', 'brain_region', 'hemisphere']
-    _lengths_match = df_sessions[_parallel_cols].apply(
-        lambda row: len(set(
-            len(v) if isinstance(v, (list, np.ndarray)) else 1
-            for v in row
-        )) == 1,
-        axis=1,
-    )
-    n_mismatched = (~_lengths_match).sum()
-    if n_mismatched > 0:
-        _bad = df_sessions.loc[
-            ~_lengths_match,
-            ['eid', 'subject', 'brain_region', 'hemisphere'],
-        ]
-        print(f"  Dropping {n_mismatched} sessions with mismatched "
-              "brain_region/hemisphere lengths:")
-        for _, row in _bad.iterrows():
-            print(f"    {row['subject']} {row['eid']}: "
-                  f"brain_region={row['brain_region']}, "
-                  f"hemisphere={row['hemisphere']}")
-        df_sessions = df_sessions[_lengths_match].copy()
-
-    # Explode to one row per recording
-    df_recordings = df_sessions.explode(_parallel_cols).copy()
-    df_recordings['fiber_idx'] = df_recordings.groupby('eid').cumcount()
-
-    # =====================================================================
-    # Create group and apply standard filters
-    # =====================================================================
     one = _get_default_connection()
-    group = PhotometrySessionGroup(df_recordings, one=one)
-    group.filter_recordings(
-        session_types=('biased', 'ephys', 'training'),
+    group = PhotometrySessionGroup.from_catalog(df, one=one)
+    group.filter_sessions(
+        session_types=SESSION_TYPES_TO_ANALYZE,
+        qc_blockers=ANALYSIS_QC_BLOCKERS,
+        targetnms=TARGETNMS_TO_ANALYZE,
     )
     print(f"  Recordings (session x region): {len(group)}")
 
     # =====================================================================
-    # Load performance data
+    # Load data onto group
     # =====================================================================
     if not PERFORMANCE_FPATH.exists():
         print(f"Error: {PERFORMANCE_FPATH} not found. "
               "Run scripts/task.py first.")
         raise SystemExit(1)
 
-    print(f"Loading performance from {PERFORMANCE_FPATH}")
-    df_performance = pd.read_parquet(PERFORMANCE_FPATH)
-
-    # Merge target_NM from group recordings (inner join keeps only
-    # sessions that passed filter_recordings)
-    rec_meta = (
-        group.recordings[['eid', 'subject', 'target_NM']]
-        .drop_duplicates()
-    )
-    df_performance = df_performance.merge(rec_meta, on='eid', how='inner')
-    print(f"  {len(df_performance)} session-target rows after merge")
+    group.load_performance(PERFORMANCE_FPATH)
+    if RESPONSES_FPATH.exists() and TRIAL_TIMING_FPATH.exists():
+        group.load_response_magnitudes(RESPONSES_FPATH)
+        group.load_trial_timing(TRIAL_TIMING_FPATH)
 
     # =====================================================================
-    # Psychometric figure — 2x3 grid of curves
+    # Figures
     # =====================================================================
     output_dir = PROJECT_ROOT / 'figures/task_performance'
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    targets = [t for t in TARGETNMS_TO_ANALYZE
-               if t in df_performance['target_NM'].values]
-
-    if len(targets) == 0:
-        print("No targets with performance data to plot.")
-        raise SystemExit(0)
-
-    fig, axes = plt.subplots(2, 3, figsize=(12, 8), squeeze=False)
-
+    # --- Psychometric curves (2x3 grid) ---
     print("\nGenerating 50-50 psychometric figure...")
-    for i, target_nm in enumerate(targets[:6]):
-        ax = axes[i // 3, i % 3]
-        df_target = df_performance[df_performance['target_NM'] == target_nm]
-        plot_psychometric_curves_50(df_target, target_nm=target_nm, ax=ax)
-        n_sessions = len(df_target)
-        n_subjects = df_target['subject'].nunique()
-        ax.text(0.05, 0.85, f'{n_sessions} sessions\n{n_subjects} mice',
-                transform=ax.transAxes)
-        ax.set_title(target_nm)
-
-    # Hide unused panels
-    for i in range(len(targets), 6):
-        axes[i // 3, i % 3].set_visible(False)
-
-    fig.tight_layout()
-    fig.savefig(output_dir / 'psychometric_50.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
+    fig1 = plot_psychometric_grid(group)
+    fig1.savefig(output_dir / 'psychometric_50.svg',
+                 dpi=FIGURE_DPI, bbox_inches='tight')
     print(f"Saved: {output_dir / 'psychometric_50.svg'}")
 
-    # =====================================================================
-    # Summary: target-NM comparison with ANOVA + post-hoc
-    # =====================================================================
-    from scipy.stats import kruskal, mannwhitneyu
-    from itertools import combinations
-
+    # --- Target-NM comparison boxplots ---
     summary_params = ['fraction_correct'] + [f'psych_50_{p}' for p in PSYCH_PARAMS]
     summary_labels = ['fraction correct', 'bias', 'threshold',
                       'lapse left', 'lapse right']
-
-    fig_sum, axes_sum = plt.subplots(
-        1, len(summary_params),
-        figsize=(3.5 * len(summary_params), 4),
-        squeeze=False,
-    )
-
-    print("\n--- Target-NM comparison (ANOVA + post-hoc) ---")
-    for i, (col, label) in enumerate(zip(summary_params, summary_labels)):
-        ax = axes_sum[0, i]
-
-        # Collect per-target data
-        groups_data = {}
-        for tnm in targets:
-            vals = df_performance.loc[
-                df_performance['target_NM'] == tnm, col
-            ].dropna().values
-            if len(vals) > 0:
-                groups_data[tnm] = vals
-
-        if len(groups_data) < 2:
-            ax.set_title(label)
-            continue
-
-        # Boxplots — unfilled, lines colored by target-NM
-        positions = list(range(len(groups_data)))
-        target_names = list(groups_data.keys())
-        bp = ax.boxplot(
-            [groups_data[t] for t in target_names],
-            positions=positions, widths=0.5, patch_artist=True,
-            showfliers=False,
-        )
-        for j, tnm in enumerate(target_names):
-            color = TARGETNM_COLORS.get(tnm, 'gray')
-            bp['boxes'][j].set_facecolor('none')
-            bp['boxes'][j].set_edgecolor(color)
-            bp['boxes'][j].set_linewidth(1.5)
-            bp['medians'][j].set_color(color)
-            bp['medians'][j].set_linewidth(2)
-            for k in (2 * j, 2 * j + 1):
-                bp['whiskers'][k].set_color(color)
-                bp['caps'][k].set_color(color)
-
-        ax.set_xticks(positions)
-        ax.set_xticklabels([t.split('-')[0] for t in target_names],
-                           rotation=45, ha='right', fontsize=8)
-        ax.set_title(label)
-
-        # Kruskal-Wallis
-        h_stat, p_kw = kruskal(*groups_data.values())
-        print(f"  {label}: H={h_stat:.2f}, p={p_kw:.4f}", end='')
-
-        if p_kw >= 0.05:
-            print(" (n.s.)")
-            y_top = ax.get_ylim()[1]
-            y_rng = y_top - ax.get_ylim()[0]
-            ax.set_ylim(ax.get_ylim()[0], y_top + y_rng * 0.15)
-            ax.text(0.5, y_top + y_rng * 0.05,
-                    f'H={h_stat:.1f}, p={p_kw:.3f} n.s.',
-                    ha='center', va='bottom', fontsize=7)
-            continue
-
-        print(" *")
-
-        # Post-hoc Mann-Whitney U (Bonferroni corrected)
-        pairs = list(combinations(range(len(target_names)), 2))
-        n_comparisons = len(pairs)
-        sig_pairs = []
-        for a, b in pairs:
-            _, p_mw = mannwhitneyu(groups_data[target_names[a]],
-                                   groups_data[target_names[b]],
-                                   alternative='two-sided')
-            p_corrected = min(p_mw * n_comparisons, 1.0)
-            if p_corrected < 0.05:
-                sig_pairs.append((a, b, p_corrected))
-
-        # Draw significance brackets
-        y_max = ax.get_ylim()[1]
-        y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
-        step = y_range * 0.06
-        for k, (a, b, p_corr) in enumerate(sig_pairs):
-            y = y_max + step * (k + 0.5)
-            stars = '***' if p_corr < 0.001 else '**' if p_corr < 0.01 else '*'
-            ax.plot([a, a, b, b], [y - step * 0.15, y, y, y - step * 0.15],
-                    color='black', linewidth=0.8)
-            ax.text((a + b) / 2, y, stars, ha='center', va='bottom',
-                    fontsize=8)
-
-        # Place ANOVA label above the topmost bracket, expand ylim to fit
-        label_y = y_max + step * (len(sig_pairs) + 0.5) if sig_pairs else y_max
-        ax.set_ylim(ax.get_ylim()[0],
-                     label_y + step * 2.5)
-        ax.text(0.5, label_y + step * 0.5,
-                f'H={h_stat:.1f}, p={p_kw:.1e}',
-                ha='center', va='bottom', fontsize=7)
-
-    fig_sum.tight_layout()
-    fig_sum.savefig(output_dir / 'target_comparison.svg',
-                    dpi=FIGURE_DPI, bbox_inches='tight')
+    fig2 = plot_target_comparison(group, summary_params, summary_labels)
+    fig2.savefig(output_dir / 'target_comparison.svg',
+                 dpi=FIGURE_DPI, bbox_inches='tight')
     print(f"Saved: {output_dir / 'target_comparison.svg'}")
+
+    # --- RT distributions by contrast ---
+    if group.response_magnitudes is not None and group.trial_timing is not None:
+        print("\nGenerating RT-by-contrast figure...")
+        fig3 = plot_rt_by_contrast(group)
+        fig3.savefig(output_dir / 'rt_by_contrast.svg',
+                     dpi=FIGURE_DPI, bbox_inches='tight')
+        print(f"Saved: {output_dir / 'rt_by_contrast.svg'}")
+    else:
+        print("\nSkipping RT figure: responses.pqt or trial_timing.pqt not found.")
 
     # =====================================================================
     # Variance stabilization analysis — at what training performance level
     # does psych parameter variance match biased+ephys?
     # =====================================================================
     """
-    print("\n--- Variance stabilization analysis ---")
+    import numpy as np
+    from scipy.special import logit as _logit
+
+    print("\\n--- Variance stabilization analysis ---")
 
     # Reload performance unfiltered (need all training sessions)
     df_all = pd.read_parquet(PERFORMANCE_FPATH)
@@ -261,10 +122,9 @@ if __name__ == '__main__':
     df_training = df_all[df_all['session_type'] == 'training'].copy()
 
     # Variance-stabilizing transforms for bounded parameters
-    #   lapses: bounded [0, 0.2] → logit(x / 0.2), with clipping to avoid ±inf
-    #   threshold: bounded [0, ∞) → log(x)
-    #   bias: unbounded → identity
-    from scipy.special import logit as _logit
+    #   lapses: bounded [0, 0.2] -> logit(x / 0.2), with clipping to avoid +/-inf
+    #   threshold: bounded [0, inf) -> log(x)
+    #   bias: unbounded -> identity
 
     def _transform(values, col):
         v = values.copy()
@@ -317,7 +177,7 @@ if __name__ == '__main__':
             mean_curves[col].append(_mean_transformed(df_above[col], col))
 
     # Find crossovers
-    print("\n  Variance crossovers (training var <= biased+ephys var):")
+    print("\\n  Variance crossovers (training var <= biased+ephys var):")
     var_crossovers = {}
     for col in param_cols:
         curve = np.array(variance_curves[col])
@@ -335,7 +195,7 @@ if __name__ == '__main__':
     # Mean crossover: first threshold where |training mean - ref mean|
     # is within 0.5 SD of the reference (small effect size boundary)
     MEAN_TOL = 0.5
-    print(f"\n  Mean crossovers (|training - ref| < {MEAN_TOL} ref SD):")
+    print(f"\\n  Mean crossovers (|training - ref| < {MEAN_TOL} ref SD):")
     mean_crossovers = {}
     for col in param_cols:
         ref_sd = np.sqrt(ref_var[col])
@@ -351,7 +211,7 @@ if __name__ == '__main__':
             mean_crossovers[col] = None
             print(f"    {col}: never crosses")
 
-    # Plot: 2 rows (variance, mean) × 4 parameters
+    # Plot: 2 rows (variance, mean) x 4 parameters
     fig_stab, axes_stab = plt.subplots(
         2, len(param_cols),
         figsize=(4 * len(param_cols), 6),
@@ -379,7 +239,7 @@ if __name__ == '__main__':
         ax.plot(thresholds, mean_curves[col], 'k-', linewidth=1.5)
         ax.axhline(ref_mean[col], color='steelblue', linestyle='--',
                    linewidth=1, label='biased+ephys')
-        # Shade ±MEAN_TOL SD around reference mean
+        # Shade +/-MEAN_TOL SD around reference mean
         ref_sd = np.sqrt(ref_var[col])
         ax.axhspan(ref_mean[col] - MEAN_TOL * ref_sd,
                     ref_mean[col] + MEAN_TOL * ref_sd,
@@ -404,41 +264,5 @@ if __name__ == '__main__':
                      dpi=FIGURE_DPI, bbox_inches='tight')
     print(f"Saved: {output_dir / 'variance_mean_stabilization.svg'}")
     """
-    # =====================================================================
-    # RT distributions by contrast
-    # =====================================================================
-    if RESPONSES_FPATH.exists() and TRIAL_TIMING_FPATH.exists():
-        print("\nGenerating RT-by-contrast figure...")
-        df_resp = pd.read_parquet(RESPONSES_FPATH,
-                                  columns=['eid', 'subject', 'target_NM',
-                                           'trial', 'contrast', 'choice',
-                                           'probabilityLeft', 'event'])
-        # FIXME: here we need to ensure we only consider sessions that pass the filter!
-        df_resp = df_resp.merge(rec_meta, on=['subject', 'eid', 'target_NM'], how='inner')
-        df_timing = pd.read_parquet(TRIAL_TIMING_FPATH,
-                                    columns=['eid', 'trial', 'response_time'])
-
-        # One row per trial (drop event duplicates before merging)
-        df_trial = (
-            df_resp
-            .drop_duplicates(subset=['eid', 'trial', 'target_NM'])
-            .merge(df_timing, on=['eid', 'trial'], how='inner')
-        )
-
-        # Unbiased trials only, no no-go, no false-starts
-        df_trial = df_trial.query(
-            'probabilityLeft == 0.5 and choice != 0'
-        ).copy()
-        # Keep only target-NMs in analysis set
-        df_trial = df_trial[df_trial['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
-
-        fig_rt, ax_rt = plt.subplots(figsize=(5, 5))
-        plot_rt_by_contrast(df_trial, ax=ax_rt)
-        fig_rt.tight_layout()
-        fig_rt.savefig(output_dir / 'rt_by_contrast.svg',
-                       dpi=FIGURE_DPI, bbox_inches='tight')
-        print(f"Saved: {output_dir / 'rt_by_contrast.svg'}")
-    else:
-        print("\nSkipping RT figure: responses.pqt or trial_timing.pqt not found.")
 
     print("\nDone!")
