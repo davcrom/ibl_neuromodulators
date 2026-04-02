@@ -12,6 +12,7 @@ Recording capacity projection
 Usage:
     python scripts/dataset_overview.py [--session_split {session_type,proficient}]
                                        [--session_x {session_n,day_n}]
+                                       [--horizontal]
 """
 import argparse
 import sys
@@ -112,6 +113,8 @@ parser.add_argument('--session_split', choices=['session_type', 'proficient'],
                     default='session_type')
 parser.add_argument('--session_x', choices=['session_n', 'day_n'],
                     default='session_n')
+parser.add_argument('--horizontal', action='store_true',
+                    help='Draw barplots with horizontal bars')
 args = parser.parse_args()
 
 if args.session_split == 'proficient':
@@ -255,7 +258,8 @@ n_rec = len(grp.recordings)
 n_ses = grp.sessions['eid'].nunique()
 
 if n_rec > 0:
-    ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map)
+    ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map,
+                                horizontal=args.horizontal)
     ax.set_title(f'Recordings by target ({n_rec} recordings, {n_ses} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
     ax.get_figure().savefig(figures_dir / '6_target_overview.svg',
@@ -263,7 +267,8 @@ if n_rec > 0:
     plt.close('all')
 
     ax = mouse_overview_barplot(grp.recordings, min_sessions=1,
-                                color_by=split_col, split_color_map=color_map)
+                                color_by=split_col, split_color_map=color_map,
+                                horizontal=args.horizontal)
     ax.set_title(f'Mice by target ({n_rec} recordings, {n_ses} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
     ax.get_figure().savefig(figures_dir / '7_mouse_overview.svg',
@@ -278,7 +283,8 @@ n_rec_a = len(grp.recordings)
 n_ses_a = grp.sessions['eid'].nunique()
 
 if n_rec_a > 0:
-    ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map)
+    ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map,
+                                horizontal=args.horizontal)
     ax.set_title(f'Analysis-ready by target ({n_rec_a} recordings, {n_ses_a} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
     ax.get_figure().savefig(figures_dir / '8_target_overview_analyze.svg',
@@ -286,7 +292,8 @@ if n_rec_a > 0:
     plt.close('all')
 
     ax = mouse_overview_barplot(grp.recordings, min_sessions=1,
-                                color_by=split_col, split_color_map=color_map)
+                                color_by=split_col, split_color_map=color_map,
+                                horizontal=args.horizontal)
     ax.set_title(f'Mice (analysis-ready, n={n_ses_a} sessions)')
     set_plotsize(w=24, h=12, ax=ax)
     ax.get_figure().savefig(figures_dir / '9_mouse_overview_analyze.svg',

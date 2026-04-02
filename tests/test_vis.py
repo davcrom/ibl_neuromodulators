@@ -887,9 +887,9 @@ class TestPlotLMMSummary:
             """Minimal summary_df with p-values for significance markers."""
             terms = [
                 'Intercept', 'reward', 'side',
-                'log_contrast',
-                'side:reward', 'log_contrast:side',
-                'log_contrast:reward', 'log_contrast:side:reward',
+                'contrast',
+                'side:reward', 'contrast:side',
+                'contrast:reward', 'contrast:side:reward',
             ]
             return pd.DataFrame({
                 'Coef.': [1.0, 0.3, 0.2, 0.5, -0.1, 0.05, 0.15, 0.02],
@@ -912,7 +912,7 @@ class TestPlotLMMSummary:
                 variance_explained={'marginal': ve_m, 'conditional': ve_c},
                 random_effects={},
             )
-            # pvals[6] = log_contrast:reward, pvals[5] = log_contrast:side,
+            # pvals[6] = contrast:reward, pvals[5] = contrast:side,
             # pvals[4] = side:reward
             r.interaction_contrast_reward = _make_interaction_df(
                 ['incorrect', 'correct'], [0.3, 0.5], p_interaction=pvals[6])
@@ -991,7 +991,7 @@ class TestPlotLMMSummary:
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         fig = plot_lmm_summary(group, 'stimOn')
-        # axes[3] = contrast×side — interaction is log_contrast:side
+        # axes[3] = contrast×side — interaction is contrast:side
         # VTA-DA p=0.3 (not sig → dashed), DR-5HT p=0.7 (not sig → dashed)
         ax = fig.axes[3]
         linestyles = set()
@@ -1168,7 +1168,7 @@ def _make_lmm_coefficients():
     targets = ['VTA-DA', 'SNc-DA', 'DR-5HT']
     events = ['stimOn', 'feedback', 'firstMovement']
     terms = ['Intercept', 'side', 'reward',
-             'log_contrast', 'log_contrast:reward']
+             'contrast', 'contrast:reward']
     rng = np.random.default_rng(42)
     rows = []
     for tnm in targets:
@@ -1214,7 +1214,7 @@ class TestPlotLMMCoefficientHeatmap:
         targets = sorted(df['target_NM'].unique())
         # Intercept is dropped; remaining terms from fixture
         terms_no_intercept = ['side', 'reward',
-                              'log_contrast', 'log_contrast:reward']
+                              'contrast', 'contrast:reward']
         assert ylabels == targets
         assert len(xlabels) == len(terms_no_intercept)
         plt.close(fig)
@@ -1484,8 +1484,8 @@ def _make_mock_cohort_cca_data():
     from iblnm.analysis import CCAResult
 
     targets = ['VTA-DA', 'DR-5HT']
-    feature_names = ['log_contrast', 'side', 'feedback',
-                     'log_contrast:side', 'log_contrast:feedback',
+    feature_names = ['contrast', 'side', 'feedback',
+                     'contrast:side', 'contrast:feedback',
                      'side:feedback']
     psych_names = ['psych_50_threshold', 'psych_50_bias',
                    'psych_50_lapse_left', 'psych_50_lapse_right']
@@ -1598,8 +1598,8 @@ def _make_mock_glm_pca_result():
         scores=rng.normal(size=(n, 3)),
         components=rng.normal(size=(3, 6)),
         explained_variance_ratio=np.array([0.45, 0.25, 0.15]),
-        feature_names=['log_contrast', 'side', 'reward',
-                       'log_contrast:side', 'log_contrast:reward',
+        feature_names=['contrast', 'side', 'reward',
+                       'contrast:side', 'contrast:reward',
                        'side:reward'],
         target_labels=np.array(targets),
         index=index,
@@ -2199,4 +2199,167 @@ class TestPlotRtByContrastGroup:
         group.trial_timing = None
         fig = plot_rt_by_contrast(group)
         assert isinstance(fig, plt.Figure)
+        plt.close('all')
+
+
+# =========================================================================
+# plot_movement_response
+# =========================================================================
+
+def _make_movement_df(n_per_cell=30, seed=42):
+    """Synthetic data for plot_movement_response tests."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for subj in ['s1', 's2', 's3']:
+        for side in ['contra', 'ipsi']:
+            for fb in [1, -1]:
+                for _ in range(n_per_cell):
+                    rows.append({
+                        'subject': subj,
+                        'eid': f'eid_{subj}',
+                        'side': side,
+                        'feedbackType': fb,
+                        'response_early': rng.normal(0, 1),
+                        'log_reaction_time': rng.normal(-0.7, 0.3),
+                    })
+    return pd.DataFrame(rows)
+
+
+class TestPlotMovementResponse:
+    def test_returns_figure(self):
+        from iblnm.vis import plot_movement_response
+        df = _make_movement_df()
+        fig = plot_movement_response(
+            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_has_two_axes(self):
+        from iblnm.vis import plot_movement_response
+        df = _make_movement_df()
+        fig = plot_movement_response(
+            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+        assert len(fig.axes) == 2
+        plt.close(fig)
+
+    def test_contra_axis_inverted(self):
+        from iblnm.vis import plot_movement_response
+        df = _make_movement_df()
+        fig = plot_movement_response(
+            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+        ax_contra = fig.axes[0]
+        xlim = ax_contra.get_xlim()
+        assert xlim[0] > xlim[1], "Contra x-axis should be inverted"
+        plt.close(fig)
+
+    def test_tick_labels_are_real_units(self):
+        """Tick labels should show bin edges in real (non-log) timing units."""
+        from iblnm.vis import plot_movement_response
+        df = _make_movement_df(n_per_cell=50)
+        fig = plot_movement_response(
+            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+        ax = fig.axes[0]
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        # Labels should be parseable as floats (real timing values)
+        for label in labels:
+            if label:
+                float(label)
+        plt.close(fig)
+
+    def test_subject_mean_removal(self):
+        """Large subject offsets should be removed from plotted values."""
+        from iblnm.vis import plot_movement_response
+        rng = np.random.default_rng(99)
+        rows = []
+        for subj, offset in [('s1', 10.0), ('s2', -10.0), ('s3', 5.0)]:
+            for side in ['contra', 'ipsi']:
+                for fb in [1, -1]:
+                    for _ in range(40):
+                        rows.append({
+                            'subject': subj,
+                            'eid': f'eid_{subj}',
+                            'side': side,
+                            'feedbackType': fb,
+                            'response_early': offset + rng.normal(0, 0.1),
+                            'log_reaction_time': rng.normal(-0.7, 0.3),
+                        })
+        df = pd.DataFrame(rows)
+        fig = plot_movement_response(
+            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+        for ax in fig.axes:
+            for line in ax.get_lines():
+                ydata = line.get_ydata()
+                if len(ydata) > 1:
+                    # Grand mean is ~1.67, values should cluster near it
+                    assert np.ptp(ydata) < 2.0, (
+                        f"Subject-mean removal failed: spread {np.ptp(ydata):.2f}")
+        plt.close(fig)
+
+    def test_empty_df_no_crash(self):
+        from iblnm.vis import plot_movement_response
+        df = pd.DataFrame(columns=[
+            'subject', 'eid', 'side', 'feedbackType',
+            'response_early', 'log_reaction_time',
+        ])
+        fig = plot_movement_response(
+            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
+# ---- Barplot orientation tests ----
+
+def _make_barplot_recordings():
+    """Minimal recordings DataFrame for barplot tests."""
+    return pd.DataFrame({
+        'eid': ['e0', 'e0', 'e1', 'e1', 'e2'],
+        'subject': ['s1', 's1', 's2', 's2', 's3'],
+        'target_NM': ['VTA-DA', 'VTA-DA', 'DR-5HT', 'DR-5HT', 'VTA-DA'],
+        'session_type': ['biased', 'biased', 'training', 'biased', 'biased'],
+        'hemisphere': ['l', 'r', 'l', 'r', 'l'],
+    })
+
+
+class TestTargetOverviewBarplotHorizontal:
+
+    def test_horizontal_bars_use_barh(self):
+        from iblnm.vis import target_overview_barplot
+        df = _make_barplot_recordings()
+        ax = target_overview_barplot(df, horizontal=True)
+        # barh creates patches whose width > height (skip zero-count bars)
+        patches = [p for c in ax.containers for p in c if p.get_width() > 0]
+        assert len(patches) > 0
+        for p in patches:
+            assert p.get_width() >= p.get_height(), "Expected horizontal bars"
+        plt.close('all')
+
+    def test_vertical_bars_default(self):
+        from iblnm.vis import target_overview_barplot
+        df = _make_barplot_recordings()
+        ax = target_overview_barplot(df, horizontal=False)
+        patches = [p for c in ax.containers for p in c if p.get_height() > 0]
+        assert len(patches) > 0
+        for p in patches:
+            assert p.get_height() >= p.get_width(), "Expected vertical bars"
+        plt.close('all')
+
+    def test_horizontal_ylabel_is_target(self):
+        from iblnm.vis import target_overview_barplot
+        df = _make_barplot_recordings()
+        ax = target_overview_barplot(df, horizontal=True)
+        assert 'Target' in ax.get_ylabel() or 'target' in ax.get_ylabel().lower()
+        assert 'Session' in ax.get_xlabel() or 'session' in ax.get_xlabel().lower()
+        plt.close('all')
+
+
+class TestMouseOverviewBarplotHorizontal:
+
+    def test_horizontal_bars_use_barh(self):
+        from iblnm.vis import mouse_overview_barplot
+        df = _make_barplot_recordings()
+        ax = mouse_overview_barplot(df, min_sessions=1, horizontal=True)
+        patches = [p for c in ax.containers for p in c if p.get_width() > 0]
+        assert len(patches) > 0
+        for p in patches:
+            assert p.get_width() >= p.get_height(), "Expected horizontal bars"
         plt.close('all')

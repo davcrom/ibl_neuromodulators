@@ -17,15 +17,13 @@ from iblnm.config import (
 from iblnm.util import get_contrast_coding
 
 
-def _coef_label(term, short=False):
+def _coef_label(term):
     """Map a model coefficient name to a display label.
 
-    Replaces any ``*_contrast`` prefix with ``'contrast'`` (or ``'con'`` if
-    *short*) and converts ``:`` separators to ``×``.
+    Strips ``psych_50_`` prefix and converts ``:`` to `` × ``.
     """
-    repl = 'con' if short else 'contrast'
-    label = re.sub(r'\w+_contrast', repl, term)
-    return label.replace(':', '×')
+    label = term.replace('psych_50_', '')
+    return label.replace(':', ' × ')
 
 
 def set_plotsize(w, h=None, ax=None):
@@ -174,7 +172,8 @@ def session_overview_matrix(group, columns='session_n', ax=None,
 
 
 def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
-                            color_by='session_type', split_color_map=None):
+                            color_by='session_type', split_color_map=None,
+                            horizontal=False):
     """Stacked bar plot of session counts per target region, by session type."""
     _color_map = split_color_map or SESSIONTYPE2COLOR
 
@@ -198,35 +197,57 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
     # Use contiguous positions for targets present in data (sorted by canonical order)
     sorted_targets = sorted(df_n.index, key=lambda x: TARGETNM2POSITION.get(x, 999))
     df_n = df_n.reindex(sorted_targets)
-    xpos = list(range(len(df_n)))
-    ypos = np.zeros(len(df_n))
+    positions = list(range(len(df_n)))
+    cumulative = np.zeros(len(df_n))
 
     # Loop over categories present in data (canonical order from color map)
     session_types = [c for c in _color_map.keys() if c in df_n.columns]
     for session_type in session_types:
         ns = df_n[session_type]
         color = _color_map[session_type]
-        ax.bar(xpos, ns, bottom=ypos, width=barwidth, color=color, label=session_type)
-        for x, n, y_bottom in zip(xpos, ns, ypos):
-            if n > 0:
-                ax.text(x, y_bottom + n/2, str(n), ha='center', va='center',
-                        fontweight='bold', color='white')
-        ypos += ns
+        if horizontal:
+            ax.barh(positions, ns, left=cumulative, height=barwidth,
+                    color=color, label=session_type)
+            for y, n, x_left in zip(positions, ns, cumulative):
+                if n > 0:
+                    ax.text(x_left + n/2, y, str(n), ha='center', va='center',
+                            fontweight='bold', color='white')
+        else:
+            ax.bar(positions, ns, bottom=cumulative, width=barwidth,
+                   color=color, label=session_type)
+            for x, n, y_bottom in zip(positions, ns, cumulative):
+                if n > 0:
+                    ax.text(x, y_bottom + n/2, str(n), ha='center', va='center',
+                            fontweight='bold', color='white')
+        cumulative += ns
 
-    ax.set_xticks(list(xpos))
     n_mice = df_sessions.groupby('target_NM').apply(
         lambda x: len(x['subject'].unique()),
         include_groups=False
     )
-    ax.set_xticklabels(
-        ['%s\n(%d mice)' % (target_NM, n_mice.loc[target_NM]) for target_NM in df_n.index]
-    )
-    ax.set_xlim(right=max(xpos) + barwidth)
-    ax.tick_params(axis='x', rotation=90)
-    if max(ypos) > 0:
-        ax.set_yticks(np.arange(0, np.ceil(max(ypos) / 100) + 1) * 100)
-    ax.set_ylabel('N Sessions')
-    ax.set_xlabel('Target-NM')
+    tick_labels = [
+        '%s\n(%d mice)' % (target_NM, n_mice.loc[target_NM])
+        for target_NM in df_n.index
+    ]
+
+    if horizontal:
+        ax.set_yticks(positions)
+        ax.set_yticklabels(tick_labels)
+        ax.invert_yaxis()
+        if max(cumulative) > 0:
+            ax.set_xticks(np.arange(0, np.ceil(max(cumulative) / 100) + 1) * 100)
+        ax.set_xlabel('N Sessions')
+        ax.set_ylabel('Target-NM')
+    else:
+        ax.set_xticks(positions)
+        ax.set_xticklabels(tick_labels)
+        ax.set_xlim(right=max(positions) + barwidth)
+        ax.tick_params(axis='x', rotation=90)
+        if max(cumulative) > 0:
+            ax.set_yticks(np.arange(0, np.ceil(max(cumulative) / 100) + 1) * 100)
+        ax.set_ylabel('N Sessions')
+        ax.set_xlabel('Target-NM')
+
     ax.legend()
 
     n_recordings = len(df_sessions)
@@ -237,22 +258,28 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
     return ax
 
 
-def _add_bar_labels(ax, xpos, values, hemisphere_counts=None, color='white'):
-    """Add vertically-oriented text labels to bars with optional L/R breakdown."""
-    for i, (x, n) in enumerate(zip(xpos, values)):
+def _add_bar_labels(ax, positions, values, hemisphere_counts=None, color='white',
+                    horizontal=False):
+    """Add text labels to bars with optional L/R breakdown."""
+    for i, (pos, n) in enumerate(zip(positions, values)):
         if n > 0:
             if hemisphere_counts is not None:
                 n_left, n_right = hemisphere_counts[i]
                 label = f'{int(n)}\n{n_left}L/{n_right}R'
             else:
                 label = str(int(n))
-            ax.text(x, n / 2, label, ha='center', va='center',
-                    fontweight='bold', color=color, rotation=90)
+            if horizontal:
+                ax.text(n / 2, pos, label, ha='center', va='center',
+                        fontweight='bold', color=color)
+            else:
+                ax.text(pos, n / 2, label, ha='center', va='center',
+                        fontweight='bold', color=color, rotation=90)
 
 
 def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
                            min_sessions=None, ax=None, barwidth=0.25,
-                           color_by='session_type', split_color_map=None):
+                           color_by='session_type', split_color_map=None,
+                           horizontal=False):
     """
     Barplot showing mouse training progress per target region.
 
@@ -279,6 +306,8 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
         Column to group bars by. Defaults to 'session_type'.
     split_color_map : dict, optional
         Mapping from color_by values to colors. Defaults to SESSIONTYPE2COLOR.
+    horizontal : bool
+        If True, draw horizontal bars.
     """
     _color_map = split_color_map or SESSIONTYPE2COLOR
 
@@ -315,9 +344,16 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
                     n_l = q_df[q_df['hemisphere'] == 'l']['subject'].nunique()
                     n_r = q_df[q_df['hemisphere'] == 'r']['subject'].nunique()
                     hemi_counts.append((n_l, n_r))
-            ax.bar(xpos + offset, counts, barwidth, color=_color_map[category],
-                   label=f'≥{min_sessions} {category}')
-            _add_bar_labels(ax, xpos + offset, counts, hemi_counts)
+            if horizontal:
+                ax.barh(xpos + offset, counts, barwidth,
+                        color=_color_map[category],
+                        label=f'≥{min_sessions} {category}')
+            else:
+                ax.bar(xpos + offset, counts, barwidth,
+                       color=_color_map[category],
+                       label=f'≥{min_sessions} {category}')
+            _add_bar_labels(ax, xpos + offset, counts, hemi_counts,
+                            horizontal=horizontal)
     else:
         # Legacy mode
         session_counts = (
@@ -345,21 +381,38 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
                 'n_ephys': len(ephys_mice),
             })
         df_results = pd.DataFrame(results)
-        ax.bar(xpos - barwidth, df_results['n_training'].values, barwidth,
-               color=SESSIONTYPE2COLOR['training'], label='training')
-        ax.bar(xpos, df_results['n_biased_ephys'].values, barwidth,
-               color=SESSIONTYPE2COLOR['biased'], label=f'≥{min_biased_ephys} biased/ephys')
-        ax.bar(xpos + barwidth, df_results['n_ephys'].values, barwidth,
-               color=SESSIONTYPE2COLOR['ephys'], label=f'≥{min_ephys} ephys')
-        _add_bar_labels(ax, xpos - barwidth, df_results['n_training'].values)
-        _add_bar_labels(ax, xpos, df_results['n_biased_ephys'].values)
-        _add_bar_labels(ax, xpos + barwidth, df_results['n_ephys'].values)
+        _bar = ax.barh if horizontal else ax.bar
+        _size_kw = 'height' if horizontal else 'width'
+        _stack_kw = 'left' if horizontal else 'bottom'
+        _bar(xpos - barwidth, df_results['n_training'].values,
+             **{_size_kw: barwidth},
+             color=SESSIONTYPE2COLOR['training'], label='training')
+        _bar(xpos, df_results['n_biased_ephys'].values,
+             **{_size_kw: barwidth},
+             color=SESSIONTYPE2COLOR['biased'],
+             label=f'≥{min_biased_ephys} biased/ephys')
+        _bar(xpos + barwidth, df_results['n_ephys'].values,
+             **{_size_kw: barwidth},
+             color=SESSIONTYPE2COLOR['ephys'], label=f'≥{min_ephys} ephys')
+        _add_bar_labels(ax, xpos - barwidth, df_results['n_training'].values,
+                        horizontal=horizontal)
+        _add_bar_labels(ax, xpos, df_results['n_biased_ephys'].values,
+                        horizontal=horizontal)
+        _add_bar_labels(ax, xpos + barwidth, df_results['n_ephys'].values,
+                        horizontal=horizontal)
 
-    ax.set_xticks(xpos)
-    ax.set_xticklabels(target_nms)
-    ax.tick_params(axis='x', rotation=90)
-    ax.set_ylabel('N Mice')
-    ax.set_xlabel('Target-NM')
+    if horizontal:
+        ax.set_yticks(xpos)
+        ax.set_yticklabels(target_nms)
+        ax.invert_yaxis()
+        ax.set_xlabel('N Mice')
+        ax.set_ylabel('Target-NM')
+    else:
+        ax.set_xticks(xpos)
+        ax.set_xticklabels(target_nms)
+        ax.tick_params(axis='x', rotation=90)
+        ax.set_ylabel('N Mice')
+        ax.set_xlabel('Target-NM')
     ax.legend()
     ax.set_title('Mouse training progress by target')
 
@@ -1393,6 +1446,123 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     return fig
 
+
+def plot_movement_response(df_group, response_col, timing_col, target_nm,
+                           contrast, fig=None, n_bins=8, min_trials=10):
+    """Plot response magnitude by timing-variable quantile bins, contra vs ipsi.
+
+    Analogous to ``plot_relative_contrast`` but with a continuous timing
+    variable (log-transformed, quantile-binned) on the x-axis instead of
+    contrast levels.
+
+    Parameters
+    ----------
+    df_group : pd.DataFrame
+        Pre-filtered rows for one (target_NM, contrast) group with columns
+        ``side`` ('contra' / 'ipsi'), ``feedbackType``, ``subject``,
+        ``<response_col>``, and ``<timing_col>`` (already log10-transformed).
+    response_col : str
+        Column name for the response magnitude.
+    timing_col : str
+        Column name for the log-transformed timing variable.
+    target_nm : str
+        Target neuromodulator label; used for title and color lookup.
+    contrast : float
+        Contrast level; used for the title.
+    fig : plt.Figure or None
+        Figure with two existing axes to draw on. If None, a new figure is
+        created.
+    n_bins : int
+        Number of quantile bins.
+    min_trials : int
+        Minimum trials per (subject, side, feedback, bin) cell to include.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if fig is None:
+        fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05},
+                              layout='constrained')
+
+    ax_c, ax_i = fig.axes[0], fig.axes[1]
+
+    color = TARGETNM_COLORS.get(target_nm, 'black')
+    n_sessions = df_group['eid'].nunique() if 'eid' in df_group.columns else '?'
+    n_subjects = df_group['subject'].nunique() if len(df_group) > 0 else 0
+    timing_label = timing_col.replace('log_', '')
+    fig.suptitle(
+        f'{target_nm} — stimOn ({timing_label})\n'
+        f'{n_sessions} sessions, {n_subjects} subjects, contrast={contrast:g}',
+        fontsize=10,
+    )
+
+    if len(df_group) == 0:
+        return fig
+
+    # Subject-mean removal
+    grand_mean = df_group[response_col].mean()
+    subj_means = df_group.groupby('subject')[response_col].transform('mean')
+    df_group = df_group.copy()
+    df_group[response_col] = df_group[response_col] - subj_means + grand_mean
+
+    # Quantile binning on the full dataset (both sides pooled)
+    df_group['bin'] = pd.qcut(df_group[timing_col], n_bins, duplicates='drop')
+    bin_cats = df_group['bin'].cat.categories
+    bin_midpoints = np.arange(len(bin_cats))
+
+    # Tick labels: bin edges in real (non-log) units
+    edges = sorted(set(
+        [cat.left for cat in bin_cats] + [bin_cats[-1].right]
+    ))
+    tick_labels = [f'{10**e:.2f}' for e in edges]
+    tick_positions = np.linspace(-0.5, len(bin_cats) - 0.5, len(edges))
+
+    # Remove cells with too few trials
+    group_cols = ['subject', 'side', 'feedbackType', 'bin']
+    trial_counts = df_group.groupby(group_cols, observed=True)[response_col].transform('count')
+    df_group = df_group[trial_counts >= min_trials]
+
+    for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
+        df_side = df_group[df_group['side'] == side]
+
+        for feedback, ls in ((1, '-'), (-1, '--')):
+            df_fb = df_side[df_side['feedbackType'] == feedback]
+            if len(df_fb) == 0:
+                continue
+
+            means, sems = [], []
+            for b in bin_cats:
+                df_b = df_fb[df_fb['bin'] == b]
+                vals = df_b[response_col].dropna()
+                means.append(vals.mean() if len(vals) > 0 else np.nan)
+                sems.append(scipy_sem(vals, nan_policy='omit')
+                            if len(vals) > 0 else np.nan)
+
+            label = 'correct' if feedback == 1 else 'incorrect'
+            ax.errorbar(bin_midpoints, means,
+                        yerr=np.array(sems, dtype=float),
+                        marker='o', color=color, linestyle=ls, label=label)
+
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=7)
+        ax.set_xlabel(f'{timing_label} (s)')
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+
+    ax_c.invert_xaxis()
+
+    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
+    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
+
+    ax_c.set_ylabel(r'$\Delta$ activity (z-score)')
+    ax_i.tick_params(left=False)
+    ax_i.spines['left'].set_visible(False)
+    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
+
+    ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+    return fig
+
+
 def plot_confusion_matrix(confusion, fig=None):
     """Plot a confusion matrix as an annotated heatmap.
 
@@ -2027,14 +2197,10 @@ def plot_lmm_coefficient_heatmap(df_coefs):
     df_coefs = df_coefs[df_coefs['term'] != 'Intercept']
     all_terms = df_coefs['term'].unique()
 
-    # Canonical term order (Intercept excluded); detect the contrast column
-    # name dynamically (log_contrast, rank_contrast, etc.)
-    contrast_col = next((t for t in all_terms if t.endswith('_contrast')
-                         and ':' not in t), 'log_contrast')
     term_order = [
-        'side', 'reward', contrast_col,
-        'side:reward', f'{contrast_col}:side',
-        f'{contrast_col}:reward', f'{contrast_col}:side:reward',
+        'side', 'reward', 'contrast',
+        'side:reward', 'contrast:side',
+        'contrast:reward', 'contrast:side:reward',
     ]
 
     events = sorted(df_coefs['event'].unique())
@@ -2310,7 +2476,7 @@ def plot_lmm_summary(group, event, fig=None):
                         color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
                         else 'w')
 
-        col_labels = [_coef_label(t, short=True) for t in present_terms]
+        col_labels = [_coef_label(t) for t in present_terms]
         ax_hm.set_xticks(range(len(col_labels)))
         ax_hm.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=7)
         ax_hm.set_yticks(range(len(targets)))
@@ -2899,7 +3065,7 @@ def plot_glm_pca_summary(pca_result, recordings, n_pcs=3, stats=None,
             val = data[i, j]
             color = 'white' if abs(val) > 0.5 * vmax else 'black'
             ax_hm.text(j, i, f'{val:.2f}', ha='center', va='center',
-                       fontsize=8, color=color)
+                       fontsize=TICKFONTSIZE, color=color)
     fig.colorbar(im, ax=ax_hm, shrink=0.8, label='Loading')
 
     colors = [TARGETNM_COLORS.get(t, 'gray') for t in targets]
@@ -2927,7 +3093,7 @@ def plot_glm_pca_summary(pca_result, recordings, n_pcs=3, stats=None,
         ax.set_title(f'{comp_label}{pc_idx + 1} ({pct:.0%})')
         ax.set_xticks(positions)
         ax.set_xticklabels([t.split('-')[0] for t in targets],
-                           rotation=45, ha='right', fontsize=8)
+                           rotation=45, ha='right')
         ax.axhline(0, ls='--', color='gray', lw=0.5)
         if pc_idx == 0:
             ax.set_ylabel(f'{comp_label} score')
@@ -2942,7 +3108,7 @@ def plot_glm_pca_summary(pca_result, recordings, n_pcs=3, stats=None,
                 else:
                     label = f'H={h:.1f}, p={p:.1e}'
                 ax.annotate(label, xy=(1, 1),
-                            xycoords='axes fraction', fontsize=7,
+                            xycoords='axes fraction', fontsize=TICKFONTSIZE,
                             ha='right', va='top', color='k')
 
     # --- Row 2: Subject means +/- 95% CI ---
@@ -2966,7 +3132,7 @@ def plot_glm_pca_summary(pca_result, recordings, n_pcs=3, stats=None,
 
         ax.set_xticks(range(len(targets)))
         ax.set_xticklabels([t.split('-')[0] for t in targets],
-                           rotation=45, ha='right', fontsize=8)
+                           rotation=45, ha='right')
         ax.axhline(0, ls='--', color='gray', lw=0.5)
         ax.set_title(f'{comp_label}{pc_num} subject means')
         if pc_idx == 0:
@@ -2984,7 +3150,7 @@ def plot_glm_pca_summary(pca_result, recordings, n_pcs=3, stats=None,
             else:
                 label = f'H={h:.1f}, p={p:.1e}'
             ax.annotate(label, xy=(1, 1),
-                        xycoords='axes fraction', fontsize=7,
+                        xycoords='axes fraction', fontsize=TICKFONTSIZE,
                         ha='right', va='top', color='k')
 
         # Draw significance brackets for pairwise comparisons
@@ -3007,7 +3173,7 @@ def plot_glm_pca_summary(pca_result, recordings, n_pcs=3, stats=None,
                 ax.plot([x0, x0], [y_bar - dy * 0.3, y_bar], color='k', lw=0.8)
                 ax.plot([x1, x1], [y_bar - dy * 0.3, y_bar], color='k', lw=0.8)
                 ax.text((x0 + x1) / 2, y_bar, stars,
-                        ha='center', va='bottom', fontsize=8)
+                        ha='center', va='bottom', fontsize=TICKFONTSIZE)
                 y_bar += dy * 1.5
             ax.set_ylim(ax.get_ylim()[0], y_bar + dy * 0.5)
 
@@ -3058,7 +3224,7 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
         pv = cohort_results[t].p_values
         if pv is not None:
             ax.text(i, corrs[i] + 0.01, f'p={pv[0]:.3f}',
-                    ha='center', va='bottom', fontsize=8)
+                    ha='center', va='bottom', fontsize=TICKFONTSIZE)
 
     # Panel 2: cross-projection heatmap
     ax = axes[1]
@@ -3076,7 +3242,7 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
     for i in range(len(targets)):
         for j in range(len(targets)):
             ax.text(j, i, f'{matrix.values[i, j]:.2f}',
-                    ha='center', va='center', fontsize=9)
+                    ha='center', va='center', fontsize=TICKFONTSIZE)
     fig.colorbar(im, ax=ax, shrink=0.8)
 
     # Panel 3: delta-r cross-projection (relative to within-cohort diagonal)
@@ -3094,7 +3260,7 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
     for i in range(len(targets)):
         for j in range(len(targets)):
             ax.text(j, i, f'{delta_matrix[i, j]:+.2f}',
-                    ha='center', va='center', fontsize=9)
+                    ha='center', va='center', fontsize=TICKFONTSIZE)
     fig.colorbar(im2, ax=ax, shrink=0.8)
 
     # Panel 4: weight profiles (neural + behavioral combined)
@@ -3118,7 +3284,7 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
         for i in range(len(cohorts)):
             for j in range(len(cohorts)):
                 ax.text(j, i, f'{sim_matrix.values[i, j]:.2f}',
-                        ha='center', va='center', fontsize=9)
+                        ha='center', va='center', fontsize=TICKFONTSIZE)
         fig.colorbar(im, ax=ax, shrink=0.8)
 
     fig.tight_layout()
@@ -3149,9 +3315,9 @@ def _plot_weight_heatmap_pair(cohort_results, targets, ax):
                    aspect='auto')
 
     ax.set_xticks(range(len(targets)))
-    ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=8)
+    ax.set_xticklabels(targets, rotation=45, ha='right')
     ax.set_yticks(range(len(all_names)))
-    ax.set_yticklabels(all_names, fontsize=7)
+    ax.set_yticklabels([_coef_label(n) for n in all_names])
 
     # Separator between neural and behavioral
     ax.axhline(n_neural - 0.5, color='black', linewidth=1.5)
@@ -3160,14 +3326,14 @@ def _plot_weight_heatmap_pair(cohort_results, targets, ax):
     for i in range(combined.shape[0]):
         for j in range(combined.shape[1]):
             ax.text(j, i, f'{combined[i, j]:.2f}',
-                    ha='center', va='center', fontsize=7,
+                    ha='center', va='center', fontsize=TICKFONTSIZE,
                     color='white' if abs(combined[i, j]) > 0.6 * vmax else 'black')
 
     # Label the two sections
     ax.text(-0.7, (n_neural - 1) / 2, 'Neural', ha='right', va='center',
-            fontsize=8, fontweight='bold', transform=ax.get_yaxis_transform())
+            fontsize=TICKFONTSIZE, fontweight='bold', transform=ax.get_yaxis_transform())
     ax.text(-0.7, n_neural + (len(behav_names) - 1) / 2, 'Behav.',
-            ha='right', va='center', fontsize=8, fontweight='bold',
+            ha='right', va='center', fontsize=TICKFONTSIZE, fontweight='bold',
             transform=ax.get_yaxis_transform())
 
     ax.set_title('CC1 weight profiles')
