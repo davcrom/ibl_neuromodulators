@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
@@ -12,6 +14,17 @@ from iblnm.config import (
     TARGETNM_COLORS, TARGETNM_POSITIONS, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.util import get_contrast_coding
+
+
+def _coef_label(term, short=False):
+    """Map a model coefficient name to a display label.
+
+    Replaces any ``*_contrast`` prefix with ``'contrast'`` (or ``'con'`` if
+    *short*) and converts ``:`` separators to ``×``.
+    """
+    repl = 'con' if short else 'contrast'
+    label = re.sub(r'\w+_contrast', repl, term)
+    return label.replace(':', '×')
 
 
 def set_plotsize(w, h=None, ax=None):
@@ -2009,23 +2022,19 @@ def plot_lmm_coefficient_heatmap(df_coefs):
     dict[str, plt.Figure]
         One figure per event, keyed by event name.
     """
-    # Canonical term order (Intercept excluded)
-    term_order = [
-        'side', 'reward', 'log_contrast',
-        'side:reward', 'log_contrast:side',
-        'log_contrast:reward', 'log_contrast:side:reward',
-    ]
-    short = {
-        'side': 'side',
-        'reward': 'reward',
-        'log_contrast': 'contrast',
-        'side:reward': 'side×reward',
-        'log_contrast:side': 'contrast×side',
-        'log_contrast:reward': 'contrast×reward',
-        'log_contrast:side:reward': 'contrast×side×reward',
-    }
-
     df_coefs = df_coefs[df_coefs['term'] != 'Intercept']
+    all_terms = df_coefs['term'].unique()
+
+    # Canonical term order (Intercept excluded); detect the contrast column
+    # name dynamically (log_contrast, rank_contrast, etc.)
+    contrast_col = next((t for t in all_terms if t.endswith('_contrast')
+                         and ':' not in t), 'log_contrast')
+    term_order = [
+        'side', 'reward', contrast_col,
+        'side:reward', f'{contrast_col}:side',
+        f'{contrast_col}:reward', f'{contrast_col}:side:reward',
+    ]
+
     events = sorted(df_coefs['event'].unique())
     targets = sorted(df_coefs['target_NM'].unique())
 
@@ -2048,7 +2057,7 @@ def plot_lmm_coefficient_heatmap(df_coefs):
                     coef_matrix[i, j] = row['Coef.'].iloc[0]
                     pval_matrix[i, j] = row['P>|z|'].iloc[0]
 
-        col_labels = [short.get(t, t) for t in present_terms]
+        col_labels = [_coef_label(t) for t in present_terms]
 
         fig, ax = plt.subplots(
             figsize=(0.9 * len(present_terms) + 1.5, 0.6 * len(targets) + 1))
@@ -2150,14 +2159,15 @@ def plot_lmm_summary(group, event, fig=None):
     # --- Panels 2–4: Interaction plots ---
     _interaction_specs = [
         # (ax_idx, attr, y_label, title, x_labels, y_main_coef)
+        # 'contrast' is resolved to lmm.contrast_col inside the loop
         (2, 'interaction_contrast_reward', 'Contrast slope',
          'Contrast × reward',
          {'incorrect': 'incorrect', 'correct': 'correct'},
-         'log_contrast'),
+         'contrast'),
         (3, 'interaction_contrast_side', 'Contrast slope',
          'Contrast × side',
          {'contra': 'contra', 'ipsi': 'ipsi'},
-         'log_contrast'),
+         'contrast'),
         (4, 'interaction_reward_side', 'Reward effect',
          'Reward × side',
          {'contra': 'contra', 'ipsi': 'ipsi'},
@@ -2177,9 +2187,11 @@ def plot_lmm_summary(group, event, fig=None):
                 continue
             color = TARGETNM_COLORS.get(tnm, f'C{i}')
 
+            # Resolve 'contrast' sentinel to actual column name
+            coef_name = lmm.contrast_col if y_coef == 'contrast' else y_coef
             # Dot fill: y-factor main effect significance
-            y_sig = (y_coef in lmm.summary_df.index
-                     and lmm.summary_df.loc[y_coef, 'P>|z|'] < 0.05)
+            y_sig = (coef_name in lmm.summary_df.index
+                     and lmm.summary_df.loc[coef_name, 'P>|z|'] < 0.05)
             fs = 'full' if y_sig else 'none'
 
             # Line style: interaction significance (from interaction DataFrame)
@@ -2249,20 +2261,15 @@ def plot_lmm_summary(group, event, fig=None):
 
     # --- Panel 2 (top right): Coefficient heatmap ---
     ax_hm = axes[1]
+    # Detect contrast column from the first available result
+    _first_lmm = next(v for (tnm, ev), v in lmm_results.items()
+                       if ev == event)
+    _cc = _first_lmm.contrast_col
     _term_order = [
-        'log_contrast', 'side', 'reward',
-        'log_contrast:side', 'log_contrast:reward',
-        'side:reward', 'log_contrast:side:reward',
+        _cc, 'side', 'reward',
+        f'{_cc}:side', f'{_cc}:reward',
+        'side:reward', f'{_cc}:side:reward',
     ]
-    _short = {
-        'log_contrast': 'contrast',
-        'side': 'side',
-        'reward': 'reward',
-        'log_contrast:side': 'con×side',
-        'log_contrast:reward': 'con×rew',
-        'side:reward': 'side×rew',
-        'log_contrast:side:reward': 'con×side×rew',
-    }
 
     # Collect coefficients for this event
     present_terms = []
@@ -2300,7 +2307,7 @@ def plot_lmm_summary(group, event, fig=None):
                         color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
                         else 'w')
 
-        col_labels = [_short.get(t, t) for t in present_terms]
+        col_labels = [_coef_label(t, short=True) for t in present_terms]
         ax_hm.set_xticks(range(len(col_labels)))
         ax_hm.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=7)
         ax_hm.set_yticks(range(len(targets)))
@@ -2739,13 +2746,7 @@ def plot_glm_pca_weights(pca_result, fig=None):
     im = ax.imshow(data, aspect='auto', cmap='RdBu_r', vmin=-vmax, vmax=vmax)
 
     # Labels
-    short = {
-        'log_contrast': 'contrast',
-        'log_contrast:side': 'contrast×side',
-        'log_contrast:reward': 'contrast×reward',
-        'side:reward': 'side×reward',
-    }
-    xlabels = [short.get(f, f) for f in pca_result.feature_names]
+    xlabels = [_coef_label(f) for f in pca_result.feature_names]
     ylabels = [
         f'PC{i+1} ({pca_result.explained_variance_ratio[i]:.0%})'
         for i in range(n_pcs)
@@ -2878,13 +2879,7 @@ def plot_glm_pca_summary(pca_result, recordings, n_pcs=3, stats=None,
     vmax = np.abs(data).max()
     im = ax_hm.imshow(data, aspect='auto', cmap='RdBu_r',
                        vmin=-vmax, vmax=vmax)
-    short = {
-        'log_contrast': 'contrast',
-        'log_contrast:side': 'contrast×side',
-        'log_contrast:reward': 'contrast×reward',
-        'side:reward': 'side×reward',
-    }
-    xlabels = [short.get(f, f) for f in pca_result.feature_names]
+    xlabels = [_coef_label(f) for f in pca_result.feature_names]
     ylabels = [
         f'{comp_label}{i+1} ({pca_result.explained_variance_ratio[i]:.0%})'
         for i in range(n_pcs)
