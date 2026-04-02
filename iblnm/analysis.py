@@ -1478,13 +1478,15 @@ class LMMResult:
     """
 
     def __init__(self, model, result, summary_df, variance_explained,
-                 random_effects, contrast_coding='log'):
+                 random_effects, contrast_coding='log',
+                 contrast_center=0.0):
         self.model = model
         self.result = result
         self.summary_df = summary_df
         self.variance_explained = variance_explained
         self.random_effects = random_effects
         self.contrast_coding = contrast_coding
+        self.contrast_center = contrast_center
         self.predictions = None
         self.emm_reward = None
         self.emm_side = None
@@ -1493,6 +1495,11 @@ class LMMResult:
         self.interaction_contrast_reward = None
         self.interaction_contrast_side = None
         self.interaction_reward_side = None
+
+    @property
+    def contrast_col(self):
+        """Column name for the contrast predictor in the fitted model."""
+        return f'{self.contrast_coding}_contrast'
 
 
 def _variance_explained(result, df, response_col):
