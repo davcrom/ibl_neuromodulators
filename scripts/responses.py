@@ -34,7 +34,7 @@ from iblnm.io import _get_default_connection
 from iblnm.task import add_relative_contrast
 from iblnm.util import collect_session_errors
 from iblnm.vis import (
-    plot_relative_contrast, plot_relative_contrast_per_subject,
+    plot_relative_contrast,
     plot_similarity_matrix,
     plot_mean_response_vectors, plot_empirical_similarity,
     plot_lmm_response, plot_lmm_summary,
@@ -75,9 +75,12 @@ def print_response_summary(df_responses):
     print(summary.to_string())
 
 
-def plot_response_figures(group, figures_dir, response_col='response_early',
-                        aggregation='subject'):
+def plot_response_figures(group, figures_dir, response_col='response_early'):
     """Plot response magnitude by contrast x feedback x hemisphere.
+
+    Produces two sets of plots per (target_NM, event):
+      - ``_pool.svg``: grand mean over all trials ± SEM
+      - ``_subject.svg``: mean of subject means ± SEM of subject means
 
     Parameters
     ----------
@@ -87,8 +90,6 @@ def plot_response_figures(group, figures_dir, response_col='response_early',
         Output directory for SVG files.
     response_col : str
         Column name for the response magnitude.
-    aggregation : str
-        'pool' or 'subject'.
     """
     df_responses = add_relative_contrast(group.response_magnitudes.copy())
     if group.trial_timing is not None:
@@ -109,19 +110,13 @@ def plot_response_figures(group, figures_dir, response_col='response_early',
             continue
 
         event_label = event.replace('_times', '')
-        fig = plot_relative_contrast(df_group, response_col, target_nm, event,
-                                     window_label=window_label,
-                                     aggregation=aggregation)
-        fname = f'{target_nm}_{event_label}_{window_label}.svg'
-        fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
-
-        fig = plot_relative_contrast_per_subject(
-            df_group, response_col, target_nm, event,
-            window_label=window_label)
-        fname = f'{target_nm}_{event_label}_{window_label}_per_subject.svg'
-        fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
+        for aggregation, suffix in [('pool', '_pool'), ('subject', '_subject')]:
+            fig = plot_relative_contrast(df_group, response_col, target_nm, event,
+                                         window_label=window_label,
+                                         aggregation=aggregation)
+            fname = f'{target_nm}_{event_label}_{window_label}{suffix}.svg'
+            fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+            plt.close(fig)
 
 
 # =========================================================================
@@ -459,6 +454,30 @@ if __name__ == '__main__':
     print("\nGenerating response magnitude plots...")
     plot_response_figures(group, fig_dirs['contrast_curves'])
     print(f"Response magnitude figures saved to {fig_dirs['contrast_curves']}")
+
+    # =====================================================================
+    # Repeated-measures ANOVA on subject means
+    # =====================================================================
+    print("\nRunning repeated-measures ANOVA on subject means...")
+    anova_results = group.anova_response_magnitudes()
+    if anova_results:
+        all_tables = []
+        for (tnm, ev), table in anova_results.items():
+            print(f"\n  {tnm} x {ev} (method: {table['method'].iloc[0]}):")
+            for _, row in table.iterrows():
+                sig = '*' if row['Pr(>F)'] < 0.05 else ''
+                print(f"    {row['Source']:40s} F={row['F']:.3f}  "
+                      f"p={row['Pr(>F)']:.4f} {sig}")
+            tagged = table.copy()
+            tagged.insert(0, 'target_NM', tnm)
+            tagged.insert(1, 'event', ev)
+            all_tables.append(tagged)
+        anova_df = pd.concat(all_tables, ignore_index=True)
+        anova_path = data_dir / 'anova_subject_means.csv'
+        anova_df.to_csv(anova_path, index=False)
+        print(f"\n  ANOVA results saved to {anova_path}")
+    else:
+        print("  No groups with sufficient data for ANOVA.")
 
     # =====================================================================
     # LMM statistical analysis

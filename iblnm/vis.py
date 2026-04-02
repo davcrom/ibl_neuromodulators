@@ -10,8 +10,8 @@ from iblnm.config import (
     ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP, RESPONSE_WINDOWS,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNM_POSITIONS,
-    get_contrast_coding,
 )
+from iblnm.util import get_contrast_coding
 
 
 def set_plotsize(w, h=None, ax=None):
@@ -51,35 +51,52 @@ def set_plotsize(w, h=None, ax=None):
     ax.figure.set_size_inches(figw, figh)
 
 
-def session_overview_matrix(df, columns='session_n', highlight='good', ax=None,
-                            subject_order=None):
+def session_overview_matrix(group, columns='session_n', ax=None,
+                            color_by='session_type',
+                            split_float_map=None, split_color_map=None):
     """
     Plot a matrix of sessions per subject, colored by session type.
 
+    All sessions in group._catalog are shown at 50% opacity. Sessions in
+    group.sessions (passing the current filter) are overlaid at 100% opacity.
+
     Parameters
     ----------
-    df : pd.DataFrame
-        Sessions dataframe with 'subject', 'session_type', and column specified by `columns`
+    group : PhotometrySessionGroup
+        Group object with current filter applied. _catalog provides the
+        background; sessions provides the highlighted foreground.
     columns : str
-        Column to use for x-axis (e.g., 'day_n', 'session_n')
-    highlight : str, callable, or None
-        Criteria for highlighting sessions at full opacity (others shown at 50%):
-        - 'all': highlight all sessions
-        - 'none': no highlighting (all at 50%)
-        - callable: function(df) -> boolean mask
+        Column to use for x-axis (e.g., 'day_n', 'session_n').
     ax : matplotlib.axes.Axes, optional
-        Axes to plot on
+        Axes to plot on.
+    color_by : str
+        Column to color cells by. Defaults to 'session_type'.
+    split_float_map : dict, optional
+        Mapping from color_by values to float positions for the colormap.
+        Defaults to SESSIONTYPE2FLOAT.
+    split_color_map : dict, optional
+        Mapping from color_by values to colors. Defaults to SESSIONTYPE2COLOR.
 
     Raises
     ------
     ValueError
-        If there is more than one session per subject/column cell
+        If there is more than one session per (subject, columns) cell in _catalog.
     """
-    df = df.copy()
-    df['_session_type_float'] = df['session_type'].map(SESSIONTYPE2FLOAT)
+    _float_map = split_float_map or SESSIONTYPE2FLOAT
+    _color_map = split_color_map or SESSIONTYPE2COLOR
 
-    # Check for duplicates
-    duplicates = df.groupby(['subject', columns]).size()
+    df_base = group._catalog.copy()
+    df_overlay = group.sessions.copy()
+
+    df_base['_float'] = df_base[color_by].map(_float_map)
+    df_overlay['_float'] = df_overlay[color_by].map(_float_map)
+
+    # Subject order: earliest start_time across all catalog sessions
+    first_start = df_base.groupby('subject')['start_time'].min().sort_values()
+    subject_order = first_start.index.tolist()
+
+    # Check for duplicates in the catalog
+    duplicates = df_base.groupby(['subject', columns]).size()
     if (duplicates > 1).any():
         dup_cells = duplicates[duplicates > 1]
         raise ValueError(
@@ -87,94 +104,75 @@ def session_overview_matrix(df, columns='session_n', highlight='good', ax=None,
             f"Duplicates:\n{dup_cells}"
         )
 
-    # Build highlight mask
-    if highlight == 'all':
-        highlight_mask = pd.Series(True, index=df.index)
-    elif highlight == 'none' or highlight is None:
-        highlight_mask = pd.Series(False, index=df.index)
-    elif callable(highlight):
-        highlight_mask = highlight(df)
-    else:
-        raise ValueError(f"Invalid highlight value: {highlight}")
-
-    df['_highlight'] = highlight_mask.astype(int)
-
-    # Create matrices (no duplicates, so 'first' is fine)
-    subject_matrix = df.pivot_table(
-        index='subject',
-        columns=columns,
-        values='_session_type_float',
+    base_matrix = df_base.pivot_table(
+        index='subject', columns=columns, values='_float',
+        aggfunc='first', fill_value=0,
+    )
+    overlay_matrix = df_overlay.pivot_table(
+        index='subject', columns=columns, values='_float',
         aggfunc='first',
-        fill_value=0
     )
 
-    overlay_matrix = df.pivot_table(
-        index='subject',
-        columns=columns,
-        values='_highlight',
-        aggfunc='first',
-        fill_value=0
+    base_matrix = base_matrix.reindex(subject_order).fillna(0)
+    # Reindex overlay to the same shape as base; missing cells stay NaN (not painted)
+    overlay_matrix = overlay_matrix.reindex(
+        index=subject_order, columns=base_matrix.columns
     )
 
-    if subject_order is not None:
-        subject_matrix = subject_matrix.reindex(subject_order).fillna(0)
-        overlay_matrix = overlay_matrix.reindex(subject_order).fillna(0)
-
-    # Get session types present in the data
-    present_session_types = [st for st in SESSIONTYPE2FLOAT.keys() if st in df['session_type'].values]
-
-    # Create categorical colormap with only present session types
-    color_list = ['white'] + [SESSIONTYPE2COLOR[st] for st in present_session_types]
+    # Build colormap from catalog values
+    present_types = [st for st in _float_map.keys() if st in df_base[color_by].values]
+    color_list = ['white'] + [_color_map[st] for st in present_types]
     cmap = colors.ListedColormap(color_list)
-    bounds = [0] + [SESSIONTYPE2FLOAT[st] for st in present_session_types] + [1.01]
+    bounds = [0] + [_float_map[st] for st in present_types] + [1.01]
     norm = colors.BoundaryNorm(bounds, cmap.N)
 
-    # Plot base matrix at 50% opacity
     if ax is None:
-        fig, ax = plt.subplots(figsize=(0.15 * len(subject_matrix.columns), 0.15 * len(subject_matrix)))
-    ax.matshow(subject_matrix, cmap=cmap, norm=norm, alpha=0.5)
+        fig, ax = plt.subplots(
+            figsize=(0.15 * len(base_matrix.columns), 0.15 * len(base_matrix))
+        )
 
-    # Overlay highlighted sessions at full opacity
-    overlay_subject_matrix = subject_matrix.copy()
-    overlay_subject_matrix[~overlay_matrix.astype(bool)] = np.nan
-    ax.matshow(overlay_subject_matrix, cmap=cmap, norm=norm, alpha=1)
+    ax.matshow(base_matrix, cmap=cmap, norm=norm, alpha=0.5)
+    ax.matshow(overlay_matrix, cmap=cmap, norm=norm, alpha=1)
 
     # Format axes
-    ax.set_yticks(np.arange(len(subject_matrix)))
-    ax.set_yticklabels(subject_matrix.index)
+    ax.set_yticks(np.arange(len(base_matrix)))
+    ax.set_yticklabels(base_matrix.index)
     ax.set_ylabel('Subject')
     ax.xaxis.tick_top()
-    ax.set_xticks(np.arange(0, len(subject_matrix.columns) + 1, 10))
+    ax.set_xticks(np.arange(0, len(base_matrix.columns) + 1, 10))
     ax.tick_params(axis='x', rotation=90)
     ax.xaxis.set_label_position('top')
     ax.set_xlabel(columns)
 
-    # Add gridlines
-    for xtick in np.arange(len(subject_matrix.columns)):
+    # Gridlines
+    for xtick in np.arange(len(base_matrix.columns)):
         ax.axvline(xtick - 0.5, color='white')
-    for ytick in np.arange(len(subject_matrix)):
+    for ytick in np.arange(len(base_matrix)):
         ax.axhline(ytick - 0.5, color='white')
 
     # Colorbar
     tick_positions = [(bounds[i] + bounds[i + 1]) / 2 for i in range(1, len(bounds) - 1)]
     cbar = plt.colorbar(ax.images[0], ax=ax, shrink=0.5, boundaries=bounds, ticks=tick_positions)
-    cbar.set_ticklabels(present_session_types)
+    cbar.set_ticklabels(present_types)
     cbar.ax.set_ylim(bounds[1], bounds[-1])
 
     return ax
 
 
-def target_overview_barplot(df_sessions, ax=None, barwidth=0.8):
+def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
+                            color_by='session_type', split_color_map=None):
     """Stacked bar plot of session counts per target region, by session type."""
+    _color_map = split_color_map or SESSIONTYPE2COLOR
+
     if len(df_sessions) == 0:
         if ax is None:
             fig, ax = plt.subplots()
         ax.set_title("No data to plot")
         return ax
 
-    # Create a target_NM x session_type matrix with session counts
+    # Create a target_NM x color_by matrix with session counts
     df_n = df_sessions.pivot_table(
-        columns='session_type',
+        columns=color_by,
         index='target_NM',
         aggfunc='size',
         fill_value=0
@@ -189,11 +187,11 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8):
     xpos = list(range(len(df_n)))
     ypos = np.zeros(len(df_n))
 
-    # Loop over session types present in data
-    session_types = [st for st in ['training', 'biased', 'ephys'] if st in df_n.columns]
+    # Loop over categories present in data (canonical order from color map)
+    session_types = [c for c in _color_map.keys() if c in df_n.columns]
     for session_type in session_types:
         ns = df_n[session_type]
-        color = SESSIONTYPE2COLOR[session_type]
+        color = _color_map[session_type]
         ax.bar(xpos, ns, bottom=ypos, width=barwidth, color=color, label=session_type)
         for x, n, y_bottom in zip(xpos, ns, ypos):
             if n > 0:
@@ -238,17 +236,38 @@ def _add_bar_labels(ax, xpos, values, hemisphere_counts=None, color='white'):
                     fontweight='bold', color=color, rotation=90)
 
 
-def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None, barwidth=0.25):
+def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
+                           min_sessions=None, ax=None, barwidth=0.25,
+                           color_by='session_type', split_color_map=None):
     """
     Barplot showing mouse training progress per target region.
 
-    Three bars per target:
-    - training: mice with any training sessions
-    - biased/ephys: mice with ≥min_biased_ephys combined biased+ephys sessions
-    - ephys: mice with ≥min_ephys ephys sessions
+    When min_sessions is provided, uses a simplified single-threshold model:
+    one bar per category per target, showing mice with ≥min_sessions in that
+    category.
 
-    If 'hemisphere' column present, bar labels include L/R breakdown.
+    Legacy mode (min_sessions=None): three bars per target using min_biased_ephys
+    and min_ephys thresholds.
+
+    Parameters
+    ----------
+    df_sessions : pd.DataFrame
+        One row per recording, with 'subject', 'target_NM', and color_by columns.
+    min_biased_ephys : int
+        Legacy: minimum combined biased+ephys sessions.
+    min_ephys : int
+        Legacy: minimum ephys sessions.
+    min_sessions : int, optional
+        If set, use simplified threshold: mice with ≥min_sessions in each category.
+    ax : matplotlib.axes.Axes, optional
+    barwidth : float
+    color_by : str
+        Column to group bars by. Defaults to 'session_type'.
+    split_color_map : dict, optional
+        Mapping from color_by values to colors. Defaults to SESSIONTYPE2COLOR.
     """
+    _color_map = split_color_map or SESSIONTYPE2COLOR
+
     if ax is None:
         fig, ax = plt.subplots()
 
@@ -256,80 +275,74 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3, ax=None
         ax.set_title("No data to plot")
         return ax
 
-    # Count sessions per subject per target_NM per session_type
-    session_counts = df_sessions.groupby(['target_NM', 'subject', 'session_type']).size().reset_index(name='n_sessions')
-
-    # Get all target_NMs
-    target_nms = sorted(df_sessions['target_NM'].unique(), key=lambda x: TARGETNM_POSITIONS.get(x, 999))
+    target_nms = sorted(df_sessions['target_NM'].unique(),
+                        key=lambda x: TARGETNM_POSITIONS.get(x, 999))
+    xpos = np.array([TARGETNM_POSITIONS.get(t, i) for i, t in enumerate(target_nms)])
 
     has_hemisphere = 'hemisphere' in df_sessions.columns
 
-    results = []
-    for target_nm in target_nms:
-        target_data = session_counts[session_counts['target_NM'] == target_nm]
-        target_sessions = df_sessions[df_sessions['target_NM'] == target_nm]
+    if min_sessions is not None:
+        # Simplified mode: one bar per category per target
+        categories = [c for c in _color_map.keys() if c in df_sessions[color_by].values]
+        n_cats = len(categories)
+        offsets = np.linspace(-(n_cats - 1) / 2, (n_cats - 1) / 2, n_cats) * barwidth
 
-        # Mice with training sessions
-        training_mice = target_data[
-            target_data['session_type'] == 'training'
-        ]['subject'].unique()
-
-        # Mice with sufficient biased + ephys sessions combined
-        biased_ephys_counts = target_data[
-            target_data['session_type'].isin(['biased', 'ephys'])
-        ].groupby('subject')['n_sessions'].sum()
-        biased_ephys_mice = biased_ephys_counts[biased_ephys_counts >= min_biased_ephys].index
-
-        # Mice with sufficient ephys sessions
-        ephys_mice = target_data[
-            (target_data['session_type'] == 'ephys') &
-            (target_data['n_sessions'] >= min_ephys)
-        ]['subject'].unique()
-
-        result = {
-            'target_NM': target_nm,
-            'n_training': len(training_mice),
-            'n_biased_ephys': len(biased_ephys_mice),
-            'n_ephys': len(ephys_mice),
-        }
-
-        # Compute per-session-type hemisphere counts
-        if has_hemisphere:
-            for key, mice in [('training', training_mice),
-                              ('biased_ephys', biased_ephys_mice),
-                              ('ephys', ephys_mice)]:
-                hemi_data = target_sessions[target_sessions['subject'].isin(mice)]
-                result[f'n_{key}_L'] = hemi_data[hemi_data['hemisphere'] == 'l']['subject'].nunique()
-                result[f'n_{key}_R'] = hemi_data[hemi_data['hemisphere'] == 'r']['subject'].nunique()
-
-        results.append(result)
-
-    df_results = pd.DataFrame(results)
-
-    # Get x positions based on TARGETNM_POSITIONS
-    xpos = np.array([TARGETNM_POSITIONS[target_nm] for target_nm in df_results['target_NM']])
-
-    # Plot bars
-    ax.bar(xpos - barwidth, df_results['n_training'].values, barwidth,
-           color=SESSIONTYPE2COLOR['training'], label='training')
-    ax.bar(xpos, df_results['n_biased_ephys'].values, barwidth,
-           color=SESSIONTYPE2COLOR['biased'], label=f'≥{min_biased_ephys} biased/ephys')
-    ax.bar(xpos + barwidth, df_results['n_ephys'].values, barwidth,
-           color=SESSIONTYPE2COLOR['ephys'], label=f'≥{min_ephys} ephys')
-
-    # Add text labels with optional hemisphere breakdown
-    if has_hemisphere:
-        hemi_training = list(zip(df_results['n_training_L'], df_results['n_training_R']))
-        hemi_biased_ephys = list(zip(df_results['n_biased_ephys_L'], df_results['n_biased_ephys_R']))
-        hemi_ephys = list(zip(df_results['n_ephys_L'], df_results['n_ephys_R']))
+        for offset, category in zip(offsets, categories):
+            counts = []
+            hemi_counts = [] if has_hemisphere else None
+            for target_nm in target_nms:
+                target_df = df_sessions[df_sessions['target_NM'] == target_nm]
+                cat_df = target_df[target_df[color_by] == category]
+                n_per_subject = cat_df.groupby('subject').size()
+                qualifying = n_per_subject[n_per_subject >= min_sessions].index
+                counts.append(len(qualifying))
+                if has_hemisphere:
+                    q_df = target_df[target_df['subject'].isin(qualifying)]
+                    n_l = q_df[q_df['hemisphere'] == 'l']['subject'].nunique()
+                    n_r = q_df[q_df['hemisphere'] == 'r']['subject'].nunique()
+                    hemi_counts.append((n_l, n_r))
+            ax.bar(xpos + offset, counts, barwidth, color=_color_map[category],
+                   label=f'≥{min_sessions} {category}')
+            _add_bar_labels(ax, xpos + offset, counts, hemi_counts)
     else:
-        hemi_training = hemi_biased_ephys = hemi_ephys = None
-    _add_bar_labels(ax, xpos - barwidth, df_results['n_training'].values, hemi_training)
-    _add_bar_labels(ax, xpos, df_results['n_biased_ephys'].values, hemi_biased_ephys)
-    _add_bar_labels(ax, xpos + barwidth, df_results['n_ephys'].values, hemi_ephys)
+        # Legacy mode
+        session_counts = (
+            df_sessions.groupby(['target_NM', 'subject', 'session_type'])
+            .size().reset_index(name='n_sessions')
+        )
+        results = []
+        for target_nm in target_nms:
+            target_data = session_counts[session_counts['target_NM'] == target_nm]
+            training_mice = target_data[
+                target_data['session_type'] == 'training'
+            ]['subject'].unique()
+            biased_ephys_counts = target_data[
+                target_data['session_type'].isin(['biased', 'ephys'])
+            ].groupby('subject')['n_sessions'].sum()
+            biased_ephys_mice = biased_ephys_counts[biased_ephys_counts >= min_biased_ephys].index
+            ephys_mice = target_data[
+                (target_data['session_type'] == 'ephys') &
+                (target_data['n_sessions'] >= min_ephys)
+            ]['subject'].unique()
+            results.append({
+                'target_NM': target_nm,
+                'n_training': len(training_mice),
+                'n_biased_ephys': len(biased_ephys_mice),
+                'n_ephys': len(ephys_mice),
+            })
+        df_results = pd.DataFrame(results)
+        ax.bar(xpos - barwidth, df_results['n_training'].values, barwidth,
+               color=SESSIONTYPE2COLOR['training'], label='training')
+        ax.bar(xpos, df_results['n_biased_ephys'].values, barwidth,
+               color=SESSIONTYPE2COLOR['biased'], label=f'≥{min_biased_ephys} biased/ephys')
+        ax.bar(xpos + barwidth, df_results['n_ephys'].values, barwidth,
+               color=SESSIONTYPE2COLOR['ephys'], label=f'≥{min_ephys} ephys')
+        _add_bar_labels(ax, xpos - barwidth, df_results['n_training'].values)
+        _add_bar_labels(ax, xpos, df_results['n_biased_ephys'].values)
+        _add_bar_labels(ax, xpos + barwidth, df_results['n_ephys'].values)
 
     ax.set_xticks(xpos)
-    ax.set_xticklabels(df_results['target_NM'].values)
+    ax.set_xticklabels(target_nms)
     ax.tick_params(axis='x', rotation=90)
     ax.set_ylabel('N Mice')
     ax.set_xlabel('Target-NM')
@@ -1355,225 +1368,13 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
     ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
 
-    ax_c.set_ylabel('$\Delta$ activity (z-score)')
+    ax_c.set_ylabel(r'$\Delta$ activity (z-score)')
     ax_i.tick_params(left=False)
     ax_i.spines['left'].set_visible(False)
     ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
 
     ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     return fig
-
-## Broken trial number thresholding logic
-def plot_relative_contrast_per_subject(df_group, response_col, target_nm, event,
-                                        window_label=None, min_trials=10):
-    """Per-subject contrast response curves, same layout as plot_relative_contrast.
-
-    Each subject gets its own line (correct=solid, incorrect=dashed).
-    Grand mean overlaid in black.
-    """
-    fig, (ax_c, ax_i) = plt.subplots(1, 2, sharey=True,
-                                      gridspec_kw={'wspace': 0.05},
-                                      layout='constrained')
-
-    event_label = event.replace('_times', '')
-    _window = window_label or ''
-    n_sessions = df_group['eid'].nunique() if 'eid' in df_group.columns else '?'
-    subjects = sorted(df_group['subject'].unique())
-    n_subjects = len(subjects)
-    fig.suptitle(
-        f'{target_nm} — {event_label} ({_window})\n'
-        f'{n_sessions} sessions, {n_subjects} subjects',
-        fontsize=10,
-    )
-
-    contrasts = sorted(df_group['contrast'].unique()) if len(df_group) > 0 else []
-    ranks = list(range(len(contrasts)))
-    rank_map = dict(zip(contrasts, ranks))
-
-    cmap = plt.cm.tab20
-    subj_colors = {s: cmap(i % 20) for i, s in enumerate(subjects)}
-
-    # Subject-mean removal: subtract per-subject mean, add grand mean
-    if len(df_group) > 0:
-        grand_mean = df_group[response_col].mean()
-        subj_means = df_group.groupby('subject')[response_col].transform('mean')
-        df_group = df_group.copy()
-        df_group[response_col] = df_group[response_col] - subj_means + grand_mean
-
-    # Remove subject × side × feedback × contrast conditions with too few trials
-    group_cols = ['subject', 'side', 'feedbackType', 'contrast']
-    trial_counts = df_group.groupby(group_cols)[response_col].transform('count')
-    df_group = df_group[trial_counts > min_trials]
-
-    for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
-        df_side = df_group[df_group['side'] == side]
-
-        for feedback, ls in ((1, '-'), (-1, '--')):
-            df_fb = df_side[df_side['feedbackType'] == feedback]
-
-            for subj in subjects:
-                df_s = df_fb[df_fb['subject'] == subj]
-                if len(df_s) == 0:
-                    continue
-                means = []
-                for c in contrasts:
-                    vals = df_s.loc[df_s['contrast'] == c, response_col].dropna()
-                    means.append(vals.mean() if len(vals) > 0 else np.nan)
-                xpos = np.array([rank_map[c] for c in contrasts])
-                ax.plot(xpos, means, marker='.', markersize=3,
-                        color=subj_colors[subj], linestyle=ls,
-                        alpha=0.4, linewidth=0.8)
-
-            # Grand mean (mean of subject means)
-            if len(df_fb) > 0:
-                grand_means, sems = [], []
-                for c in contrasts:
-                    subj_means = df_fb[df_fb['contrast'] == c].groupby(
-                        'subject')[response_col].apply(
-                            lambda x: np.mean(x) if len(x) > 0 else np.nan
-                            )
-                    grand_means.append(subj_means.mean())
-                    sems.append(scipy_sem(subj_means, nan_policy='omit') if len(subj_means) > 0 else np.nan)
-                xpos = np.array([rank_map[c] for c in contrasts])
-                label = 'correct' if feedback == 1 else 'incorrect'
-                # ~ ax.plot(xpos, grand_means, marker='o',
-                        # ~ color='black', linestyle=ls, linewidth=2, label=label)
-                ax.errorbar(xpos, grand_means, yerr=np.array(sems, dtype=float),
-                        marker='o', color='black', linestyle=ls, label=label)
-
-        ax.set_xticks(ranks)
-        ax.set_xticklabels([f'{c:g}' for c in contrasts])
-        ax.set_xlabel('Contrast level')
-        ax.set_yticks([-1, 0, 1, 2])
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-    ax_c.invert_xaxis()
-    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
-    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
-    ax_c.set_ylabel('$\Delta$ activity (z-score)')
-    ax_i.tick_params(left=False)
-    ax_i.spines['left'].set_visible(False)
-    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
-    ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-    return fig
-    
-
-## From ChatGPT
-# ~ def plot_relative_contrast_per_subject(df_group, response_col, target_nm, event,
-                                       # ~ window_label=None, min_trials=10):
-    # ~ """Per-subject contrast response curves, same layout as plot_relative_contrast.
-
-    # ~ Each subject gets its own line (correct=solid, incorrect=dashed).
-    # ~ Grand mean overlaid in black.
-    # ~ """
-    # ~ fig, (ax_c, ax_i) = plt.subplots(
-        # ~ 1, 2, sharey=True,
-        # ~ gridspec_kw={'wspace': 0.05},
-        # ~ layout='constrained'
-    # ~ )
-
-    # ~ event_label = event.replace('_times', '')
-    # ~ _window = window_label or ''
-    # ~ n_sessions = df_group['eid'].nunique() if 'eid' in df_group.columns else '?'
-    # ~ subjects = sorted(df_group['subject'].unique())
-    # ~ n_subjects = len(subjects)
-
-    # ~ fig.suptitle(
-        # ~ f'{target_nm} — {event_label} ({_window})\n'
-        # ~ f'{n_sessions} sessions, {n_subjects} subjects',
-        # ~ fontsize=10,
-    # ~ )
-
-    # ~ contrasts = sorted(df_group['contrast'].unique()) if len(df_group) > 0 else []
-    # ~ ranks = list(range(len(contrasts)))
-    # ~ rank_map = dict(zip(contrasts, ranks))
-
-    # ~ cmap = plt.cm.tab20
-    # ~ subj_colors = {s: cmap(i % 20) for i, s in enumerate(subjects)}
-
-    # ~ # Subject-mean removal: subtract per-subject mean, add grand mean
-    # ~ if len(df_group) > 0:
-        # ~ grand_mean = df_group[response_col].mean()
-        # ~ subj_means = df_group.groupby('subject')[response_col].transform('mean')
-        # ~ df_group = df_group.copy()
-        # ~ df_group[response_col] = df_group[response_col] - subj_means + grand_mean
-
-    # ~ for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
-        # ~ df_side = df_group[df_group['side'] == side]
-
-        # ~ for feedback, ls in ((1, '-'), (-1, '--')):
-            # ~ df_fb = df_side[df_side['feedbackType'] == feedback]
-
-            # ~ # --- subject lines ---
-            # ~ for subj in subjects:
-                # ~ df_s = df_fb[df_fb['subject'] == subj]
-                # ~ if len(df_s) == 0:
-                    # ~ continue
-
-                # ~ means = []
-                # ~ for c in contrasts:
-                    # ~ vals = df_s.loc[df_s['contrast'] == c, response_col].dropna()
-                    # ~ means.append(vals.mean() if len(vals) > min_trials else np.nan)
-
-                # ~ xpos = np.array([rank_map[c] for c in contrasts])
-
-                # ~ ax.plot(
-                    # ~ xpos, means,
-                    # ~ marker='.',
-                    # ~ markersize=3,
-                    # ~ color=subj_colors[subj],
-                    # ~ linestyle=ls,
-                    # ~ alpha=0.4,
-                    # ~ linewidth=0.8
-                # ~ )
-
-            # ~ # --- grand mean (mean of subject means) ---
-            # ~ if len(df_fb) > 0:
-                # ~ grand_means = []
-                # ~ for c in contrasts:
-                    # ~ subj_means = (
-                        # ~ df_fb[df_fb['contrast'] == c]
-                        # ~ .groupby('subject')[response_col]
-                        # ~ .apply(lambda x: np.mean(x) if len(x) > min_trials else np.nan)
-                    # ~ )
-                    # ~ grand_means.append(subj_means.mean())
-
-                # ~ xpos = np.array([rank_map[c] for c in contrasts])
-                # ~ label = 'correct' if feedback == 1 else 'incorrect'
-
-                # ~ ax.plot(
-                    # ~ xpos, grand_means,
-                    # ~ marker='o',
-                    # ~ color='black',
-                    # ~ linestyle=ls,
-                    # ~ linewidth=2,
-                    # ~ label=label
-                # ~ )
-
-        # ~ ax.set_xticks(ranks)
-        # ~ ax.set_xticklabels([f'{c:g}' for c in contrasts])
-        # ~ ax.set_xlabel('Contrast (rank)')
-        # ~ ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-    # ~ ax_c.invert_xaxis()
-
-    # ~ ax_c.text(0.05, 0.02, 'Contra', ha='left',
-              # ~ transform=ax_c.transAxes, fontsize=9)
-    # ~ ax_i.text(0.95, 0.02, 'Ipsi', ha='right',
-              # ~ transform=ax_i.transAxes, fontsize=9)
-
-    # ~ ax_c.set_ylabel('z-score')
-
-    # ~ ax_i.tick_params(left=False)
-    # ~ ax_i.spines['left'].set_visible(False)
-
-    # ~ ax_i.legend(frameon=False, loc='upper left',
-                # ~ bbox_to_anchor=(1, 1), fontsize=8)
-
-    # ~ ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-
-    # ~ return fig
-    
 
 def plot_confusion_matrix(confusion, fig=None):
     """Plot a confusion matrix as an annotated heatmap.
