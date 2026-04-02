@@ -150,11 +150,11 @@ class TestPlotRelativeContrast:
             {'subject': s, 'side': 'contra', 'contrast': 25.0,
              'feedbackType': 1, 'centered_mean': val + rng.normal(0, 0.1)}
             for s, val in [('s1', 0.3), ('s2', -0.3)]
-            for _ in range(5)
+            for _ in range(15)
         ] + [
             {'subject': 's3', 'side': 'contra', 'contrast': 25.0,
              'feedbackType': 1, 'centered_mean': np.nan}
-            for _ in range(5)
+            for _ in range(15)
         ]
         df = pd.DataFrame(rows)
 
@@ -192,7 +192,7 @@ class TestPlotRelativeContrast:
             for s in ['s1', 's2', 's3']
             for side in ['contra', 'ipsi']
             for fb in [1, -1]
-            for _ in range(10)
+            for _ in range(15)
         ]
         df = pd.DataFrame(rows)
         fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOn_times')
@@ -265,6 +265,43 @@ class TestPlotRelativeContrast:
         with pytest.raises(ValueError, match='aggregation'):
             plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times',
                                    aggregation='invalid')
+
+    def test_min_trials_filter_drops_sparse_cells(self):
+        """Cells with <= min_trials rows should be excluded from the plot."""
+        from matplotlib.container import ErrorbarContainer
+
+        rng = np.random.default_rng(99)
+        # s1 and s2 have 20 trials at contrast 25 (well above threshold)
+        rows = [
+            {'subject': s, 'side': 'contra', 'contrast': 25.0,
+             'feedbackType': 1, 'centered_mean': rng.normal(0, 0.1)}
+            for s in ['s1', 's2']
+            for _ in range(20)
+        ]
+        # s1 and s2 have only 3 trials at contrast 100 (below threshold)
+        rows += [
+            {'subject': s, 'side': 'contra', 'contrast': 100.0,
+             'feedbackType': 1, 'centered_mean': rng.normal(5, 0.1)}
+            for s in ['s1', 's2']
+            for _ in range(3)
+        ]
+        df = pd.DataFrame(rows)
+
+        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA',
+                                     'stimOn_times', min_trials=10)
+        ax_c = fig.axes[0]
+        eb_containers = [c for c in ax_c.containers
+                         if isinstance(c, ErrorbarContainer)]
+        # Only contrast 25 should survive; the plotted mean should be near 0
+        # (not pulled toward the contrast-100 value of ~5)
+        for container in eb_containers:
+            ydata = np.array(container.lines[0].get_ydata(), dtype=float)
+            finite = ydata[np.isfinite(ydata)]
+            assert all(abs(v) < 2.0 for v in finite), (
+                f"Sparse cells (contrast=100, mean~5) leaked through min_trials "
+                f"filter: plotted values {finite}"
+            )
+        plt.close(fig)
 
 
 class TestPlotSimilarityMatrix:
