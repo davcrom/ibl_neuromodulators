@@ -2177,6 +2177,14 @@ class PhotometrySessionGroup:
         Reads from ``self.performance`` if already loaded, otherwise calls
         ``load_performance(performance_path)``.
 
+        Lateralizes bias and lapse terms to the contra/ipsi frame using each
+        recording's hemisphere, matching the side coding in the neural GLM
+        (contra = positive). Uses the same ``hemi_sign`` convention as
+        ``add_relative_contrast``: ``{'l': 1, 'r': -1}``.
+
+        - ``bias``: multiplied by ``hemi_sign``
+        - ``lapse_left`` / ``lapse_right`` → ``lapse_contra`` / ``lapse_ipsi``
+
         Parameters
         ----------
         performance_path : Path or str, optional
@@ -2186,6 +2194,7 @@ class PhotometrySessionGroup:
             Columns to include from performance data. Default:
             ``['psych_50_threshold', 'psych_50_bias',
             'psych_50_lapse_left', 'psych_50_lapse_right']``.
+            Lapse columns are lateralized to contra/ipsi in the output.
 
         Returns
         -------
@@ -2215,7 +2224,63 @@ class PhotometrySessionGroup:
         psych = lookup.reindex(eids)
         psych.index = rf_index
 
+        # Lateralize bias and lapse to contra/ipsi frame
+        psych = self._lateralize_psychometric(psych)
+
         self.psychometric_features = psych
+        return psych
+
+    def _lateralize_psychometric(self, psych):
+        """Convert left/right psychometric params to contra/ipsi frame.
+
+        Parameters
+        ----------
+        psych : pd.DataFrame
+            Psychometric features indexed like response_features.
+
+        Returns
+        -------
+        pd.DataFrame
+            Same shape, with bias flipped by hemisphere and lapse columns
+            renamed to contra/ipsi.
+        """
+        # Look up hemisphere per recording
+        recs = self.recordings
+        join_cols = [c for c in ['eid', 'target_NM', 'fiber_idx']
+                     if c in psych.index.names]
+        hemi_lookup = (
+            recs[join_cols + ['hemisphere']]
+            .drop_duplicates(subset=join_cols)
+            .set_index(join_cols)['hemisphere']
+        )
+        hemi = hemi_lookup.reindex(psych.index)
+        # hemi_sign: same convention as add_relative_contrast
+        hemi_sign = hemi.map({'l': 1, 'r': -1}).fillna(1)
+
+        psych = psych.copy()
+
+        # Flip bias sign for right hemisphere
+        if 'psych_50_bias' in psych.columns:
+            psych['psych_50_bias'] = psych['psych_50_bias'] * hemi_sign.values
+
+        # Swap lapse_left/lapse_right → lapse_contra/lapse_ipsi
+        has_left = 'psych_50_lapse_left' in psych.columns
+        has_right = 'psych_50_lapse_right' in psych.columns
+        if has_left and has_right:
+            is_left_hemi = (hemi == 'l').values
+            lapse_left = psych['psych_50_lapse_left'].values.copy()
+            lapse_right = psych['psych_50_lapse_right'].values.copy()
+
+            # Left hemi: contra=right, ipsi=left
+            # Right hemi: contra=left, ipsi=right
+            contra = np.where(is_left_hemi, lapse_right, lapse_left)
+            ipsi = np.where(is_left_hemi, lapse_left, lapse_right)
+
+            psych = psych.drop(columns=['psych_50_lapse_left',
+                                         'psych_50_lapse_right'])
+            psych['psych_50_lapse_contra'] = contra
+            psych['psych_50_lapse_ipsi'] = ipsi
+
         return psych
 
     def fit_cca(self, n_components=None, n_permutations=1000, seed=42,

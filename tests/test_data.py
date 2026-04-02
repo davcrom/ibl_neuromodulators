@@ -3323,7 +3323,7 @@ class TestFitLMM:
         """When given multiple re_formulas, selects the most complex
         that converges for all groups."""
         group = _make_group_with_events()
-        group.fit_lmm(re_formulas=['log_contrast', '1'])
+        group.fit_lmm(re_formulas=['contrast', '1'])
         # All results should use the same RE structure
         re_structures = set()
         for result in group.lmm_results.values():
@@ -3334,9 +3334,9 @@ class TestFitLMM:
     def test_re_formulas_stores_selected_formula(self):
         """The selected RE formula should be stored on the group."""
         group = _make_group_with_events()
-        group.fit_lmm(re_formulas=['log_contrast', '1'])
+        group.fit_lmm(re_formulas=['contrast', '1'])
         assert hasattr(group, 'lmm_re_formula')
-        assert group.lmm_re_formula in ('log_contrast', '1')
+        assert group.lmm_re_formula in ('contrast', '1')
 
 
 class TestAnovaResponseMagnitudes:
@@ -3475,7 +3475,7 @@ class TestGetPsychometricFeatures:
             result = group.get_psychometric_features(performance_path=f.name)
         assert set(result.columns) == {
             'psych_50_threshold', 'psych_50_bias',
-            'psych_50_lapse_left', 'psych_50_lapse_right',
+            'psych_50_lapse_contra', 'psych_50_lapse_ipsi',
         }
 
     def test_custom_params(self):
@@ -3523,6 +3523,60 @@ class TestGetPsychometricFeatures:
         first_eid = result.index.get_level_values('eid')[0]
         expected = perf.loc[perf['eid'] == first_eid, 'psych_50_threshold'].iloc[0]
         assert np.isclose(result.iloc[0]['psych_50_threshold'], expected)
+
+    def test_lateralizes_bias_and_lapse(self):
+        """Bias and lapse terms should be converted to contra/ipsi frame."""
+        from iblnm.data import PhotometrySessionGroup
+
+        # Two recordings: one left hemisphere, one right hemisphere
+        # with known bias and lapse values
+        recs = pd.DataFrame([
+            {'eid': 'e0', 'subject': 's0', 'brain_region': 'VTA',
+             'hemisphere': 'l', 'target_NM': 'VTA-DA', 'NM': 'DA',
+             'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
+             'number': 1, 'task_protocol': 'biased'},
+            {'eid': 'e1', 'subject': 's1', 'brain_region': 'DR',
+             'hemisphere': 'r', 'target_NM': 'DR-5HT', 'NM': '5HT',
+             'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
+             'number': 1, 'task_protocol': 'biased'},
+        ])
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+
+        index = pd.MultiIndex.from_tuples(
+            [('e0', 'VTA-DA'), ('e1', 'DR-5HT')],
+            names=['eid', 'target_NM'],
+        )
+        group.response_features = pd.DataFrame(
+            np.ones((2, 3)), index=index, columns=['f0', 'f1', 'f2'])
+
+        perf = pd.DataFrame({
+            'eid': ['e0', 'e1'],
+            'psych_50_threshold': [20.0, 30.0],
+            'psych_50_bias': [10.0, 10.0],
+            'psych_50_lapse_left': [0.05, 0.10],
+            'psych_50_lapse_right': [0.15, 0.20],
+        })
+        group.performance = perf
+        result = group.get_psychometric_features()
+
+        # Column names should be lateralized
+        assert 'psych_50_lapse_contra' in result.columns
+        assert 'psych_50_lapse_ipsi' in result.columns
+        assert 'psych_50_lapse_left' not in result.columns
+
+        # Threshold unchanged for both
+        assert result.loc[('e0', 'VTA-DA'), 'psych_50_threshold'] == 20.0
+        assert result.loc[('e1', 'DR-5HT'), 'psych_50_threshold'] == 30.0
+
+        # Bias: left hemi uses hemi_sign=1 (no flip), right hemi uses -1 (flip)
+        assert result.loc[('e0', 'VTA-DA'), 'psych_50_bias'] == 10.0   # left hemi, no flip
+        assert result.loc[('e1', 'DR-5HT'), 'psych_50_bias'] == -10.0  # right hemi, flipped
+
+        # Lapse: left hemi contra=right, right hemi contra=left
+        assert result.loc[('e0', 'VTA-DA'), 'psych_50_lapse_contra'] == 0.15  # was lapse_right
+        assert result.loc[('e0', 'VTA-DA'), 'psych_50_lapse_ipsi'] == 0.05    # was lapse_left
+        assert result.loc[('e1', 'DR-5HT'), 'psych_50_lapse_contra'] == 0.10  # was lapse_left
+        assert result.loc[('e1', 'DR-5HT'), 'psych_50_lapse_ipsi'] == 0.20    # was lapse_right
 
 
 class TestGroupFitCCA:
@@ -3572,7 +3626,7 @@ class TestGetGLMResponseFeatures:
         group = _make_group_with_events()
         result = group.get_glm_response_features(event_name='stimOn_times')
         assert isinstance(result, pd.DataFrame)
-        assert 'log_contrast' in result.columns
+        assert 'contrast' in result.columns
         assert 'side' in result.columns
         assert 'side:reward' in result.columns
 
@@ -3642,7 +3696,7 @@ class TestGLMFeaturesCCA:
             group.get_psychometric_features(performance_path=f.name)
         result = group.fit_cca(n_permutations=0)
         assert result.x_weights.shape[1] > 0
-        assert 'log_contrast' in result.x_weights.index
+        assert 'contrast' in result.x_weights.index
 
 
 # =============================================================================
@@ -4059,12 +4113,12 @@ def _make_group_for_cohort_cca(n_per_cohort=None, seed=42):
     rng = np.random.default_rng(seed)
     subjects = ['s0', 's1', 's2', 's3', 's4']
     glm_cols = [
-        'intercept', 'log_contrast', 'side', 'reward',
-        'log_contrast:side', 'log_contrast:reward', 'side:reward',
+        'intercept', 'contrast', 'side', 'reward',
+        'contrast:side', 'contrast:reward', 'side:reward',
     ]
     psych_cols = [
         'psych_50_threshold', 'psych_50_bias',
-        'psych_50_lapse_left', 'psych_50_lapse_right',
+        'psych_50_lapse_contra', 'psych_50_lapse_ipsi',
     ]
 
     rec_rows = []
