@@ -1817,11 +1817,11 @@ def compute_contrast_slopes(lmm_result):
     """Compute contrast slopes per reward condition from an LMM fit.
 
     With deviation coding (±0.5):
-        incorrect (reward=-0.5): β_lc - 0.5 × β_lc:reward
-        correct   (reward=+0.5): β_lc + 0.5 × β_lc:reward
+        incorrect (reward=-0.5): β_c - 0.5 × β_c:reward
+        correct   (reward=+0.5): β_c + 0.5 × β_c:reward
 
-    When the model includes random slopes for log_contrast, subject-level
-    slopes (population + BLUP deviation) are also returned.
+    When the model includes random slopes for the contrast predictor,
+    subject-level slopes (population + BLUP deviation) are also returned.
 
     Parameters
     ----------
@@ -1834,15 +1834,16 @@ def compute_contrast_slopes(lmm_result):
         Columns: reward, slope, ci_lower, ci_upper, type, subject.
         type is 'population' or 'subject'.
     """
+    cc = lmm_result.contrast_col
     result = lmm_result.result
     fe_params = result.fe_params
     fe_names = list(fe_params.index)
     fe_cov = result.cov_params().loc[fe_names, fe_names].values
 
-    beta_lc = fe_params['log_contrast']
-    idx_lc = fe_names.index('log_contrast')
+    beta_lc = fe_params[cc]
+    idx_lc = fe_names.index(cc)
 
-    interaction_name = 'log_contrast:reward'
+    interaction_name = f'{cc}:reward'
     has_interaction = interaction_name in fe_names
     if has_interaction:
         beta_int = fe_params[interaction_name]
@@ -1853,7 +1854,7 @@ def compute_contrast_slopes(lmm_result):
     rows = []
     for label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
         slope = beta_lc + reward_val * beta_int
-        # Var(β_lc + r × β_int) = Var(β_lc) + r²Var(β_int) + 2r·Cov
+        # Var(β_c + r × β_c:r) = Var(β_c) + r²Var(β_c:r) + 2r·Cov
         if has_interaction:
             var = (fe_cov[idx_lc, idx_lc]
                    + reward_val**2 * fe_cov[idx_int, idx_int]
@@ -1874,11 +1875,11 @@ def compute_contrast_slopes(lmm_result):
     # Subject-level slopes (population + BLUP)
     re_dict = lmm_result.random_effects
     has_random_slope = any(
-        'log_contrast' in effects.index for effects in re_dict.values()
+        cc in effects.index for effects in re_dict.values()
     )
     if has_random_slope:
         for subj, effects in re_dict.items():
-            u_slope = effects.get('log_contrast', 0.0)
+            u_slope = effects.get(cc, 0.0)
             for i, (label, _) in enumerate(
                     [('incorrect', -0.5), ('correct', 0.5)]):
                 pop_slope = rows[i]['slope']
