@@ -1559,12 +1559,10 @@ def plot_feature_contributions(contributions, fig=None):
     return fig
 
 
-import re as _re
-
 _SIDE_ORDER = {'contra': 0, 'ipsi': 1}
 _EVENT_ORDER = {'stimOn': 0, 'firstMovement': 1, 'feedback': 2}
 _FB_ORDER = {'correct': 0, 'incorrect': 1}
-_FEATURE_RE = _re.compile(
+_FEATURE_RE = re.compile(
     r'^(?P<event>[a-zA-Z]+)_c(?P<contrast>[\d.]+)_(?P<side>contra|ipsi)_(?P<fb>correct|incorrect)$'
 )
 
