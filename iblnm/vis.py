@@ -9,7 +9,7 @@ from sklearn.preprocessing import quantile_transform
 from iblnm.config import (
     ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP, RESPONSE_WINDOWS,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
-    TARGETNM_COLORS, TARGETNM_POSITIONS,
+    TARGETNM_COLORS, TARGETNM_POSITIONS, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.util import get_contrast_coding
 
@@ -3255,5 +3255,53 @@ def plot_rt_by_contrast(df, ax=None):
         ax.legend(handles=handles, fontsize=7, loc='upper left')
 
     return ax
+
+
+# =============================================================================
+# Group-based task performance figures
+# =============================================================================
+
+def plot_psychometric_grid(group, axes=None):
+    """2x3 grid of 50-50 block psychometric curves, one panel per target-NM.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        Must have ``group.performance`` loaded.
+    axes : np.ndarray of Axes, optional
+        Shape (2, 3). Created if None.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    rec_meta = (
+        group.recordings[['eid', 'subject', 'target_NM']]
+        .drop_duplicates()
+    )
+    df = group.performance.merge(rec_meta, on='eid', how='inner')
+
+    targets = [t for t in TARGETNMS_TO_ANALYZE if t in df['target_NM'].values]
+
+    if axes is None:
+        fig, axes = plt.subplots(2, 3, figsize=(12, 8), squeeze=False)
+    else:
+        fig = axes.flat[0].figure
+
+    for i, target_nm in enumerate(targets[:6]):
+        ax = axes[i // 3, i % 3]
+        df_target = df[df['target_NM'] == target_nm]
+        plot_psychometric_curves_50(df_target, target_nm=target_nm, ax=ax)
+        n_sessions = len(df_target)
+        n_subjects = df_target['subject'].nunique()
+        ax.text(0.05, 0.85, f'{n_sessions} sessions\n{n_subjects} mice',
+                transform=ax.transAxes)
+        ax.set_title(target_nm)
+
+    for i in range(len(targets), 6):
+        axes[i // 3, i % 3].set_visible(False)
+
+    fig.tight_layout()
+    return fig
 
 

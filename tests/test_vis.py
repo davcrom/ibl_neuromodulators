@@ -5,6 +5,7 @@ import pytest
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
+from unittest.mock import MagicMock
 
 from iblnm.vis import plot_relative_contrast
 
@@ -1973,4 +1974,64 @@ class TestSessionOverviewMatrixSubjectOrder:
         assert 'B' in labels
         # Two images: base (faded) and overlay (solid)
         assert len(ax.images) == 2
+        plt.close('all')
+
+
+# =============================================================================
+# plot_psychometric_grid
+# =============================================================================
+
+def _make_mock_group_with_performance():
+    """Build a mock group with performance data for two target_NMs."""
+    from iblnm.data import PhotometrySessionGroup
+    rows = []
+    for i in range(6):
+        tnm = 'VTA-DA' if i < 3 else 'LC-NE'
+        rows.append({
+            'eid': f'eid-{i}',
+            'subject': f'subj-{i % 3}',
+            'brain_region': [tnm.split('-')[0]],
+            'hemisphere': ['l'],
+            'target_NM': [tnm],
+            'NM': tnm.split('-')[1],
+            'session_type': 'biased',
+            'start_time': '2024-01-01T10:00:00',
+            'number': 1,
+            'task_protocol': 'biased_protocol',
+        })
+    df = pd.DataFrame(rows)
+    group = PhotometrySessionGroup(df, one=MagicMock())
+    group.filter_sessions(
+        session_types=False, qc_blockers=set(), targetnms=False,
+        min_performance=False, required_contrasts=False,
+    )
+
+    rng = np.random.default_rng(0)
+    group.performance = pd.DataFrame({
+        'eid': [f'eid-{i}' for i in range(6)],
+        'fraction_correct': rng.uniform(0.6, 0.9, 6),
+        'psych_50_bias': rng.uniform(-10, 10, 6),
+        'psych_50_threshold': rng.uniform(10, 50, 6),
+        'psych_50_lapse_left': rng.uniform(0, 0.15, 6),
+        'psych_50_lapse_right': rng.uniform(0, 0.15, 6),
+    })
+    return group
+
+
+class TestPlotPsychometricGrid:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_psychometric_grid
+        group = _make_mock_group_with_performance()
+        fig = plot_psychometric_grid(group)
+        assert isinstance(fig, plt.Figure)
+        plt.close('all')
+
+    def test_panels_match_target_nms(self):
+        from iblnm.vis import plot_psychometric_grid
+        group = _make_mock_group_with_performance()
+        fig = plot_psychometric_grid(group)
+        titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
+        assert 'VTA-DA' in titles
+        assert 'LC-NE' in titles
         plt.close('all')
