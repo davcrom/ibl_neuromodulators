@@ -3173,8 +3173,8 @@ def _plot_weight_heatmap_pair(cohort_results, targets, ax):
     ax.figure.colorbar(im, ax=ax, shrink=0.8, label='Weight')
 
 
-def plot_rt_by_contrast(df, ax=None):
-    """Horizontal boxplots of response time by contrast, one offset per target-NM.
+def _draw_rt_violins(df, ax=None):
+    """Horizontal violin plots of response time by contrast, one offset per target-NM.
 
     Parameters
     ----------
@@ -3411,5 +3411,48 @@ def plot_target_comparison(group, params, labels, axes=None):
                 ha='center', va='bottom', fontsize=7)
 
     fig.tight_layout()
+    return fig
+
+
+def plot_rt_by_contrast(group, ax=None):
+    """Response time by contrast from a PhotometrySessionGroup.
+
+    Builds the trial DataFrame from ``group.response_magnitudes`` and
+    ``group.trial_timing``, filters to 50-50 block unbiased trials, and
+    draws RT violins.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        Must have ``response_magnitudes`` and ``trial_timing`` loaded.
+    ax : plt.Axes, optional
+        Axes to draw on.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 5))
+    else:
+        fig = ax.figure
+
+    if group.response_magnitudes is None or group.trial_timing is None:
+        ax.set_xlabel('Response time (s)')
+        ax.set_ylabel('Contrast (%)')
+        return fig
+
+    df_resp = group.response_magnitudes.drop_duplicates(
+        subset=['eid', 'trial', 'target_NM'])
+    df_trial = df_resp.merge(
+        group.trial_timing[['eid', 'trial', 'response_time']],
+        on=['eid', 'trial'], how='inner',
+    )
+    df_trial = df_trial.query(
+        'probabilityLeft == 0.5 and choice != 0'
+    ).copy()
+    df_trial = df_trial[df_trial['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
+
+    _draw_rt_violins(df_trial, ax=ax)
     return fig
 

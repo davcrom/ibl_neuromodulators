@@ -1791,14 +1791,14 @@ def df_rt():
 
 class TestPlotRtByContrast:
     def test_returns_axes(self, df_rt):
-        from iblnm.vis import plot_rt_by_contrast
+        from iblnm.vis import _draw_rt_violins as plot_rt_by_contrast
         ax = plot_rt_by_contrast(df_rt)
         assert isinstance(ax, plt.Axes)
         plt.close('all')
 
     def test_xaxis_uses_log_ticks_on_linear_scale(self, df_rt):
         """Axis should be linear (data pre-transformed) with log-formatted tick labels."""
-        from iblnm.vis import plot_rt_by_contrast
+        from iblnm.vis import _draw_rt_violins as plot_rt_by_contrast
         ax = plot_rt_by_contrast(df_rt)
         assert ax.get_xscale() == 'linear'
         # Tick labels should show real-time values (e.g. '0.1', '1'), not log values
@@ -1808,7 +1808,7 @@ class TestPlotRtByContrast:
 
     def test_violin_xdata_is_log_transformed(self, df_rt):
         """Violin x-extents should be in log space (negative values present for sub-1s RTs)."""
-        from iblnm.vis import plot_rt_by_contrast
+        from iblnm.vis import _draw_rt_violins as plot_rt_by_contrast
         ax = plot_rt_by_contrast(df_rt)
         # df_rt has response_time in [0.1, 2.0]; log10 of those is in [-1, 0.3]
         # so violin bodies must span negative x values
@@ -1822,7 +1822,7 @@ class TestPlotRtByContrast:
 
     def test_yticks_at_contrast_levels(self, df_rt):
         """Y-ticks should be at the integer indices of sorted contrast levels."""
-        from iblnm.vis import plot_rt_by_contrast
+        from iblnm.vis import _draw_rt_violins as plot_rt_by_contrast
         ax = plot_rt_by_contrast(df_rt)
         tick_labels = [t.get_text() for t in ax.get_yticklabels()]
         # All three contrasts should appear as tick labels
@@ -1834,7 +1834,7 @@ class TestPlotRtByContrast:
 
     def test_each_target_nm_gets_own_offset(self, df_rt):
         """Two target-NMs at the same contrast should produce violins at different y positions."""
-        from iblnm.vis import plot_rt_by_contrast
+        from iblnm.vis import _draw_rt_violins as plot_rt_by_contrast
         ax = plot_rt_by_contrast(df_rt)
         # violinplot bodies are PolyCollections; extract their y-centre positions
         y_centers = set()
@@ -1847,14 +1847,14 @@ class TestPlotRtByContrast:
         plt.close('all')
 
     def test_accepts_ax_argument(self, df_rt):
-        from iblnm.vis import plot_rt_by_contrast
+        from iblnm.vis import _draw_rt_violins as plot_rt_by_contrast
         fig, ax = plt.subplots()
         result = plot_rt_by_contrast(df_rt, ax=ax)
         assert result is ax
         plt.close('all')
 
     def test_empty_data_no_crash(self):
-        from iblnm.vis import plot_rt_by_contrast
+        from iblnm.vis import _draw_rt_violins as plot_rt_by_contrast
         df_empty = pd.DataFrame(
             columns=['target_NM', 'contrast', 'response_time', 'subject']
         )
@@ -2061,4 +2061,82 @@ class TestPlotTargetComparison:
         titles = [ax.get_title() for ax in fig.axes if ax.get_visible()]
         for label in labels:
             assert label in titles
+        plt.close('all')
+
+
+# =============================================================================
+# plot_rt_by_contrast (group-based)
+# =============================================================================
+
+def _make_mock_group_with_rt():
+    """Build a mock group with response_magnitudes and trial_timing."""
+    from iblnm.data import PhotometrySessionGroup
+    rng = np.random.default_rng(42)
+    rows = []
+    for i in range(4):
+        tnm = 'VTA-DA' if i < 2 else 'LC-NE'
+        rows.append({
+            'eid': f'eid-{i}',
+            'subject': f'subj-{i % 2}',
+            'brain_region': [tnm.split('-')[0]],
+            'hemisphere': ['l'],
+            'target_NM': [tnm],
+            'NM': tnm.split('-')[1],
+            'session_type': 'biased',
+            'start_time': '2024-01-01T10:00:00',
+            'number': 1,
+            'task_protocol': 'biased_protocol',
+        })
+    df = pd.DataFrame(rows)
+    group = PhotometrySessionGroup(df, one=MagicMock())
+    group.filter_sessions(
+        session_types=False, qc_blockers=set(), targetnms=False,
+        min_performance=False, required_contrasts=False,
+    )
+
+    # Build response_magnitudes with required columns
+    resp_rows = []
+    for i in range(4):
+        tnm = 'VTA-DA' if i < 2 else 'LC-NE'
+        for t in range(20):
+            resp_rows.append({
+                'eid': f'eid-{i}',
+                'subject': f'subj-{i % 2}',
+                'target_NM': tnm,
+                'trial': t,
+                'contrast': rng.choice([6.25, 25.0, 100.0]),
+                'choice': rng.choice([-1, 1]),
+                'probabilityLeft': rng.choice([0.2, 0.5, 0.8]),
+                'event': 'stimOn_times',
+            })
+    group.response_magnitudes = pd.DataFrame(resp_rows)
+
+    # Build trial_timing
+    timing_rows = []
+    for i in range(4):
+        for t in range(20):
+            timing_rows.append({
+                'eid': f'eid-{i}',
+                'trial': t,
+                'response_time': rng.uniform(0.1, 2.0),
+            })
+    group.trial_timing = pd.DataFrame(timing_rows)
+    return group
+
+
+class TestPlotRtByContrastGroup:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_rt_by_contrast
+        group = _make_mock_group_with_rt()
+        fig = plot_rt_by_contrast(group)
+        assert isinstance(fig, plt.Figure)
+        plt.close('all')
+
+    def test_none_timing_returns_empty(self):
+        from iblnm.vis import plot_rt_by_contrast
+        group = _make_mock_group_with_rt()
+        group.trial_timing = None
+        fig = plot_rt_by_contrast(group)
+        assert isinstance(fig, plt.Figure)
         plt.close('all')
