@@ -129,6 +129,8 @@ else:
     float_map = SESSION_TYPE_FLOAT_MAP
     color_map = SESSION_TYPE_COLOR_MAP
 
+BAR_W, BAR_H = (12, 24) if args.horizontal else (24, 12)
+
 # ---- Output directory ----
 
 figures_dir = PROJECT_ROOT / 'figures/dataset_overview'
@@ -261,7 +263,7 @@ if n_rec > 0:
     ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map,
                                 horizontal=args.horizontal)
     ax.set_title(f'Recordings by target ({n_rec} recordings, {n_ses} sessions)')
-    set_plotsize(w=24, h=12, ax=ax)
+    set_plotsize(w=BAR_W, h=BAR_H, ax=ax)
     ax.get_figure().savefig(figures_dir / '6_target_overview.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close('all')
@@ -270,7 +272,7 @@ if n_rec > 0:
                                 color_by=split_col, split_color_map=color_map,
                                 horizontal=args.horizontal)
     ax.set_title(f'Mice by target ({n_rec} recordings, {n_ses} sessions)')
-    set_plotsize(w=24, h=12, ax=ax)
+    set_plotsize(w=BAR_W, h=BAR_H, ax=ax)
     ax.get_figure().savefig(figures_dir / '7_mouse_overview.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close('all')
@@ -286,7 +288,7 @@ if n_rec_a > 0:
     ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map,
                                 horizontal=args.horizontal)
     ax.set_title(f'Analysis-ready by target ({n_rec_a} recordings, {n_ses_a} sessions)')
-    set_plotsize(w=24, h=12, ax=ax)
+    set_plotsize(w=BAR_W, h=BAR_H, ax=ax)
     ax.get_figure().savefig(figures_dir / '8_target_overview_analyze.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close('all')
@@ -295,7 +297,7 @@ if n_rec_a > 0:
                                 color_by=split_col, split_color_map=color_map,
                                 horizontal=args.horizontal)
     ax.set_title(f'Mice (analysis-ready, n={n_ses_a} sessions)')
-    set_plotsize(w=24, h=12, ax=ax)
+    set_plotsize(w=BAR_W, h=BAR_H, ax=ax)
     ax.get_figure().savefig(figures_dir / '9_mouse_overview_analyze.svg',
                             dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close('all')
