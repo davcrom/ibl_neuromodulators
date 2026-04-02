@@ -1,8 +1,11 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from iblnm.config import TARGET_FS, get_contrast_coding
+from iblnm.config import TARGET_FS
+from iblnm.util import get_contrast_coding
 
 
 def get_responses(photometry, events, t0=-1.0, t1=1.0):
@@ -851,7 +854,6 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
     ses : pd.DataFrame
         (n_recordings, 7) standard errors.
     """
-    import logging
     from iblnm.task import add_relative_contrast
 
     _transform, _ = get_contrast_coding(contrast_coding)
@@ -908,8 +910,8 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
 
         # Check rank
         if np.linalg.matrix_rank(X) < X.shape[1]:
-            logging.warning(
-                f"Singular design matrix for {eid}/{brain_region}, skipping"
+            print(
+                f"  Singular design matrix for {eid}/{brain_region}, skipping"
             )
             continue
 
@@ -2101,3 +2103,174 @@ def fit_wheel_lmm(df, dv_col, response_col='response_early',
         'n_trials': len(df),
         'n_subjects': df['subject'].nunique(),
     }
+
+
+def compute_recording_projection(n_analysis_ready, n_total, target_n,
+                                 deadline, capacity_per_day, today=None):
+    """Compute recording capacity projection per target.
+
+    Parameters
+    ----------
+    n_analysis_ready : dict
+        {target_NM: count} of sessions currently passing all filters.
+    n_total : dict
+        {target_NM: count} of total sessions recorded per target.
+    target_n : int
+        Goal number of analysis-ready sessions per target.
+    deadline : datetime.date
+        Recording deadline.
+    capacity_per_day : int
+        Total sessions that can be recorded per day across all targets.
+    today : datetime.date, optional
+        Reference date (defaults to date.today()).
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per target_NM with projection columns.
+    """
+    from datetime import date as _date
+    if today is None:
+        today = _date.today()
+
+    days_available = (deadline - today).days
+
+    rows = []
+    for target in n_analysis_ready:
+        ready = n_analysis_ready[target]
+        total = n_total[target]
+
+        if total == 0:
+            yield_rate = np.nan
+        else:
+            yield_rate = ready / total
+
+        shortfall = max(0, target_n - ready)
+
+        if shortfall == 0:
+            effective = 0
+            rec_days = 0.0
+        elif yield_rate == 0:
+            effective = np.inf
+            rec_days = np.inf
+        elif np.isnan(yield_rate):
+            effective = np.nan
+            rec_days = np.nan
+        else:
+            effective = int(np.ceil(shortfall / yield_rate))
+            rec_days = 0.0  # computed below from totals
+
+        rows.append({
+            'target_NM': target,
+            'n_analysis_ready': ready,
+            'n_total': total,
+            'yield_rate': yield_rate,
+            'shortfall': shortfall,
+            'effective_sessions_needed': effective,
+            'recording_days_needed': rec_days,
+            'days_available': days_available,
+        })
+
+    df = pd.DataFrame(rows)
+
+    # Recording days: total effective sessions across all targets / capacity
+    total_effective = df['effective_sessions_needed'].replace([np.inf], np.nan).sum()
+    if np.isfinite(total_effective) and total_effective > 0:
+        total_days = np.ceil(total_effective / capacity_per_day)
+        # Distribute days proportionally to each target's share
+        finite_mask = np.isfinite(df['effective_sessions_needed'])
+        finite_sum = df.loc[finite_mask, 'effective_sessions_needed'].sum()
+        if finite_sum > 0:
+            df.loc[finite_mask, 'recording_days_needed'] = (
+                df.loc[finite_mask, 'effective_sessions_needed'] / capacity_per_day
+            ).apply(np.ceil)
+
+    # Restore inf for zero-yield targets
+    df.loc[df['yield_rate'] == 0, 'recording_days_needed'] = np.inf
+
+    return df
+
+
+def anova_rm(df, depvar, subject, within):
+    """Repeated-measures ANOVA on a pre-aggregated DataFrame.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        One row per subject x condition cell. Must contain ``depvar``,
+        ``subject``, and every column listed in ``within``.
+    depvar : str
+        Column name of the dependent variable.
+    subject : str
+        Column name identifying subjects.
+    within : list of str
+        Within-subject factor column names. All treated as categorical.
+
+    Returns
+    -------
+    pd.DataFrame
+        ANOVA table with columns Source, F, Num DF, Den DF, Pr(>F).
+        Includes an extra column ``method`` ('rm' or 'ols') indicating
+        which method was used.
+    """
+    from itertools import combinations
+    from statsmodels.stats.anova import AnovaRM
+    import statsmodels.api as sm
+    from statsmodels.formula.api import ols
+
+    df = df.copy()
+    for col in within:
+        df[col] = df[col].astype(str)
+
+    # Check balance: every subject must appear in every cell exactly once
+    cells = df.groupby(within).ngroups
+    subject_cell_counts = df.groupby(subject)[within[0]].count()
+    balanced = (subject_cell_counts == cells).all() and len(subject_cell_counts) >= 2
+
+    if balanced:
+        aov = AnovaRM(df, depvar, subject, within=within).fit()
+        result = aov.anova_table.reset_index()
+        result = result.rename(columns={
+            result.columns[0]: 'Source',
+            'F Value': 'F',
+            'Pr > F': 'Pr(>F)',
+        })
+        result['method'] = 'rm'
+    else:
+        warnings.warn(
+            "Unbalanced repeated-measures design: not all subjects have data "
+            "in every condition cell. Falling back to between-subjects OLS "
+            "ANOVA (Type III).",
+            UserWarning,
+            stacklevel=2,
+        )
+        # Build formula with all main effects and interactions
+        # C() wraps each factor as categorical
+        terms = [f'C({w})' for w in within]
+        # All interactions: 2-way, 3-way, ...
+        interaction_terms = []
+        for r in range(2, len(within) + 1):
+            for combo in combinations(terms, r):
+                interaction_terms.append(':'.join(combo))
+        formula = f'{depvar} ~ {" + ".join(terms + interaction_terms)}'
+        model = ols(formula, data=df).fit()
+        aov_table = sm.stats.anova_lm(model, typ=3)
+        # Drop Intercept and Residual rows
+        aov_table = aov_table.drop(
+            index=[idx for idx in aov_table.index
+                   if idx in ('Intercept', 'Residual')],
+        )
+        result = aov_table.reset_index()
+        result.columns = ['Source', 'SS', 'Num DF', 'F', 'Pr(>F)']
+        # Clean source names: strip C() wrapping
+        result['Source'] = (
+            result['Source']
+            .str.replace(r'C\(([^)]+)\)', r'\1', regex=True)
+        )
+        # Compute Den DF from residual
+        den_df = model.df_resid
+        result['Den DF'] = den_df
+        result = result[['Source', 'F', 'Num DF', 'Den DF', 'Pr(>F)']]
+        result['method'] = 'ols'
+
+    return result

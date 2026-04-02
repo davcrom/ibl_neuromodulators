@@ -3,28 +3,28 @@ import numpy as np
 import pandas as pd
 
 from iblnm.analysis import get_responses, normalize_responses, resample_signal
-from iblnm.config import contrast_transform
+from iblnm.util import contrast_transform
 
 
 class TestContrastTransform:
     def test_zero_contrast(self):
-        from iblnm.config import contrast_transform
+        from iblnm.util import contrast_transform
         assert contrast_transform(0) == 0.0
 
     def test_known_values(self):
-        from iblnm.config import contrast_transform
+        from iblnm.util import contrast_transform
         c = np.array([0.0, 6.25, 12.5, 25, 100])
         result = contrast_transform(c)
         expected = np.log(c + 1)
         np.testing.assert_allclose(result, expected)
 
     def test_roundtrip(self):
-        from iblnm.config import contrast_transform, contrast_inverse
+        from iblnm.util import contrast_transform, contrast_inverse
         c = np.array([0.0, 6.25, 12.5, 25, 50, 100])
         np.testing.assert_allclose(contrast_inverse(contrast_transform(c)), c)
 
     def test_monotonic(self):
-        from iblnm.config import contrast_transform
+        from iblnm.util import contrast_transform
         c = np.array([0.0, 6.25, 12.5, 25, 50, 100])
         result = contrast_transform(c)
         assert np.all(np.diff(result) > 0)
@@ -34,46 +34,46 @@ class TestGetContrastCoding:
     """Tests for get_contrast_coding() which returns (transform, inverse) pairs."""
 
     def test_log_transform_matches_legacy(self):
-        from iblnm.config import get_contrast_coding, contrast_transform
+        from iblnm.util import get_contrast_coding, contrast_transform
         transform, _ = get_contrast_coding('log')
         c = np.array([0.0, 6.25, 12.5, 25, 100])
         np.testing.assert_allclose(transform(c), contrast_transform(c))
 
     def test_log_roundtrip(self):
-        from iblnm.config import get_contrast_coding
+        from iblnm.util import get_contrast_coding
         transform, inverse = get_contrast_coding('log')
         c = np.array([0.0, 6.25, 12.5, 25, 50, 100])
         np.testing.assert_allclose(inverse(transform(c)), c)
 
     def test_linear_identity(self):
-        from iblnm.config import get_contrast_coding
+        from iblnm.util import get_contrast_coding
         transform, inverse = get_contrast_coding('linear')
         c = np.array([0.0, 6.25, 12.5, 25, 100])
         np.testing.assert_allclose(transform(c), c)
         np.testing.assert_allclose(inverse(c), c)
 
     def test_rank_maps_to_ordinal(self):
-        from iblnm.config import get_contrast_coding
+        from iblnm.util import get_contrast_coding
         transform, _ = get_contrast_coding('rank')
         c = np.array([0.0, 6.25, 12.5, 25, 100])
         np.testing.assert_allclose(transform(c), [0, 1, 2, 3, 4])
 
     def test_rank_roundtrip(self):
-        from iblnm.config import get_contrast_coding
+        from iblnm.util import get_contrast_coding
         transform, inverse = get_contrast_coding('rank')
         c = np.array([0.0, 6.25, 12.5, 25, 100])
         np.testing.assert_allclose(inverse(transform(c)), c)
 
     def test_rank_scalar_after_array(self):
         """After seeing the full contrast set, scalar lookup returns correct rank."""
-        from iblnm.config import get_contrast_coding
+        from iblnm.util import get_contrast_coding
         transform, _ = get_contrast_coding('rank')
         # First call with full array to populate the rank map
         transform(np.array([0.0, 6.25, 12.5, 25, 100]))
         assert transform(12.5) == 2.0
 
     def test_all_monotonic(self):
-        from iblnm.config import get_contrast_coding
+        from iblnm.util import get_contrast_coding
         c = np.array([0.0, 6.25, 12.5, 25, 100])
         for coding in ('linear', 'rank', 'log'):
             transform, _ = get_contrast_coding(coding)
@@ -81,7 +81,7 @@ class TestGetContrastCoding:
 
     def test_invalid_coding_raises(self):
         import pytest
-        from iblnm.config import get_contrast_coding
+        from iblnm.util import get_contrast_coding
         with pytest.raises(ValueError, match='quadratic'):
             get_contrast_coding('quadratic')
 
@@ -2146,3 +2146,190 @@ class TestAlignCCASigns:
         results = {'Z': result, 'A': result}
         aligned = align_cca_signs(results)
         assert list(aligned.keys()) == ['Z', 'A']
+
+
+class TestComputeRecordingProjection:
+    """Tests for compute_recording_projection."""
+
+    from datetime import date
+
+    def test_basic_projection(self):
+        from iblnm.analysis import compute_recording_projection
+        from datetime import date
+
+        n_ready = {'VTA-DA': 3, 'SNc-DA': 5}
+        n_total = {'VTA-DA': 10, 'SNc-DA': 10}
+        result = compute_recording_projection(
+            n_ready, n_total, target_n=5,
+            deadline=date(2026, 7, 31), capacity_per_day=16,
+            today=date(2026, 3, 31),
+        )
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 2
+        assert set(result.columns) >= {
+            'target_NM', 'n_analysis_ready', 'n_total', 'yield_rate',
+            'shortfall', 'effective_sessions_needed', 'recording_days_needed',
+        }
+        # VTA-DA: yield=0.3, shortfall=2, effective=ceil(2/0.3)=7
+        vta = result.set_index('target_NM').loc['VTA-DA']
+        assert vta['yield_rate'] == 0.3
+        assert vta['shortfall'] == 2
+        assert vta['effective_sessions_needed'] == 7
+        # SNc-DA: already at target, no additional sessions needed
+        snc = result.set_index('target_NM').loc['SNc-DA']
+        assert snc['shortfall'] == 0
+        assert snc['effective_sessions_needed'] == 0
+
+    def test_zero_yield_returns_inf(self):
+        from iblnm.analysis import compute_recording_projection
+        from datetime import date
+
+        n_ready = {'VTA-DA': 0}
+        n_total = {'VTA-DA': 5}
+        result = compute_recording_projection(
+            n_ready, n_total, target_n=5,
+            deadline=date(2026, 7, 31), capacity_per_day=16,
+            today=date(2026, 3, 31),
+        )
+        vta = result.set_index('target_NM').loc['VTA-DA']
+        assert vta['yield_rate'] == 0.0
+        assert np.isinf(vta['effective_sessions_needed'])
+        assert np.isinf(vta['recording_days_needed'])
+
+    def test_no_recordings_yet(self):
+        """Target with zero total recordings gets NaN yield."""
+        from iblnm.analysis import compute_recording_projection
+        from datetime import date
+
+        n_ready = {'VTA-DA': 0}
+        n_total = {'VTA-DA': 0}
+        result = compute_recording_projection(
+            n_ready, n_total, target_n=5,
+            deadline=date(2026, 7, 31), capacity_per_day=16,
+            today=date(2026, 3, 31),
+        )
+        vta = result.set_index('target_NM').loc['VTA-DA']
+        assert np.isnan(vta['yield_rate'])
+
+    def test_recording_days_uses_capacity(self):
+        """Total effective sessions divided by capacity_per_day."""
+        from iblnm.analysis import compute_recording_projection
+        from datetime import date
+
+        # 2 targets, each needs 10 effective sessions = 20 total, at 16/day = 2 days
+        n_ready = {'A': 0, 'B': 0}
+        n_total = {'A': 10, 'B': 10}
+        result = compute_recording_projection(
+            n_ready, n_total, target_n=5,
+            deadline=date(2026, 7, 31), capacity_per_day=16,
+            today=date(2026, 3, 31),
+        )
+        total_effective = result['effective_sessions_needed'].sum()
+        total_days = result['recording_days_needed'].sum()
+        assert total_days == np.ceil(total_effective / 16)
+
+    def test_days_available(self):
+        from iblnm.analysis import compute_recording_projection
+        from datetime import date
+
+        result = compute_recording_projection(
+            {'A': 3}, {'A': 10}, target_n=5,
+            deadline=date(2026, 7, 31), capacity_per_day=16,
+            today=date(2026, 3, 31),
+        )
+        # 122 days from March 31 to July 31
+        assert result['days_available'].iloc[0] == 122
+
+
+class TestAnovaRM:
+    """Tests for anova_rm."""
+
+    @staticmethod
+    def _balanced_df(n_subjects=4, seed=42):
+        """Fully balanced subject × contrast × side × feedback dataset."""
+        rng = np.random.default_rng(seed)
+        rows = []
+        for subj in range(n_subjects):
+            for contrast in [0.0, 0.25, 1.0]:
+                for side in ['contra', 'ipsi']:
+                    for fb in [1, -1]:
+                        rows.append({
+                            'subject': f's{subj}',
+                            'contrast': contrast,
+                            'side': side,
+                            'feedbackType': fb,
+                            'response': rng.normal(0, 1),
+                        })
+        return pd.DataFrame(rows)
+
+    def test_returns_dataframe(self):
+        from iblnm.analysis import anova_rm
+        df = self._balanced_df()
+        result = anova_rm(df, 'response', 'subject',
+                          ['contrast', 'side', 'feedbackType'])
+        assert isinstance(result, pd.DataFrame)
+
+    def test_has_expected_columns(self):
+        from iblnm.analysis import anova_rm
+        df = self._balanced_df()
+        result = anova_rm(df, 'response', 'subject',
+                          ['contrast', 'side', 'feedbackType'])
+        for col in ['Source', 'F', 'Num DF', 'Den DF', 'Pr(>F)', 'method']:
+            assert col in result.columns, f"Missing column: {col}"
+
+    def test_all_main_effects_and_interactions(self):
+        """3 factors → 7 terms (3 main + 3 two-way + 1 three-way)."""
+        from iblnm.analysis import anova_rm
+        df = self._balanced_df()
+        result = anova_rm(df, 'response', 'subject',
+                          ['contrast', 'side', 'feedbackType'])
+        assert len(result) == 7
+
+    def test_uses_rm_for_balanced_data(self):
+        from iblnm.analysis import anova_rm
+        df = self._balanced_df()
+        result = anova_rm(df, 'response', 'subject',
+                          ['contrast', 'side', 'feedbackType'])
+        assert (result['method'] == 'rm').all()
+
+    def test_falls_back_to_ols_for_unbalanced(self):
+        """Drop one cell for one subject so the design is unbalanced."""
+        from iblnm.analysis import anova_rm
+        df = self._balanced_df()
+        # Remove s0's contra/correct/1.0 row → unbalanced
+        mask = (
+            (df['subject'] == 's0') &
+            (df['side'] == 'contra') &
+            (df['feedbackType'] == 1) &
+            (df['contrast'] == 1.0)
+        )
+        df = df[~mask]
+        import warnings as w
+        with w.catch_warnings(record=True) as caught:
+            w.simplefilter('always')
+            result = anova_rm(df, 'response', 'subject',
+                              ['contrast', 'side', 'feedbackType'])
+        assert (result['method'] == 'ols').all()
+        assert any('unbalanced' in str(m.message).lower() for m in caught)
+
+    def test_single_factor(self):
+        """Works with a single within-subject factor."""
+        from iblnm.analysis import anova_rm
+        rng = np.random.default_rng(0)
+        rows = []
+        for subj in ['a', 'b', 'c']:
+            for level in ['x', 'y', 'z']:
+                rows.append({'sub': subj, 'cond': level,
+                             'dv': rng.normal()})
+        df = pd.DataFrame(rows)
+        result = anova_rm(df, 'dv', 'sub', ['cond'])
+        assert len(result) == 1  # one main effect
+        assert result['Source'].iloc[0] == 'cond'
+
+    def test_p_values_in_range(self):
+        from iblnm.analysis import anova_rm
+        df = self._balanced_df()
+        result = anova_rm(df, 'response', 'subject',
+                          ['contrast', 'side', 'feedbackType'])
+        assert (result['Pr(>F)'] >= 0).all()
+        assert (result['Pr(>F)'] <= 1).all()
