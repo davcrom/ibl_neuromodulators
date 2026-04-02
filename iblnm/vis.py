@@ -3372,6 +3372,30 @@ def plot_target_comparison(group, params, labels, axes=None):
                 bp['whiskers'][k].set_color(color)
                 bp['caps'][k].set_color(color)
 
+        # Per-subject mean ± 95% CI overlaid on each boxplot
+        for j, tnm in enumerate(target_names):
+            color = TARGETNM_COLORS.get(tnm, 'gray')
+            df_tnm = df.loc[
+                (df['target_NM'] == tnm) & df[col].notna(),
+                ['subject', col],
+            ]
+            subj_stats = (
+                df_tnm.groupby('subject')[col]
+                .agg(['mean', 'sem', 'count'])
+            )
+            subj_stats = subj_stats[subj_stats['count'] > 0]
+            n_subj = len(subj_stats)
+            if n_subj == 0:
+                continue
+            offsets = np.linspace(-0.15, 0.15, n_subj) if n_subj > 1 else [0.0]
+            for k, (subj, row) in enumerate(subj_stats.iterrows()):
+                ci = 1.96 * row['sem'] if row['count'] > 1 else 0
+                ax.errorbar(
+                    j + offsets[k], row['mean'], yerr=ci,
+                    fmt='o', color=color, markersize=3,
+                    linewidth=0.8, capsize=0, zorder=5,
+                )
+
         ax.set_xticks(positions)
         ax.set_xticklabels([t.split('-')[0] for t in target_names],
                            rotation=45, ha='right', fontsize=8)

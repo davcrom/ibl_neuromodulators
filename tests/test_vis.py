@@ -2018,6 +2018,50 @@ def _make_mock_group_with_performance():
     return group
 
 
+def _make_mock_group_with_performance_multi():
+    """Build a mock group with multiple sessions per subject per target_NM."""
+    from iblnm.data import PhotometrySessionGroup
+    rng = np.random.default_rng(0)
+    subjects = ['subj-0', 'subj-1', 'subj-2']
+    target_nms = ['VTA-DA', 'LC-NE']
+    rows = []
+    perf_rows = []
+    eid_idx = 0
+    for tnm in target_nms:
+        for subj in subjects:
+            for _ in range(4):  # 4 sessions per subject per target
+                eid = f'eid-{eid_idx}'
+                rows.append({
+                    'eid': eid,
+                    'subject': subj,
+                    'brain_region': [tnm.split('-')[0]],
+                    'hemisphere': ['l'],
+                    'target_NM': [tnm],
+                    'NM': tnm.split('-')[1],
+                    'session_type': 'biased',
+                    'start_time': '2024-01-01T10:00:00',
+                    'number': 1,
+                    'task_protocol': 'biased_protocol',
+                })
+                perf_rows.append({
+                    'eid': eid,
+                    'fraction_correct': rng.uniform(0.6, 0.9),
+                    'psych_50_bias': rng.uniform(-10, 10),
+                    'psych_50_threshold': rng.uniform(10, 50),
+                    'psych_50_lapse_left': rng.uniform(0, 0.15),
+                    'psych_50_lapse_right': rng.uniform(0, 0.15),
+                })
+                eid_idx += 1
+    df = pd.DataFrame(rows)
+    group = PhotometrySessionGroup(df, one=MagicMock())
+    group.filter_sessions(
+        session_types=False, qc_blockers=set(), targetnms=False,
+        min_performance=False, required_contrasts=False,
+    )
+    group.performance = pd.DataFrame(perf_rows)
+    return group
+
+
 class TestPlotPsychometricGrid:
 
     def test_returns_figure(self):
@@ -2061,6 +2105,22 @@ class TestPlotTargetComparison:
         titles = [ax.get_title() for ax in fig.axes if ax.get_visible()]
         for label in labels:
             assert label in titles
+        plt.close('all')
+
+    def test_subject_errorbars_present(self):
+        """Each target-NM should have per-subject mean+CI errorbars overlaid."""
+        from iblnm.vis import plot_target_comparison
+        group = _make_mock_group_with_performance_multi()
+        params = ['fraction_correct']
+        labels = ['fraction correct']
+        fig = plot_target_comparison(group, params, labels)
+        ax = fig.axes[0]
+        # ErrorbarContainer objects appear as ax.containers entries
+        from matplotlib.container import ErrorbarContainer
+        errorbar_containers = [c for c in ax.containers
+                               if isinstance(c, ErrorbarContainer)]
+        # 2 target_NMs, 3 subjects each → 6 errorbar containers
+        assert len(errorbar_containers) == 6
         plt.close('all')
 
 
