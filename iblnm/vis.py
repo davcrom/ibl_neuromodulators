@@ -12,6 +12,7 @@ from iblnm.config import (
     ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP, RESPONSE_WINDOWS,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNM_POSITIONS, TARGETNMS_TO_ANALYZE,
+    TICKFONTSIZE, LABELFONTSIZE,
 )
 from iblnm.util import get_contrast_coding
 
@@ -1384,6 +1385,9 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     ax_c.set_ylabel(r'$\Delta$ activity (z-score)')
     ax_i.tick_params(left=False)
     ax_i.spines['left'].set_visible(False)
+    for ax in (ax_c, ax_i):
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
     ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
 
     ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
@@ -2150,7 +2154,7 @@ def plot_lmm_summary(group, event, fig=None):
     ax_r2.set_xticks(range(len(targets)))
     ax_r2.set_xticklabels(targets, rotation=45, ha='right', fontsize=7)
     ax_r2.set_ylabel('R²')
-    ax_r2.set_ylim(0, min(1, ax_r2.get_ylim()[1] * 1.2))
+    ax_r2.set_ylim(0, 0.35)
     ax_r2.set_title('Variance explained')
     ax_r2.legend(frameon=False, fontsize=7, loc='upper left')
 
@@ -2231,7 +2235,7 @@ def plot_lmm_summary(group, event, fig=None):
                 x_pos = -dx if j == 0 else dx
                 ax.annotate(
                     name, xy=(x_pos, 0.02), xycoords=('data', 'axes fraction'),
-                    fontsize=6, ha='center', va='bottom', color='k',
+                    fontsize=TICKFONTSIZE, ha='center', va='bottom', color='k',
                     rotation=90,
                 )
 
@@ -2254,7 +2258,8 @@ def plot_lmm_summary(group, event, fig=None):
     axes[4].legend(
         target_handles + encoding_handles,
         targets + encoding_labels,
-        frameon=False, fontsize=6, loc='upper left', bbox_to_anchor=(1, 1),
+        frameon=False, fontsize=LABELFONTSIZE, loc='upper left',
+        bbox_to_anchor=(1, 1),
     )
 
     # --- Panel 2 (top right): Coefficient heatmap ---
