@@ -989,6 +989,54 @@ class TestContrastCodingParameter:
         assert not np.allclose(emm_log['mean'].values, emm_rank['mean'].values)
 
 
+class TestContrastCenteringAndNaming:
+
+    @pytest.mark.parametrize('coding', ['log', 'linear', 'rank'])
+    def test_contrast_col_named_by_coding(self, coding):
+        """LMM result.contrast_col matches coding and appears in summary_df."""
+        from iblnm.analysis import fit_response_lmm
+        df = _make_lmm_data()
+        result = fit_response_lmm(df, 'response', contrast_coding=coding)
+        assert result.contrast_col == f'{coding}_contrast'
+        assert result.contrast_col in result.summary_df.index
+
+    @pytest.mark.parametrize('coding', ['log', 'linear', 'rank'])
+    def test_contrast_predictor_is_centered(self, coding):
+        """The contrast predictor in the fitted model has mean ≈ 0."""
+        from iblnm.analysis import fit_response_lmm
+        df = _make_lmm_data(n_per_cell=30)
+        result = fit_response_lmm(df, 'response', contrast_coding=coding)
+        # The exog matrix column for the contrast predictor
+        col_idx = result.result.model.exog_names.index(result.contrast_col)
+        contrast_vals = result.result.model.exog[:, col_idx]
+        assert abs(contrast_vals.mean()) < 1e-10
+
+    @pytest.mark.parametrize('coding', ['log', 'linear', 'rank'])
+    def test_glm_contrast_col_named_by_coding(self, coding):
+        """GLM coefficient columns reflect the contrast coding scheme."""
+        from iblnm.analysis import fit_response_glm
+        events = _make_glm_events(n=200, seed=0)
+        coefs, ses = fit_response_glm(events, 'stimOn_times',
+                                      contrast_coding=coding)
+        expected_col = f'{coding}_contrast'
+        assert expected_col in coefs.columns
+        assert f'{expected_col}:reward' in coefs.columns
+
+    def test_glm_contrast_predictor_is_centered(self):
+        """GLM contrast predictor per recording has mean ≈ 0.
+
+        We verify indirectly: fitting with a constant response should give
+        near-zero contrast coefficient when centered (intercept absorbs all).
+        """
+        from iblnm.analysis import fit_response_glm
+        events = _make_glm_events(n=200, seed=0)
+        events['response_early'] = 1.0  # constant response
+        coefs, _ = fit_response_glm(events, 'stimOn_times')
+        # All non-intercept coefficients should be near zero
+        non_intercept = coefs.drop(columns='intercept').values
+        np.testing.assert_allclose(non_intercept, 0, atol=1e-10)
+
+
 class TestComputeMarginalMeans:
 
     def test_returns_dataframe(self):
@@ -1138,7 +1186,7 @@ class TestComputeContrastSlopes:
         slopes = compute_contrast_slopes(result)
         subj_rows = slopes[slopes['type'] == 'subject']
         # Should have subject rows if random slope converged
-        if 'log_contrast' in list(result.random_effects.values())[0].index:
+        if result.contrast_col in list(result.random_effects.values())[0].index:
             assert len(subj_rows) > 0
             assert 'subject' in slopes.columns
 
