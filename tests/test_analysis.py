@@ -863,18 +863,18 @@ class TestFitResponseLMM:
         df = _make_lmm_data()
         result = fit_response_lmm(df, 'response', re_formula='1')
         assert result is not None
-        # Intercept-only: random effects should not have log_contrast
+        # Intercept-only: random effects should not have the contrast column
         for effects in result.random_effects.values():
-            assert 'log_contrast' not in effects.index
+            assert result.contrast_col not in effects.index
 
     def test_re_formula_with_slope(self):
-        """Random slope model should include log_contrast in random effects."""
+        """Random slope model should include contrast col in random effects."""
         from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data(n_per_cell=30, seed=0)
         result = fit_response_lmm(df, 'response', re_formula='log_contrast')
         if result is not None:
             has_slope = any(
-                'log_contrast' in eff.index
+                result.contrast_col in eff.index
                 for eff in result.random_effects.values()
             )
             assert has_slope
@@ -912,9 +912,9 @@ class TestFitResponseLMM:
         from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data(n_per_cell=30, seed=0)
         result = fit_response_lmm(df, 'response')
-        # log_contrast coefficient should be significantly positive
-        coef = result.summary_df.loc['log_contrast', 'Coef.']
-        pval = result.summary_df.loc['log_contrast', 'P>|z|']
+        # Contrast coefficient should be significantly positive
+        coef = result.summary_df.loc[result.contrast_col, 'Coef.']
+        pval = result.summary_df.loc[result.contrast_col, 'P>|z|']
         assert coef > 0.2, f"Expected positive contrast effect, got {coef}"
         assert pval < 0.05, f"Expected significant contrast effect, got p={pval}"
 
@@ -974,7 +974,7 @@ class TestContrastCodingParameter:
         from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data(n_per_cell=30, seed=0)
         result = fit_response_lmm(df, 'response', contrast_coding='rank')
-        coef = result.summary_df.loc['log_contrast', 'Coef.']
+        coef = result.summary_df.loc[result.contrast_col, 'Coef.']
         assert coef > 0, f"Expected positive contrast effect under rank coding, got {coef}"
 
     def test_marginal_means_use_stored_coding(self):

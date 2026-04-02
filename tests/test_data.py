@@ -3317,7 +3317,7 @@ class TestFitLMM:
         group.fit_lmm()
         for result in group.lmm_results.values():
             for effects in result.random_effects.values():
-                assert 'log_contrast' not in effects.index
+                assert result.contrast_col not in effects.index
 
     def test_re_formulas_selects_maximal_converging(self):
         """When given multiple re_formulas, selects the most complex

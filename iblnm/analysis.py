@@ -1537,7 +1537,7 @@ def _variance_explained(result, df, response_col):
 
 
 def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
-             contrast_coding='log'):
+             contrast_coding='log', contrast_center=0.0):
     """Fit a linear mixed-effects model and return an LMMResult.
 
     Generic fitting function: builds the model, checks for convergence,
@@ -1613,6 +1613,7 @@ def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
         variance_explained=ve,
         random_effects=re_dict,
         contrast_coding=contrast_coding,
+        contrast_center=contrast_center,
     )
 
 
@@ -1623,8 +1624,9 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
     Uses deviation coding (±0.5) for side and reward so that every
     coefficient is interpretable at the grand mean of all other factors.
 
-    Model: ``response ~ log_contrast * side * reward`` with subject
-    as random effect.
+    Model: ``response ~ {coding}_contrast * side * reward`` with subject
+    as random effect. The contrast predictor is mean-centered so that main
+    effects are evaluated at the average contrast level.
 
     Coding:
         side:   contra = +0.5, ipsi = −0.5
@@ -1639,7 +1641,7 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
         Column name for the response magnitude.
     formula : str, optional
         Wilkinson formula for fixed effects. Default:
-        ``'{response_col} ~ log_contrast * side * reward'``.
+        ``'{response_col} ~ {coding}_contrast * side * reward'``.
     re_formula : str
         Random effects formula passed to ``statsmodels.MixedLM``.
         Default ``'1'`` (random intercept only).
@@ -1650,9 +1652,12 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
         None if the model fails to converge or data is degenerate.
     """
     _transform, _ = get_contrast_coding(contrast_coding)
+    contrast_col = f'{contrast_coding}_contrast'
 
     df = df.copy()
-    df['log_contrast'] = _transform(df['contrast'])
+    coded = _transform(df['contrast'])
+    contrast_center = float(np.mean(coded))
+    df[contrast_col] = coded - contrast_center
     # Deviation coding: ±0.5
     df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
     df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
@@ -1666,11 +1671,16 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
         return None
 
     if formula is None:
-        formula = f'{response_col} ~ log_contrast * side * reward'
+        formula = f'{response_col} ~ {contrast_col} * side * reward'
+
+    # Translate re_formula if it references the old 'log_contrast' name
+    if re_formula and 'log_contrast' in re_formula:
+        re_formula = re_formula.replace('log_contrast', contrast_col)
 
     lmm_result = _fit_lmm(formula, df, groups=df['subject'],
                            re_formula=re_formula, reml=True,
-                           contrast_coding=contrast_coding)
+                           contrast_coding=contrast_coding,
+                           contrast_center=contrast_center)
     if lmm_result is None:
         return None
 
@@ -1686,7 +1696,7 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
         for reward_label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
             grid = pd.DataFrame({
                 'contrast': contrasts,
-                'log_contrast': _transform(contrasts),
+                contrast_col: _transform(contrasts) - contrast_center,
                 'side': side_val,
                 'reward': reward_val,
                 'subject': df['subject'].iloc[0],  # dummy
