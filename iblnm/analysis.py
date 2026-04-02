@@ -1927,12 +1927,13 @@ def compute_interaction_effects(lmm_result, y_factor, x_factor):
         return fe_names.index(name) if name in fe_names else None
 
     # Deviation-coded coefficient names
+    cc = lmm_result.contrast_col
     _coef = {
-        'contrast': 'log_contrast',
+        'contrast': cc,
         'reward': 'reward',
         'side': 'side',
-        'contrast:reward': 'log_contrast:reward',
-        'contrast:side': 'log_contrast:side',
+        'contrast:reward': f'{cc}:reward',
+        'contrast:side': f'{cc}:side',
         'reward:side': 'side:reward',
     }
 
