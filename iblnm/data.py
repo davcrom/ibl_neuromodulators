@@ -2591,6 +2591,86 @@ class PhotometrySessionGroup:
 
         return results
 
+    def anova_response_magnitudes(self, response_col='response_early',
+                                    min_subjects=2, min_trials=10):
+        """Run repeated-measures ANOVA on subject-mean response magnitudes.
+
+        For each (target_NM, event) group, aggregates trial-level data to
+        subject means by (contrast, side, feedbackType), then runs a 3-way
+        repeated-measures ANOVA via ``anova_rm``.
+
+        Requires ``self.response_magnitudes`` and ``self.trial_timing`` to
+        be populated.
+
+        Parameters
+        ----------
+        response_col : str
+            Column name for the response magnitude.
+        min_subjects : int
+            Minimum subjects per group to attempt the ANOVA.
+        min_trials : int
+            Minimum trials per subject x condition cell. Cells with fewer
+            trials are dropped before aggregation.
+
+        Returns
+        -------
+        dict
+            Keys: (target_NM, event_label) tuples.
+            Values: ANOVA result DataFrames (from ``anova_rm``).
+        """
+        from iblnm.analysis import anova_rm
+        from iblnm.task import add_relative_contrast
+
+        if self.response_magnitudes is None:
+            raise ValueError(
+                "response_magnitudes not populated. "
+                "Call get_response_magnitudes() first."
+            )
+        if self.trial_timing is None:
+            raise ValueError(
+                "trial_timing not populated. "
+                "Call get_response_magnitudes() first."
+            )
+
+        df = add_relative_contrast(self.response_magnitudes.copy())
+        df = df.merge(
+            self.trial_timing[['eid', 'trial', 'response_time']],
+            on=['eid', 'trial'], how='left',
+        )
+        df = df.query('probabilityLeft == 0.5')
+        df = df.dropna(subset=[response_col])
+        df = df.query('choice != 0 and response_time > 0.05')
+
+        results = {}
+        for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
+            if df_group['subject'].nunique() < min_subjects:
+                continue
+            event_label = event.replace('_times', '')
+
+            # Aggregate to subject means per condition cell
+            group_cols = ['subject', 'contrast', 'side', 'feedbackType']
+            cell_counts = df_group.groupby(group_cols)[response_col].count()
+            # Drop cells with too few trials
+            valid_cells = cell_counts[cell_counts >= min_trials].reset_index()
+            if len(valid_cells) == 0:
+                continue
+            subject_means = (
+                df_group.merge(valid_cells[group_cols], on=group_cols, how='inner')
+                .groupby(group_cols, as_index=False)[response_col]
+                .mean()
+            )
+            if subject_means['subject'].nunique() < min_subjects:
+                continue
+
+            table = anova_rm(
+                subject_means, response_col, 'subject',
+                ['contrast', 'side', 'feedbackType'],
+            )
+            results[(target_nm, event_label)] = table
+
+        self.anova_results = results
+        return results
+
     def enrich_peak_velocity(self):
         """Extract peak wheel velocity from H5 files.
 

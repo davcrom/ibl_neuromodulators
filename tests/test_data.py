@@ -3324,6 +3324,58 @@ class TestFitLMM:
         assert group.lmm_re_formula in ('log_contrast', '1')
 
 
+class TestAnovaResponseMagnitudes:
+
+    def test_returns_dict(self):
+        group = _make_group_with_events()
+        result = group.anova_response_magnitudes()
+        assert isinstance(result, dict)
+
+    def test_keys_are_target_event_tuples(self):
+        group = _make_group_with_events()
+        result = group.anova_response_magnitudes()
+        for key in result:
+            assert len(key) == 2
+            target_nm, event_label = key
+            assert isinstance(target_nm, str)
+            assert isinstance(event_label, str)
+
+    def test_values_are_anova_tables(self):
+        group = _make_group_with_events()
+        result = group.anova_response_magnitudes()
+        assert len(result) > 0
+        for table in result.values():
+            assert isinstance(table, pd.DataFrame)
+            for col in ['Source', 'F', 'Pr(>F)', 'method']:
+                assert col in table.columns
+
+    def test_seven_terms_per_group(self):
+        """3 factors → 7 terms (3 main + 3 two-way + 1 three-way)."""
+        group = _make_group_with_events()
+        result = group.anova_response_magnitudes()
+        for table in result.values():
+            assert len(table) == 7
+
+    def test_requires_response_magnitudes(self):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        group = PhotometrySessionGroup(recs, one=MagicMock())
+        with pytest.raises(ValueError, match='response_magnitudes'):
+            group.anova_response_magnitudes()
+
+    def test_requires_trial_timing(self):
+        group = _make_group_with_events()
+        group.trial_timing = None
+        with pytest.raises(ValueError, match='trial_timing'):
+            group.anova_response_magnitudes()
+
+    def test_stores_results_on_self(self):
+        group = _make_group_with_events()
+        group.anova_response_magnitudes()
+        assert hasattr(group, 'anova_results')
+        assert isinstance(group.anova_results, dict)
+
+
 # =============================================================================
 # CCA Tests
 # =============================================================================
