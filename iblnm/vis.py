@@ -692,7 +692,7 @@ def plot_joint_distributions(df, metrics=None, transform=True, bins=30, figsize=
                 ax.yaxis.set_visible(False)
                 ax.set_xlabel(metrics[j] if i == n_metrics - 1 else "")
                 ax.set_ylabel(metrics[i] if j == 0 else "")
-                ax.text(0.01, 0.8, r'$\rho$' + f'={corr.iloc[i, j]:.2f}', fontsize=6, transform=ax.transAxes)
+                ax.text(0.01, 0.8, r'$\rho$' + f'={corr.iloc[i, j]:.2f}', fontsize=TICKFONTSIZE, transform=ax.transAxes)
             elif i == j:  # Diagonal: plot histograms
                 data = X[:, i]
                 ax.hist(data, bins=bins, color='gray', alpha=0.7)
@@ -1378,7 +1378,7 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     fig.suptitle(
         f'{target_nm} — {event_label} ({_window})\n'
         f'{n_sessions} sessions, {n_subjects} subjects',
-        fontsize=10,
+        fontsize=LABELFONTSIZE,
     )
 
     # Compute contrasts from the full dataset so both panels share the same x-axis
@@ -1432,8 +1432,10 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     # Invert contra axis so highest contrast is on the far left
     ax_c.invert_xaxis()
 
-    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
-    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
+    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes,
+              fontsize=TICKFONTSIZE)
+    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes,
+              fontsize=TICKFONTSIZE)
 
     ax_c.set_ylabel(r'$\Delta$ activity (z-score)')
     ax_i.tick_params(left=False)
@@ -1441,7 +1443,8 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     for ax in (ax_c, ax_i):
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
+    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
+                fontsize=TICKFONTSIZE)
 
     ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     return fig
@@ -1494,7 +1497,7 @@ def plot_movement_response(df_group, response_col, timing_col, target_nm,
     fig.suptitle(
         f'{target_nm} — stimOn ({timing_label})\n'
         f'{n_sessions} sessions, {n_subjects} subjects, contrast={contrast:g}',
-        fontsize=10,
+        fontsize=LABELFONTSIZE,
     )
 
     if len(df_group) == 0:
@@ -1545,19 +1548,23 @@ def plot_movement_response(df_group, response_col, timing_col, target_nm,
                         marker='o', color=color, linestyle=ls, label=label)
 
         ax.set_xticks(tick_positions)
-        ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=7)
+        ax.set_xticklabels(tick_labels, rotation=45, ha='right',
+                           fontsize=TICKFONTSIZE)
         ax.set_xlabel(f'{timing_label} (s)')
         ax.axhline(0, ls='--', color='gray', lw=0.5)
 
     ax_c.invert_xaxis()
 
-    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
-    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
+    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes,
+              fontsize=TICKFONTSIZE)
+    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes,
+              fontsize=TICKFONTSIZE)
 
     ax_c.set_ylabel(r'$\Delta$ activity (z-score)')
     ax_i.tick_params(left=False)
     ax_i.spines['left'].set_visible(False)
-    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
+    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
+                fontsize=TICKFONTSIZE)
 
     ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     return fig
@@ -1696,7 +1703,7 @@ def plot_decoding_coefficients(coefficients, fig=None):
     ax.set_yticks(range(len(coefficients.index)))
     ax.set_yticklabels(coefficients.index)
     ax.set_xticks(range(len(coefficients.columns)))
-    ax.set_xticklabels(coefficients.columns, rotation=90, fontsize=7)
+    ax.set_xticklabels(coefficients.columns, rotation=90, fontsize=TICKFONTSIZE)
     ax.set_title('Decoding coefficients (L1 logistic)')
     fig.tight_layout()
     return fig
@@ -1725,7 +1732,7 @@ def plot_feature_contributions(contributions, fig=None):
 
     ax.barh(range(len(df)), df['delta'].values)
     ax.set_yticks(range(len(df)))
-    ax.set_yticklabels(df['feature'].values, fontsize=7)
+    ax.set_yticklabels(df['feature'].values, fontsize=TICKFONTSIZE)
     ax.set_xlabel(r'$\Delta$ accuracy')
     ax.set_title('Feature unique contribution')
     ax.axvline(0, color='k', linewidth=0.5)
@@ -1833,7 +1840,7 @@ def plot_mean_response_vectors(response_matrix, fig=None):
         ax.legend(frameon=False)
 
     axes[-1].set_xticks(np.arange(len(response_matrix.columns)))
-    axes[-1].set_xticklabels(response_matrix.columns, rotation=90, fontsize=7)
+    axes[-1].set_xticklabels(response_matrix.columns, rotation=90, fontsize=TICKFONTSIZE)
     axes[0].set_title('Mean response vectors by target-NM')
     fig.tight_layout()
     return fig
@@ -2005,7 +2012,7 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
     event_label = event.replace('_times', '')
     _window = window_label or ''
     color = TARGETNM_COLORS.get(target_nm, 'black')
-    fig.suptitle(f'{target_nm} — {event_label} ({_window}) [LMM]', fontsize=10)
+    fig.suptitle(f'{target_nm} — {event_label} ({_window}) [LMM]', fontsize=LABELFONTSIZE)
 
     _transform, _ = get_contrast_coding(contrast_coding)
 
@@ -2045,12 +2052,15 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
         ax.axhline(0, ls='--', color='gray', lw=0.5)
 
     ax_c.invert_xaxis()
-    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes, fontsize=9)
-    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes, fontsize=9)
+    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes,
+              fontsize=TICKFONTSIZE)
+    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes,
+              fontsize=TICKFONTSIZE)
     ax_c.set_ylabel('z-score (modeled)')
     ax_i.tick_params(left=False)
     ax_i.spines['left'].set_visible(False)
-    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1), fontsize=8)
+    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
+                fontsize=TICKFONTSIZE)
     ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     return fig
 
@@ -2089,7 +2099,7 @@ def plot_lmm_variance_explained(ve_dict, fig=None):
     ax.bar(x + width / 2, conditional, width, label='Conditional R²', color='coral')
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=8)
+    ax.set_xticklabels(labels, fontsize=TICKFONTSIZE)
     ax.set_ylabel('R²')
     ax.set_ylim(0, 1)
     ax.legend(frameon=False)
@@ -2161,8 +2171,8 @@ def plot_marginal_means(emm_dict, event, fig=None):
         ax.axhline(0, ls='--', color='gray', lw=0.5)
 
     axes[-1].legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
-                    fontsize=8)
-    fig.suptitle(f'Estimated marginal means — {event}', fontsize=10)
+                    fontsize=TICKFONTSIZE)
+    fig.suptitle(f'Estimated marginal means — {event}', fontsize=LABELFONTSIZE)
     return fig
 
 
@@ -2204,7 +2214,8 @@ def plot_lmm_coefficient_heatmap(df_coefs):
     ]
 
     events = sorted(df_coefs['event'].unique())
-    targets = sorted(df_coefs['target_NM'].unique())
+    targets = sorted(df_coefs['target_NM'].unique(),
+                     key=lambda x: TARGETNM2POSITION.get(x, 999))
 
     # Global vmax across all events for shared colorbar scale
     vmax = df_coefs['Coef.'].abs().max()
@@ -2238,15 +2249,15 @@ def plot_lmm_coefficient_heatmap(df_coefs):
                 stars = _pval_to_stars(pval_matrix[i, j])
                 if stars:
                     ax.text(j, i, stars, ha='center', va='center',
-                            fontsize=9, fontweight='bold',
+                            fontsize=TICKFONTSIZE, fontweight='bold',
                             color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
                             else 'w')
 
         ax.set_xticks(range(len(col_labels)))
-        ax.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=8)
+        ax.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=TICKFONTSIZE)
         ax.set_yticks(range(len(targets)))
-        ax.set_yticklabels(targets, fontsize=9)
-        ax.set_title(event, fontsize=11)
+        ax.set_yticklabels(targets, fontsize=TICKFONTSIZE)
+        ax.set_title(event, fontsize=LABELFONTSIZE)
         fig.colorbar(im, ax=ax, label='Coefficient', shrink=0.8)
         fig.tight_layout()
         figs[event] = fig
@@ -2300,9 +2311,10 @@ def plot_lmm_summary(group, event, fig=None):
 
     ax_r2 = axes[0]
 
-    targets = sorted(set(
-        tnm for (tnm, ev) in lmm_results if ev == event
-    ))
+    targets = sorted(
+        set(tnm for (tnm, ev) in lmm_results if ev == event),
+        key=lambda x: TARGETNM2POSITION.get(x, 999),
+    )
 
     # --- Panel 1: R² side-by-side bars ---
     bar_w = 0.35
@@ -2318,11 +2330,11 @@ def plot_lmm_summary(group, event, fig=None):
                   color=color, alpha=1.0, label='Fixed + random' if i == 0 else '')
 
     ax_r2.set_xticks(range(len(targets)))
-    ax_r2.set_xticklabels(targets, rotation=45, ha='right', fontsize=7)
+    ax_r2.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
     ax_r2.set_ylabel('R²')
     ax_r2.set_ylim(0, 0.35)
     ax_r2.set_title('Variance explained')
-    ax_r2.legend(frameon=False, fontsize=7, loc='upper left')
+    ax_r2.legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
 
     # --- Panels 2–4: Interaction plots ---
     _interaction_specs = [
@@ -2388,7 +2400,7 @@ def plot_lmm_summary(group, event, fig=None):
         # X-axis: label each target position with target name,
         # and add level labels as a secondary indication
         ax.set_xticks(range(len(targets)))
-        ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=7)
+        ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         ax.axhline(0, ls='--', color='gray', lw=0.5)
@@ -2472,22 +2484,22 @@ def plot_lmm_summary(group, event, fig=None):
                 if stars:
                     ax_hm.text(
                         j, i, stars, ha='center', va='center',
-                        fontsize=8, fontweight='bold',
+                        fontsize=TICKFONTSIZE, fontweight='bold',
                         color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
                         else 'w')
 
         col_labels = [_coef_label(t) for t in present_terms]
         ax_hm.set_xticks(range(len(col_labels)))
-        ax_hm.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=7)
+        ax_hm.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=TICKFONTSIZE)
         ax_hm.set_yticks(range(len(targets)))
-        ax_hm.set_yticklabels(targets, fontsize=7)
+        ax_hm.set_yticklabels(targets, fontsize=TICKFONTSIZE)
         ax_hm.set_title('Coefficients')
         from mpl_toolkits.axes_grid1 import make_axes_locatable
         divider = make_axes_locatable(ax_hm)
         cax = divider.append_axes('right', size='5%', pad=0.08)
         fig.colorbar(im, cax=cax, label='β')
 
-    fig.suptitle(f'LMM summary — {event}', fontsize=11)
+    fig.suptitle(f'LMM summary — {event}', fontsize=LABELFONTSIZE)
     return fig
 
 
@@ -2541,7 +2553,7 @@ def plot_decoding_summary(coefficients, contributions, fig=None):
     x = np.arange(n_features)
     ax_delta.bar(x, contrib_sorted['delta'].values)
     ax_delta.set_xticks(x)
-    ax_delta.set_xticklabels(feature_order, rotation=90, fontsize=7)
+    ax_delta.set_xticklabels(feature_order, rotation=90, fontsize=TICKFONTSIZE)
     ax_delta.set_ylabel(r'$\Delta$ acc.')
     ax_delta.axhline(0, color='k', linewidth=0.5)
 
@@ -2630,7 +2642,7 @@ def plot_response_decoding_summary(response_matrix, coefficients,
                          fmt='o', markersize=3, capsize=2, label=target,
                          color=color)
     ax_resp.set_ylabel('Normalized response')
-    ax_resp.legend(frameon=False, fontsize=8)
+    ax_resp.legend(frameon=False, fontsize=TICKFONTSIZE)
     ax_resp.tick_params(axis='x', labelbottom=False)
 
     # --- Middle: coefficients heatmap ---
@@ -2645,7 +2657,7 @@ def plot_response_decoding_summary(response_matrix, coefficients,
     # --- Bottom: contribution bars ---
     ax_delta.bar(x, contrib_sorted['delta'].values)
     ax_delta.set_xticks(x)
-    ax_delta.set_xticklabels(feature_order, rotation=90, fontsize=7)
+    ax_delta.set_xticklabels(feature_order, rotation=90, fontsize=TICKFONTSIZE)
     ax_delta.set_ylabel(r'$\Delta$ acc.')
     ax_delta.axhline(0, color='k', linewidth=0.5)
 
@@ -2804,8 +2816,8 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
                 ax.set_title(event_label)
 
     # Legend on first axis
-    axes[0, 0].legend(title='Contrast', fontsize=7, title_fontsize=8,
-                      loc='upper left')
+    axes[0, 0].legend(title='Contrast', fontsize=TICKFONTSIZE,
+                      title_fontsize=TICKFONTSIZE, loc='upper left')
 
     # N trials / N sessions / N mice label on last column, top row
     n_sessions = df['eid'].nunique()
@@ -2821,10 +2833,10 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
     axes[0, -1].annotate(
         count_text,
         xy=(0.95, 0.92), xycoords='axes fraction',
-        fontsize=8, ha='right', va='top', color='k',
+        fontsize=TICKFONTSIZE, ha='right', va='top', color='k',
     )
 
-    fig.suptitle(target_nm, fontsize=12)
+    fig.suptitle(target_nm, fontsize=LABELFONTSIZE)
     fig.tight_layout()
     return fig
 
@@ -2839,6 +2851,175 @@ _DV_LABELS = {
     'movement_time': 'Movement time',
     'peak_velocity': 'Peak velocity',
 }
+
+
+def plot_movement_lmm_summary(summary_df):
+    """Grouped bar chart comparing delta-R² from dropping contrast vs timing.
+
+    One group per target_NM, two bars per timing variable (delta_R²_contrast,
+    delta_R²_timing). Significance from LRT marked with stars. A secondary
+    panel shows log10(BF).
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        One row per (target_NM, timing_variable). Required columns:
+        target_NM, timing_col, delta_r2_contrast, delta_r2_timing,
+        lrt_contrast_p, lrt_timing_p, bf_contrast, bf_timing,
+        full_r2.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    timing_vars = sorted(summary_df['timing_col'].unique()) if len(summary_df) > 0 else []
+    n_panels = max(len(timing_vars), 1)
+
+    fig, axes = plt.subplots(2, n_panels, figsize=(4 * n_panels + 1, 7),
+                             gridspec_kw={'height_ratios': [3, 2]},
+                             layout='constrained')
+    if n_panels == 1:
+        axes = axes.reshape(2, 1)
+
+    if len(summary_df) == 0:
+        fig.suptitle('Movement encoding — model comparison', fontsize=LABELFONTSIZE)
+        return fig
+
+    targets = sorted(summary_df['target_NM'].unique(),
+                     key=lambda x: TARGETNM2POSITION.get(x, 999))
+    x = np.arange(len(targets))
+    width = 0.35
+
+    for j, tvar in enumerate(timing_vars):
+        ax_r2 = axes[0, j]
+        ax_bf = axes[1, j]
+        df_tv = summary_df[summary_df['timing_col'] == tvar]
+
+        for i, tnm in enumerate(targets):
+            row = df_tv[df_tv['target_NM'] == tnm]
+            if len(row) == 0:
+                continue
+            row = row.iloc[0]
+            color = TARGETNM_COLORS.get(tnm, f'C{i}')
+
+            # Delta-R² bars
+            ax_r2.bar(i - width / 2, row['delta_r2_contrast'], width,
+                      color=color, alpha=0.6, edgecolor=color)
+            ax_r2.bar(i + width / 2, row['delta_r2_timing'], width,
+                      color=color, alpha=1.0, edgecolor=color)
+
+            # Significance stars
+            y_c = row['delta_r2_contrast']
+            y_t = row['delta_r2_timing']
+            stars_c = _pval_to_stars(row['lrt_contrast_p'])
+            stars_t = _pval_to_stars(row['lrt_timing_p'])
+            if stars_c:
+                ax_r2.text(i - width / 2, y_c, stars_c, ha='center',
+                           va='bottom', fontsize=TICKFONTSIZE)
+            if stars_t:
+                ax_r2.text(i + width / 2, y_t, stars_t, ha='center',
+                           va='bottom', fontsize=TICKFONTSIZE)
+
+            # log10(BF) bars
+            log_bf_c = np.log10(max(row['bf_contrast'], 1e-10))
+            log_bf_t = np.log10(max(row['bf_timing'], 1e-10))
+            ax_bf.bar(i - width / 2, log_bf_c, width,
+                      color=color, alpha=0.6, edgecolor=color)
+            ax_bf.bar(i + width / 2, log_bf_t, width,
+                      color=color, alpha=1.0, edgecolor=color)
+
+        timing_label = tvar.replace('log_', '')
+        ax_r2.set_title(timing_label)
+        ax_r2.set_xticks(x)
+        ax_r2.set_xticklabels(targets, fontsize=TICKFONTSIZE, rotation=30, ha='right')
+        ax_r2.set_ylabel(r'$\Delta R^2$' if j == 0 else '')
+        ax_r2.axhline(0, ls='--', color='gray', lw=0.5)
+
+        ax_bf.set_xticks(x)
+        ax_bf.set_xticklabels(targets, fontsize=TICKFONTSIZE, rotation=30, ha='right')
+        ax_bf.set_ylabel(r'$\log_{10}$ BF' if j == 0 else '')
+        ax_bf.axhline(0, ls='--', color='gray', lw=0.5)
+        ax_bf.axhline(1, ls=':', color='gray', lw=0.5)  # BF=10 line
+
+    # Legend: light = drop contrast, dark = drop timing
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='gray', alpha=0.6, label='contrast unique'),
+        Patch(facecolor='gray', alpha=1.0, label='timing unique'),
+    ]
+    axes[0, -1].legend(handles=legend_elements, frameon=False,
+                       loc='upper right', fontsize=TICKFONTSIZE)
+
+    fig.suptitle('Movement encoding — model comparison', fontsize=LABELFONTSIZE)
+    return fig
+
+
+def plot_movement_slopes(slopes_df):
+    """Timing slope (± 95% CI) as a function of contrast, per target_NM.
+
+    One panel per timing variable.
+
+    Parameters
+    ----------
+    slopes_df : pd.DataFrame
+        One row per (target_NM, contrast, timing_variable). Required columns:
+        target_NM, contrast, timing_col, timing_coef, timing_se, timing_p.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    timing_vars = sorted(slopes_df['timing_col'].unique()) if len(slopes_df) > 0 else []
+    n_panels = max(len(timing_vars), 1)
+
+    fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels + 1, 4),
+                             sharey=True, layout='constrained')
+    if n_panels == 1:
+        axes = [axes]
+
+    if len(slopes_df) == 0:
+        fig.suptitle('Timing slopes by contrast', fontsize=LABELFONTSIZE)
+        return fig
+
+    targets = sorted(slopes_df['target_NM'].unique(),
+                     key=lambda x: TARGETNM2POSITION.get(x, 999))
+
+    for j, tvar in enumerate(timing_vars):
+        ax = axes[j]
+        df_tv = slopes_df[slopes_df['timing_col'] == tvar]
+
+        for tnm in targets:
+            df_tnm = df_tv[df_tv['target_NM'] == tnm].sort_values('contrast')
+            if len(df_tnm) == 0:
+                continue
+            color = TARGETNM_COLORS.get(tnm, 'gray')
+            contrasts = df_tnm['contrast'].values
+            coefs = df_tnm['timing_coef'].values
+            ci = 1.96 * df_tnm['timing_se'].values
+
+            ax.errorbar(contrasts, coefs, yerr=ci,
+                        marker='o', color=color, label=tnm,
+                        markersize=5, capsize=3)
+
+            # Mark significant slopes
+            sig = df_tnm['timing_p'] < 0.05
+            if sig.any():
+                ax.scatter(df_tnm.loc[sig.values, 'contrast'].values,
+                           df_tnm.loc[sig.values, 'timing_coef'].values,
+                           color=color, s=50, zorder=5,
+                           edgecolors='black', linewidths=0.5)
+
+        timing_label = tvar.replace('log_', '')
+        ax.set_title(timing_label)
+        ax.set_xlabel('Contrast (%)')
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+        if j == 0:
+            ax.set_ylabel('Timing slope (z / log₁₀ s)')
+
+    axes[-1].legend(frameon=False, loc='upper left',
+                    bbox_to_anchor=(1, 1), fontsize=TICKFONTSIZE)
+    fig.suptitle('Timing slopes by contrast', fontsize=LABELFONTSIZE)
+    return fig
 
 
 def plot_wheel_lmm_summary(summary_df):
@@ -2861,7 +3042,7 @@ def plot_wheel_lmm_summary(summary_df):
             ax.set_title(_DV_LABELS.get(dv, dv))
             ax.set_xlabel('Contrast (%)')
         axes[0].set_ylabel('ΔR² (marginal)')
-        fig.suptitle('NM activity contribution to behavioral vigor', fontsize=12)
+        fig.suptitle('NM activity contribution to behavioral vigor', fontsize=LABELFONTSIZE)
         fig.tight_layout()
         return fig
 
@@ -2887,8 +3068,8 @@ def plot_wheel_lmm_summary(summary_df):
     axes[0].set_ylabel('ΔR² (marginal)')
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
-        axes[-1].legend(handles, labels, fontsize=8)
-    fig.suptitle('NM activity contribution to behavioral vigor', fontsize=12)
+        axes[-1].legend(handles, labels, fontsize=TICKFONTSIZE)
+    fig.suptitle('NM activity contribution to behavioral vigor', fontsize=LABELFONTSIZE)
     fig.tight_layout()
     return fig
 
@@ -2934,7 +3115,7 @@ def plot_glm_pca_weights(pca_result, fig=None):
             val = data[i, j]
             color = 'white' if abs(val) > 0.5 * vmax else 'black'
             ax.text(j, i, f'{val:.2f}', ha='center', va='center',
-                    fontsize=8, color=color)
+                    fontsize=TICKFONTSIZE, color=color)
 
     fig.colorbar(im, ax=ax, shrink=0.8, label='Loading')
     return fig
@@ -2991,7 +3172,7 @@ def plot_glm_pca_scores(pca_result, n_pcs=3, stats=None, fig=None):
         ax.set_title(f'PC{pc_idx + 1} ({pct:.0%})')
         ax.set_xticks(positions)
         ax.set_xticklabels([t.split('-')[0] for t in targets],
-                           rotation=45, ha='right', fontsize=8)
+                           rotation=45, ha='right', fontsize=TICKFONTSIZE)
         ax.axhline(0, ls='--', color='gray', lw=0.5)
         if pc_idx == 0:
             ax.set_ylabel('PC score')
@@ -3003,7 +3184,7 @@ def plot_glm_pca_scores(pca_result, n_pcs=3, stats=None, fig=None):
                 p = kw['kruskal_p'].iloc[0]
                 label = f'p={p:.3f}' if p >= 0.001 else f'p={p:.1e}'
                 ax.annotate(f'KW {label}', xy=(1, 1),
-                            xycoords='axes fraction', fontsize=7,
+                            xycoords='axes fraction', fontsize=TICKFONTSIZE,
                             ha='right', va='top', color='k')
 
     return fig
@@ -3219,12 +3400,14 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
     ax.set_ylabel('Canonical correlation')
     ax.set_title('Per-cohort CC1')
 
-    # Annotate p-values
+    # Annotate significance stars
     for i, t in enumerate(targets):
         pv = cohort_results[t].p_values
         if pv is not None:
-            ax.text(i, corrs[i] + 0.01, f'p={pv[0]:.3f}',
-                    ha='center', va='bottom', fontsize=TICKFONTSIZE)
+            stars = _pval_to_stars(pv[0])
+            if stars:
+                ax.text(i, corrs[i] + 0.01, stars,
+                        ha='center', va='bottom', fontsize=TICKFONTSIZE)
 
     # Panel 2: cross-projection heatmap
     ax = axes[1]
@@ -3239,10 +3422,6 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
     ax.set_xlabel('Weight source')
     ax.set_ylabel('Data source')
     ax.set_title('Cross-projection')
-    for i in range(len(targets)):
-        for j in range(len(targets)):
-            ax.text(j, i, f'{matrix.values[i, j]:.2f}',
-                    ha='center', va='center', fontsize=TICKFONTSIZE)
     fig.colorbar(im, ax=ax, shrink=0.8)
 
     # Panel 3: delta-r cross-projection (relative to within-cohort diagonal)
@@ -3257,10 +3436,6 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
     ax.set_xlabel('Weight source')
     ax.set_ylabel('Data source')
     ax.set_title(r'$\Delta r$ (vs within-cohort)')
-    for i in range(len(targets)):
-        for j in range(len(targets)):
-            ax.text(j, i, f'{delta_matrix[i, j]:+.2f}',
-                    ha='center', va='center', fontsize=TICKFONTSIZE)
     fig.colorbar(im2, ax=ax, shrink=0.8)
 
     # Panel 4: weight profiles (neural + behavioral combined)
@@ -3281,10 +3456,6 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
         ax.set_yticks(range(len(cohorts)))
         ax.set_yticklabels(cohorts)
         ax.set_title(title)
-        for i in range(len(cohorts)):
-            for j in range(len(cohorts)):
-                ax.text(j, i, f'{sim_matrix.values[i, j]:.2f}',
-                        ha='center', va='center', fontsize=TICKFONTSIZE)
         fig.colorbar(im, ax=ax, shrink=0.8)
 
     fig.tight_layout()
@@ -3321,13 +3492,6 @@ def _plot_weight_heatmap_pair(cohort_results, targets, ax):
 
     # Separator between neural and behavioral
     ax.axhline(n_neural - 0.5, color='black', linewidth=1.5)
-
-    # Annotate values
-    for i in range(combined.shape[0]):
-        for j in range(combined.shape[1]):
-            ax.text(j, i, f'{combined[i, j]:.2f}',
-                    ha='center', va='center', fontsize=TICKFONTSIZE,
-                    color='white' if abs(combined[i, j]) > 0.6 * vmax else 'black')
 
     # Label the two sections
     ax.text(-0.7, (n_neural - 1) / 2, 'Neural', ha='right', va='center',
@@ -3419,7 +3583,7 @@ def _draw_rt_violins(df, ax=None):
         for t in target_nms
     ]
     if handles:
-        ax.legend(handles=handles, fontsize=7, loc='upper left')
+        ax.legend(handles=handles, fontsize=TICKFONTSIZE, loc='upper left')
 
     return ax
 
@@ -3565,7 +3729,7 @@ def plot_target_comparison(group, params, labels, axes=None):
 
         ax.set_xticks(positions)
         ax.set_xticklabels([t.split('-')[0] for t in target_names],
-                           rotation=45, ha='right', fontsize=8)
+                           rotation=45, ha='right', fontsize=TICKFONTSIZE)
         ax.set_title(label)
 
         if p_kw >= 0.05:
@@ -3574,7 +3738,7 @@ def plot_target_comparison(group, params, labels, axes=None):
             ax.set_ylim(ax.get_ylim()[0], y_top + y_rng * 0.15)
             ax.text(0.5, y_top + y_rng * 0.05,
                     f'H={H:.1f}, p={p_kw:.3f} n.s.',
-                    ha='center', va='bottom', fontsize=7)
+                    ha='center', va='bottom', fontsize=TICKFONTSIZE)
             continue
 
         # Post-hoc pairwise tests
@@ -3592,14 +3756,14 @@ def plot_target_comparison(group, params, labels, axes=None):
             ax.plot([a, a, b, b], [y - step * 0.15, y, y, y - step * 0.15],
                     color='black', linewidth=0.8)
             ax.text((a + b) / 2, y, stars, ha='center', va='bottom',
-                    fontsize=8)
+                    fontsize=TICKFONTSIZE)
 
         label_y = (y_max + step * (len(sig_pairs) + 0.5)
                    if sig_pairs else y_max)
         ax.set_ylim(ax.get_ylim()[0], label_y + step * 2.5)
         ax.text(0.5, label_y + step * 0.5,
                 f'H={H:.1f}, p={p_kw:.1e}',
-                ha='center', va='bottom', fontsize=7)
+                ha='center', va='bottom', fontsize=TICKFONTSIZE)
 
     fig.tight_layout()
     return fig
