@@ -2316,7 +2316,10 @@ def plot_lmm_summary(group, event, fig=None):
         ax_hm.set_yticks(range(len(targets)))
         ax_hm.set_yticklabels(targets, fontsize=7)
         ax_hm.set_title('Coefficients')
-        fig.colorbar(im, ax=ax_hm, label='β', shrink=0.8)
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        divider = make_axes_locatable(ax_hm)
+        cax = divider.append_axes('right', size='5%', pad=0.08)
+        fig.colorbar(im, cax=cax, label='β')
 
     fig.suptitle(f'LMM summary — {event}', fontsize=11)
     return fig
