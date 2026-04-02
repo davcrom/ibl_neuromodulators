@@ -3513,6 +3513,17 @@ class TestGetPsychometricFeatures:
         actual = result.iloc[0]['psych_50_threshold']
         assert np.isclose(actual, expected)
 
+    def test_uses_preloaded_performance(self):
+        """When self.performance is already set, no path is needed."""
+        group = _make_group_with_response_features()
+        perf = _make_mock_performance(group)
+        group.performance = perf
+        result = group.get_psychometric_features()
+        assert list(result.index) == list(group.response_features.index)
+        first_eid = result.index.get_level_values('eid')[0]
+        expected = perf.loc[perf['eid'] == first_eid, 'psych_50_threshold'].iloc[0]
+        assert np.isclose(result.iloc[0]['psych_50_threshold'], expected)
+
 
 class TestGroupFitCCA:
 

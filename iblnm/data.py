@@ -2174,10 +2174,14 @@ class PhotometrySessionGroup:
     def get_psychometric_features(self, performance_path=None, params=None):
         """Build psychometric parameter matrix aligned to response_features.
 
+        Reads from ``self.performance`` if already loaded, otherwise calls
+        ``load_performance(performance_path)``.
+
         Parameters
         ----------
         performance_path : Path or str, optional
-            Path to performance.pqt. Default: config.PERFORMANCE_FPATH.
+            Path to performance.pqt. Only used when ``self.performance`` is
+            None. Default: config.PERFORMANCE_FPATH.
         params : list of str, optional
             Columns to include from performance data. Default:
             ``['psych_50_threshold', 'psych_50_bias',
@@ -2188,17 +2192,19 @@ class PhotometrySessionGroup:
         pd.DataFrame
             (n_recordings, P) aligned to ``self.response_features`` index.
         """
-        from iblnm.config import PERFORMANCE_FPATH
-
-        if performance_path is None:
-            performance_path = PERFORMANCE_FPATH
+        if self.performance is None:
+            from iblnm.config import PERFORMANCE_FPATH
+            self.load_performance(
+                performance_path if performance_path is not None
+                else PERFORMANCE_FPATH
+            )
         if params is None:
             params = [
                 'psych_50_threshold', 'psych_50_bias',
                 'psych_50_lapse_left', 'psych_50_lapse_right',
             ]
 
-        perf = pd.read_parquet(performance_path)
+        perf = self.performance
 
         # Extract eid from response_features index and merge
         rf_index = self.response_features.index
