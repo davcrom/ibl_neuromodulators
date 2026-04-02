@@ -2035,3 +2035,30 @@ class TestPlotPsychometricGrid:
         assert 'VTA-DA' in titles
         assert 'LC-NE' in titles
         plt.close('all')
+
+
+# =============================================================================
+# plot_target_comparison
+# =============================================================================
+
+class TestPlotTargetComparison:
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_target_comparison
+        group = _make_mock_group_with_performance()
+        params = ['fraction_correct', 'psych_50_bias']
+        labels = ['fraction correct', 'bias']
+        fig = plot_target_comparison(group, params, labels)
+        assert isinstance(fig, plt.Figure)
+        plt.close('all')
+
+    def test_one_panel_per_param(self):
+        from iblnm.vis import plot_target_comparison
+        group = _make_mock_group_with_performance()
+        params = ['fraction_correct', 'psych_50_bias', 'psych_50_threshold']
+        labels = ['fraction correct', 'bias', 'threshold']
+        fig = plot_target_comparison(group, params, labels)
+        titles = [ax.get_title() for ax in fig.axes if ax.get_visible()]
+        for label in labels:
+            assert label in titles
+        plt.close('all')

@@ -3305,3 +3305,111 @@ def plot_psychometric_grid(group, axes=None):
     return fig
 
 
+def plot_target_comparison(group, params, labels, axes=None):
+    """Boxplots comparing target-NMs on performance parameters.
+
+    Runs Kruskal-Wallis per parameter; draws post-hoc Mann-Whitney brackets
+    when significant (p < 0.05, Bonferroni-corrected).
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        Must have ``group.performance`` loaded.
+    params : list of str
+        Column names in performance to compare.
+    labels : list of str
+        Display labels (same length as params).
+    axes : np.ndarray of Axes, optional
+        Shape (1, len(params)). Created if None.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    from iblnm.analysis import kruskal_wallis_groups, pairwise_mannwhitney
+
+    rec_meta = (
+        group.recordings[['eid', 'subject', 'target_NM']]
+        .drop_duplicates()
+    )
+    df = group.performance.merge(rec_meta, on='eid', how='inner')
+    targets = [t for t in TARGETNMS_TO_ANALYZE if t in df['target_NM'].values]
+
+    if axes is None:
+        fig, axes = plt.subplots(
+            1, len(params),
+            figsize=(3.5 * len(params), 4),
+            squeeze=False,
+        )
+    else:
+        fig = axes.flat[0].figure
+
+    for i, (col, label) in enumerate(zip(params, labels)):
+        ax = axes[0, i]
+
+        H, p_kw, groups_data = kruskal_wallis_groups(df, 'target_NM', col)
+
+        # Keep only targets in TARGETNMS_TO_ANALYZE order
+        target_names = [t for t in targets if t in groups_data]
+        if len(target_names) < 2:
+            ax.set_title(label)
+            continue
+
+        positions = list(range(len(target_names)))
+        bp = ax.boxplot(
+            [groups_data[t] for t in target_names],
+            positions=positions, widths=0.5, patch_artist=True,
+            showfliers=False,
+        )
+        for j, tnm in enumerate(target_names):
+            color = TARGETNM_COLORS.get(tnm, 'gray')
+            bp['boxes'][j].set_facecolor('none')
+            bp['boxes'][j].set_edgecolor(color)
+            bp['boxes'][j].set_linewidth(1.5)
+            bp['medians'][j].set_color(color)
+            bp['medians'][j].set_linewidth(2)
+            for k in (2 * j, 2 * j + 1):
+                bp['whiskers'][k].set_color(color)
+                bp['caps'][k].set_color(color)
+
+        ax.set_xticks(positions)
+        ax.set_xticklabels([t.split('-')[0] for t in target_names],
+                           rotation=45, ha='right', fontsize=8)
+        ax.set_title(label)
+
+        if p_kw >= 0.05:
+            y_top = ax.get_ylim()[1]
+            y_rng = y_top - ax.get_ylim()[0]
+            ax.set_ylim(ax.get_ylim()[0], y_top + y_rng * 0.15)
+            ax.text(0.5, y_top + y_rng * 0.05,
+                    f'H={H:.1f}, p={p_kw:.3f} n.s.',
+                    ha='center', va='bottom', fontsize=7)
+            continue
+
+        # Post-hoc pairwise tests
+        pairwise = pairwise_mannwhitney(
+            {t: groups_data[t] for t in target_names})
+        sig_pairs = [(target_names.index(a), target_names.index(b), p_corr)
+                     for a, b, _, p_corr in pairwise if p_corr < 0.05]
+
+        y_max = ax.get_ylim()[1]
+        y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+        step = y_range * 0.06
+        for k, (a, b, p_corr) in enumerate(sig_pairs):
+            y = y_max + step * (k + 0.5)
+            stars = '***' if p_corr < 0.001 else '**' if p_corr < 0.01 else '*'
+            ax.plot([a, a, b, b], [y - step * 0.15, y, y, y - step * 0.15],
+                    color='black', linewidth=0.8)
+            ax.text((a + b) / 2, y, stars, ha='center', va='bottom',
+                    fontsize=8)
+
+        label_y = (y_max + step * (len(sig_pairs) + 0.5)
+                   if sig_pairs else y_max)
+        ax.set_ylim(ax.get_ylim()[0], label_y + step * 2.5)
+        ax.text(0.5, label_y + step * 0.5,
+                f'H={H:.1f}, p={p_kw:.1e}',
+                ha='center', va='bottom', fontsize=7)
+
+    fig.tight_layout()
+    return fig
+
