@@ -402,8 +402,8 @@ RESPONSE_WINDOWS = {
 
 # Plotting parameters
 FIGURE_DPI = 150
-TICKFONTSIZE = 8
-LABELFONTSIZE = 12
+TICKFONTSIZE = 12
+LABELFONTSIZE = 14
 plt.rcParams.update({
     'font.size': TICKFONTSIZE,
     'axes.labelsize': LABELFONTSIZE,
@@ -474,17 +474,6 @@ TARGETNM2POSITION = {
     'NBM-ACh': 5,
     'SI-ACh': 6,
     'PPT-ACh': 7
-}
-
-TARGETNM_POSITIONS = {
-    'MR-5HT': 0,
-    'DR-5HT': 1,
-    'VTA-DA': 2,
-    'SNc-DA': 3,
-    'LC-NE': 4,
-    'NBM-ACh': 5,
-    'SI-ACh': 6,
-    'PPT-ACh': 7,
 }
 
 

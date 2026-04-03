@@ -11,7 +11,7 @@ from sklearn.preprocessing import quantile_transform
 from iblnm.config import (
     ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP, RESPONSE_WINDOWS,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
-    TARGETNM_COLORS, TARGETNM_POSITIONS, TARGETNMS_TO_ANALYZE,
+    TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
 )
 from iblnm.util import get_contrast_coding
@@ -319,8 +319,8 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
         return ax
 
     target_nms = sorted(df_sessions['target_NM'].unique(),
-                        key=lambda x: TARGETNM_POSITIONS.get(x, 999))
-    xpos = np.array([TARGETNM_POSITIONS.get(t, i) for i, t in enumerate(target_nms)])
+                        key=lambda x: TARGETNM2POSITION.get(x, 999))
+    xpos = np.array([TARGETNM2POSITION.get(t, i) for i, t in enumerate(target_nms)])
 
     has_hemisphere = 'hemisphere' in df_sessions.columns
 
@@ -2854,103 +2854,81 @@ _DV_LABELS = {
 
 
 def plot_movement_lmm_summary(summary_df):
-    """Grouped bar chart comparing delta-R² from dropping contrast vs timing.
+    """Dot-and-whisker plot of per-subject LOSO-CV delta-R².
 
-    One group per target_NM, two bars per timing variable (delta_R²_contrast,
-    delta_R²_timing). Significance from LRT marked with stars. A secondary
-    panel shows log10(BF).
+    Two rows of panels: top shows delta_r2_contrast (unique variance from
+    contrast), bottom shows delta_r2_timing (unique variance from timing).
+    One column per timing variable. Each dot is one subject; horizontal bar
+    shows mean ± SEM.
 
     Parameters
     ----------
     summary_df : pd.DataFrame
-        One row per (target_NM, timing_variable). Required columns:
-        target_NM, timing_col, delta_r2_contrast, delta_r2_timing,
-        lrt_contrast_p, lrt_timing_p, bf_contrast, bf_timing,
-        full_r2.
+        One row per (target_NM, timing_variable, subject). Required columns:
+        target_NM, timing_col, subject, delta_r2_contrast, delta_r2_timing.
 
     Returns
     -------
     plt.Figure
     """
+    from scipy.stats import sem as scipy_sem
+
     timing_vars = sorted(summary_df['timing_col'].unique()) if len(summary_df) > 0 else []
     n_panels = max(len(timing_vars), 1)
 
     fig, axes = plt.subplots(2, n_panels, figsize=(4 * n_panels + 1, 7),
-                             gridspec_kw={'height_ratios': [3, 2]},
-                             layout='constrained')
+                             sharey='row', layout='constrained')
     if n_panels == 1:
         axes = axes.reshape(2, 1)
 
     if len(summary_df) == 0:
-        fig.suptitle('Movement encoding — model comparison', fontsize=LABELFONTSIZE)
+        fig.suptitle('Movement encoding — LOSO-CV model comparison',
+                     fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(summary_df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
-    x = np.arange(len(targets))
-    width = 0.35
 
     for j, tvar in enumerate(timing_vars):
-        ax_r2 = axes[0, j]
-        ax_bf = axes[1, j]
         df_tv = summary_df[summary_df['timing_col'] == tvar]
-
-        for i, tnm in enumerate(targets):
-            row = df_tv[df_tv['target_NM'] == tnm]
-            if len(row) == 0:
-                continue
-            row = row.iloc[0]
-            color = TARGETNM_COLORS.get(tnm, f'C{i}')
-
-            # Delta-R² bars
-            ax_r2.bar(i - width / 2, row['delta_r2_contrast'], width,
-                      color=color, alpha=0.6, edgecolor=color)
-            ax_r2.bar(i + width / 2, row['delta_r2_timing'], width,
-                      color=color, alpha=1.0, edgecolor=color)
-
-            # Significance stars
-            y_c = row['delta_r2_contrast']
-            y_t = row['delta_r2_timing']
-            stars_c = _pval_to_stars(row['lrt_contrast_p'])
-            stars_t = _pval_to_stars(row['lrt_timing_p'])
-            if stars_c:
-                ax_r2.text(i - width / 2, y_c, stars_c, ha='center',
-                           va='bottom', fontsize=TICKFONTSIZE)
-            if stars_t:
-                ax_r2.text(i + width / 2, y_t, stars_t, ha='center',
-                           va='bottom', fontsize=TICKFONTSIZE)
-
-            # log10(BF) bars
-            log_bf_c = np.log10(max(row['bf_contrast'], 1e-10))
-            log_bf_t = np.log10(max(row['bf_timing'], 1e-10))
-            ax_bf.bar(i - width / 2, log_bf_c, width,
-                      color=color, alpha=0.6, edgecolor=color)
-            ax_bf.bar(i + width / 2, log_bf_t, width,
-                      color=color, alpha=1.0, edgecolor=color)
-
         timing_label = tvar.replace('log_', '')
-        ax_r2.set_title(timing_label)
-        ax_r2.set_xticks(x)
-        ax_r2.set_xticklabels(targets, fontsize=TICKFONTSIZE, rotation=30, ha='right')
-        ax_r2.set_ylabel(r'$\Delta R^2$' if j == 0 else '')
-        ax_r2.axhline(0, ls='--', color='gray', lw=0.5)
 
-        ax_bf.set_xticks(x)
-        ax_bf.set_xticklabels(targets, fontsize=TICKFONTSIZE, rotation=30, ha='right')
-        ax_bf.set_ylabel(r'$\log_{10}$ BF' if j == 0 else '')
-        ax_bf.axhline(0, ls='--', color='gray', lw=0.5)
-        ax_bf.axhline(1, ls=':', color='gray', lw=0.5)  # BF=10 line
+        for row_idx, (delta_col, label) in enumerate([
+            ('delta_r2_contrast', r'$\Delta R^2$ (contrast unique)'),
+            ('delta_r2_timing', r'$\Delta R^2$ (timing unique)'),
+        ]):
+            ax = axes[row_idx, j]
 
-    # Legend: light = drop contrast, dark = drop timing
-    from matplotlib.patches import Patch
-    legend_elements = [
-        Patch(facecolor='gray', alpha=0.6, label='contrast unique'),
-        Patch(facecolor='gray', alpha=1.0, label='timing unique'),
-    ]
-    axes[0, -1].legend(handles=legend_elements, frameon=False,
-                       loc='upper right', fontsize=TICKFONTSIZE)
+            for i, tnm in enumerate(targets):
+                df_tnm = df_tv[df_tv['target_NM'] == tnm]
+                if len(df_tnm) == 0:
+                    continue
+                color = TARGETNM_COLORS.get(tnm, f'C{i}')
+                vals = df_tnm[delta_col].values
 
-    fig.suptitle('Movement encoding — model comparison', fontsize=LABELFONTSIZE)
+                # Individual subject dots (jittered)
+                jitter = np.random.default_rng(i).uniform(-0.15, 0.15, len(vals))
+                ax.scatter(i + jitter, vals, color=color, alpha=0.5,
+                           s=25, zorder=3)
+
+                # Mean ± SEM bar
+                m = np.mean(vals)
+                se = scipy_sem(vals) if len(vals) > 1 else 0
+                ax.errorbar(i, m, yerr=se, fmt='_', color='black',
+                            markersize=12, markeredgewidth=2, capsize=4,
+                            zorder=4)
+
+            ax.set_xticks(range(len(targets)))
+            ax.set_xticklabels(targets, fontsize=TICKFONTSIZE,
+                               rotation=30, ha='right')
+            ax.axhline(0, ls='--', color='gray', lw=0.5)
+            if j == 0:
+                ax.set_ylabel(label)
+            if row_idx == 0:
+                ax.set_title(timing_label)
+
+    fig.suptitle('Movement encoding — LOSO-CV model comparison',
+                 fontsize=LABELFONTSIZE)
     return fig
 
 

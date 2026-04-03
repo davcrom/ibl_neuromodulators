@@ -22,7 +22,7 @@ from iblnm.config import (
 from iblnm.util import process_regions
 from iblnm.vis import (
     violinplot, plot_joint_distributions,
-    TARGETNM_COLORS, TARGETNM_POSITIONS
+    TARGETNM_COLORS
 )
 
 plt.ion()
@@ -85,7 +85,8 @@ if len(df_qc) == 0:
 
 # Get targets present in data
 targets = [t for t in VALID_TARGETS if t in df_qc['target_NM'].unique()]
-positions = [TARGETNM_POSITIONS[t] for t in targets]
+from iblnm.config import TARGETNM2POSITION
+positions = [TARGETNM2POSITION[t] for t in targets]
 colors = [TARGETNM_COLORS[t] for t in targets]
 
 # Add basic QC pass/fail flags
