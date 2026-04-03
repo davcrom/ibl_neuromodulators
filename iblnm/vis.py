@@ -320,7 +320,7 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
 
     target_nms = sorted(df_sessions['target_NM'].unique(),
                         key=lambda x: TARGETNM2POSITION.get(x, 999))
-    xpos = np.array([TARGETNM2POSITION.get(t, i) for i, t in enumerate(target_nms)])
+    xpos = np.arange(len(target_nms))
 
     has_hemisphere = 'hemisphere' in df_sessions.columns
 
