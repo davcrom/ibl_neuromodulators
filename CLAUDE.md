@@ -51,6 +51,26 @@ vis.py / gui.py ← plotting
 scripts/ ← orchestration (filtering, iteration, figure layout)
 ```
 
+## Repository Layout
+
+```
+iblnm/              # Core package (tracked)
+scripts/             # Pipeline stages and analysis scripts (tracked)
+tests/               # pytest suite, synthetic fixtures (tracked)
+metadata/fibers.csv  # Fiber insertion coordinates (tracked)
+
+# Generated outputs (gitignored)
+metadata/            # sessions.pqt, error logs (*.pqt)
+data/                # qc_photometry.pqt, performance.pqt, sessions/*.h5
+results/             # Analysis CSVs (responses/, movement_encoding/, task_encoding/)
+figures/             # Output plots
+
+# Local working files (gitignored)
+specs/               # Design specs and implementation plans
+notes/               # Personal notes, code snippets, reports, brainstorm docs
+histology/           # Histology images (.tif) and fiber track CSVs
+```
+
 **Module vs script rule**: `iblnm/` contains generic, reusable functions.
 `scripts/` contains analysis-specific orchestration. Never put generic
 functions in scripts.
