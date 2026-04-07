@@ -243,51 +243,17 @@ def validate_brain_region(session):
 def _get_fiber_hemisphere_lookup():
     """Build subject+region -> hemisphere lookup from fiber coordinates.
 
-    Returns None for a (subject, region) pair when fibers span both hemispheres.
+    Returns None for a (subject, region) pair when fibers span both
+    hemispheres or are midline (X=0).  Used only by validate_hemisphere.
     """
     df_fibers = pd.read_csv(FIBERS_FPATH)
     df_fibers = df_fibers.copy()
     df_fibers['hemi'] = df_fibers['X-ml_um'].apply(
-        lambda x: 'l' if x > 0 else 'r'
+        lambda x: 'l' if x > 0 else ('r' if x < 0 else None)
     )
     grouped = df_fibers.groupby(['subject', 'targeted_region'])['hemi']
     return {key: vals.iloc[0] if vals.nunique() == 1 else None
             for key, vals in grouped}
-
-
-@exception_logger
-def fill_hemisphere_from_fiber_insertion_table(session, fiber_lookup=None):
-    """Fill None hemisphere entries from the fiber insertion coordinates lookup.
-
-    For each brain region where hemisphere is None, the bare region name is
-    looked up in fiber_lookup. If a unique hemisphere is found it is filled in;
-    otherwise the entry remains None and validate_hemisphere will flag it.
-
-    Parameters
-    ----------
-    session : pd.Series
-        Must have 'subject', 'brain_region' (list[str]), 'hemisphere' (list[str|None]).
-    fiber_lookup : dict, optional
-        {(subject, bare_region): 'l' | 'r' | None}. Defaults to
-        _get_fiber_hemisphere_lookup().
-
-    Returns
-    -------
-    pd.Series
-        Session with updated hemisphere list.
-    """
-    if fiber_lookup is None:
-        fiber_lookup = _get_fiber_hemisphere_lookup()
-    subject = session['subject']
-    hemi = list(session['hemisphere'])
-    for i, (region, h) in enumerate(zip(session['brain_region'], hemi)):
-        if h is not None:
-            continue
-        bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
-        hemi[i] = fiber_lookup.get((subject, bare))
-    session = session.copy()
-    session['hemisphere'] = hemi
-    return session
 
 
 @exception_logger
@@ -304,7 +270,7 @@ def validate_hemisphere(session, fiber_lookup=None):
     for region, hemi_name in zip(session['brain_region'], session['hemisphere']):
         bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
         hemi_fiber = fiber_lookup.get((subject, bare))
-        if hemi_name is not None and hemi_fiber is not None and hemi_name != hemi_fiber:
+        if hemi_name and hemi_fiber and hemi_name != hemi_fiber:
             raise HemisphereMismatch(
                 f"{subject} {region}: name={hemi_name}, coordinate={hemi_fiber}"
             )
@@ -312,7 +278,7 @@ def validate_hemisphere(session, fiber_lookup=None):
             raise MissingInsertion(
                 f"{subject} {region} missing fiber insertion entry"
             )
-        elif hemi_name is None:
+        elif not hemi_name:
             raise MissingHemiSuffix(
                 f"{subject} {region} missing hemisphere suffix"
             )
