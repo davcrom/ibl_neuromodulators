@@ -6,12 +6,14 @@ Determine whether trial timing variables (reaction time, movement time, and
 later peak wheel velocity) explain NM responses at stimulus onset, and how
 that explanatory power compares to task structure (contrast, side, feedback).
 
-Two complementary analyses:
+Three complementary analyses:
 
-1. **Pooled model comparison** — across all contrasts, compare the unique
-   variance explained by contrast vs. timing.
+1. **LOSO cross-validated model comparison** — across all contrasts, compare
+   the unique out-of-sample variance explained by contrast vs. timing, with
+   a per-subject distribution of delta-R².
 2. **Per-contrast slope analysis** — at each contrast level, estimate the
    timing-response slope and compare across targets.
+3. **Descriptive plots** — NM response vs. timing at each contrast level.
 
 ## Inputs
 
@@ -46,35 +48,76 @@ All timing variables are log10-transformed before entering the models.
 6. Add relative contrast via `add_relative_contrast()`.
 7. Log10-transform timing variables after excluding non-positive values.
 
-## Analysis 1: Pooled Model Comparison
+## Analysis 1: LOSO Cross-Validated Model Comparison
 
-For each (target_NM, timing_variable), fit three nested LMMs using ML
-(not REML) so likelihood ratio tests are valid:
+For each (target_NM, timing_variable), perform leave-one-subject-out
+cross-validation to compare three nested LMMs:
 
-- **Full:** `response ~ contrast + side + reward + log_timing + (1 | subject)`
-- **Drop-contrast:** `response ~ side + reward + log_timing + (1 | subject)`
-- **Drop-timing:** `response ~ contrast + side + reward + (1 | subject)`
+- **Full:** `response ~ contrast + side + reward + log_timing`
+- **Drop-contrast:** `response ~ side + reward + log_timing`
+- **Drop-timing:** `response ~ contrast + side + reward`
 
-Contrast is rank-coded (matching `responses.py`). Side and reward use
-deviation coding (±0.5). All terms are additive — no interactions.
+Contrast is rank-coded and mean-centered. Side and reward use deviation
+coding (±0.5). All terms are additive — no interactions.
+
+### Procedure
+
+For each fold (held-out subject):
+
+1. Fit the three LMMs on the training set (all other subjects) using ML,
+   with `(1 | subject)` as the random effect.
+2. Predict the held-out subject's trials using fixed effects only (random
+   effects set to zero — the held-out subject has no estimated intercept).
+3. Compute R² on the held-out trials:
+   `R² = 1 - SS_res / SS_tot` where SS_tot uses the held-out trial mean.
+   This can be negative if the model predicts worse than the mean.
+4. Compute delta-R² for each comparison:
+   - `delta_R²_contrast = R²_full - R²_drop_contrast`
+   - `delta_R²_timing = R²_full - R²_drop_timing`
+
+Both models being compared use fixed-effects-only prediction on the same
+held-out trials, so the missing random intercept cancels out in the delta.
 
 ### Outputs per (target_NM, timing_variable)
 
-- R² marginal for all three models
-- delta_R²_contrast = R²(full) − R²(drop-contrast)
-- delta_R²_timing = R²(full) − R²(drop-timing)
-- LRT chi² and p-value for each comparison (1 df each)
-- BIC for all three models → BIC-based Bayes factor:
-  BF_contrast = exp((BIC_drop_contrast − BIC_full) / 2)
-  BF_timing = exp((BIC_drop_timing − BIC_full) / 2)
-  (BF > 1 favors the full model; BF > 10 is strong evidence)
+- Per-subject: R²_full, R²_drop_contrast, R²_drop_timing,
+  delta_R²_contrast, delta_R²_timing, n_trials, subject
+- Group-level: mean and SEM of each delta-R² across subjects,
+  one-sample t-test or Wilcoxon signed-rank test on delta-R² > 0
+
+### Subject counts per target (current data)
+
+| Target | Subjects | Sessions |
+|--------|----------|----------|
+| VTA-DA | 7 | 210 |
+| SNc-DA | 7 | 119 |
+| DR-5HT | 11 | 244 |
+| LC-NE | 10 | 163 |
+| NBM-ACh | 6 | 72 |
+
+With 6-11 subjects per target, LOSO gives 6-11 folds. Each training set
+uses 5-10 subjects. This is adequate — the LMMs are estimated from hundreds
+to thousands of trials per training fold.
 
 ### Summary plot
 
-Grouped bar chart or dot plot: one group per target_NM, comparing
-delta_R²_contrast vs delta_R²_timing for each timing variable. Significance
-from LRT marked with stars. Log10(BF) shown as secondary annotation or
-separate panel.
+Dot-and-whisker plot: one row per target_NM, two panels (one per timing
+variable). Each dot is one subject's delta-R². Show mean ± SEM as a
+horizontal bar. Mark whether the group-level test is significant.
+
+This replaces the single-bar delta-R² plot from the previous spec.
+
+### Why LOSO-CV instead of in-sample R²
+
+- In-sample R² can only increase with more predictors — it cannot reveal
+  whether the timing predictor genuinely helps or is fitting noise.
+- LOSO-CV delta-R² can be negative for individual subjects, which is
+  informative: it means the timing predictor hurts prediction for that
+  subject.
+- The per-subject distribution enables proper group-level inference
+  (N = number of subjects, not number of trials).
+- The delta-R² between two models cancels the missing random intercept
+  for the held-out subject, so fixed-effects-only prediction is fair.
 
 ## Analysis 2: Per-Contrast Slope Analysis
 
@@ -110,46 +153,59 @@ One figure per (target_NM, contrast, timing_variable):
 - Quantile-binned log-transformed timing on x-axis
 - NM response on y-axis with subject-mean removal
 
-## Changes Already Made to responses.py
-
-- Removed: `TRIAL_TIMING_FPATH`, `PEAK_VELOCITY_FPATH`,
-  `plot_wheel_lmm_summary`, `plot_wheel_lmm_figures`
-- Removed trial_timing merge/filter from plot functions
-- Removed trial_timing/peak_velocity loading/saving from main block
-- Removed commented-out wheel LMM block and `'wheel_lmm'` fig dir
-
 ## Implementation Plan
 
-### Step 1: `fit_movement_lmm` in `analysis.py`
+### Step 1: `loso_cv_movement_lmm` in `analysis.py`
 
 Pure function. Takes a DataFrame (single target_NM, all contrasts) and a
-timing column name. Fits the three nested models. Returns a dict with R²
-values, delta-R², LRT stats, and BIC-based Bayes factors.
+timing column name. Performs LOSO-CV across subjects.
 
-Reuses `_fit_lmm` for model fitting and `_variance_explained` via the
-LMMResult it returns.
+For each fold:
+1. Split data into train (N-1 subjects) and test (1 subject).
+2. Code predictors (rank contrast, deviation-coded side/reward).
+3. Fit three LMMs on training data via `_fit_lmm` with `reml=False`.
+4. Build design matrices for the test data using patsy with the training
+   model's `design_info`.
+5. Predict test trials: `X_test @ fe_params` (fixed effects only).
+6. Compute R² on test trials for each model.
+7. Compute delta-R² values.
+
+Returns a DataFrame with one row per subject: subject, n_trials,
+r2_full, r2_drop_contrast, r2_drop_timing, delta_r2_contrast,
+delta_r2_timing, timing_col.
+
+Replaces `fit_movement_lmm`. The old function can be removed.
 
 ### Step 2: `fit_movement_lmm_per_contrast` in `analysis.py`
 
-Pure function. Takes a DataFrame (single target_NM, single contrast) and a
-timing column name. Fits the per-contrast model. Returns a dict with the
-timing slope, SE, p-value, and R².
+Already implemented. No changes needed.
 
 ### Step 3: `plot_movement_lmm_summary` in `vis.py`
 
-Summary plot for Analysis 1 (pooled comparison).
+Replace the current grouped-bar implementation with a dot-and-whisker
+plot showing per-subject delta-R² distributions. One panel per timing
+variable. Targets ordered by `TARGETNM2POSITION`.
 
 ### Step 4: `plot_movement_slopes` in `vis.py`
 
-Summary plot for Analysis 2 (per-contrast slopes).
+Already implemented. No changes needed.
 
 ### Step 5: Wire up in `scripts/movement_encoding.py`
 
-Orchestrate: load data, iterate over groups, call analysis functions, save
-results to CSV, generate plots.
+Replace the `fit_movement_lmm` call with `loso_cv_movement_lmm`. Collect
+per-subject results into a DataFrame, save to CSV, pass to the updated
+plot function.
 
 ### Testing
 
-Each analysis function gets tests with synthetic data in `test_analysis.py`.
-Plot functions get tests in `test_vis.py`. Follow existing patterns (synthetic
-fixtures, no Alyx calls).
+`test_loso_cv_movement_lmm` in `test_analysis.py`:
+- Synthetic data with known contrast and timing effects.
+- Verify returns DataFrame with expected columns.
+- Verify one row per subject.
+- Verify delta-R² values are positive on average (both predictors have
+  real effects in the synthetic data).
+- Verify returns empty DataFrame when < 2 subjects.
+
+Updated `TestPlotMovementLMMSummary` in `test_vis.py`:
+- Adapt fixture to per-subject format.
+- Verify figure returned, correct number of panels.
