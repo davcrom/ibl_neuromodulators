@@ -1,2 +1,2 @@
 [tool.ruff]
-exclude = ["notebooks/", "snippets/", "scripts/SfN2025.py"]
+exclude = ["notebooks/"]
