@@ -164,8 +164,7 @@ ps.preprocess()  # bleach → isosbestic → zscore → resample to 30 Hz
 ps.extract_responses(events=RESPONSE_EVENTS)
 # → ps.responses: xarray DataArray with dims (region, event, trial, time)
 
-ps.save_h5(mode='w')  # write signal
-ps.save_h5(mode='a')  # append trials + responses
+ps.save_h5()  # saves all available data groups
 ```
 
 ### Working with responses
@@ -196,37 +195,31 @@ fit = ps.fit_psychometric()           # {bias, threshold, lapse_left, lapse_righ
 
 ## PhotometrySessionGroup
 
-`PhotometrySessionGroup` is the central class for all multi-session analyses. It takes a DataFrame of recordings (one row per session x brain region, after exploding `sessions.pqt`) and provides methods for filtering, iterating, and running analyses across recordings.
+`PhotometrySessionGroup` is the central class for all multi-session analyses. It manages session-level filtering and recording-level explosion internally.
 
 ### Design principles
 
-- **Constructor takes already-exploded recordings.** The class does not handle session-to-recording expansion. Callers explode `brain_region`, `hemisphere`, `target_NM` before passing the DataFrame in.
-- **Ad-hoc data fixes live in scripts, not in the class.** Fixes for current dataset issues (region name typos, mismatched list lengths) are applied visibly in the script body before constructing the group. The class is for generic, reusable analysis logic.
-- **`filter_recordings` filters by analysis criteria**, not data quality. It filters by session type, excluded subjects, QC error types, and target-NM values. It does not repair data.
+- **Constructor takes session-level DataFrames.** List columns (`brain_region`, `hemisphere`, `target_NM`) are kept intact. Explosion to one-row-per-recording happens via `explode_recordings()`.
+- **`filter_sessions` filters at the session level** by session type, excluded subjects, QC error types, and target-NM values. Sessions where none of their target_NM entries match are dropped.
+- **`explode_recordings` produces recording-level rows** from the filtered sessions, trimming to only valid target_NM entries and adding `fiber_idx`.
+- **`from_catalog` handles the full pipeline**: load parquet, validate parallel lists, filter sessions, explode recordings.
 - **Lazy analysis attributes.** `events`, `response_features`, `similarity_matrix`, and `decoder` start as `None` and are populated by explicit method calls.
 - **Iterable.** `for rec, ps in group` yields `(recording_row, PhotometrySession)` pairs. Sessions are cached by eid so loading an H5 once serves all regions.
 
 ### Usage
 
 ```python
-import pandas as pd
 from iblnm.config import SESSIONS_FPATH
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.util import derive_target_nm
 
 one = _get_default_connection()
-df_sessions = pd.read_parquet(SESSIONS_FPATH)
 
-# Derive target_NM from brain_region (prerequisite for exploding)
-df_sessions = derive_target_nm(df_sessions)
-
-# Explode to one row per recording
-df_recordings = df_sessions.explode(['brain_region', 'hemisphere', 'target_NM'])
-
-# Create group and filter
-group = PhotometrySessionGroup(df_recordings, one=one)
-group.filter_recordings()
+# Load, filter, and explode in one step
+group = PhotometrySessionGroup.from_catalog(
+    SESSIONS_FPATH, one=one,
+    session_types=('biased', 'ephys'),
+)
 ```
 
 ### Analysis methods
@@ -253,7 +246,7 @@ group.decode_target()
 
 ```python
 # Standard filters (all parameters optional, default to config values)
-group.filter_recordings(
+group.filter_sessions(
     session_types=('biased', 'ephys'),
     exclude_subjects=['excluded_mouse'],
     qc_blockers={'MissingRawData', 'QCValidationError'},

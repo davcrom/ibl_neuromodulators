@@ -177,6 +177,9 @@ and initializes list columns (replaces NaN with `[]`). Called when loading
 
 ## Development Principles
 
+- **Specs go in `specs/`.** Write design specs and implementation plans to
+  `specs/` before starting work. Never put spec files in `scripts/` or other
+  code directories.
 - **No backward compatibility shims.** This is an active development project,
   not a library with external consumers. When renaming, delete the old name
   everywhere. No aliases, no re-exports, no deprecation wrappers.
