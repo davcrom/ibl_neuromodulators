@@ -11,7 +11,7 @@ Three analyses:
   3. Descriptive plots — NM response vs. timing at each contrast level
 
 Output:
-    data/movement_encoding/          — CSV summary tables
+    results/movement_encoding/       — CSV summary tables
     figures/movement_encoding/       — SVG figures
 
 Usage:
@@ -24,7 +24,7 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
-    RESPONSES_FPATH, TRIAL_TIMING_FPATH,
+    RESPONSES_FPATH, TRIAL_TIMING_FPATH, MOVEMENT_ENCODING_DIR,
     FIGURE_DPI,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
@@ -49,7 +49,7 @@ if __name__ == '__main__':
     # =====================================================================
     # Output directories
     # =====================================================================
-    data_dir = PROJECT_ROOT / 'data/movement_encoding'
+    data_dir = MOVEMENT_ENCODING_DIR
     data_dir.mkdir(parents=True, exist_ok=True)
 
     fig_dir = PROJECT_ROOT / 'figures/movement_encoding'

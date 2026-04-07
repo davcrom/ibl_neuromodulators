@@ -29,7 +29,7 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
-    RESPONSES_FPATH, TRIAL_TIMING_FPATH,
+    RESPONSES_FPATH, TRIAL_TIMING_FPATH, TASK_ENCODING_DIR,
     RESPONSE_EVENTS, FIGURE_DPI, TARGETNM_COLORS,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
@@ -424,7 +424,7 @@ if __name__ == '__main__':
     events = args.events if args.events else RESPONSE_EVENTS
 
     # Create output directories
-    data_dir = PROJECT_ROOT / 'results/task_encoding'
+    data_dir = TASK_ENCODING_DIR
     data_dir.mkdir(parents=True, exist_ok=True)
 
     fig_dirs = {
