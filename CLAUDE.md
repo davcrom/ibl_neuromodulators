@@ -252,14 +252,15 @@ count or figure size that are obvious from reading the code.
 
 ## Environment
 
-Requires the IBL unified environment with `ibllib` on the
-`photometry-integration` branch and `ibl-photometry` on `develop`.
-See `README.md` for full install instructions.
+All commands (`pytest`, `ruff`, `python`) must run inside the project's
+virtual environment. Find the active venv by checking `which python` or
+looking for a `.venv` directory. If no venv is active, do not run
+commands that depend on project packages.
 
-```bash
-uv pip install -e ".[dev]"   # Install (venv: ~/.venv/ibl)
-pytest                       # Test
-ruff check .                 # Lint
-```
+Requires `ibllib` (`photometry-integration` branch) and `ibl-photometry`
+(`develop` branch). Core dependencies (`xarray`, `statsmodels`, `cca-zoo`,
+etc.) and dev tools (`pytest`, `ruff`) are declared in `pyproject.toml`
+with optional `[ibl]` and `[dev]` groups. See `README.md` for full
+install instructions.
 
 **Docs**: [IBL](https://docs.internationalbrainlab.org/) · [ONE API](https://int-brain-lab.github.io/ONE/)
