@@ -10,8 +10,8 @@ with specific development branches of `ibllib` and `ibl-photometry`.
 ### Fresh install
 
 ```bash
-# 1. Create and activate a virtual environment (Python >= 3.10)
-uv venv .venv --prompt ibl
+# 1. Create and activate a virtual environment
+uv venv .venv --prompt ibl --python 3.13
 source .venv/bin/activate
 
 # 2. Install IBL packages from the required branches
