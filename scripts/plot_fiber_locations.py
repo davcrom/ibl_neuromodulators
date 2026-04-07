@@ -1,22 +1,27 @@
 """
 Plot Fiber Insertion Locations on Brain Slices
 
-For a given subject, retrieves chronic fiber insertion trajectories from Alyx
-and plots each fiber's tip coordinates on coronal, sagittal, and horizontal
-brain atlas slices. Optionally colors the markers by a photometry QC metric.
+Retrieves chronic fiber insertion trajectories from Alyx and plots each
+fiber's tip coordinates on coronal, sagittal, and horizontal brain atlas
+slices. Fibers are grouped by brain_region (one row per region, one column
+per view). The slice coordinate for each view is the median of the
+corresponding axis across all fibers in that region.
 
-Trajectories are cached in metadata/trajectories.json after the first download;
-use --redownload to refresh the cache.
+Brain region is derived from df_sessions and only assigned when unambiguous
+(single unique region per subject, ignoring hemisphere suffix).
+
+Trajectories are cached in metadata/trajectories.json after the first
+download; use --redownload to refresh the cache.
 
 Usage
 -----
-    python plot_fiber_locations.py <subject> [--qc_metric METRIC] [--redownload]
+    python plot_fiber_locations.py [--subject S1 S2 ...] [--redownload]
 
 Examples
 --------
-    python plot_fiber_locations.py SWC_054
-    python plot_fiber_locations.py SWC_054 --qc_metric n_unique_samples
-    python plot_fiber_locations.py SWC_054 --redownload
+    python plot_fiber_locations.py
+    python plot_fiber_locations.py --subject SWC_054
+    python plot_fiber_locations.py --redownload
 """
 import argparse
 import json
@@ -24,32 +29,27 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from tqdm import tqdm
 from iblatlas.atlas import AllenAtlas
 
-from iblnm.config import SESSIONS_FPATH, QCPHOTOMETRY_FPATH, TRAJECTORIES_FPATH
+from iblnm.config import SESSIONS_FPATH, TARGETNMS_TO_ANALYZE, TRAJECTORIES_FPATH
 from iblnm.io import _get_default_connection, get_fiber_coordinates
 
-# Assign point color based on QC value
 ba = AllenAtlas()
 # x, y axes for each slice view (indices into ML=0, AP=1, DV=2 coord array)
 slice_xy = {'coronal': (0, 2), 'sagittal': (1, 2), 'horizontal': (0, 1)}
 slice_fn = {'coronal': ba.plot_cslice, 'sagittal': ba.plot_sslice, 'horizontal': ba.plot_hslice}
 slice_coord_idx = {'coronal': 1, 'sagittal': 0, 'horizontal': 2}
 
-cmap = plt.cm.Reds
-
 # Parse command line arguments
 parser = argparse.ArgumentParser(
     description=__doc__,
     formatter_class=argparse.RawDescriptionHelpFormatter,
 )
-parser.add_argument('subject', help='Alyx subject name (e.g. SWC_054)')
+parser.add_argument('--subject', '-s', nargs='+', help='Alyx subject names (e.g. SWC_054)')
 parser.add_argument('--fiber', '-f', metavar='FIBER',
                     help='Fiber name to plot (e.g. G0). If omitted, all fibers are plotted.')
 # FIXME: use --fiber to restrict coords to the specified fiber only
-parser.add_argument('--qc_metric', '-q', metavar='METRIC',
-                    help='Photometry QC column to use for marker color '
-                         '(e.g. n_unique_samples). Requires qc_photometry.pqt.')
 parser.add_argument('--redownload', action='store_true',
                     help='Re-download trajectories from Alyx, ignoring cache')
 args = parser.parse_args()
@@ -68,41 +68,90 @@ else:
         json.dump(all_trajectories, f)
     print(f"Saved to {TRAJECTORIES_FPATH}")
 
-print(f"Getting trajectory for {args.subject}...")
-coords = get_fiber_coordinates(args.subject, all_trajectories, one)
+print(f"Loading sessions from {SESSIONS_FPATH}")
+df_sessions = pd.read_parquet(SESSIONS_FPATH)
+print(f"Loaded {len(df_sessions)} sessions")
 
-# FIXME: QC val is curently aggregate over all recordings x fibers for the subject
-# Once probe_names in Alyx can be mapped on to photometry columns we need to fix
-if args.qc_metric and QCPHOTOMETRY_FPATH.exists() and SESSIONS_FPATH.exists():
-    print(f"Getting average {args.qc_metric} QC value for {args.subject}...")
-    df_qc = pd.read_parquet(QCPHOTOMETRY_FPATH)
-    df_sessions = pd.read_parquet(SESSIONS_FPATH)
-    eids = df_sessions[df_sessions['subject'] == args.subject]['eid']
-    if len(eids) > 0:
-        qc_val = df_qc[df_qc['eid'].isin(eids)][args.qc_metric].mean()
-        vmin, vmax = df_qc[args.qc_metric].min(), df_qc[args.qc_metric].max()
-        norm = plt.Normalize(vmin=vmin, vmax=vmax)
-        facecolor = cmap(norm(qc_val))
+if not args.subject:
+    # FIXME: put some session filtering here
+    subjects = df_sessions['subject'].unique()
 else:
-    print(f"No photometry QC values for subject {args.subject}.")
-    facecolor = cmap(8.)
+    subjects = args.subject
 
-views = ['sagittal', 'coronal', 'horizontal']
-fig, axs = plt.subplots(len(coords), 3, figsize=(10, 10))
+coords = []
+for subject in tqdm(subjects):
+    coords.extend(get_fiber_coordinates(subject, all_trajectories, one))
+df_coords = pd.DataFrame(coords)
+
+
+# ---------------------------------------------------------------------------
+# Merge brain_region from df_sessions
+# ---------------------------------------------------------------------------
+def _get_subject_region(subject, df_sessions):
+    """Return the brain region for a subject if unambiguous, else None.
+
+    Unambiguous means all brain_region entries across sessions for this
+    subject resolve to the same base region after stripping hemisphere
+    suffixes (-r, -l).
+    """
+    subject_sessions = df_sessions[df_sessions['subject'] == subject]
+    regions = set()
+    for br_list in subject_sessions['brain_region']:
+        for r in br_list:
+            base = r[:-2] if r.endswith(('-r', '-l')) else r
+            regions.add(base)
+    if len(regions) == 1:
+        return regions.pop()
+    return None
+
+
+df_coords['brain_region'] = df_coords['subject'].map(
+    lambda s: _get_subject_region(s, df_sessions))
+n_before = len(df_coords)
+df_coords = df_coords.dropna(subset=['brain_region'])
+n_dropped = n_before - len(df_coords)
+if n_dropped:
+    print(f"Dropped {n_dropped} fibers with ambiguous brain_region")
+
+targets_to_analyze = {t.split('-')[0] for t in TARGETNMS_TO_ANALYZE}
+df_coords = df_coords[df_coords['brain_region'].isin(targets_to_analyze)]
+
+# ---------------------------------------------------------------------------
+# Plot: rows = brain_region, columns = view
+# ---------------------------------------------------------------------------
+views = ['coronal', 'sagittal', 'horizontal']
+regions = sorted(df_coords['brain_region'].unique())
+
+fig, axs = plt.subplots(len(regions), len(views),
+                        figsize=(4 * len(views), 4 * len(regions)))
 if axs.ndim == 1:
     axs = axs[np.newaxis, :]
-for (fiber, coord), ax_row in zip(coords.items(), axs):
-    for view, ax in zip(views, ax_row):
-        ax.set_title(fiber)
-        slice_fn[view](coord[slice_coord_idx[view]] / 1e6, volume='boundary', ax=ax)
+
+for i, region in enumerate(regions):
+    df_region = df_coords[df_coords['brain_region'] == region]
+    all_coords = np.stack(df_region['coords'].values)  # (n_fibers, 3)
+    median_coords = np.median(all_coords, axis=0)       # [ML, AP, DV]
+
+    for j, view in enumerate(views):
+        ax = axs[i, j]
+        coord_idx = slice_coord_idx[view]
+        slice_fn[view](median_coords[coord_idx] / 1e6, volume='boundary', ax=ax)
+
         xi, yi = slice_xy[view]
         ax.scatter(
-            coord[xi],
-            coord[yi],
+            all_coords[:, xi],
+            all_coords[:, yi],
             s=100,
-            facecolors=facecolor,
-            edgecolors=cmap(1.),
+            facecolors='steelblue',
+            edgecolors='navy',
             linewidths=2,
-            zorder=10
+            zorder=10,
         )
 
+        if i == 0:
+            ax.set_title(view.capitalize())
+        if j == 0:
+            ax.set_ylabel(region)
+
+plt.tight_layout()
+plt.show()
