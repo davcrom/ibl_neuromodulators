@@ -1211,7 +1211,9 @@ class TestPlotLMMCoefficientHeatmap:
         ax = [a for a in fig.axes if len(a.images) > 0][0]
         ylabels = [t.get_text() for t in ax.get_yticklabels()]
         xlabels = [t.get_text() for t in ax.get_xticklabels()]
-        targets = sorted(df['target_NM'].unique())
+        from iblnm.config import TARGETNM2POSITION
+        targets = sorted(df['target_NM'].unique(),
+                         key=lambda x: TARGETNM2POSITION.get(x, 999))
         # Intercept is dropped; remaining terms from fixture
         terms_no_intercept = ['side', 'reward',
                               'contrast', 'contrast:reward']
@@ -2303,6 +2305,79 @@ class TestPlotMovementResponse:
         ])
         fig = plot_movement_response(
             df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
+# =========================================================================
+# plot_movement_lmm_summary / plot_movement_slopes
+# =========================================================================
+
+def _make_movement_lmm_summary():
+    """Per-subject LOSO-CV delta-R² results for two targets, two timing vars."""
+    rows = []
+    for tnm in ['VTA-DA', 'DR-5HT']:
+        for tvar in ['log_reaction_time', 'log_movement_time']:
+            for subj in ['s1', 's2', 's3', 's4']:
+                rows.append({
+                    'target_NM': tnm, 'timing_col': tvar, 'subject': subj,
+                    'n_trials': 200,
+                    'r2_full': 0.05, 'r2_drop_contrast': 0.02,
+                    'r2_drop_timing': 0.03,
+                    'delta_r2_contrast': 0.03, 'delta_r2_timing': 0.02,
+                })
+    return pd.DataFrame(rows)
+
+
+def _make_movement_slopes():
+    rows = []
+    for tnm in ['VTA-DA', 'DR-5HT']:
+        for c in [0.0, 25.0, 100.0]:
+            for tc in ['log_reaction_time', 'log_movement_time']:
+                rows.append({
+                    'target_NM': tnm, 'contrast': c, 'timing_col': tc,
+                    'timing_coef': 0.1 + c * 0.001,
+                    'timing_se': 0.03,
+                    'timing_p': 0.01 if c > 0 else 0.10,
+                })
+    return pd.DataFrame(rows)
+
+
+class TestPlotMovementLMMSummary:
+    def test_returns_figure(self):
+        from iblnm.vis import plot_movement_lmm_summary
+        df = _make_movement_lmm_summary()
+        fig = plot_movement_lmm_summary(df)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_empty_df(self):
+        from iblnm.vis import plot_movement_lmm_summary
+        df = pd.DataFrame(columns=[
+            'target_NM', 'timing_col', 'full_r2',
+            'delta_r2_contrast', 'delta_r2_timing',
+            'lrt_contrast_p', 'lrt_timing_p', 'bf_contrast', 'bf_timing',
+        ])
+        fig = plot_movement_lmm_summary(df)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
+class TestPlotMovementSlopes:
+    def test_returns_figure(self):
+        from iblnm.vis import plot_movement_slopes
+        df = _make_movement_slopes()
+        fig = plot_movement_slopes(df)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_empty_df(self):
+        from iblnm.vis import plot_movement_slopes
+        df = pd.DataFrame(columns=[
+            'target_NM', 'contrast', 'timing_col',
+            'timing_coef', 'timing_se', 'timing_p',
+        ])
+        fig = plot_movement_slopes(df)
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
