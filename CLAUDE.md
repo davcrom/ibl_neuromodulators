@@ -131,9 +131,8 @@ ps.extract_responses() # populates ps.responses (xarray DataArray)
 Access data attributes directly, not through getters. The class extends
 `PhotometrySessionLoader` from `brainbox.io.one`.
 
-HDF5 round-trip: `save_h5(mode='w')` writes signal, `save_h5(mode='a')`
-appends trials/responses/wheel. `load_h5(fpath)` populates all available
-groups.
+HDF5 round-trip: `save_h5()` writes all available data groups.
+`load_h5(fpath)` populates all available groups.
 
 ### 3b. PhotometrySessionGroup Lifecycle
 
@@ -196,6 +195,9 @@ and initializes list columns (replaces NaN with `[]`). Called when loading
   self-documenting.
 - **Parquet for tabular data, HDF5 for session data**: `sessions.pqt` is the
   central catalog; signals, trials, and responses live in `data/sessions/{eid}.h5`.
+- **Analysis outputs go in `results/`**: each analysis script writes to its
+  own subdirectory (`results/responses/`, `results/movement_encoding/`,
+  `results/task_encoding/`). Output paths are defined in `config.py`.
 - **Error logs**: unified schema `['eid', 'error_type', 'error_message', 'traceback']`.
   One parquet log per pipeline stage in `metadata/`.
 

@@ -84,15 +84,14 @@ Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and all error logs
 
 | Script | Purpose |
 |---|---|
-| `responses.py` | Trial-level response magnitudes, response feature vectors, similarity, and decoding |
+| `responses.py` | Trial-level response magnitudes, LMM fits, response feature vectors, similarity, and decoding |
+| `movement_encoding.py` | LOSO cross-validated model comparison of contrast vs. timing predictors, per-contrast slopes |
+| `task_encoding.py` | Per-session GLM encoding decomposed via PCA/ICA, per-cohort CCA |
+| `task_performance.py` | Learning curves, psychometric trajectories per target |
 | `qc_overview.py` | QC metric distributions (histograms, violins, PCA, temporal trends) |
-| `task_performance_overview.py` | Learning curves, psychometric trajectories per target |
 | `video.py` | Video QC pipeline (timestamps, dropped frames, pin state) |
 | `session_viewer.py` | Interactive single-session viewer (raw + preprocessed + PSTHs) |
-| `plot_fiber_locations.py` | Fiber tip coordinates on brain atlas slices |
-| `recording_capacity.py` | Estimate recording-ready mice by a target date |
-| `sync_lp_progress.py` | Lightning Pose progress sync |
-| `demo_load_session.py` | Annotated example of loading and plotting a session |
+| `example_session.py` | Annotated example of loading and plotting a session |
 
 ---
 
@@ -325,7 +324,7 @@ Downstream scripts read upstream error logs via `collect_session_errors()` and f
 
 `brain_region`, `hemisphere`, and `target_NM` are parallel lists that must always have matching lengths. To get one row per recording, explode all three together: `df.explode(['brain_region', 'hemisphere', 'target_NM'])`.
 
-### `data/events.pqt` — one row per (recording x event x trial)
+### `results/responses/responses.pqt` — one row per (recording x event x trial)
 
 | Column | Type | Description |
 |---|---|---|
@@ -347,7 +346,7 @@ Downstream scripts read upstream error logs via `collect_session_errors()` and f
 | `reaction_time` | float | firstMovement - stimOn (seconds) |
 | `response_early` | float | Mean response in early window (0.1-0.35s) |
 
-### `data/response_matrix.pqt` — one row per recording
+### `results/responses/response_matrix.pqt` — one row per recording
 
 Response feature vectors indexed by `(eid, target_NM)`. Each column is a condition label encoding event x contrast x laterality x feedback (e.g. `stimOn_c1_contra_correct`). Values are mean response magnitudes in the early window.
 
@@ -434,16 +433,19 @@ iblnm/                      # Core package (generic, reusable)
   data.py                   # PhotometrySession, PhotometrySessionGroup
   io.py                     # Alyx/ONE queries
   task.py                   # Task performance (psychometrics, block validation)
-  analysis.py               # Signal processing, similarity, decoding
+  analysis.py               # Signal processing, LMMs, similarity, decoding
   validation.py             # Custom exceptions, @exception_logger, validate_* functions
   util.py                   # Pandas utilities, parquet I/O, schema enforcement
   vis.py                    # Plotting functions
   gui.py                    # Interactive session viewer widget
 
-scripts/                    # Analysis scripts
+scripts/                    # Pipeline stages and analysis scripts
 tests/                      # pytest (synthetic fixtures, no Alyx calls)
-specs/                      # Design docs
-metadata/                   # sessions.pqt, error logs, fibers.csv, trajectories.json
-data/                       # qc_photometry.pqt, performance.pqt, events.pqt, sessions/*.h5
+
+# Generated outputs (gitignored)
+metadata/                   # sessions.pqt, error logs (fibers.csv is tracked)
+data/                       # qc_photometry.pqt, performance.pqt, sessions/*.h5
+results/                    # Analysis outputs (responses/, movement_encoding/, task_encoding/)
 figures/                    # Output plots
+specs/                      # Design specs (gitignored, local working docs)
 ```
