@@ -10,9 +10,9 @@ with specific development branches of `ibllib` and `ibl-photometry`.
 ### Fresh install
 
 ```bash
-# 1. Create and activate a virtual environment
-uv venv ~/.venv/ibl --prompt ibl --python 3.13
-source ~/.venv/ibl/bin/activate
+# 1. Create and activate a virtual environment (Python >= 3.10)
+uv venv .venv --prompt ibl
+source .venv/bin/activate
 
 # 2. Install IBL packages from the required branches
 uv pip install git+https://github.com/int-brain-lab/ibllib@photometry-integration
