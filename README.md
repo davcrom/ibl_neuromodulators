@@ -4,13 +4,42 @@ Fiber photometry analysis pipeline for the IBL neuromodulators project. Ingests 
 
 ## Setup
 
+This project requires the [IBL unified environment](https://docs.internationalbrainlab.org/02_installation.html#uv-pip-instructions)
+with specific development branches of `ibllib` and `ibl-photometry`.
+
+### Fresh install
+
 ```bash
-uv pip install -e .        # editable install (venv: ~/.venv/ibl)
+# 1. Create and activate a virtual environment
+uv venv ~/.venv/ibl --prompt ibl --python 3.13
+source ~/.venv/ibl/bin/activate
+
+# 2. Install IBL packages from the required branches
+uv pip install git+https://github.com/int-brain-lab/ibllib@photometry-integration
+uv pip install git+https://github.com/int-brain-lab/ibl-photometry@develop
+
+# 3. Install iblnm (editable) with dev tools
+uv pip install -e ".[dev]"
+```
+
+### Existing IBL environment
+
+If you already have the IBL environment with the correct `ibllib` and
+`ibl-photometry` branches:
+
+```bash
+uv pip install -e ".[dev]"
+```
+
+This installs `iblnm` plus any missing core dependencies (`xarray`,
+`statsmodels`, `cca-zoo`, etc.) and dev tools (`pytest`, `ruff`).
+
+### Verify
+
+```bash
 pytest                     # run tests
 ruff check .               # lint
 ```
-
-**Dependencies**: `one-api`, `brainbox`, `iblphotometry` (IBL ecosystem); `pandas`, `xarray`, `numpy`, `scipy`, `matplotlib`, `h5py`.
 
 **Docs**: [IBL](https://docs.internationalbrainlab.org/) · [ONE API](https://int-brain-lab.github.io/ONE/)
 

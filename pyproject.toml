@@ -1,2 +1,36 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iblnm"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "h5py",
+    "xarray",
+    "statsmodels",
+    "cca-zoo>=3.0",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+ibl = [
+    "ONE-api",
+    "ibllib @ git+https://github.com/int-brain-lab/ibllib@photometry-integration",
+    "ibl-photometry @ git+https://github.com/int-brain-lab/ibl-photometry@develop",
+]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools]
+packages = ["iblnm"]
+
 [tool.ruff]
 exclude = ["notebooks/"]

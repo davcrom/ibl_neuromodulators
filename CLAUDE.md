@@ -252,12 +252,14 @@ count or figure size that are obvious from reading the code.
 
 ## Environment
 
-```bash
-uv pip install -e .   # Install (venv: ~/.venv/ibl)
-pytest                # Test
-ruff check .          # Lint
-```
+Requires the IBL unified environment with `ibllib` on the
+`photometry-integration` branch and `ibl-photometry` on `develop`.
+See `README.md` for full install instructions.
 
-**Dependencies**: `one-api`, `brainbox`, `iblphotometry` (IBL ecosystem)
+```bash
+uv pip install -e ".[dev]"   # Install (venv: ~/.venv/ibl)
+pytest                       # Test
+ruff check .                 # Lint
+```
 
 **Docs**: [IBL](https://docs.internationalbrainlab.org/) · [ONE API](https://int-brain-lab.github.io/ONE/)
