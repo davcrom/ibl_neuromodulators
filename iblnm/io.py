@@ -84,9 +84,9 @@ def get_session_dict(session, one=None):
     return session
 
 
-def _regions_from_hemisphere(regions):
+def _hemisphere_from_regions(regions):
     """Derive hemisphere list from region names."""
-    return [r[-1] if r.endswith(('-l', '-r')) else None for r in regions]
+    return [r[-1] if r.endswith(('-l', '-r')) else '' for r in regions]
 
 
 @exception_logger
@@ -106,7 +106,7 @@ def get_brain_region(session, one=None):
         fibers = session_desc.get('devices', {}).get('neurophotometrics', {}).get('fibers', {})
         regions = [fiber.get('location', '') for fiber in fibers.values()]
         session['brain_region'] = regions
-        session['hemisphere'] = _regions_from_hemisphere(regions)
+        session['hemisphere'] = _hemisphere_from_regions(regions)
         return session
     except ALFObjectNotFound:
         pass
@@ -116,7 +116,7 @@ def get_brain_region(session, one=None):
         loc = one.load_dataset(session['eid'], 'photometryROI.locations.pqt')
         regions = list(loc['brain_region'].values)
         session['brain_region'] = regions
-        session['hemisphere'] = _regions_from_hemisphere(regions)
+        session['hemisphere'] = _hemisphere_from_regions(regions)
         return session
     except ALFObjectNotFound:
         pass
@@ -196,17 +196,21 @@ def get_fiber_coordinates(session, all_trajectories=None, one=None):
     insertions = one.alyx.rest('chronic-insertions', 'list', subject=subject)
     if len(insertions) == 0:
         print(f"No chronic insertions found for subject {subject}.")
-        return
+        return []
 
     iids = [i['id'] for i in insertions]
-    coords = {}
+    coords = []
     for iid in iids:
         trajectory = [
             t for t in all_trajectories if t['chronic_insertion'] == iid
             ]
         assert len(trajectory) == 1
         trajectory = trajectory[0]
-        coords[trajectory['probe_name']] = traj2coord(**trajectory)
+        coords.append({
+            'subject': subject,
+            'fiber': trajectory['probe_name'],
+            'coords': traj2coord(**trajectory)
+            })
 
     # FIXME: return session as pd.Series with coords inserted
     return coords

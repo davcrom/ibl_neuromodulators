@@ -65,7 +65,7 @@ class TestGetBrainRegion:
         }
         result = get_brain_region(mock_session, one=mock_one)
         assert result['brain_region'] == ['VTA-r', 'DR']
-        assert result['hemisphere'] == ['r', None]
+        assert result['hemisphere'] == ['r', '']
 
     def test_fallback_to_locations_file(self, mock_session, mock_one):
         """Experiment desc missing → falls back to photometryROI.locations.pqt."""
@@ -75,7 +75,7 @@ class TestGetBrainRegion:
         ]
         result = get_brain_region(mock_session, one=mock_one)
         assert result['brain_region'] == ['VTA-r', 'DR']
-        assert result['hemisphere'] == ['r', None]
+        assert result['hemisphere'] == ['r', '']
 
     def test_both_missing_raises(self, mock_session, mock_one):
         """Both sources missing → raises ALFObjectNotFound."""
