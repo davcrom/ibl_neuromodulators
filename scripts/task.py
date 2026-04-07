@@ -14,146 +14,94 @@ No write-back to sessions.pqt — produces standalone outputs.
 
 Output: data/performance.pqt, data/performance_log.pqt
 """
+import argparse
 from pathlib import Path
+
 import pandas as pd
-from tqdm import tqdm
+
+import pandas as pd
 
 from iblnm.config import (
     SESSIONS_FPATH, PERFORMANCE_FPATH, TASK_LOG_FPATH, TRIAL_TIMING_FPATH,
-    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH,
-    SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE,
+    SESSIONS_H5_DIR, VALID_TARGETNMS,
 )
+from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.util import collect_session_errors, resolve_duplicate_group, LOG_COLUMNS
-from iblnm.validation import make_log_entry
-from iblnm.data import PhotometrySession
+from iblnm.util import collect_errors
 
 
-def run_task_pipeline(df_sessions, one=None, verbose=True):
-    """
-    Compute task performance metrics for all sessions.
+def process_task(ps):
+    """Compute task performance metrics for a single session."""
+    ps.load_trials()
+    ps.validate_n_trials()
 
-    Returns
-    -------
-    df_performance : pd.DataFrame
-        Performance metrics per session; basic metrics always present,
-        block metrics present when session_type is biased/ephys and block
-        structure is valid.
-    df_log : pd.DataFrame
-        Error log with schema (eid, error_type, error_message, traceback).
-    df_trial_timing : pd.DataFrame
-        Per-trial timing (eid, trial, reaction_time, movement_time,
-        response_time).
-    """
-    if one is None:
-        one = _get_default_connection()
+    try:
+        ps.validate_event_completeness()
+    except Exception as e:
+        ps.log_error(e)
 
-    results = []
-    timing_frames = []
-    error_log = []
+    result = {'eid': ps.eid, 'n_trials': len(ps.trials)}
+    result['contrasts'] = sorted(ps.trials['contrast'].unique().tolist())
+    result.update(ps.basic_performance())
 
-    for _, session_series in tqdm(df_sessions.iterrows(), total=len(df_sessions),
-                                   desc="Computing task performance", disable=not verbose):
-        eid = session_series['eid']
+    try:
+        ps.validate_block_structure()
+        result.update(ps.block_performance())
+    except Exception as e:
+        ps.log_error(e)
 
-        # Block 1: Load (fatal)
-        try:
-            ps = PhotometrySession(session_series, one=one)
-            ps.load_trials()
-        except Exception as e:
-            error_log.append(make_log_entry(eid, error=e))
-            continue
-
-        # Block 2: n_trials (fatal)
-        try:
-            ps.validate_n_trials()
-        except Exception as e:
-            error_log.append(make_log_entry(eid, error=e))
-            continue
-
-        # Block 3: event completeness (non-blocking — logged only)
-        try:
-            ps.validate_event_completeness()
-        except Exception as e:
-            error_log.append(make_log_entry(eid, error=e))
-
-        # Block 4: basic performance (fatal)
-        try:
-            result = {'eid': eid, 'n_trials': len(ps.trials)}
-            result['contrasts'] = sorted(ps.trials['contrast'].unique().tolist())
-            result.update(ps.basic_performance())
-        except Exception as e:
-            error_log.append(make_log_entry(eid, error=e))
-            continue
-
-        # Block 5: validate block structure then compute block performance (non-fatal)
-        try:
-            ps.validate_block_structure()
-            result.update(ps.block_performance())
-        except Exception as e:
-            error_log.append(make_log_entry(eid, error=e))
-
-        results.append(result)
-        timing_frames.append(ps.get_trial_timings())
-
-    df_performance = pd.DataFrame(results)
-    df_log = pd.DataFrame(error_log) if error_log else pd.DataFrame(columns=LOG_COLUMNS)
-    df_trial_timing = pd.concat(timing_frames, ignore_index=True) if timing_frames else pd.DataFrame(
-        columns=['eid', 'trial', 'reaction_time', 'movement_time', 'response_time']
-    )
-    return df_performance, df_log, df_trial_timing
+    timing = ps.get_trial_timings()
+    return {'performance': result, 'timing': timing}
 
 
 if __name__ == '__main__':
-    print(f"Loading sessions from {SESSIONS_FPATH}")
-    df_sessions = pd.read_parquet(SESSIONS_FPATH)
-    print(f"Loaded {len(df_sessions)} sessions")
-
-    # Filter to sessions that are valid for task analysis
-    df_sessions = df_sessions[
-        df_sessions['session_type'].isin(SESSION_TYPES_TO_ANALYZE) &
-        ~df_sessions['subject'].isin(SUBJECTS_TO_EXCLUDE)
-    ]
-    print(f"  After session type filter: {len(df_sessions)}")
-
-    # Attach upstream error logs (needed for dedup and QC filter)
-    df_sessions = collect_session_errors(
-        df_sessions,
-        [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH],
-    )
-
-    # Deduplicate: one session per (subject, day_n)
-    dup_log = []
-    df_sessions = (
-        df_sessions.groupby(['subject', 'day_n'], group_keys=False)
-        .apply(resolve_duplicate_group, exlog=dup_log, include_groups=True)
-        .reset_index(drop=True)
-    )
-    print(f"  After deduplication: {len(df_sessions)}")
-
-    # Apply basic QC filter (same blockers as dataset_overview.py)
-    _qc_blockers = {
-        'MissingRawData', 'MissingExtractedData', 'InsufficientTrials',
-        'TrialsNotInPhotometryTime', 'QCValidationError', 'FewUniqueSamples',
-    }
-    df_sessions = df_sessions[
-        df_sessions['logged_errors'].apply(
-            lambda e: not any(err in _qc_blockers for err in e)
-        )
-    ]
-    print(f"  After basic QC filter: {len(df_sessions)}")
-    print(f"Processing {len(df_sessions)} sessions")
+    parser = argparse.ArgumentParser(description='Task performance analysis')
+    parser.add_argument('--workers', '-w', type=int, default=1,
+                        help='Number of parallel workers')
+    args = parser.parse_args()
 
     one = _get_default_connection()
-    df_performance, df_log, df_trial_timing = run_task_pipeline(df_sessions, one=one)
 
+    print(f"Loading sessions from {SESSIONS_FPATH}")
+    group = PhotometrySessionGroup.from_catalog(pd.read_parquet(SESSIONS_FPATH), one=one)
+    group.filter_sessions(
+        session_types=False, qc_blockers=set(),
+        targetnms=VALID_TARGETNMS, min_performance=False,
+        required_contrasts=False,
+    )
+    print(f"  {len(group.sessions)} sessions after filtering")
+
+    results = group.process(process_task, workers=args.workers)
+
+    # Aggregate results
+    perf_rows = [r['performance'] for r in results if r is not None]
+    timing_frames = [r['timing'] for r in results if r is not None]
+
+    df_performance = pd.DataFrame(perf_rows) if perf_rows else pd.DataFrame()
+    df_trial_timing = (
+        pd.concat(timing_frames, ignore_index=True) if timing_frames
+        else pd.DataFrame(
+            columns=['eid', 'trial', 'reaction_time', 'movement_time',
+                     'response_time']
+        )
+    )
+
+    n_processed = sum(1 for r in results if r is not None)
+    n_failed = sum(1 for r in results if r is None)
+    print(f"\nResults: {n_processed} processed, {n_failed} failed")
+
+    # Save outputs
     Path(PERFORMANCE_FPATH).parent.mkdir(parents=True, exist_ok=True)
     df_performance.to_parquet(PERFORMANCE_FPATH)
-    df_log.to_parquet(TASK_LOG_FPATH)
     df_trial_timing.to_parquet(TRIAL_TIMING_FPATH, index=False)
-    print(f"\nSaved performance data to {PERFORMANCE_FPATH}")
+    print(f"Saved {len(df_performance)} sessions to {PERFORMANCE_FPATH}")
     print(f"Saved trial timing to {TRIAL_TIMING_FPATH}")
-    print(f"Saved error log to {TASK_LOG_FPATH}")
-    if len(df_log) > 0:
-        print(f"  {len(df_log)} sessions with errors/warnings")
-        print(f"  Error types:\n{df_log['error_type'].value_counts().to_string()}")
+
+    # Collect errors from H5 files
+    df_errors = collect_errors(SESSIONS_H5_DIR)
+    if len(df_errors) > 0:
+        df_errors.to_parquet(TASK_LOG_FPATH)
+        print(f"Saved {len(df_errors)} error entries to {TASK_LOG_FPATH}")
+        print(f"Error types:\n{df_errors['error_type'].value_counts().to_string()}")
+    else:
+        print("No errors logged.")

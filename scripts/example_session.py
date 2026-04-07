@@ -484,7 +484,7 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup(df_recordings, one=one)
-    group.filter_recordings(session_types=('biased', 'ephys'))
+    group.filter_sessions(session_types=('biased', 'ephys'))
     print(f"  {len(group)} recordings after filtering")
 
     # -----------------------------------------------------------------

@@ -114,7 +114,7 @@ if __name__ == '__main__':
     # Filter
     one = _get_default_connection()
     group = PhotometrySessionGroup(df_recordings, one=one)
-    group.filter_recordings(session_types=('biased', 'ephys'))
+    group.filter_sessions(session_types=('biased', 'ephys'))
 
     # Load pre-extracted responses
     print(f'Loading responses from {RESPONSES_FPATH}')

@@ -11,11 +11,8 @@ Usage:
     python scripts/query_database.py --extended-qc    # also fetch extended QC
 """
 import argparse
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from pathlib import Path
 
 import pandas as pd
-from tqdm import tqdm
 
 from one.api import ONE
 
@@ -23,134 +20,122 @@ from iblnm.config import (
     SESSION_SCHEMA, SESSIONS_FPATH, SESSIONS_QC_FPATH, SESSIONS_H5_DIR,
     QUERY_DATABASE_LOG_FPATH,
 )
-from iblnm.data import PhotometrySession
+from iblnm.data import PhotometrySessionGroup
 from iblnm.io import get_extended_qc
 from iblnm.util import (
     collect_catalog, collect_errors,
     enforce_schema, fill_empty_lists_from_group, fill_brain_region_from_fibers,
-    fix_brain_regions, df2pqt,
+    fix_brain_regions, derive_target_nm, df2pqt,
 )
 
 
-def _query_one_session(session_dict):
-    """Query Alyx metadata for a single session and save to H5.
-
-    Called in parallel workers. Creates its own ONE connection.
-    Returns the eid on success, or (eid, error_message) on failure.
-    """
-    one = ONE()
-    row = pd.Series(session_dict).rename(index={'id': 'eid'})
-    ps = PhotometrySession(row, one=one, load_data=False)
+def query_session(ps):
+    """Query Alyx metadata for a single session and save to H5."""
     ps.from_alyx()
     ps.save_h5(groups=['metadata', 'errors'])
     return ps.eid
 
 
-parser = argparse.ArgumentParser(description='Query IBL fibrephotometry database')
-parser.add_argument('--redownload', action='store_true',
-                    help='Re-query all sessions, ignoring existing H5 files')
-parser.add_argument('--workers', '-w', type=int, default=1,
-                    help='Number of parallel workers')
-parser.add_argument('--extended-qc', action='store_true',
-                    help='Fetch extended QC data (saved to separate file)')
-args = parser.parse_args()
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Query IBL fibrephotometry database')
+    parser.add_argument('--redownload', action='store_true',
+                        help='Re-query all sessions, ignoring existing H5 files')
+    parser.add_argument('--workers', '-w', type=int, default=1,
+                        help='Number of parallel workers')
+    parser.add_argument('--extended-qc', action='store_true',
+                        help='Fetch extended QC data (saved to separate file)')
+    args = parser.parse_args()
 
-one = ONE()
+    one = ONE()
 
-# Get list of session dicts from Alyx
-print("Querying database...")
-sessions = one.alyx.rest('sessions', 'list', project='ibl_fibrephotometry')
-print(f"Found {len(sessions)} sessions on Alyx")
+    # Get list of session dicts from Alyx
+    print("Querying database...")
+    sessions = one.alyx.rest('sessions', 'list', project='ibl_fibrephotometry')
+    print(f"Found {len(sessions)} sessions on Alyx")
 
-# Skip sessions with existing H5 metadata (unless --redownload)
-if not args.redownload:
-    existing = {p.stem for p in SESSIONS_H5_DIR.glob('*.h5')}
-    before = len(sessions)
-    sessions = [s for s in sessions if s['id'] not in existing]
-    print(f"Skipping {before - len(sessions)} with existing H5, "
-          f"{len(sessions)} to process")
-    if not sessions:
-        print("No new sessions. Collecting catalog from existing H5 files...")
-else:
-    print("Re-downloading all data...")
+    # Build DataFrame from Alyx dicts
+    df = pd.DataFrame(sessions).rename(columns={'id': 'eid'})
 
-# Process sessions
-if sessions:
-    if args.workers > 1:
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(_query_one_session, s): s['id']
-                       for s in sessions}
-            for future in tqdm(as_completed(futures), total=len(futures),
-                               desc="Querying"):
-                try:
-                    future.result()
-                except Exception as e:
-                    eid = futures[future]
-                    print(f"\n  FATAL: {eid}: {type(e).__name__}: {e}")
+    # Skip sessions with existing H5 metadata (unless --redownload)
+    if not args.redownload:
+        existing = {p.stem for p in SESSIONS_H5_DIR.glob('*.h5')}
+        before = len(df)
+        df = df[~df['eid'].isin(existing)]
+        print(f"Skipping {before - len(df)} with existing H5, "
+              f"{len(df)} to process")
+        if len(df) == 0:
+            print("No new sessions. Collecting catalog from existing H5 files...")
     else:
-        for s in tqdm(sessions, desc="Querying"):
-            try:
-                _query_one_session(s)
-            except Exception as e:
-                print(f"\n  FATAL: {s['id']}: {type(e).__name__}: {e}")
+        print("Re-downloading all data...")
 
-# Collect catalog from all H5 files
-print("Collecting catalog from H5 metadata...")
-df_sessions = collect_catalog(SESSIONS_H5_DIR)
+    # Process sessions
+    if len(df) > 0:
+        group = PhotometrySessionGroup(df, one=one)
+        results = group.process(query_session, workers=args.workers)
 
-# -----------------------------------------------------------------
-# TEMPFIX: cross-session fill/fix operations
-# These compensate for incomplete Alyx metadata and should be removed
-# once the upstream data is corrected.
-# -----------------------------------------------------------------
-df_sessions = fill_empty_lists_from_group(df_sessions, 'brain_region')
-df_sessions = fill_empty_lists_from_group(df_sessions, 'hemisphere')
-df_sessions = fill_brain_region_from_fibers(df_sessions)
-df_sessions = fix_brain_regions(df_sessions)
-# -----------------------------------------------------------------
+        n_ok = sum(1 for r in results if r is not None)
+        n_failed = sum(1 for r in results if r is None)
+        print(f"\nQueried: {n_ok} succeeded, {n_failed} failed")
 
-# Derive convenience columns (display/query aids on the catalog)
-df_sessions['date'] = pd.to_datetime(
-    df_sessions['start_time'], format='ISO8601'
-).dt.date
-df_sessions['day_n'] = df_sessions.groupby('subject')['date'].transform(
-    lambda x: [(date - x.min()).days for date in x]
-)
-df_sessions['session_n'] = df_sessions.groupby('subject')['date'].rank(
-    method='dense'
-)
-df_sessions = df_sessions.drop(columns='date').copy()
+    # Collect catalog from all H5 files
+    print("Collecting catalog from H5 metadata...")
+    df_sessions = collect_catalog(SESSIONS_H5_DIR)
 
-# Normalize schema
-df_sessions = enforce_schema(df_sessions, SESSION_SCHEMA)
+    # -----------------------------------------------------------------
+    # TEMPFIX: cross-session fill/fix operations
+    # These compensate for incomplete Alyx metadata and should be removed
+    # once the upstream data is corrected.
+    # -----------------------------------------------------------------
+    df_sessions = fill_empty_lists_from_group(df_sessions, 'brain_region')
+    df_sessions = fill_empty_lists_from_group(df_sessions, 'hemisphere')
+    df_sessions = fill_brain_region_from_fibers(df_sessions)
+    df_sessions = fix_brain_regions(df_sessions)
+    df_sessions = derive_target_nm(df_sessions)
+    # -----------------------------------------------------------------
 
-# Extended QC (optional)
-error_log = []
-df_qc = None
-if args.extended_qc:
-    print("Fetching extended QC...")
-    tqdm.pandas()
-    df_qc = df_sessions[['eid']].copy()
-    df_qc = df_qc.progress_apply(
-        get_extended_qc, axis='columns', exlog=error_log
-    ).copy()
+    # Derive convenience columns (display/query aids on the catalog)
+    df_sessions['date'] = pd.to_datetime(
+        df_sessions['start_time'], format='ISO8601'
+    ).dt.date
+    df_sessions['day_n'] = df_sessions.groupby('subject')['date'].transform(
+        lambda x: [(date - x.min()).days for date in x]
+    )
+    df_sessions['session_n'] = df_sessions.groupby('subject')['date'].rank(
+        method='dense'
+    )
+    df_sessions = df_sessions.drop(columns='date').copy()
 
-# Save derived catalog
-df_sessions.to_parquet(SESSIONS_FPATH, index=False)
-print(f"Saved {len(df_sessions)} sessions to {SESSIONS_FPATH}")
+    # Normalize schema
+    df_sessions = enforce_schema(df_sessions, SESSION_SCHEMA)
 
-# Save QC
-if df_qc is not None:
-    df2pqt(df_qc, SESSIONS_QC_FPATH)
+    # Extended QC (optional)
+    error_log = []
+    df_qc = None
+    if args.extended_qc:
+        from tqdm import tqdm
+        print("Fetching extended QC...")
+        tqdm.pandas()
+        df_qc = df_sessions[['eid']].copy()
+        df_qc = df_qc.progress_apply(
+            get_extended_qc, axis='columns', exlog=error_log
+        ).copy()
 
-# Save aggregated error log
-df_errors = collect_errors(SESSIONS_H5_DIR)
-if error_log:
-    extra = pd.DataFrame(error_log)
-    df_errors = pd.concat([df_errors, extra], ignore_index=True)
-if len(df_errors) > 0:
-    df_errors.to_parquet(QUERY_DATABASE_LOG_FPATH, index=False)
-    print(f"Saved {len(df_errors)} error entries to {QUERY_DATABASE_LOG_FPATH}")
-    print(f"Error types:\n{df_errors['error_type'].value_counts().to_string()}")
-else:
-    print("No errors logged.")
+    # Save derived catalog
+    df_sessions.to_parquet(SESSIONS_FPATH, index=False)
+    print(f"Saved {len(df_sessions)} sessions to {SESSIONS_FPATH}")
+
+    # Save QC
+    if df_qc is not None:
+        df2pqt(df_qc, SESSIONS_QC_FPATH)
+
+    # Save aggregated error log
+    df_errors = collect_errors(SESSIONS_H5_DIR)
+    if error_log:
+        extra = pd.DataFrame(error_log)
+        df_errors = pd.concat([df_errors, extra], ignore_index=True)
+    if len(df_errors) > 0:
+        df_errors.to_parquet(QUERY_DATABASE_LOG_FPATH, index=False)
+        print(f"Saved {len(df_errors)} error entries to {QUERY_DATABASE_LOG_FPATH}")
+        print(f"Error types:\n{df_errors['error_type'].value_counts().to_string()}")
+    else:
+        print("No errors logged.")

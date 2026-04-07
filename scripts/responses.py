@@ -23,7 +23,7 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
-    RESPONSES_DIR, RESPONSES_FPATH,
+    RESPONSES_DIR, RESPONSES_FPATH, TRIAL_TIMING_FPATH,
     RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
@@ -331,6 +331,7 @@ if __name__ == '__main__':
             raise SystemExit(1)
 
         group.load_response_magnitudes(RESPONSES_FPATH)
+        group.load_trial_timing(TRIAL_TIMING_FPATH)
         group.load_response_features(RESPONSE_MATRIX_FPATH)
         group.load_mean_traces(MEAN_TRACES_FPATH)
 
@@ -346,6 +347,10 @@ if __name__ == '__main__':
         # --- Response magnitudes ---
         print("Computing trial-level response magnitudes...")
         group.get_response_magnitudes()
+
+        if group.trial_timing is not None:
+            group.trial_timing.to_parquet(TRIAL_TIMING_FPATH, index=False)
+            print(f"Saved trial timing to {TRIAL_TIMING_FPATH}")
 
         if len(group.response_magnitudes) == 0:
             print("No response magnitudes extracted. Check H5 files exist.")
