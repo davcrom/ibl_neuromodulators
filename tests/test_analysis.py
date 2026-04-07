@@ -871,7 +871,7 @@ class TestFitResponseLMM:
         """Random slope model should include contrast col in random effects."""
         from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_response_lmm(df, 'response', re_formula='log_contrast')
+        result = fit_response_lmm(df, 'response', re_formula='contrast')
         if result is not None:
             has_slope = any(
                 result.contrast_col in eff.index
@@ -993,11 +993,11 @@ class TestContrastCenteringAndNaming:
 
     @pytest.mark.parametrize('coding', ['log', 'linear', 'rank'])
     def test_contrast_col_named_by_coding(self, coding):
-        """LMM result.contrast_col matches coding and appears in summary_df."""
+        """LMM result.contrast_col is always 'contrast' regardless of coding."""
         from iblnm.analysis import fit_response_lmm
         df = _make_lmm_data()
         result = fit_response_lmm(df, 'response', contrast_coding=coding)
-        assert result.contrast_col == f'{coding}_contrast'
+        assert result.contrast_col == 'contrast'
         assert result.contrast_col in result.summary_df.index
 
     @pytest.mark.parametrize('coding', ['log', 'linear', 'rank'])
@@ -1013,14 +1013,13 @@ class TestContrastCenteringAndNaming:
 
     @pytest.mark.parametrize('coding', ['log', 'linear', 'rank'])
     def test_glm_contrast_col_named_by_coding(self, coding):
-        """GLM coefficient columns reflect the contrast coding scheme."""
+        """GLM coefficient column is always 'contrast' regardless of coding."""
         from iblnm.analysis import fit_response_glm
         events = _make_glm_events(n=200, seed=0)
         coefs, ses = fit_response_glm(events, 'stimOn_times',
                                       contrast_coding=coding)
-        expected_col = f'{coding}_contrast'
-        assert expected_col in coefs.columns
-        assert f'{expected_col}:reward' in coefs.columns
+        assert 'contrast' in coefs.columns
+        assert 'contrast:reward' in coefs.columns
 
     def test_glm_contrast_predictor_is_centered(self):
         """GLM contrast predictor per recording has mean ≈ 0.
@@ -1146,7 +1145,7 @@ class TestLMMResultRandomEffects:
         df = _make_lmm_data(n_per_cell=30)
         result = fit_response_lmm(df, 'response')
         for subj, effects in result.random_effects.items():
-            # effects is a Series with 'Group' (intercept) and possibly 'log_contrast'
+            # effects is a Series with 'Group' (intercept) and possibly 'contrast'
             assert len(effects) >= 1  # at minimum, intercept
 
 
@@ -1437,7 +1436,7 @@ class TestFitSparseCCA:
     def test_preserves_feature_names(self):
         from iblnm.analysis import fit_sparse_cca
         rng = np.random.default_rng(42)
-        x_names = ['log_contrast', 'side', 'feedback', 'lc:side', 'lc:fb', 'side:fb']
+        x_names = ['contrast', 'side', 'feedback', 'lc:side', 'lc:fb', 'side:fb']
         y_names = ['threshold', 'bias', 'lapse_l', 'lapse_r']
         X = pd.DataFrame(rng.standard_normal((40, 6)), columns=x_names)
         Y = pd.DataFrame(rng.standard_normal((40, 4)), columns=y_names)
@@ -1698,20 +1697,20 @@ def _make_glm_coefs(seed=42):
     """Synthetic GLM coefficient matrix with known structure.
 
     Two cohorts: A (20 sessions) and B (5 sessions).
-    A has high log_contrast, low reward.
-    B has low log_contrast, high reward.
+    A has high contrast, low reward.
+    B has low contrast, high reward.
     This guarantees PC1 separates the two groups.
     """
     rng = np.random.default_rng(seed)
     coef_names = [
-        'log_contrast', 'side', 'reward',
-        'log_contrast:side', 'log_contrast:reward', 'side:reward',
+        'contrast', 'side', 'reward',
+        'contrast:side', 'contrast:reward', 'side:reward',
     ]
     n_a, n_b = 20, 5
     rows = []
     targets = []
     for i in range(n_a):
-        rows.append([2.0 + rng.normal(0, 0.3),   # log_contrast: high
+        rows.append([2.0 + rng.normal(0, 0.3),   # contrast: high
                      rng.normal(0, 0.2),
                      0.1 + rng.normal(0, 0.2),    # reward: low
                      rng.normal(0, 0.1),
@@ -1719,7 +1718,7 @@ def _make_glm_coefs(seed=42):
                      rng.normal(0, 0.1)])
         targets.append('A')
     for i in range(n_b):
-        rows.append([0.1 + rng.normal(0, 0.3),    # log_contrast: low
+        rows.append([0.1 + rng.normal(0, 0.3),    # contrast: low
                      rng.normal(0, 0.2),
                      2.0 + rng.normal(0, 0.2),    # reward: high
                      rng.normal(0, 0.1),
@@ -1991,8 +1990,8 @@ class TestFitResponseGLM:
         from iblnm.analysis import fit_response_glm
         events = _make_glm_events(n=200, seed=0)
         coefs, ses = fit_response_glm(events, 'stimOn_times')
-        expected = ['intercept', 'log_contrast', 'side', 'reward',
-                    'log_contrast:side', 'log_contrast:reward',
+        expected = ['intercept', 'contrast', 'side', 'reward',
+                    'contrast:side', 'contrast:reward',
                     'side:reward']
         assert list(coefs.columns) == expected
         assert list(ses.columns) == expected
@@ -2478,3 +2477,124 @@ class TestPairwiseMannwhitney:
         _, p_raw = mannwhitneyu(groups['X'], groups['Y'],
                                 alternative='two-sided')
         assert np.isclose(results[0][3], p_raw)
+
+
+# =============================================================================
+# Movement Encoding LMM
+# =============================================================================
+
+def _make_movement_lmm_df(n_per_cell=40, seed=0):
+    """Synthetic trial-level data for movement LMM tests.
+
+    Creates data where contrast and timing both influence the response,
+    so both should show non-zero delta-R².
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for subj in ['s1', 's2', 's3', 's4']:
+        subj_intercept = rng.normal(0, 0.5)
+        for contrast in [0.0, 25.0, 100.0]:
+            for side_label, side_val in [('contra', 0.5), ('ipsi', -0.5)]:
+                for fb, reward_val in [(1, 0.5), (-1, -0.5)]:
+                    for _ in range(n_per_cell):
+                        log_rt = rng.normal(-0.7, 0.3)
+                        response = (
+                            subj_intercept
+                            + 0.3 * (contrast / 100)  # contrast effect
+                            + 0.2 * side_val
+                            + 0.1 * reward_val
+                            + 0.4 * log_rt  # timing effect
+                            + rng.normal(0, 0.5)
+                        )
+                        rows.append({
+                            'subject': subj,
+                            'contrast': contrast,
+                            'side': side_label,
+                            'feedbackType': fb,
+                            'response_early': response,
+                            'log_reaction_time': log_rt,
+                        })
+    return pd.DataFrame(rows)
+
+
+class TestLosoCVMovementLMM:
+    def test_returns_dataframe(self):
+        from iblnm.analysis import loso_cv_movement_lmm
+        df = _make_movement_lmm_df()
+        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        assert isinstance(result, pd.DataFrame)
+
+    def test_one_row_per_subject(self):
+        from iblnm.analysis import loso_cv_movement_lmm
+        df = _make_movement_lmm_df()
+        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        assert len(result) == df['subject'].nunique()
+        assert set(result['subject']) == set(df['subject'].unique())
+
+    def test_required_columns(self):
+        from iblnm.analysis import loso_cv_movement_lmm
+        df = _make_movement_lmm_df()
+        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        expected_cols = {
+            'subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
+            'r2_drop_timing', 'delta_r2_contrast', 'delta_r2_timing',
+            'timing_col',
+        }
+        assert expected_cols <= set(result.columns)
+
+    def test_mean_delta_r2_positive(self):
+        """Both predictors have real effects, so mean delta-R² across
+        subjects should be positive."""
+        from iblnm.analysis import loso_cv_movement_lmm
+        df = _make_movement_lmm_df()
+        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        assert result['delta_r2_contrast'].mean() > 0
+        assert result['delta_r2_timing'].mean() > 0
+
+    def test_too_few_subjects_returns_empty(self):
+        from iblnm.analysis import loso_cv_movement_lmm
+        df = _make_movement_lmm_df()
+        df['subject'] = 's1'
+        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+
+
+class TestFitMovementLMMPerContrast:
+    def test_returns_dict(self):
+        from iblnm.analysis import fit_movement_lmm_per_contrast
+        df = _make_movement_lmm_df()
+        df_c = df[df['contrast'] == 25.0]
+        result = fit_movement_lmm_per_contrast(
+            df_c, 'response_early', 'log_reaction_time')
+        assert isinstance(result, dict)
+
+    def test_required_keys(self):
+        from iblnm.analysis import fit_movement_lmm_per_contrast
+        df = _make_movement_lmm_df()
+        df_c = df[df['contrast'] == 25.0]
+        result = fit_movement_lmm_per_contrast(
+            df_c, 'response_early', 'log_reaction_time')
+        expected_keys = {
+            'timing_coef', 'timing_se', 'timing_p',
+            'r2_marginal', 'n_trials', 'n_subjects', 'timing_col',
+        }
+        assert expected_keys <= set(result.keys())
+
+    def test_positive_slope(self):
+        """Synthetic data has positive timing effect (0.4), slope should be positive."""
+        from iblnm.analysis import fit_movement_lmm_per_contrast
+        df = _make_movement_lmm_df()
+        df_c = df[df['contrast'] == 25.0]
+        result = fit_movement_lmm_per_contrast(
+            df_c, 'response_early', 'log_reaction_time')
+        assert result['timing_coef'] > 0
+
+    def test_too_few_subjects_returns_none(self):
+        from iblnm.analysis import fit_movement_lmm_per_contrast
+        df = _make_movement_lmm_df()
+        df_c = df[df['contrast'] == 25.0].copy()
+        df_c['subject'] = 's1'
+        result = fit_movement_lmm_per_contrast(
+            df_c, 'response_early', 'log_reaction_time')
+        assert result is None

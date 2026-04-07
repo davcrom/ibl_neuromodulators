@@ -826,8 +826,8 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
     """Fit per-recording OLS models and return coefficients as features.
 
     For each recording in the events DataFrame, fits:
-    ``response_early ~ 1 + {coding}_contrast + side + reward
-    + {coding}_contrast:side + {coding}_contrast:reward + side:reward``
+    ``response_early ~ 1 + contrast + side + reward
+    + contrast:side + contrast:reward + side:reward``
 
     The contrast predictor is mean-centered per recording. Uses deviation
     coding (±0.5) for side and reward, consistent with the LMM:
@@ -878,10 +878,9 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
     if 'side' not in df.columns:
         df = add_relative_contrast(df)
 
-    contrast_col = f'{contrast_coding}_contrast'
     coef_names = [
-        'intercept', contrast_col, 'side', 'reward',
-        f'{contrast_col}:side', f'{contrast_col}:reward', 'side:reward',
+        'intercept', 'contrast', 'side', 'reward',
+        'contrast:side', 'contrast:reward', 'side:reward',
     ]
 
     coef_rows = {}
@@ -1502,7 +1501,7 @@ class LMMResult:
     @property
     def contrast_col(self):
         """Column name for the contrast predictor in the fitted model."""
-        return f'{self.contrast_coding}_contrast'
+        return 'contrast'
 
 
 def _variance_explained(result, df, response_col):
@@ -1627,7 +1626,7 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
     Uses deviation coding (±0.5) for side and reward so that every
     coefficient is interpretable at the grand mean of all other factors.
 
-    Model: ``response ~ {coding}_contrast * side * reward`` with subject
+    Model: ``response ~ contrast * side * reward`` with subject
     as random effect. The contrast predictor is mean-centered so that main
     effects are evaluated at the average contrast level.
 
@@ -1644,7 +1643,7 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
         Column name for the response magnitude.
     formula : str, optional
         Wilkinson formula for fixed effects. Default:
-        ``'{response_col} ~ {coding}_contrast * side * reward'``.
+        ``'{response_col} ~ contrast * side * reward'``.
     re_formula : str
         Random effects formula passed to ``statsmodels.MixedLM``.
         Default ``'1'`` (random intercept only).
@@ -1655,12 +1654,12 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
         None if the model fails to converge or data is degenerate.
     """
     _transform, _ = get_contrast_coding(contrast_coding)
-    contrast_col = f'{contrast_coding}_contrast'
 
     df = df.copy()
+    original_contrasts = df['contrast'].copy()
     coded = _transform(df['contrast'])
     contrast_center = float(np.mean(coded))
-    df[contrast_col] = coded - contrast_center
+    df['contrast'] = coded - contrast_center
     # Deviation coding: ±0.5
     df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
     df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
@@ -1674,11 +1673,7 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
         return None
 
     if formula is None:
-        formula = f'{response_col} ~ {contrast_col} * side * reward'
-
-    # Translate re_formula if it references the old 'log_contrast' name
-    if re_formula and 'log_contrast' in re_formula:
-        re_formula = re_formula.replace('log_contrast', contrast_col)
+        formula = f'{response_col} ~ contrast * side * reward'
 
     lmm_result = _fit_lmm(formula, df, groups=df['subject'],
                            re_formula=re_formula, reml=True,
@@ -1693,13 +1688,12 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
     fe_names = list(result.fe_params.index)
     fe_cov = result.cov_params().loc[fe_names, fe_names].values
 
-    contrasts = sorted(df['contrast'].unique())
+    original_contrast_levels = sorted(original_contrasts.unique())
     pred_rows = []
     for side_label, side_val in [('contra', 0.5), ('ipsi', -0.5)]:
         for reward_label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
             grid = pd.DataFrame({
-                'contrast': contrasts,
-                contrast_col: _transform(contrasts) - contrast_center,
+                'contrast': _transform(original_contrast_levels) - contrast_center,
                 'side': side_val,
                 'reward': reward_val,
                 'subject': df['subject'].iloc[0],  # dummy
@@ -1710,7 +1704,7 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
             X_grid = np.asarray(dmatrix(design_info, grid))
             pred = X_grid @ fe_params
             se_pred = np.sqrt(np.maximum(np.diag(X_grid @ fe_cov @ X_grid.T), 0))
-            for i, c in enumerate(contrasts):
+            for i, c in enumerate(original_contrast_levels):
                 pred_rows.append({
                     'contrast': c,
                     'side': side_label,
@@ -2041,6 +2035,186 @@ def feature_unique_contribution(response_matrix, labels, subjects,
 
 
 # =============================================================================
+# Movement Encoding LMM
+# =============================================================================
+
+
+def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
+    """Leave-one-subject-out cross-validated comparison of timing vs. contrast.
+
+    For each held-out subject, fits three LMMs on the remaining subjects:
+
+    - Full: ``response ~ contrast + side + reward + timing + (1 | subject)``
+    - Drop-contrast: ``response ~ side + reward + timing + (1 | subject)``
+    - Drop-timing: ``response ~ contrast + side + reward + (1 | subject)``
+
+    Predicts the held-out subject's trials using fixed effects only, then
+    computes R² = 1 - SS_res / SS_tot on those trials. The delta-R² between
+    models is a fair comparison because the missing random intercept cancels.
+
+    Contrast is rank-coded and mean-centered. Side and reward use deviation
+    coding (±0.5). The timing column should already be log-transformed.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data with columns: contrast, side (contra/ipsi),
+        feedbackType, subject, ``response_col``, and ``timing_col``.
+    response_col : str
+        Column name for the NM response magnitude.
+    timing_col : str
+        Column name for the (log-transformed) timing variable.
+    min_subjects : int
+        Minimum subjects required (need at least 3 so training sets have
+        ≥ 2 subjects for the random effect).
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per subject with columns: subject, n_trials, r2_full,
+        r2_drop_contrast, r2_drop_timing, delta_r2_contrast,
+        delta_r2_timing, timing_col. Empty DataFrame if fewer than
+        min_subjects.
+    """
+    from patsy import dmatrix
+    import pandas as pd
+
+    empty = pd.DataFrame(columns=[
+        'subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
+        'r2_drop_timing', 'delta_r2_contrast', 'delta_r2_timing',
+        'timing_col',
+    ])
+
+    _transform, _ = get_contrast_coding('rank')
+
+    df = df.dropna(subset=[response_col, timing_col]).copy()
+    subjects = df['subject'].unique()
+    if len(subjects) < min_subjects:
+        return empty
+
+    # Code predictors on full dataset so coding is consistent across folds
+    coded = _transform(df['contrast'])
+    contrast_center = float(np.mean(coded))
+    df['contrast'] = coded - contrast_center
+    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+
+    full_formula = f'{response_col} ~ contrast + side + reward + {timing_col}'
+    drop_contrast_formula = f'{response_col} ~ side + reward + {timing_col}'
+    drop_timing_formula = f'{response_col} ~ contrast + side + reward'
+
+    rows = []
+    for held_out in subjects:
+        df_train = df[df['subject'] != held_out]
+        df_test = df[df['subject'] == held_out]
+
+        if len(df_test) < 5:
+            continue
+        if df_train['subject'].nunique() < 2:
+            continue
+
+        # Fit three models on training data
+        full = _fit_lmm(full_formula, df_train, groups=df_train['subject'],
+                         re_formula='1', reml=False)
+        drop_c = _fit_lmm(drop_contrast_formula, df_train,
+                           groups=df_train['subject'],
+                           re_formula='1', reml=False)
+        drop_t = _fit_lmm(drop_timing_formula, df_train,
+                           groups=df_train['subject'],
+                           re_formula='1', reml=False)
+
+        if full is None or drop_c is None or drop_t is None:
+            continue
+
+        # Predict held-out trials using fixed effects only
+        y_test = df_test[response_col].values
+        ss_tot = np.sum((y_test - np.mean(y_test)) ** 2)
+        if ss_tot == 0:
+            continue
+
+        def _predict_fe(lmm_result, df_held):
+            design_info = lmm_result.result.model.data.orig_exog.design_info
+            X = np.asarray(dmatrix(design_info, df_held))
+            return X @ lmm_result.result.fe_params.values
+
+        pred_full = _predict_fe(full, df_test)
+        pred_drop_c = _predict_fe(drop_c, df_test)
+        pred_drop_t = _predict_fe(drop_t, df_test)
+
+        r2_full = 1 - np.sum((y_test - pred_full) ** 2) / ss_tot
+        r2_dc = 1 - np.sum((y_test - pred_drop_c) ** 2) / ss_tot
+        r2_dt = 1 - np.sum((y_test - pred_drop_t) ** 2) / ss_tot
+
+        rows.append({
+            'subject': held_out,
+            'n_trials': len(df_test),
+            'r2_full': float(r2_full),
+            'r2_drop_contrast': float(r2_dc),
+            'r2_drop_timing': float(r2_dt),
+            'delta_r2_contrast': float(r2_full - r2_dc),
+            'delta_r2_timing': float(r2_full - r2_dt),
+            'timing_col': timing_col,
+        })
+
+    if not rows:
+        return empty
+    return pd.DataFrame(rows)
+
+
+def fit_movement_lmm_per_contrast(df, response_col, timing_col,
+                                   min_subjects=2):
+    """Estimate timing-response slope at a single contrast level.
+
+    Fits: ``response ~ side + reward + timing + (1 | subject)``
+
+    Side and reward use deviation coding (±0.5). The timing column should
+    already be log-transformed.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data for a single contrast level.
+    response_col : str
+        Column name for the NM response magnitude.
+    timing_col : str
+        Column name for the (log-transformed) timing variable.
+    min_subjects : int
+        Minimum subjects required to fit.
+
+    Returns
+    -------
+    dict or None
+        None if fewer than min_subjects or model fails to converge.
+        Otherwise a dict with keys: timing_coef, timing_se, timing_p,
+        r2_marginal, n_trials, n_subjects, timing_col.
+    """
+    df = df.dropna(subset=[response_col, timing_col]).copy()
+    if df['subject'].nunique() < min_subjects:
+        return None
+
+    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+
+    if df['side'].nunique() < 2 or df['reward'].nunique() < 2:
+        return None
+
+    formula = f'{response_col} ~ side + reward + {timing_col}'
+    lmm = _fit_lmm(formula, df, groups=df['subject'],
+                    re_formula='1', reml=True)
+    if lmm is None:
+        return None
+
+    return {
+        'timing_coef': float(lmm.result.fe_params[timing_col]),
+        'timing_se': float(lmm.result.bse[timing_col]),
+        'timing_p': float(lmm.result.pvalues[timing_col]),
+        'r2_marginal': lmm.variance_explained['marginal'],
+        'n_trials': len(df),
+        'n_subjects': df['subject'].nunique(),
+        'timing_col': timing_col,
+    }
+
+
 # Wheel Kinematics LMM
 # =============================================================================
 
