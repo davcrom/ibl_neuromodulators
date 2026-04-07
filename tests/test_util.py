@@ -895,7 +895,7 @@ class TestFillBrainRegionFromFibers:
 
     @pytest.fixture
     def single_region_fibers(self, tmp_path):
-        """Fibers CSV with one subject having one fiber in DR."""
+        """Fibers CSV with one subject having one fiber in DR (midline)."""
         fpath = tmp_path / 'fibers.csv'
         fpath.write_text(
             'subject,targeted_region,X-ml_um\n'
@@ -998,6 +998,131 @@ class TestFillBrainRegionFromFibers:
         })
         result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
         assert len(result['brain_region'].iloc[0]) == len(result['hemisphere'].iloc[0])
+
+    # --- Hemisphere fill pass (second pass over ALL rows) ---
+
+    def test_fills_empty_string_hemisphere_from_fibers(self, tmp_path):
+        """Row with brain_region filled but hemisphere '' gets filled from fibers.csv."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse1,VTA,500\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [['VTA']],
+            'hemisphere': [['']],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert result['hemisphere'].iloc[0] == ['l']
+
+    def test_fills_none_hemisphere_from_fibers(self, tmp_path):
+        """Row with hemisphere None gets filled and normalized to string."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse1,VTA,-500\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [['VTA']],
+            'hemisphere': [[None]],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert result['hemisphere'].iloc[0] == ['r']
+
+    def test_preserves_existing_hemisphere(self, tmp_path):
+        """Existing 'l'/'r' values are not overwritten."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse1,VTA,500\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [['VTA']],
+            'hemisphere': [['r']],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert result['hemisphere'].iloc[0] == ['r']
+
+    def test_bilateral_same_target_stays_empty(self, tmp_path):
+        """Bilateral same-target can't resolve channel → stays ''."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse1,NBM,-1500\n'
+            'mouse1,NBM,1500\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [['NBM', 'NBM']],
+            'hemisphere': [['', '']],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert result['hemisphere'].iloc[0] == ['', '']
+
+    def test_midline_stays_empty(self, tmp_path):
+        """Midline structure (X=0) stays ''."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse1,DR,0\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [['DR']],
+            'hemisphere': [['']],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert result['hemisphere'].iloc[0] == ['']
+
+    def test_partial_fill_multi_region(self, tmp_path):
+        """Mixed regions: fills resolvable, leaves bilateral/midline as ''."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse1,VTA,500\n'
+            'mouse1,DR,0\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [['VTA', 'DR']],
+            'hemisphere': [['', '']],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert result['hemisphere'].iloc[0] == ['l', '']
+
+    def test_strips_suffix_before_lookup(self, tmp_path):
+        """Region stored as 'VTA-r' should match 'VTA' in fiber table."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse1,VTA,-500\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [['VTA-r']],
+            'hemisphere': [['']],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        assert result['hemisphere'].iloc[0] == ['r']
+
+    def test_normalizes_none_to_empty_string(self, tmp_path):
+        """Any remaining None values become '' after fill."""
+        fpath = tmp_path / 'fibers.csv'
+        fpath.write_text(
+            'subject,targeted_region,X-ml_um\n'
+            'mouse1,VTA,500\n'
+        )
+        df = pd.DataFrame({
+            'subject': ['mouse1'],
+            'brain_region': [['VTA', 'NAc']],
+            'hemisphere': [[None, None]],
+        })
+        result = fill_brain_region_from_fibers(df, fibers_fpath=fpath)
+        # VTA filled, NAc not in fibers → normalized to ''
+        assert result['hemisphere'].iloc[0] == ['l', '']
 
 
 def _write_session_h5(h5_dir, eid, subject, session_type='biased',

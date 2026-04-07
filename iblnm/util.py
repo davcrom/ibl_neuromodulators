@@ -174,6 +174,44 @@ def collect_errors(h5_dir):
     return pd.DataFrame(rows, columns=LOG_COLUMNS)
 
 
+def collect_qc(h5_dir):
+    """Aggregate photometry QC metrics from all H5 files in a directory.
+
+    Reads the /photometry_qc_metrics group from each .h5 file.
+
+    Parameters
+    ----------
+    h5_dir : Path or str
+        Directory containing {eid}.h5 files.
+
+    Returns
+    -------
+    pd.DataFrame
+        QC metrics, one row per (eid, brain_region, band).
+    """
+    import h5py
+
+    h5_dir = Path(h5_dir)
+    frames = []
+    for fpath in sorted(h5_dir.glob('*.h5')):
+        with h5py.File(fpath, 'r') as f:
+            if 'photometry_qc_metrics' not in f:
+                continue
+            grp = f['photometry_qc_metrics']
+            data = {}
+            for col in grp:
+                vals = grp[col][:]
+                if vals.dtype.kind == 'S':
+                    vals = vals.astype(str)
+                data[col] = vals
+            if data:
+                frames.append(pd.DataFrame(data))
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def enforce_schema(df, schema):
     """Ensure DataFrame columns match a schema with correct types and defaults.
 
@@ -557,8 +595,6 @@ def validate_parallel_lists(df, columns):
     pd.DataFrame
         Copy with mismatched rows removed.
     """
-    import logging
-
     def _lengths_match(row):
         lengths = set()
         for col in columns:
@@ -572,10 +608,7 @@ def validate_parallel_lists(df, columns):
     mask = df.apply(_lengths_match, axis=1)
     n_dropped = (~mask).sum()
     if n_dropped > 0:
-        logging.warning(
-            f"Dropped {n_dropped} rows with mismatched parallel list lengths "
-            f"in columns {columns}"
-        )
+        print(f"  Mismatched parallel lists: -{n_dropped}")
     return df[mask].copy()
 
 
@@ -772,9 +805,20 @@ def fill_brain_region_from_fibers(df, fibers_fpath=None):
         pairs = list(zip(grp['targeted_region'], grp['hemi']))
         subject_fibers[subj] = pairs
 
+    # Build per-(subject, region) hemisphere lookup for the fill pass.
+    # Returns the hemisphere if unambiguous, '' if bilateral same-target or midline.
+    hemi_lookup = {}
+    for (subj, region), grp in fibers.groupby(['subject', 'targeted_region']):
+        unique_hemis = grp['hemi'].unique()
+        if len(unique_hemis) == 1 and unique_hemis[0] != '':
+            hemi_lookup[(subj, region)] = unique_hemis[0]
+        else:
+            hemi_lookup[(subj, region)] = ''
+
     def _is_empty(x):
         return isinstance(x, (list, np.ndarray)) and len(x) == 0
 
+    # Pass 1: fill brain_region and hemisphere for rows with empty brain_region
     for idx, row in df.iterrows():
         if not _is_empty(row['brain_region']):
             continue
@@ -797,7 +841,94 @@ def fill_brain_region_from_fibers(df, fibers_fpath=None):
             df.at[idx, 'brain_region'] = regions
             df.at[idx, 'hemisphere'] = hemis
 
+    # Pass 2: fill missing hemisphere entries ('' or None) from fiber coordinates
+    for idx, row in df.iterrows():
+        hemis = row['hemisphere']
+        if not isinstance(hemis, (list, np.ndarray)) or len(hemis) == 0:
+            continue
+
+        subj = row['subject']
+        regions = row['brain_region']
+        updated = False
+        hemis = list(hemis)
+        for i, (region, h) in enumerate(zip(regions, hemis)):
+            if h not in ('', None):
+                continue
+            bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
+            filled = hemi_lookup.get((subj, bare))
+            if filled is not None:
+                hemis[i] = filled
+                updated = True
+        # Normalize any remaining None to ''
+        hemis = [h if h is not None else '' for h in hemis]
+        if updated or None in row['hemisphere']:
+            df.at[idx, 'hemisphere'] = hemis
+
     return df
+
+
+def contrast_transform(c):
+    """Map raw contrast to model scale: log(c + 1)."""
+    return np.log(np.asarray(c, dtype=float) + 1)
+
+
+def contrast_inverse(c_transformed):
+    """Inverse of contrast_transform: exp(x) - 1."""
+    return np.exp(np.asarray(c_transformed, dtype=float)) - 1
+
+
+def get_contrast_coding(coding='log'):
+    """Return (transform, inverse) functions for the given contrast coding.
+
+    Parameters
+    ----------
+    coding : str
+        One of 'log', 'linear', or 'rank'.
+
+    Returns
+    -------
+    transform : callable
+        Maps raw contrast values to model scale.
+    inverse : callable
+        Maps model-scale values back to raw contrast.
+    """
+    if coding == 'log':
+        return contrast_transform, contrast_inverse
+
+    if coding == 'linear':
+        def _identity(c):
+            return np.asarray(c, dtype=float)
+        return _identity, _identity
+
+    if coding == 'rank':
+        _rank_map = {}
+
+        def _rank_transform(c):
+            c = np.asarray(c, dtype=float)
+            scalar = c.ndim == 0
+            c = np.atleast_1d(c)
+            vals = sorted(set(float(v) for v in c) | set(_rank_map.keys()))
+            if len(vals) > len(_rank_map):
+                _rank_map.clear()
+                _rank_map.update({v: float(i) for i, v in enumerate(vals)})
+            result = np.array([_rank_map[float(v)] for v in c])
+            return float(result[0]) if scalar else result
+
+        _inv_map = {}
+
+        def _rank_inverse(r):
+            if not _inv_map and _rank_map:
+                _inv_map.update({v: k for k, v in _rank_map.items()})
+            r = np.asarray(r, dtype=float)
+            scalar = r.ndim == 0
+            r = np.atleast_1d(r)
+            result = np.array([_inv_map[float(v)] for v in r])
+            return float(result[0]) if scalar else result
+
+        return _rank_transform, _rank_inverse
+
+    raise ValueError(f"Unknown contrast coding: {coding!r}. "
+                     f"Choose from 'log', 'linear', 'rank'.")
 
 
 def derive_target_nm(df, brain_region_col='brain_region'):
