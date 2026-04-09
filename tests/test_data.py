@@ -727,13 +727,25 @@ class TestValidateNTrials:
 class TestValidateBlockStructure:
     """Tests for PhotometrySession.validate_block_structure."""
 
-    def test_raises_with_flipping_blocks(self, mock_session_series):
+    def test_raises_with_corrupted_blocks(self, mock_session_series):
+        """Flipping blocks with JSON mismatch raises BlockStructureBug."""
         from iblnm.data import PhotometrySession
         from iblnm.validation import BlockStructureBug
         series = mock_session_series.copy()
         series['session_type'] = 'biased'
         session = PhotometrySession(series, one=MagicMock(), load_data=False)
         session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
+
+        # JSON says blocks should be [50, 50] — doesn't match trials
+        rng = np.random.default_rng(0)
+        positions = np.empty(100)
+        positions[:50] = rng.choice([-35, 35], size=50, p=[0.8, 0.2])
+        positions[50:] = rng.choice([-35, 35], size=50, p=[0.2, 0.8])
+        session._block_info = {
+            'len_blocks': [50, 50],
+            'positions': positions,
+            'block_probability_set': [0.2, 0.8],
+        }
         with pytest.raises(BlockStructureBug):
             session.validate_block_structure()
 
@@ -754,6 +766,81 @@ class TestValidateBlockStructure:
         session = PhotometrySession(series, one=MagicMock(), load_data=False)
         session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
         session.validate_block_structure()  # should not raise for training
+
+    def test_missing_block_info_logs_and_raises(self, mock_session_series):
+        """When LEN_BLOCKS is None, logs MissingBlockInfo and raises BlockStructureBug."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import BlockStructureBug
+        series = mock_session_series.copy()
+        series['session_type'] = 'biased'
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
+        session._block_info = {
+            'len_blocks': None, 'positions': None, 'block_probability_set': None,
+        }
+        with pytest.raises(BlockStructureBug):
+            session.validate_block_structure()
+        error_types = [e['error_type'] for e in session.errors]
+        assert 'MissingBlockInfo' in error_types
+
+    def test_json_match_no_raise(self, mock_session_series):
+        """Short last block that matches JSON should not raise."""
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        series['session_type'] = 'biased'
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        # Short last block — cheap check flags, but JSON matches
+        prob_left = np.concatenate([
+            np.full(50, 0.5), np.full(30, 0.8), np.full(3, 0.2),
+        ])
+        session.trials = pd.DataFrame({'probabilityLeft': prob_left})
+
+        rng = np.random.default_rng(0)
+        positions = np.empty(100)
+        positions[:50] = rng.choice([-35, 35], size=50, p=[0.5, 0.5])
+        positions[50:80] = rng.choice([-35, 35], size=30, p=[0.8, 0.2])
+        positions[80:] = rng.choice([-35, 35], size=20, p=[0.2, 0.8])
+        session._block_info = {
+            'len_blocks': [50, 30, 20],
+            'positions': positions,
+            'block_probability_set': [0.2, 0.8],
+        }
+        session.validate_block_structure()  # should not raise
+
+
+class TestFixBlockStructure:
+    """Tests for PhotometrySession.fix_block_structure."""
+
+    def test_fixes_corrupted_trials(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        series['session_type'] = 'biased'
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        # Corrupted: trial-by-trial flipping
+        session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
+
+        rng = np.random.default_rng(0)
+        positions = np.empty(100)
+        positions[:50] = rng.choice([-35, 35], size=50, p=[0.8, 0.2])
+        positions[50:] = rng.choice([-35, 35], size=50, p=[0.2, 0.8])
+        session._block_info = {
+            'len_blocks': [50, 50],
+            'positions': positions,
+            'block_probability_set': [0.2, 0.8],
+        }
+        assert session.fix_block_structure() is True
+        np.testing.assert_array_equal(session.trials['probabilityLeft'][:50], 0.8)
+        np.testing.assert_array_equal(session.trials['probabilityLeft'][50:], 0.2)
+
+    def test_returns_false_without_block_info(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
+        session._block_info = {
+            'len_blocks': None, 'positions': None, 'block_probability_set': None,
+        }
+        assert session.fix_block_structure() is False
 
 
 class TestValidateEventCompleteness:

@@ -88,6 +88,9 @@ class InsufficientTrials(Exception):
 class BlockStructureBug(Exception):
     """Biased/ephys session has rapidly flipping blocks."""
 
+class MissingBlockInfo(Exception):
+    """Session JSON lacks LEN_BLOCKS needed to validate block structure."""
+
 class IncompleteEventTimes(Exception):
     """Event times below completeness threshold."""
     def __init__(self, missing_events):

@@ -6,6 +6,8 @@ import pytest
 from iblnm.task import (
     get_block_lengths,
     validate_block_structure,
+    reconstruct_probability_left,
+    validate_block_match,
     count_sessions_to_stage,
     get_subjects_by_stage,
     compute_fraction_correct,
@@ -200,6 +202,75 @@ class TestValidateBlockStructure:
         result = validate_block_structure(mock_trials_training)
         assert result['valid'] is True
         assert result['n_blocks'] == 1
+
+    def test_short_last_block_not_flagged(self):
+        """A short final block (session ended mid-block) should not flag."""
+        prob_left = np.concatenate([
+            np.full(50, 0.5), np.full(30, 0.8), np.full(40, 0.2), np.full(3, 0.8)
+        ])
+        trials = pd.DataFrame({'probabilityLeft': prob_left})
+        result = validate_block_structure(trials)
+        assert result['flagged'] is False
+
+
+class TestReconstructProbabilityLeft:
+    def test_basic_reconstruction(self):
+        """Reconstruct probabilityLeft from known block structure."""
+        # 3 blocks: 50 trials at 0.5, 30 at 0.8, 20 at 0.2
+        len_blocks = [50, 30, 20]
+        rng = np.random.default_rng(42)
+        # Build positions: left=-35 with probability matching each block
+        positions = np.empty(100)
+        positions[:50] = rng.choice([-35, 35], size=50, p=[0.5, 0.5])
+        positions[50:80] = rng.choice([-35, 35], size=30, p=[0.8, 0.2])
+        positions[80:] = rng.choice([-35, 35], size=20, p=[0.2, 0.8])
+
+        result = reconstruct_probability_left(100, len_blocks, positions, [0.2, 0.8])
+        expected = np.concatenate([np.full(50, 0.5), np.full(30, 0.8), np.full(20, 0.2)])
+        np.testing.assert_array_equal(result, expected)
+
+    def test_truncation(self):
+        """Output is truncated to n_trials when session ends early."""
+        len_blocks = [50, 30, 20]
+        rng = np.random.default_rng(42)
+        positions = np.empty(100)
+        positions[:50] = rng.choice([-35, 35], size=50, p=[0.5, 0.5])
+        positions[50:80] = rng.choice([-35, 35], size=30, p=[0.8, 0.2])
+        positions[80:] = rng.choice([-35, 35], size=20, p=[0.2, 0.8])
+
+        result = reconstruct_probability_left(65, len_blocks, positions, [0.2, 0.8])
+        assert len(result) == 65
+        # First 50 should be 0.5, next 15 should be 0.8
+        np.testing.assert_array_equal(result[:50], 0.5)
+        np.testing.assert_array_equal(result[50:65], 0.8)
+
+
+class TestValidateBlockMatch:
+    @pytest.fixture
+    def block_setup(self):
+        """Synthetic block structure: 50 trials 0.5, 30 trials 0.8, 20 trials 0.2."""
+        len_blocks = [50, 30, 20]
+        rng = np.random.default_rng(42)
+        positions = np.empty(100)
+        positions[:50] = rng.choice([-35, 35], size=50, p=[0.5, 0.5])
+        positions[50:80] = rng.choice([-35, 35], size=30, p=[0.8, 0.2])
+        positions[80:] = rng.choice([-35, 35], size=20, p=[0.2, 0.8])
+        return len_blocks, positions
+
+    def test_matching_trials(self, block_setup):
+        """Returns True when probabilityLeft matches JSON block structure."""
+        len_blocks, positions = block_setup
+        prob_left = np.concatenate([np.full(50, 0.5), np.full(30, 0.8), np.full(20, 0.2)])
+        trials = pd.DataFrame({'probabilityLeft': prob_left})
+        assert validate_block_match(trials, len_blocks, positions, [0.2, 0.8]) is True
+
+    def test_corrupted_trials(self, block_setup):
+        """Returns False when probabilityLeft is corrupted."""
+        len_blocks, positions = block_setup
+        # Simulate the bug: first block OK, then trial-by-trial flipping
+        prob_left = np.concatenate([np.full(50, 0.5), np.tile([0.8, 0.2], 25)])
+        trials = pd.DataFrame({'probabilityLeft': prob_left})
+        assert validate_block_match(trials, len_blocks, positions, [0.2, 0.8]) is False
 
 
 # =============================================================================

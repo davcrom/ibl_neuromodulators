@@ -92,8 +92,9 @@ def validate_block_structure(trials: pd.DataFrame) -> dict:
     min_length = int(lengths.min())
     n_blocks = len(lengths)
 
-    # Flag if any block is shorter than MIN_BLOCK_LENGTH
-    flagged = min_length < MIN_BLOCK_LENGTH
+    # Exclude last block (truncated by session end) from flagging
+    check = lengths[:-1] if len(lengths) > 1 else lengths
+    flagged = int(check.min()) < MIN_BLOCK_LENGTH
     valid = not flagged
 
     return {
@@ -102,6 +103,73 @@ def validate_block_structure(trials: pd.DataFrame) -> dict:
         'n_blocks': n_blocks,
         'flagged': flagged,
     }
+
+
+def reconstruct_probability_left(n_trials, len_blocks, positions,
+                                 block_probability_set):
+    """
+    Rebuild probabilityLeft from session JSON fields.
+
+    Classifies each block's probability by computing the fraction of left
+    stimuli (position == min(positions)) within that block's slice of
+    *positions*, then snapping to the nearest candidate in
+    {0.5} ∪ *block_probability_set*.
+
+    Parameters
+    ----------
+    n_trials : int
+        Number of trials actually recorded (output array length).
+    len_blocks : list of int
+        Planned block lengths from session JSON ``LEN_BLOCKS``.
+    positions : array-like
+        Per-trial stimulus positions from session JSON ``POSITIONS``.
+    block_probability_set : list of float
+        The two bias probabilities, e.g. ``[0.2, 0.8]``.
+
+    Returns
+    -------
+    np.ndarray
+        Corrected probabilityLeft, length *n_trials*.
+    """
+    positions = np.asarray(positions, dtype=float)
+    left_pos = positions.min()
+    candidates = np.array([0.5] + list(block_probability_set))
+
+    cumsum = np.cumsum([0] + list(len_blocks))
+    block_probs = np.empty(len(len_blocks))
+
+    for i in range(len(len_blocks)):
+        block_pos = positions[cumsum[i]:cumsum[i + 1]]
+        frac_left = (block_pos == left_pos).mean()
+        block_probs[i] = candidates[np.argmin(np.abs(candidates - frac_left))]
+
+    return np.repeat(block_probs, len_blocks)[:n_trials]
+
+
+def validate_block_match(trials, len_blocks, positions, block_probability_set):
+    """
+    Check whether trials probabilityLeft matches the session JSON block structure.
+
+    Parameters
+    ----------
+    trials : pd.DataFrame
+        Trials table with ``probabilityLeft`` column.
+    len_blocks : list of int
+        From session JSON ``LEN_BLOCKS``.
+    positions : array-like
+        From session JSON ``POSITIONS``.
+    block_probability_set : list of float
+        From session JSON ``BLOCK_PROBABILITY_SET``.
+
+    Returns
+    -------
+    bool
+        True if trials probabilityLeft matches the reconstructed values.
+    """
+    expected = reconstruct_probability_left(
+        len(trials), len_blocks, positions, block_probability_set,
+    )
+    return np.array_equal(trials['probabilityLeft'].values, expected)
 
 
 # =============================================================================

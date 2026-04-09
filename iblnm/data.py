@@ -25,7 +25,7 @@ from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.validation import (
     MissingExtractedData, MissingRawData, InsufficientTrials, BlockStructureBug,
-    IncompleteEventTimes, TrialsNotInPhotometryTime,
+    MissingBlockInfo, IncompleteEventTimes, TrialsNotInPhotometryTime,
     FewUniqueSamples, QCValidationError, AmbiguousRegionMapping,
 )
 
@@ -408,16 +408,65 @@ class PhotometrySession(PhotometrySessionLoader):
                 f"n_trials={len(self.trials)} < MIN_NTRIALS={MIN_NTRIALS}"
             )
 
+    def _fetch_block_info(self):
+        """Fetch and cache block structure fields from the Alyx session JSON."""
+        if not hasattr(self, '_block_info'):
+            from iblnm.io import get_block_info
+            self._block_info = get_block_info(self.eid, self.one)
+        return self._block_info
+
     def validate_block_structure(self):
-        """Raises BlockStructureBug if biased/ephys session has rapidly flipping blocks."""
+        """Validate probabilityLeft against session JSON block structure.
+
+        For biased/ephys sessions, runs a cheap check on block lengths from
+        the trials table (excluding the last block). If that flags, fetches
+        the session JSON to compare against ground truth.
+
+        Raises
+        ------
+        BlockStructureBug
+            If the block structure is corrupted (JSON mismatch) or if no
+            JSON ground truth is available and the cheap check flags.
+        """
         if self.session_type not in ('biased', 'ephys'):
             return
         block_info = task.validate_block_structure(self.trials)
-        if block_info['flagged']:
+        if not block_info['flagged']:
+            return
+
+        # Cheap check flagged — fetch JSON ground truth
+        bi = self._fetch_block_info()
+        if bi['len_blocks'] is None:
+            self.log_error(MissingBlockInfo(self.eid))
             raise BlockStructureBug(
                 f"Min block length: {block_info['min_block_length']}, "
                 f"n_blocks: {block_info['n_blocks']}"
             )
+
+        if not task.validate_block_match(
+            self.trials, bi['len_blocks'], bi['positions'],
+            bi['block_probability_set'],
+        ):
+            raise BlockStructureBug(
+                "probabilityLeft does not match session JSON block structure"
+            )
+
+    def fix_block_structure(self):
+        """Overwrite probabilityLeft with values reconstructed from session JSON.
+
+        Returns
+        -------
+        bool
+            True if the fix was applied, False if block info is unavailable.
+        """
+        bi = self._fetch_block_info()
+        if bi['len_blocks'] is None:
+            return False
+        self.trials['probabilityLeft'] = task.reconstruct_probability_left(
+            len(self.trials), bi['len_blocks'], bi['positions'],
+            bi['block_probability_set'],
+        )
+        return True
 
     def validate_event_completeness(self):
         """Raises IncompleteEventTimes with all missing events if any are below threshold."""

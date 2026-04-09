@@ -28,6 +28,7 @@ from iblnm.config import (
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.util import collect_errors
+from iblnm.validation import BlockStructureBug
 
 
 def process_task(ps):
@@ -46,9 +47,13 @@ def process_task(ps):
 
     try:
         ps.validate_block_structure()
-        result.update(ps.block_performance())
-    except Exception as e:
+    except BlockStructureBug as e:
         ps.log_error(e)
+        if ps.fix_block_structure():
+            ps.save_h5(groups=['trials'])
+
+    if 'probabilityLeft' in ps.trials.columns:
+        result.update(ps.block_performance())
 
     timing = ps.get_trial_timings()
     return {'performance': result, 'timing': timing}

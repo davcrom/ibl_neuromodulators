@@ -84,6 +84,35 @@ def get_session_dict(session, one=None):
     return session
 
 
+def get_block_info(eid, one=None):
+    """Fetch block structure fields from the Alyx session JSON.
+
+    Parameters
+    ----------
+    eid : str
+        Session UUID.
+    one : ONE, optional
+        ONE connection. Uses default if None.
+
+    Returns
+    -------
+    dict
+        Keys ``len_blocks``, ``positions``, ``block_probability_set``.
+        Values are None when the corresponding field is absent from the JSON.
+    """
+    if one is None:
+        one = _get_default_connection()
+
+    session_dict = one.alyx.rest('sessions', 'read', id=eid)
+    session_json = session_dict.get('json') or {}
+
+    return {
+        'len_blocks': session_json.get('LEN_BLOCKS'),
+        'positions': session_json.get('POSITIONS'),
+        'block_probability_set': session_json.get('BLOCK_PROBABILITY_SET'),
+    }
+
+
 def _hemisphere_from_regions(regions):
     """Derive hemisphere list from region names."""
     return [r[-1] if r.endswith(('-l', '-r')) else '' for r in regions]
