@@ -27,7 +27,7 @@ class TestAggregateQcPerSession:
         df_qc = pd.DataFrame({
             'eid': ['a', 'a', 'b', 'b'],
             'brain_region': ['VTA', 'SNc', 'VTA', 'SNc'],
-            'n_unique_samples': [0.5, 0.05, 0.05, 0.05],  # a has one > 0.1
+            'n_unique_samples': [0.5, 0.05, 0.05, 0.05],  # a has one above threshold
             'n_band_inversions': [0, 0, 0, 0],
         })
         result = aggregate_qc_per_session(df_qc, require_all=False)

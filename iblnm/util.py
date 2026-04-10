@@ -4,8 +4,9 @@ from pathlib import Path
 from datetime import datetime
 
 from iblnm.config import (
-    VALID_TARGETNMS, DATASET_CATEGORIES, EXCLUDE_SESSION_TYPES,
-    PROTOCOL_RED_FLAGS, SESSION_TYPES, SUBJECTS_TO_EXCLUDE,
+    N_UNIQUE_SAMPLES_THRESHOLD, VALID_TARGETNMS, DATASET_CATEGORIES,
+    EXCLUDE_SESSION_TYPES, PROTOCOL_RED_FLAGS, SESSION_TYPES,
+    SUBJECTS_TO_EXCLUDE,
 )
 from iblnm.validation import (
     exception_logger,
@@ -676,23 +677,23 @@ def aggregate_qc_per_session(df_qc: pd.DataFrame, require_all: bool = True) -> p
         return pd.DataFrame(columns=['eid', 'passes_basic_qc'])
 
     if require_all:
-        # All signals must pass: min unique > 0.1, max inversions == 0
+        # All signals must pass: min unique > threshold, max inversions == 0
         agg = df_qc.groupby('eid').agg({
             'n_unique_samples': 'min',
             'n_band_inversions': 'max',
         }).reset_index()
         agg['passes_basic_qc'] = (
-            (agg['n_unique_samples'] > 0.1) &
+            (agg['n_unique_samples'] > N_UNIQUE_SAMPLES_THRESHOLD) &
             (agg['n_band_inversions'] == 0)
         )
     else:
-        # Any signal passing is sufficient: max unique > 0.1, min inversions == 0
+        # Any signal passing is sufficient: max unique > threshold, min inversions == 0
         agg = df_qc.groupby('eid').agg({
             'n_unique_samples': 'max',
             'n_band_inversions': 'min',
         }).reset_index()
         agg['passes_basic_qc'] = (
-            (agg['n_unique_samples'] > 0.1) &
+            (agg['n_unique_samples'] > N_UNIQUE_SAMPLES_THRESHOLD) &
             (agg['n_band_inversions'] == 0)
         )
 
