@@ -264,7 +264,7 @@ ANALYSIS_QC_BLOCKERS = {
     'MissingExtractedData', 'MissingRawData',
     'InsufficientTrials', 'IncompleteEventTimes',
     'TrialsNotInPhotometryTime', 'QCValidationError',
-    'AmbiguousRegionMapping',
+    'AmbiguousRegionMapping', 'MissingBlockInfo',
 }
 
 # Task performance parameters
@@ -390,7 +390,7 @@ PREPROCESSING_PIPELINES = {
 }
 
 # Fraction of unique samples per window below which a channel is flagged as suspect
-N_UNIQUE_SAMPLES_THRESHOLD = 0.05
+N_UNIQUE_SAMPLES_THRESHOLD = 0.1
 
 
 # Analysis parameters
