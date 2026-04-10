@@ -1,6 +1,6 @@
 # %% 
 import sys
-import Path
+from pathlib import Path
 sys.path.append(Path(__file__).parent / 'RRRlib') # to be removed
 import RRRlib as rrr
 
