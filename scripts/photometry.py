@@ -24,7 +24,7 @@ import pandas as pd
 
 from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_H5_DIR, QCPHOTOMETRY_FPATH,
-    RESPONSE_EVENTS, VALID_TARGETNMS,
+    RESPONSE_EVENTS,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -88,7 +88,7 @@ def process_session(ps, reprocess=False):
 
     if events_to_extract:
         ps.extract_responses(events=events_to_extract)
-        ps.save_h5(groups=['trials', 'responses'])
+        ps.save_h5(groups=['responses'])
 
     return 'processed'
 
@@ -107,7 +107,7 @@ if __name__ == '__main__':
     group = PhotometrySessionGroup.from_catalog(pd.read_parquet(SESSIONS_FPATH), one=one)
     group.filter_sessions(
         session_types=False, qc_blockers=set(),
-        targetnms=VALID_TARGETNMS, min_performance=False,
+        targetnms=False, min_performance=False,
         required_contrasts=False,
     )
     print(f"  {len(group.sessions)} sessions after filtering")

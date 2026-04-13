@@ -23,7 +23,7 @@ import pandas as pd
 
 from iblnm.config import (
     SESSIONS_FPATH, PERFORMANCE_FPATH, TASK_LOG_FPATH, TRIAL_TIMING_FPATH,
-    SESSIONS_H5_DIR, VALID_TARGETNMS,
+    SESSIONS_H5_DIR,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -71,7 +71,7 @@ if __name__ == '__main__':
     group = PhotometrySessionGroup.from_catalog(pd.read_parquet(SESSIONS_FPATH), one=one)
     group.filter_sessions(
         session_types=False, qc_blockers=set(),
-        targetnms=VALID_TARGETNMS, min_performance=False,
+        targetnms=False, min_performance=False,
         required_contrasts=False,
     )
     print(f"  {len(group.sessions)} sessions after filtering")
