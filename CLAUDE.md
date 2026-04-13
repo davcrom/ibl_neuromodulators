@@ -220,6 +220,11 @@ and initializes list columns (replaces NaN with `[]`). Called when loading
   `results/task_encoding/`). Output paths are defined in `config.py`.
 - **Error logs**: unified schema `['eid', 'error_type', 'error_message', 'traceback']`.
   One parquet log per pipeline stage in `metadata/`.
+- **Signed-zero in `signed_contrast`**: zero-contrast trials encode stimulus
+  side via IEEE 754 signed zero (`-0.0` = left, `0.0` = right). `unique()`,
+  `sorted()`, `set()`, `==`, and pandas `groupby` all treat `-0.0 == 0.0` and
+  will collapse the distinction. Use `np.signbit()` when side matters at zero
+  contrast, or use the `stim_side` column (the authoritative source).
 
 ## Testing
 
@@ -251,11 +256,6 @@ mapping of values to visual encodings. Skip tests for things like panel
 count or figure size that are obvious from reading the code.
 
 ## Environment
-
-All commands (`pytest`, `ruff`, `python`) must run inside the project's
-virtual environment. Find the active venv by checking `which python` or
-looking for a `.venv` directory. If no venv is active, do not run
-commands that depend on project packages.
 
 Requires `ibllib` (`photometry-integration` branch) and `ibl-photometry`
 (`develop` branch). Core dependencies (`xarray`, `statsmodels`, `cca-zoo`,
