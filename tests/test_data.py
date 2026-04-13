@@ -759,13 +759,23 @@ class TestValidateBlockStructure:
         })
         session.validate_block_structure()  # should not raise
 
-    def test_does_not_raise_for_training(self, mock_session_series):
+    def test_raises_for_training_with_non_uniform_pleft(self, mock_session_series):
         from iblnm.data import PhotometrySession
+        from iblnm.validation import BlockStructureBug
         series = mock_session_series.copy()
         series['session_type'] = 'training'
         session = PhotometrySession(series, one=MagicMock(), load_data=False)
         session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
-        session.validate_block_structure()  # should not raise for training
+        with pytest.raises(BlockStructureBug, match="Training session"):
+            session.validate_block_structure()
+
+    def test_does_not_raise_for_training_with_uniform_pleft(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        series['session_type'] = 'training'
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = pd.DataFrame({'probabilityLeft': np.full(100, 0.5)})
+        session.validate_block_structure()  # should not raise
 
     def test_missing_block_info_logs_and_raises(self, mock_session_series):
         """When LEN_BLOCKS is None, logs MissingBlockInfo and raises BlockStructureBug."""
@@ -832,9 +842,19 @@ class TestFixBlockStructure:
         np.testing.assert_array_equal(session.trials['probabilityLeft'][:50], 0.8)
         np.testing.assert_array_equal(session.trials['probabilityLeft'][50:], 0.2)
 
+    def test_fixes_training_to_uniform_pleft(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        series = mock_session_series.copy()
+        series['session_type'] = 'training'
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
+        assert session.fix_block_structure() is True
+        np.testing.assert_array_equal(session.trials['probabilityLeft'], 0.5)
+
     def test_returns_false_without_block_info(self, mock_session_series):
         from iblnm.data import PhotometrySession
         series = mock_session_series.copy()
+        series['session_type'] = 'biased'
         session = PhotometrySession(series, one=MagicMock(), load_data=False)
         session.trials = pd.DataFrame({'probabilityLeft': np.tile([0.8, 0.2], 50)})
         session._block_info = {

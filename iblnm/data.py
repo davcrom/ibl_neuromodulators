@@ -416,20 +416,30 @@ class PhotometrySession(PhotometrySessionLoader):
         return self._block_info
 
     def validate_block_structure(self):
-        """Validate probabilityLeft against session JSON block structure.
+        """Validate probabilityLeft against expected block structure.
 
-        For biased/ephys sessions, runs a cheap check on block lengths from
-        the trials table (excluding the last block). If that flags, fetches
-        the session JSON to compare against ground truth.
+        Training sessions must have probabilityLeft == 0.5 uniformly.
+        Biased/ephys sessions are checked for short blocks, then validated
+        against the session JSON ground truth.
 
         Raises
         ------
         BlockStructureBug
-            If the block structure is corrupted (JSON mismatch) or if no
-            JSON ground truth is available and the cheap check flags.
+            If the block structure is corrupted.
         """
+        if 'probabilityLeft' not in self.trials.columns:
+            return
+
+        if self.session_type == 'training':
+            if not (self.trials['probabilityLeft'] == 0.5).all():
+                raise BlockStructureBug(
+                    "Training session has non-uniform probabilityLeft"
+                )
+            return
+
         if self.session_type not in ('biased', 'ephys'):
             return
+
         block_info = task.validate_block_structure(self.trials)
         if not block_info['flagged']:
             return
@@ -452,13 +462,19 @@ class PhotometrySession(PhotometrySessionLoader):
             )
 
     def fix_block_structure(self):
-        """Overwrite probabilityLeft with values reconstructed from session JSON.
+        """Overwrite probabilityLeft with correct values.
+
+        Training sessions are set to 0.5 uniformly. Biased/ephys sessions
+        are reconstructed from the session JSON.
 
         Returns
         -------
         bool
             True if the fix was applied, False if block info is unavailable.
         """
+        if self.session_type == 'training':
+            self.trials['probabilityLeft'] = 0.5
+            return True
         bi = self._fetch_block_info()
         if bi['len_blocks'] is None:
             return False
