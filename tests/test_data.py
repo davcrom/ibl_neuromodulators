@@ -497,6 +497,65 @@ class TestH5Errors:
         assert ps2.strain is None  # metadata loaded
         assert len(ps2.errors) == 1  # errors loaded
 
+    def test_save_errors_append_merges_existing(self, mock_session_series, tmp_path):
+        """Append mode merges new errors with existing ones in H5."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import InvalidStrain, MissingRawData
+        mock_one = MagicMock()
+        fpath = tmp_path / f"{mock_session_series['eid']}.h5"
+
+        # First session: write with one error
+        ps1 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        try:
+            raise InvalidStrain("bad strain")
+        except InvalidStrain as e:
+            ps1.log_error(e)
+        ps1.save_h5(fpath, groups=['metadata', 'errors'], mode='w')
+
+        # Second session: append a different error
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        try:
+            raise MissingRawData("no raw data")
+        except MissingRawData as e:
+            ps2.log_error(e)
+        ps2.save_h5(fpath, groups=['errors'], mode='a')
+
+        # Both errors should be present
+        ps3 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps3.load_h5(fpath, groups=['errors'])
+        error_types = {e['error_type'] for e in ps3.errors}
+        assert error_types == {'InvalidStrain', 'MissingRawData'}
+        assert len(ps3.errors) == 2
+
+    def test_save_errors_append_deduplicates(self, mock_session_series, tmp_path):
+        """Append mode deduplicates errors across existing and new."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import InvalidStrain
+        mock_one = MagicMock()
+        fpath = tmp_path / f"{mock_session_series['eid']}.h5"
+
+        # First write
+        ps1 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        try:
+            raise InvalidStrain("bad strain")
+        except InvalidStrain as e:
+            ps1.log_error(e)
+        ps1.save_h5(fpath, groups=['metadata', 'errors'], mode='w')
+
+        # Append the same error again
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        try:
+            raise InvalidStrain("bad strain")
+        except InvalidStrain as e:
+            ps2.log_error(e)
+        ps2.save_h5(fpath, groups=['errors'], mode='a')
+
+        # Should be deduplicated to one
+        ps3 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps3.load_h5(fpath, groups=['errors'])
+        assert len(ps3.errors) == 1
+        assert ps3.errors[0]['error_type'] == 'InvalidStrain'
+
 
 class TestFromAlyx:
     """Tests for PhotometrySession.from_alyx instance method."""
@@ -1162,7 +1221,8 @@ class TestExtractResponses:
             'feedback_times': np.linspace(101, 501, n),
         })
         session.extract_responses()
-        assert isinstance(session.responses, xr.DataArray)
+        assert isinstance(session.responses, dict)
+        assert isinstance(session.responses['VTA'], xr.DataArray)
 
     def test_has_correct_dims(self, mock_photometry_session):
         from iblnm.config import RESPONSE_EVENTS
@@ -1175,14 +1235,15 @@ class TestExtractResponses:
             'feedback_times': np.linspace(101, 501, n),
         })
         session.extract_responses()
-        assert set(session.responses.dims) == {'region', 'event', 'trial', 'time'}
-        assert 'VTA' in session.responses.coords['region'].values
+        assert 'VTA' in session.responses
+        region_responses = session.responses['VTA']
+        assert set(region_responses.dims) == {'event', 'trial', 'time'}
         for event in RESPONSE_EVENTS:
-            assert event in session.responses.coords['event'].values
-        assert session.responses.sizes['trial'] == n
+            assert event in region_responses.coords['event'].values
+        assert region_responses.sizes['trial'] == n
 
     def test_sel_region_event(self, mock_photometry_session):
-        """Selecting by region and event returns (trial, time) array."""
+        """Selecting by event returns (trial, time) array."""
         session = mock_photometry_session
         session.preprocess()
         n = 50
@@ -1192,7 +1253,7 @@ class TestExtractResponses:
             'feedback_times': np.linspace(101, 501, n),
         })
         session.extract_responses()
-        sel = session.responses.sel(region='VTA', event='stimOn_times')
+        sel = session.responses['VTA'].sel(event='stimOn_times')
         assert sel.dims == ('trial', 'time')
         assert sel.shape[0] == n
 
@@ -1206,7 +1267,7 @@ class TestExtractResponses:
             'feedback_times': np.linspace(101, 501, n),
         })
         session.extract_responses(events=['feedback_times'])
-        tpts = session.responses.coords['time'].values
+        tpts = session.responses['VTA'].coords['time'].values
         assert tpts[0] == pytest.approx(RESPONSE_WINDOW[0], abs=0.05)
         assert tpts[-1] == pytest.approx(RESPONSE_WINDOW[1], abs=0.05)
 
@@ -1218,8 +1279,9 @@ class TestExtractResponses:
             'feedback_times': np.linspace(101, 501, n),
         })
         session.extract_responses(events=['feedback_times'])
-        assert list(session.responses.coords['event'].values) == ['feedback_times']
-        assert session.responses.sizes['event'] == 1
+        region_responses = session.responses['VTA']
+        assert list(region_responses.coords['event'].values) == ['feedback_times']
+        assert region_responses.sizes['event'] == 1
 
 
 
@@ -1237,19 +1299,16 @@ class TestSaveLoadH5:
 
         import h5py
         with h5py.File(fpath, 'r') as f:
-            assert f.attrs['eid'] == session.eid
-            assert f.attrs['subject'] == session.subject
-            assert f.attrs['fs'] == 30
-            assert 'preprocessed/VTA' in f
-            assert 'times' in f
-            assert f['preprocessed/VTA'].dtype == np.float64
+            pp_grp = f['photometry/VTA/preprocessed']
+            assert pp_grp.attrs['fs'] == 30
+            assert pp_grp['signal'].dtype == np.float64
             np.testing.assert_allclose(
-                f['preprocessed/VTA'][:],
+                pp_grp['signal'][:],
                 session.photometry['GCaMP_preprocessed']['VTA'].values,
                 rtol=1e-10
             )
             np.testing.assert_allclose(
-                f['times'][:],
+                pp_grp['times'][:],
                 session.photometry['GCaMP_preprocessed'].index.values,
                 rtol=1e-10
             )
@@ -1281,13 +1340,13 @@ class TestSaveLoadH5:
 
         import h5py
         with h5py.File(fpath, 'r') as f:
-            assert 'preprocessed/VTA' in f
+            assert 'photometry/VTA/preprocessed/signal' in f
             assert 'trials/choice' in f
-            assert 'responses/VTA/stimOn_times' in f
-            assert 'responses/VTA/feedback_times' in f
+            assert 'photometry/VTA/responses/stimOn_times' in f
+            assert 'photometry/VTA/responses/feedback_times' in f
             # Verify response data matches xarray content
-            resp_h5 = f['responses/VTA/stimOn_times'][:]
-            resp_xr = session.responses.sel(region='VTA', event='stimOn_times').values
+            resp_h5 = f['photometry/VTA/responses/stimOn_times'][:]
+            resp_xr = session.responses['VTA'].sel(event='stimOn_times').values
             np.testing.assert_allclose(resp_h5, resp_xr, rtol=1e-5)
             np.testing.assert_array_equal(
                 f['trials/choice'][:],
@@ -1305,20 +1364,21 @@ class TestSaveLoadH5:
             'feedback_times': np.linspace(101, 501, n),
         })
         session.extract_responses(events=['stimOn_times', 'feedback_times'])
-        original = session.responses.copy()
+        original = {r: da.copy() for r, da in session.responses.items()}
 
         fpath = tmp_path / f'{session.eid}.h5'
         session.save_h5(fpath)
         session.save_h5(fpath, mode='a')
 
         # Clear and reload
-        session.responses = None
+        session.responses = {}
         session.load_h5(fpath)
-        assert isinstance(session.responses, xr.DataArray)
-        assert set(session.responses.dims) == {'region', 'event', 'trial', 'time'}
+        assert isinstance(session.responses, dict)
+        assert isinstance(session.responses['VTA'], xr.DataArray)
+        assert set(session.responses['VTA'].dims) == {'event', 'trial', 'time'}
         np.testing.assert_allclose(
-            session.responses.sel(region='VTA', event='stimOn_times').values,
-            original.sel(region='VTA', event='stimOn_times').values,
+            session.responses['VTA'].sel(event='stimOn_times').values,
+            original['VTA'].sel(event='stimOn_times').values,
             rtol=1e-5,
         )
 
@@ -1352,7 +1412,7 @@ class TestSaveLoadH5:
         np.testing.assert_allclose(session.trials['stimOn_times'].values, saved_stim)
 
     def test_save_load_qc_roundtrip(self, mock_session_series, tmp_path):
-        """photometry_qc_metrics group survives H5 roundtrip."""
+        """QC metrics under photometry/<region>/qc/ survive H5 roundtrip."""
         from iblnm.data import PhotometrySession
         mock_one = MagicMock()
         ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
@@ -1364,15 +1424,17 @@ class TestSaveLoadH5:
             'bleaching_tau': [150.5, 200.3],
         })
         fpath = tmp_path / f'{ps.eid}.h5'
-        ps.save_h5(fpath, groups=['metadata', 'photometry_qc_metrics'])
+        ps.save_h5(fpath, groups=['metadata', 'photometry'])
 
         ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
         assert ps2.qc.empty
-        ps2.load_h5(fpath, groups=['photometry_qc_metrics'])
+        ps2.load_h5(fpath, groups=['photometry'])
         assert len(ps2.qc) == 2
-        assert list(ps2.qc['brain_region']) == ['VTA', 'SNc']
-        assert list(ps2.qc['n_band_inversions']) == [0, 2]
-        np.testing.assert_allclose(ps2.qc['bleaching_tau'], [150.5, 200.3])
+        assert set(ps2.qc['brain_region']) == {'VTA', 'SNc'}
+        qc_sorted = ps2.qc.sort_values('brain_region').reset_index(drop=True)
+        assert list(qc_sorted['brain_region']) == ['SNc', 'VTA']
+        assert list(qc_sorted['n_band_inversions']) == [2, 0]
+        np.testing.assert_allclose(qc_sorted['bleaching_tau'], [200.3, 150.5])
 
     def test_load_h5_roundtrip(self, mock_photometry_session, tmp_path):
         """load_h5 should restore preprocessed signal from saved file."""
@@ -1659,16 +1721,15 @@ class TestRunSlidingQc:
 # =============================================================================
 
 def _make_responses(tpts, vals, region='R', event='e'):
-    """Build a minimal (1 region, 1 event, n_trials, n_times) DataArray."""
+    """Build a minimal (1 event, n_trials, n_times) DataArray for one region."""
     import xarray as xr
-    data = np.array([[[vals]]] if vals.ndim == 1 else [[vals]])
+    data = np.array([[vals]] if vals.ndim == 1 else [vals])
     return xr.DataArray(
         data,
-        dims=['region', 'event', 'trial', 'time'],
+        dims=['event', 'trial', 'time'],
         coords={
-            'region': [region],
             'event':  [event],
-            'trial':  np.arange(data.shape[2]),
+            'trial':  np.arange(data.shape[1]),
             'time':   tpts,
         },
     )
@@ -1688,7 +1749,7 @@ class TestSubtractBaseline:
         vals = np.array([2., 4., 6., 8., 10.])
         responses = _make_responses(tpts, vals)
         result = session.subtract_baseline(responses, window=(-1.0, 0.0))
-        np.testing.assert_allclose(result.values[0, 0, 0], [-2., 0., 2., 4., 6.])
+        np.testing.assert_allclose(result.values[0, 0], [-2., 0., 2., 4., 6.])
 
     def test_subtracts_per_trial(self, mock_session_series):
         """Each trial gets its own baseline removed."""
@@ -1700,30 +1761,19 @@ class TestSubtractBaseline:
         vals = np.array([[2., 4., 6., 8.], [10., 20., 30., 40.]])
         responses = _make_responses(tpts, vals)
         result = session.subtract_baseline(responses, window=(-1.0, 0.0))
-        np.testing.assert_allclose(result.values[0, 0, 0], [-1., 1., 3., 5.])
-        np.testing.assert_allclose(result.values[0, 0, 1], [-5., 5., 15., 25.])
+        np.testing.assert_allclose(result.values[0, 0], [-1., 1., 3., 5.])
+        np.testing.assert_allclose(result.values[0, 1], [-5., 5., 15., 25.])
 
-    def test_does_not_modify_self_responses(self, mock_session_series):
-        """Returns new DataArray; self.responses unchanged."""
+    def test_does_not_modify_input(self, mock_session_series):
+        """Returns new DataArray; input unchanged."""
         session = self._session(mock_session_series)
         tpts = np.array([-1.0, -0.5, 0.5, 1.0])
         vals = np.array([1., 2., 3., 4.])
         responses = _make_responses(tpts, vals)
-        session.responses = responses.copy()
-        original_vals = session.responses.values.copy()
+        original_vals = responses.values.copy()
         result = session.subtract_baseline(responses, window=(-1.0, 0.0))
-        np.testing.assert_array_equal(session.responses.values, original_vals)
-        assert result is not session.responses
-
-    def test_defaults_to_self_responses(self, mock_session_series):
-        """Calling without args operates on self.responses."""
-        session = self._session(mock_session_series)
-        tpts = np.array([-1.0, -0.5, 0.5, 1.0])
-        vals = np.array([2., 4., 6., 8.])
-        session.responses = _make_responses(tpts, vals)
-        result = session.subtract_baseline(window=(-1.0, 0.0))
-        # baseline = mean(2, 4) = 3.0; expected = [-1, 1, 3, 5]
-        np.testing.assert_allclose(result.values[0, 0, 0], [-1., 1., 3., 5.])
+        np.testing.assert_array_equal(responses.values, original_vals)
+        assert result is not responses
 
     def test_empty_window_produces_nan(self, mock_session_series):
         """Window entirely outside time axis → baseline NaN → output all NaN."""
@@ -1759,12 +1809,11 @@ class TestMaskSubsequentEvents:
         import xarray as xr
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         tpts = np.array([-1.0, -0.5, 0.0, 0.5, 1.0])
-        data = np.ones((1, 2, 2, 5))  # (region, event, trial, time)
+        data = np.ones((2, 2, 5))  # (event, trial, time)
         responses = xr.DataArray(
             data,
-            dims=['region', 'event', 'trial', 'time'],
+            dims=['event', 'trial', 'time'],
             coords={
-                'region': ['R'],
                 'event':  ['stimOn_times', 'firstMovement_times'],
                 'trial':  [0, 1],
                 'time':   tpts,
@@ -1785,7 +1834,7 @@ class TestMaskSubsequentEvents:
             responses,
             event_order=['stimOn_times', 'firstMovement_times', 'feedback_times'],
         )
-        mat = result.sel(region='R', event='stimOn_times').values
+        mat = result.sel(event='stimOn_times').values
         assert np.isnan(mat[0, 3])       # trial 0, t=0.5 > 0.3 → NaN
         assert np.isnan(mat[0, 4])       # trial 0, t=1.0 > 0.3 → NaN
         assert not np.isnan(mat[0, 2])   # trial 0, t=0.0 ≤ 0.3 → kept
@@ -1798,7 +1847,7 @@ class TestMaskSubsequentEvents:
             responses,
             event_order=['stimOn_times', 'firstMovement_times'],
         )
-        mat = result.sel(region='R', event='firstMovement_times').values
+        mat = result.sel(event='firstMovement_times').values
         assert not np.any(np.isnan(mat))
 
     def test_nan_dt_not_masked(self, mock_session_series):
@@ -1808,7 +1857,7 @@ class TestMaskSubsequentEvents:
             responses,
             event_order=['stimOn_times', 'firstMovement_times', 'feedback_times'],
         )
-        mat = result.sel(region='R', event='stimOn_times').values
+        mat = result.sel(event='stimOn_times').values
         assert not np.any(np.isnan(mat[1]))
 
     def test_no_trials_returns_unchanged(self, mock_session_series):
@@ -1828,11 +1877,11 @@ class TestMaskSubsequentEvents:
         import xarray as xr
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         tpts = np.array([-1.0, 0.0, 1.0])
-        data = np.ones((1, 1, 2, 3))
+        data = np.ones((1, 2, 3))
         responses = xr.DataArray(
             data,
-            dims=['region', 'event', 'trial', 'time'],
-            coords={'region': ['R'], 'event': ['feedback_times'],
+            dims=['event', 'trial', 'time'],
+            coords={'event': ['feedback_times'],
                     'trial': [0, 1], 'time': tpts},
         )
         session.trials = pd.DataFrame({
@@ -2017,7 +2066,7 @@ def _make_sessions_df(n_eids=2, regions_per=2):
             'brain_region': [region_names[j] for j in range(regions_per)],
             'hemisphere': [region_names[j][-1] for j in range(regions_per)],
             'target_NM': [target_names[j] for j in range(regions_per)],
-            'NM': f'NM-0',
+            'NM': 'NM-0',
             'session_type': 'biased',
             'start_time': '2024-01-01T10:00:00',
             'number': 1,
@@ -2331,15 +2380,17 @@ def _make_session_with_responses(mock_one, n_trials=100, post_event_value=1.0):
     events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
 
     # Baseline = 0, post-event = post_event_value
-    data = np.zeros((1, 3, n_trials, n_time))
+    data = np.zeros((3, n_trials, n_time))
     post_mask = tpts >= 0
-    data[:, :, :, post_mask] = post_event_value
+    data[:, :, post_mask] = post_event_value
 
-    ps.responses = xr.DataArray(
-        data, dims=['region', 'event', 'trial', 'time'],
-        coords={'region': ['VTA-r'], 'event': events,
-                'trial': np.arange(n_trials), 'time': tpts},
-    )
+    ps.responses = {
+        'VTA-r': xr.DataArray(
+            data, dims=['event', 'trial', 'time'],
+            coords={'event': events,
+                    'trial': np.arange(n_trials), 'time': tpts},
+        )
+    }
 
     contrasts = np.array([0.0, 0.0625, 0.125, 0.25, 1.0])
     sides = rng.choice(['left', 'right'], n_trials)
@@ -2437,17 +2488,19 @@ class TestGetResponseVector:
 
         # Baseline (t<0) = 0, post-event varies by event
         rng = np.random.default_rng(0)
-        data = np.zeros((1, 3, n_trials, n_time))
+        data = np.zeros((3, n_trials, n_time))
         post_mask = tpts >= 0
-        data[0, 0, :, :][:, post_mask] = 1.0   # stimOn post-event = 1
-        data[0, 1, :, :][:, post_mask] = 2.0   # firstMov post-event = 2
-        data[0, 2, :, :][:, post_mask] = 3.0   # feedback post-event = 3
+        data[0, :, :][:, post_mask] = 1.0   # stimOn post-event = 1
+        data[1, :, :][:, post_mask] = 2.0   # firstMov post-event = 2
+        data[2, :, :][:, post_mask] = 3.0   # feedback post-event = 3
 
-        ps.responses = xr.DataArray(
-            data, dims=['region', 'event', 'trial', 'time'],
-            coords={'region': ['VTA-r'], 'event': events,
-                    'trial': np.arange(n_trials), 'time': tpts},
-        )
+        ps.responses = {
+            'VTA-r': xr.DataArray(
+                data, dims=['event', 'trial', 'time'],
+                coords={'event': events,
+                        'trial': np.arange(n_trials), 'time': tpts},
+            )
+        }
 
         contrasts = np.array([0.0, 0.0625, 0.125, 0.25, 1.0])
         sides = rng.choice(['left', 'right'], n_trials)
@@ -2539,14 +2592,18 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
                            data=np.full(n_trials, 0.8) if all_biased
                            else np.full(n_trials, 0.5))
 
-        resp_grp = f.create_group('responses')
-        resp_grp.create_dataset('time', data=tpts)
+        phot_root = f.create_group('photometry')
         for region in regions:
-            region_grp = resp_grp.create_group(region)
+            region_grp = phot_root.create_group(region)
+            resp_grp = region_grp.create_group('responses')
+            resp_grp.attrs['fs'] = 30.0
+            resp_grp.attrs['response_window'] = (tpts[0], tpts[-1])
+            resp_grp.create_dataset('times', data=tpts)
+            resp_grp.create_dataset('trials', data=np.arange(n_trials))
             for event in events:
                 data = np.zeros((n_trials, n_time))
                 data[:, post_mask] = 1.0
-                region_grp.create_dataset(event, data=data)
+                resp_grp.create_dataset(event, data=data)
 
 
 class TestGetResponseFeatures:
@@ -2595,7 +2652,7 @@ class TestGetResponseFeatures:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.get_response_features(min_trials=1)
         _, ps = group[0]
-        assert not hasattr(ps, 'responses')
+        assert ps.responses == {}
 
     def test_default_min_trials_is_one(self, tmp_path):
         """Default min_trials=1 allows sparse conditions through."""
@@ -4076,16 +4133,20 @@ def _write_h5_with_wheel(path, n_trials=100, seed=42):
         grp.create_dataset('choice', data=rng.choice([-1, 1], n_trials))
         grp.create_dataset('probabilityLeft', data=np.full(n_trials, 0.5))
 
-        resp_grp = f.create_group('responses')
-        resp_grp.create_dataset('time', data=tpts)
+        phot_root = f.create_group('photometry')
         region = 'VTA-r'
-        region_grp = resp_grp.create_group(region)
+        region_grp = phot_root.create_group(region)
+        resp_grp = region_grp.create_group('responses')
+        resp_grp.attrs['fs'] = 30.0
+        resp_grp.attrs['response_window'] = (tpts[0], tpts[-1])
+        resp_grp.create_dataset('times', data=tpts)
+        resp_grp.create_dataset('trials', data=np.arange(n_trials))
         for event in events:
             data = np.zeros((n_trials, n_time))
             data[:, post_mask] = 1.0
-            region_grp.create_dataset(event, data=data)
+            resp_grp.create_dataset(event, data=data)
 
-        w_grp = f.create_group('wheel')
+        w_grp = f.create_group('wheel/responses')
         w_grp.create_dataset('velocity', data=wheel_vel, compression='gzip')
         w_grp.attrs['fs'] = wheel_fs
         w_grp.attrs['t0_event'] = 'stimOn_times'

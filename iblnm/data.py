@@ -84,6 +84,7 @@ class PhotometrySession(PhotometrySessionLoader):
         super().__init__(*args, eid=self.eid, **kwargs)
         if not isinstance(self.photometry, dict):
             self.photometry = {}
+        self.responses = {}
         self.qc = pd.DataFrame()
         if load_data:
             self.load_trials()
@@ -225,7 +226,7 @@ class PhotometrySession(PhotometrySessionLoader):
             ps.target_NM = list(raw_tnm) if isinstance(raw_tnm, (list, np.ndarray)) else []
 
         # Load remaining groups
-        ps.load_h5(fpath, groups=['errors', 'signal', 'trials', 'responses', 'wheel'])
+        ps.load_h5(fpath, groups=['errors', 'photometry', 'trials', 'wheel'])
         return ps
 
     def from_alyx(self):
@@ -542,12 +543,12 @@ class PhotometrySession(PhotometrySessionLoader):
 
     def extract_responses(self, events=None, band='GCaMP_preprocessed',
                           window=None):
-        """Extract peri-event response matrices as xarray DataArray.
+        """Extract peri-event response matrices as a dict of xarrays.
 
         Returns
         -------
-        xr.DataArray
-            dims: (region, event, trial, time)
+        dict[str, xr.DataArray]
+            One DataArray per brain region, dims (event, trial, time).
         """
         import xarray as xr
 
@@ -555,35 +556,26 @@ class PhotometrySession(PhotometrySessionLoader):
             events = RESPONSE_EVENTS
         if window is None:
             window = self.RESPONSE_WINDOW
-        regions = list(self.photometry[band].columns)
-        n_trials = len(self.trials)
 
-        # Collect response matrices and determine tpts from first call
-        data = []
-        tpts = None
-        for region in regions:
+        self.responses = {}
+        for region in self.photometry[band].columns:
             signal = self.photometry[band][region]
-            region_data = []
+            per_event = []
             for event in events:
                 event_times = self.trials[event].values
-                resp, t = get_responses(signal, event_times,
-                                        t0=window[0], t1=window[1])
-                if tpts is None:
-                    tpts = t
-                region_data.append(resp)
-            data.append(region_data)
-
-        # data shape: (n_regions, n_events, n_trials, n_times)
-        self.responses = xr.DataArray(
-            np.array(data),
-            dims=['region', 'event', 'trial', 'time'],
-            coords={
-                'region': regions,
-                'event': events,
-                'trial': np.arange(n_trials),
-                'time': tpts,
-            },
-        )
+                resp, sample_times = get_responses(
+                    signal, event_times, t0=window[0], t1=window[1],
+                )
+                per_event.append(resp)
+            self.responses[region] = xr.DataArray(
+                np.stack(per_event),
+                dims=['event', 'trial', 'time'],
+                coords={
+                    'event': list(events),
+                    'trial': self.trials.index.to_numpy(),
+                    'time': sample_times,
+                },
+            )
         return self.responses
 
     def save_h5(self, fpath=None, groups=None, band='GCaMP_preprocessed', mode='a'):
@@ -595,8 +587,9 @@ class PhotometrySession(PhotometrySessionLoader):
             Output path. Defaults to SESSIONS_H5_DIR / {eid}.h5.
         groups : sequence of str, optional
             Which data groups to write. Any subset of:
-            'metadata', 'errors', 'signal', 'trials', 'responses', 'wheel',
-            'photometry_qc_metrics'.
+            'metadata', 'errors', 'photometry', 'trials', 'wheel'.
+            The 'photometry' group bundles preprocessed traces, peri-event
+            responses, and QC metrics under /photometry/<region>/.
             None auto-detects all available data groups.
         mode : str
             HDF5 file open mode ('a' creates/appends, 'w' truncates).
@@ -608,14 +601,16 @@ class PhotometrySession(PhotometrySessionLoader):
         fpath = Path(fpath)
         fpath.parent.mkdir(parents=True, exist_ok=True)
 
+        have_pp = band in self.photometry
+        have_resp = bool(getattr(self, 'responses', None))
+        have_qc = (hasattr(self, 'qc') and self.qc is not None
+                   and len(self.qc) > 0)
+
         if groups is None:
             groups = [g for g, available in (
-                ('signal',    band in self.photometry),
-                ('trials',    hasattr(self, 'trials') and self.trials is not None),
-                ('responses', hasattr(self, 'responses') and self.responses is not None),
-                ('wheel',     hasattr(self, 'wheel_velocity') and self.wheel_velocity is not None),
-                ('photometry_qc_metrics', hasattr(self, 'qc') and self.qc is not None
-                 and len(self.qc) > 0),
+                ('photometry', have_pp or have_resp or have_qc),
+                ('trials',     hasattr(self, 'trials') and self.trials is not None),
+                ('wheel',      hasattr(self, 'wheel_velocity') and self.wheel_velocity is not None),
             ) if available]
 
         with h5py.File(fpath, mode) as f:
@@ -644,12 +639,25 @@ class PhotometrySession(PhotometrySessionLoader):
                             grp.attrs[attr] = val
 
             if 'errors' in groups:
+                # In append mode, merge with existing errors
+                if mode == 'a' and 'errors' in f and f['errors'].keys():
+                    existing = [
+                        {col: (f['errors'][col][i].decode()
+                               if isinstance(f['errors'][col][i], bytes)
+                               else str(f['errors'][col][i]))
+                         for col in ('eid', 'error_type', 'error_message',
+                                     'traceback')}
+                        for i in range(len(f['errors']['eid']))
+                    ]
+                    all_errors = existing + self.errors
+                else:
+                    all_errors = self.errors
                 if 'errors' in f:
                     del f['errors']
                 grp = f.create_group('errors')
                 seen = set()
                 unique_errors = []
-                for e in self.errors:
+                for e in all_errors:
                     key = (e.get('eid', ''), e.get('error_type', ''), e.get('error_message', ''))
                     if key not in seen:
                         seen.add(key)
@@ -662,24 +670,67 @@ class PhotometrySession(PhotometrySessionLoader):
                 # Empty group signals "no errors" — distinguishable from
                 # "errors not yet written" (no group at all).
 
-            if 'signal' in groups:
-                f.attrs['eid'] = self.eid
-                f.attrs['subject'] = self.subject
-                f.attrs['session_type'] = self.session_type
-                f.attrs['date'] = self.date
-                f.attrs['fs'] = TARGET_FS
-                f.attrs['response_window'] = self.RESPONSE_WINDOW
+            if 'photometry' in groups:
+                phot_root = f.require_group('photometry')
 
-                if 'times' in f:
-                    del f['times']
-                if 'preprocessed' in f:
-                    del f['preprocessed']
-                preprocessed = self.photometry[band]
-                f.create_dataset('times', data=preprocessed.index.values)
-                grp = f.create_group('preprocessed')
-                for col in preprocessed.columns:
-                    grp.create_dataset(col, data=preprocessed[col].values,
-                                       compression='gzip', compression_opts=4)
+                preprocessed = self.photometry[band] if have_pp else None
+                regions = set()
+                if have_pp:
+                    regions.update(preprocessed.columns)
+                if have_resp:
+                    regions.update(self.responses.keys())
+                if have_qc:
+                    regions.update(self.qc['brain_region'].unique())
+
+                for region in sorted(regions):
+                    region_grp = phot_root.require_group(region)
+
+                    if have_pp and region in preprocessed.columns:
+                        if 'preprocessed' in region_grp:
+                            del region_grp['preprocessed']
+                        pp_grp = region_grp.create_group('preprocessed')
+                        pp_grp.attrs['fs'] = TARGET_FS
+                        pp_grp.create_dataset(
+                            'times', data=preprocessed.index.values,
+                        )
+                        pp_grp.create_dataset(
+                            'signal',
+                            data=preprocessed[region].values.astype(np.float64),
+                            compression='gzip', compression_opts=4,
+                        )
+
+                    if have_resp and region in self.responses:
+                        region_responses = self.responses[region]
+                        if 'responses' in region_grp:
+                            del region_grp['responses']
+                        resp_grp = region_grp.create_group('responses')
+                        resp_grp.attrs['fs'] = TARGET_FS
+                        resp_grp.attrs['response_window'] = self.RESPONSE_WINDOW
+                        resp_grp.create_dataset(
+                            'times', data=region_responses.coords['time'].values,
+                        )
+                        resp_grp.create_dataset(
+                            'trials',
+                            data=region_responses.coords['trial'].values,
+                        )
+                        for event in region_responses.coords['event'].values:
+                            vals = region_responses.sel(event=event).values
+                            resp_grp.create_dataset(
+                                event, data=vals.astype(np.float64),
+                                compression='gzip', compression_opts=4,
+                            )
+
+                    if have_qc:
+                        qc_rows = self.qc[self.qc['brain_region'] == region]
+                        if len(qc_rows) > 0:
+                            if 'qc' in region_grp:
+                                del region_grp['qc']
+                            qc_grp = region_grp.create_group('qc')
+                            for col in qc_rows.columns:
+                                vals = qc_rows[col].values
+                                if vals.dtype == object:
+                                    vals = vals.astype('S')
+                                qc_grp.create_dataset(col, data=vals)
 
             if 'trials' in groups and hasattr(self, 'trials') and self.trials is not None:
                 if 'trials' in f:
@@ -693,44 +744,18 @@ class PhotometrySession(PhotometrySessionLoader):
                         vals = vals.astype('S')
                     grp.create_dataset(col, data=vals)
 
-            if 'responses' in groups and hasattr(self, 'responses') and self.responses is not None:
-                if 'responses' in f:
-                    del f['responses']
-                grp = f.create_group('responses')
-                tpts = self.responses.coords['time'].values
-                grp.create_dataset('time', data=tpts)
-                for region in self.responses.coords['region'].values:
-                    region_grp = grp.create_group(region)
-                    for event in self.responses.coords['event'].values:
-                        resp = self.responses.sel(region=region, event=event).values
-                        ds = region_grp.create_dataset(
-                            event, data=resp.astype(np.float64),
-                            compression='gzip', compression_opts=4
-                        )
-                        ds.attrs['window_t0'] = tpts[0]
-                        ds.attrs['window_t1'] = tpts[-1]
-
             if 'wheel' in groups and hasattr(self, 'wheel_velocity') and self.wheel_velocity is not None:
-                if 'wheel' in f:
-                    del f['wheel']
-                grp = f.create_group('wheel')
-                grp.create_dataset(
+                wheel_root = f.require_group('wheel')
+                if 'responses' in wheel_root:
+                    del wheel_root['responses']
+                resp_grp = wheel_root.create_group('responses')
+                resp_grp.create_dataset(
                     'velocity', data=self.wheel_velocity,
                     compression='gzip', compression_opts=4,
                 )
-                grp.attrs['fs'] = self.wheel_fs
-                grp.attrs['t0_event'] = getattr(self, '_wheel_t0_event', 'stimOn_times')
-                grp.attrs['t1_event'] = getattr(self, '_wheel_t1_event', 'feedback_times')
-
-            if 'photometry_qc_metrics' in groups and hasattr(self, 'qc') and self.qc is not None and len(self.qc) > 0:
-                if 'photometry_qc_metrics' in f:
-                    del f['photometry_qc_metrics']
-                grp = f.create_group('photometry_qc_metrics')
-                for col in self.qc.columns:
-                    vals = self.qc[col].values
-                    if vals.dtype == object:
-                        vals = vals.astype('S')
-                    grp.create_dataset(col, data=vals)
+                resp_grp.attrs['fs'] = self.wheel_fs
+                resp_grp.attrs['t0_event'] = getattr(self, '_wheel_t0_event', 'stimOn_times')
+                resp_grp.attrs['t1_event'] = getattr(self, '_wheel_t1_event', 'feedback_times')
 
     def load_h5(self, fpath, groups=None):
         """Load session data from HDF5 file.
@@ -741,8 +766,9 @@ class PhotometrySession(PhotometrySessionLoader):
             Path to the HDF5 file.
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
-            'metadata', 'errors', 'signal', 'trials', 'responses', 'wheel',
-            'photometry_qc_metrics'.
+            'metadata', 'errors', 'photometry', 'trials', 'wheel'.
+            The 'photometry' key loads preprocessed traces, responses, and
+            QC metrics from /photometry/<region>/.
             None loads all groups present in the file.
         """
         import h5py
@@ -784,16 +810,6 @@ class PhotometrySession(PhotometrySessionLoader):
                 else:
                     self.errors = []
 
-            if (groups is None or 'signal' in groups) and 'preprocessed' in f:
-                times = f['times'][:]
-                preprocessed = {}
-                for name in f['preprocessed']:
-                    preprocessed[name] = pd.Series(
-                        f[f'preprocessed/{name}'][:].astype(np.float64),
-                        index=times
-                    )
-                self.photometry['GCaMP_preprocessed'] = pd.DataFrame(preprocessed)
-
             if (groups is None or 'trials' in groups) and 'trials' in f:
                 data = {}
                 for col in f['trials']:
@@ -803,45 +819,66 @@ class PhotometrySession(PhotometrySessionLoader):
                     data[col] = vals
                 self.trials = pd.DataFrame(data)
 
-            if (groups is None or 'responses' in groups) and 'responses' in f:
-                resp_grp = f['responses']
-                tpts = resp_grp['time'][:]
-                regions = [k for k in resp_grp.keys() if k != 'time']
-                events = list(resp_grp[regions[0]].keys())
-                n_trials = resp_grp[regions[0]][events[0]].shape[0]
+            if (groups is None or 'wheel' in groups) and 'wheel' in f and 'responses' in f['wheel']:
+                resp_grp = f['wheel/responses']
+                self.wheel_velocity = resp_grp['velocity'][:].astype(np.float32)
+                self.wheel_fs = resp_grp.attrs['fs']
+                self._wheel_t0_event = resp_grp.attrs['t0_event']
+                self._wheel_t1_event = resp_grp.attrs['t1_event']
 
-                data = np.empty((len(regions), len(events), n_trials, len(tpts)),
-                                dtype=np.float64)
-                for i, region in enumerate(regions):
-                    for j, event in enumerate(events):
-                        data[i, j] = resp_grp[region][event][:].astype(np.float64)
+            if (groups is None or 'photometry' in groups) and 'photometry' in f:
+                phot_root = f['photometry']
+                regions = list(phot_root.keys())
 
-                self.responses = xr.DataArray(
-                    data,
-                    dims=['region', 'event', 'trial', 'time'],
-                    coords={
-                        'region': regions,
-                        'event': events,
-                        'trial': np.arange(n_trials),
-                        'time': tpts,
-                    },
-                )
+                pp_data = {}
+                pp_times = None
+                for region in regions:
+                    rg = phot_root[region]
+                    if 'preprocessed' in rg:
+                        pp_grp = rg['preprocessed']
+                        if pp_times is None:
+                            pp_times = pp_grp['times'][:]
+                        pp_data[region] = pp_grp['signal'][:].astype(np.float64)
+                if pp_data:
+                    self.photometry['GCaMP_preprocessed'] = pd.DataFrame(
+                        pp_data, index=pp_times,
+                    )
 
-            if (groups is None or 'wheel' in groups) and 'wheel' in f:
-                self.wheel_velocity = f['wheel/velocity'][:].astype(np.float32)
-                self.wheel_fs = f['wheel'].attrs['fs']
-                self._wheel_t0_event = f['wheel'].attrs['t0_event']
-                self._wheel_t1_event = f['wheel'].attrs['t1_event']
+                self.responses = {}
+                for region in regions:
+                    region_group = phot_root[region]
+                    if 'responses' not in region_group:
+                        continue
+                    resp_grp = region_group['responses']
+                    reserved = {'times', 'trials'}
+                    event_names = [k for k in resp_grp.keys() if k not in reserved]
+                    self.responses[region] = xr.DataArray(
+                        np.stack([
+                            resp_grp[name][:].astype(np.float64)
+                            for name in event_names
+                        ]),
+                        dims=['event', 'trial', 'time'],
+                        coords={
+                            'event': event_names,
+                            'trial': resp_grp['trials'][:],
+                            'time': resp_grp['times'][:],
+                        },
+                    )
 
-            if (groups is None or 'photometry_qc_metrics' in groups) and 'photometry_qc_metrics' in f:
-                grp = f['photometry_qc_metrics']
-                data = {}
-                for col in grp:
-                    vals = grp[col][:]
-                    if vals.dtype.kind == 'S':
-                        vals = vals.astype(str)
-                    data[col] = vals
-                self.qc = pd.DataFrame(data)
+                qc_frames = []
+                for region in regions:
+                    rg = phot_root[region]
+                    if 'qc' in rg:
+                        qc_grp = rg['qc']
+                        qc_data = {}
+                        for col in qc_grp:
+                            vals = qc_grp[col][:]
+                            if vals.dtype.kind == 'S':
+                                vals = vals.astype(str)
+                            qc_data[col] = vals
+                        qc_frames.append(pd.DataFrame(qc_data))
+                if qc_frames:
+                    self.qc = pd.concat(qc_frames, ignore_index=True)
 
     def _append_qc(self, brain_region: str, band: str, metrics: dict) -> None:
         """Append or update a QC row in the DataFrame."""
@@ -971,13 +1008,13 @@ class PhotometrySession(PhotometrySessionLoader):
     # Response Convenience Methods
     # =========================================================================
 
-    def subtract_baseline(self, responses=None, window=None):
+    def subtract_baseline(self, responses, window=None):
         """Subtract per-trial pre-event baseline from response traces.
 
         Parameters
         ----------
-        responses : xr.DataArray, optional
-            dims (region, event, trial, time). Defaults to self.responses.
+        responses : xr.DataArray
+            Single-region DataArray with dims (event, trial, time).
         window : tuple(float, float), optional
             Baseline window in seconds [t_start, t_end). Defaults to
             BASELINE_WINDOW from config.
@@ -987,17 +1024,15 @@ class PhotometrySession(PhotometrySessionLoader):
         xr.DataArray
             Baseline-subtracted responses, same shape and coords as input.
         """
-        if responses is None:
-            responses = self.responses
         if window is None:
             window = BASELINE_WINDOW
-        tpts = responses.coords['time'].values
-        i0 = np.searchsorted(tpts, window[0])
-        i1 = np.searchsorted(tpts, window[1])
+        sample_times = responses.coords['time'].values
+        i0 = np.searchsorted(sample_times, window[0])
+        i1 = np.searchsorted(sample_times, window[1])
         baseline = responses.isel(time=slice(i0, i1)).mean(dim='time', skipna=True)
         return responses - baseline
 
-    def mask_subsequent_events(self, responses=None, event_order=None):
+    def mask_subsequent_events(self, responses, event_order=None):
         """Mask response times that fall after the next event onset.
 
         For each consecutive pair (e0, e1) in event_order, per-trial times
@@ -1006,8 +1041,8 @@ class PhotometrySession(PhotometrySessionLoader):
 
         Parameters
         ----------
-        responses : xr.DataArray, optional
-            dims (region, event, trial, time). Defaults to self.responses.
+        responses : xr.DataArray
+            Single-region DataArray with dims (event, trial, time).
         event_order : list[str], optional
             Chronologically ordered event names. Defaults to RESPONSE_EVENTS.
 
@@ -1017,14 +1052,12 @@ class PhotometrySession(PhotometrySessionLoader):
             Masked responses, same shape and coords as input.
         """
         import xarray as xr
-        if responses is None:
-            responses = self.responses
         if event_order is None:
             event_order = list(RESPONSE_EVENTS)
-        if not hasattr(self, 'trials') or self.trials is None:
+        if self.trials is None:
             return responses
         events_present = list(responses.coords['event'].values)
-        tpts = responses.coords['time'].values
+        sample_times = responses.coords['time'].values
         result = responses.copy()
         for i, event in enumerate(event_order[:-1]):
             next_event = event_order[i + 1]
@@ -1034,7 +1067,7 @@ class PhotometrySession(PhotometrySessionLoader):
                 continue
             dt = self.trials[next_event].values - self.trials[event].values
             nan_dt = np.isnan(dt)
-            keep = (tpts[None, :] <= dt[:, None]) | nan_dt[:, None]
+            keep = (sample_times[None, :] <= dt[:, None]) | nan_dt[:, None]
             keep_da = xr.DataArray(
                 keep, dims=['trial', 'time'],
                 coords={'trial': responses.coords['trial'],
@@ -1203,9 +1236,9 @@ class PhotometrySession(PhotometrySessionLoader):
         if normalize not in (None, 'minmax'):
             raise ValueError(f"normalize must be None or 'minmax', got {normalize!r}")
 
-        responses = self.mask_subsequent_events(self.responses)
+        responses = self.mask_subsequent_events(self.responses[brain_region])
         responses = self.subtract_baseline(responses)
-        tpts = responses.coords['time'].values
+        sample_times = responses.coords['time'].values
 
         # Lateralize using stim_side column (set by compute_trial_contrasts in load_trials)
         if 'stim_side' not in self.trials.columns:
@@ -1249,8 +1282,8 @@ class PhotometrySession(PhotometrySessionLoader):
             if n < min_trials:
                 result[label] = np.nan
                 continue
-            resp = responses.sel(region=brain_region, event=event).values[trial_mask]
-            magnitudes = compute_response_magnitude(resp, tpts, win)
+            resp = responses.sel(event=event).values[trial_mask]
+            magnitudes = compute_response_magnitude(resp, sample_times, win)
             result[label] = np.nanmean(magnitudes)
 
         vec = pd.Series(result)
@@ -1730,22 +1763,21 @@ class PhotometrySessionGroup:
             if not h5_path.exists():
                 continue
 
-            ps.load_h5(h5_path, groups=['trials', 'responses'])
+            ps.load_h5(h5_path, groups=['trials', 'photometry'])
 
             if (getattr(ps, 'responses', None) is None
                     or getattr(ps, 'trials', None) is None):
                 continue
 
-            available_regions = list(ps.responses.coords['region'].values)
-            if brain_region not in available_regions:
+            if brain_region not in ps.responses:
                 continue
 
-            responses = ps.mask_subsequent_events(ps.responses)
+            responses = ps.mask_subsequent_events(ps.responses[brain_region])
             responses = ps.subtract_baseline(responses)
 
-            tpts = responses.coords['time'].values
+            sample_times = responses.coords['time'].values
             if self.response_traces_tpts is None:
-                self.response_traces_tpts = tpts
+                self.response_traces_tpts = sample_times
 
             meta = {
                 'eid': eid,
@@ -1761,12 +1793,10 @@ class PhotometrySessionGroup:
             for event in RESPONSE_EVENTS:
                 if event not in responses.coords['event'].values:
                     continue
-                resp = responses.sel(
-                    region=brain_region, event=event,
-                ).values  # (n_trials, n_time)
+                resp = responses.sel(event=event).values  # (n_trials, n_time)
                 cache[(eid, brain_region, event)] = {
                     'traces': resp,
-                    'tpts': tpts,
+                    'tpts': sample_times,
                     'meta': {**meta, 'event': event},
                     'trials': ps.trials.copy(),
                 }
@@ -1995,16 +2025,14 @@ class PhotometrySessionGroup:
             fiber_idx = int(rec['fiber_idx']) if has_fiber_idx else 0
 
             # Load H5 if responses not yet available
-            if not hasattr(ps, 'responses') or not hasattr(ps, 'trials'):
+            if not ps.responses or not hasattr(ps, 'trials') or ps.trials is None:
                 h5_path = Path(self.h5_dir) / f'{eid}.h5'
                 if not h5_path.exists():
                     print(f"  H5 file not found: {h5_path}")
                     continue
-                ps.load_h5(h5_path, groups=['trials', 'responses'])
+                ps.load_h5(h5_path, groups=['trials', 'photometry'])
 
-            if not hasattr(ps, 'responses') or not hasattr(ps, 'trials'):
-                continue
-            if brain_region not in ps.responses.coords['region'].values:
+            if brain_region not in ps.responses:
                 continue
 
             vec = ps.get_response_vector(
@@ -2013,7 +2041,7 @@ class PhotometrySessionGroup:
             rows[(eid, target_nm, fiber_idx)] = vec
 
             # Discard raw data to free memory
-            del ps.responses
+            ps.responses = {}
             del ps.trials
 
         if not rows:
@@ -2847,8 +2875,8 @@ class PhotometrySessionGroup:
 
             if h5_path.exists():
                 with h5py.File(h5_path, 'r') as f:
-                    if 'wheel' in f:
-                        wheel_vel = f['wheel/velocity'][:]
+                    if 'wheel/responses' in f:
+                        wheel_vel = f['wheel/responses/velocity'][:]
 
             eid_trials = trial_keys[trial_keys['eid'] == eid]['trial']
             for trial in eid_trials:

@@ -10,22 +10,13 @@ are drawn as thin vertical lines in both signal traces.
 Usage:
     python scripts/view_session.py [eid]
 """
-import sys
 
 import numpy as np
-import pandas as pd
 from scipy.stats import sem as scipy_sem
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.widgets import Button
 
-from iblnm.config import (
-    SESSIONS_FPATH, SESSIONS_H5_DIR,
-    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH,
-    SESSION_TYPES_TO_ANALYZE,
-)
-from iblnm.data import PhotometrySession
-from iblnm.io import _get_default_connection
 from iblnm.task import sort_trials_by_type
 
 DEMO_EID = '2025366a-c9aa-4b6c-97be-8af40eda6410'
@@ -72,8 +63,7 @@ class PhotometrySessionViewer:
                 and 'Isosbestic' in self.session.photometry)
 
     def _has_responses(self):
-        return (hasattr(self.session, 'responses')
-                and self.session.responses is not None)
+        return bool(getattr(self.session, 'responses', None))
 
     def _has_trials(self):
         return (hasattr(self.session, 'trials')
@@ -81,7 +71,8 @@ class PhotometrySessionViewer:
 
     def _events(self):
         """Return events sorted by EVENT_ORDER; unknowns appended at the end."""
-        evs = list(self.session.responses.coords['event'].values)
+        first_region = next(iter(self.session.responses))
+        evs = list(self.session.responses[first_region].coords['event'].values)
         known   = [e for e in EVENT_ORDER if e in evs]
         unknown = [e for e in evs if e not in EVENT_ORDER]
         return known + unknown
@@ -94,11 +85,15 @@ class PhotometrySessionViewer:
         """
         types, ratios = [], []
         if self._has_raw():
-            types.append('raw');       ratios.append(RATIO_SIGNAL)
-        types.append('preprocessed'); ratios.append(RATIO_SIGNAL)
+            types.append('raw')
+            ratios.append(RATIO_SIGNAL)
+        types.append('preprocessed')
+        ratios.append(RATIO_SIGNAL)
         if self._has_responses():
-            types.append('heatmap');   ratios.append(RATIO_HEATMAP)
-            types.append('mean');      ratios.append(RATIO_MEAN)
+            types.append('heatmap')
+            ratios.append(RATIO_HEATMAP)
+            types.append('mean')
+            ratios.append(RATIO_MEAN)
         return types, ratios
 
     # ------------------------------------------------------------------ #
@@ -235,9 +230,9 @@ class PhotometrySessionViewer:
         self._buttons['sort'].ax.set_facecolor(color)
         self._switch_region(self._current_region)
 
-    def _get_transformed_responses(self):
-        """Return responses with active transforms applied (for mean traces)."""
-        resp = self.session.responses
+    def _get_transformed_responses(self, region):
+        """Return responses for `region` with active transforms applied."""
+        resp = self.session.responses[region]
         if self._mask_on:
             resp = self.session.mask_subsequent_events(resp)
         if self._baseline_on:
@@ -349,9 +344,10 @@ class PhotometrySessionViewer:
         ax_heat.cla()
         ax_mean.cla()
 
-        tpts = self.session.responses.coords['time'].values
-        raw  = self.session.responses.sel(region=region, event=event).values  # (n_trials, n_times)
-        resp = self._get_transformed_responses().sel(region=region, event=event).values
+        region_responses = self.session.responses[region]
+        tpts = region_responses.coords['time'].values
+        raw  = region_responses.sel(event=event).values  # (n_trials, n_times)
+        resp = self._get_transformed_responses(region).sel(event=event).values
         color = EVENT_COLORS.get(event, 'black')
 
         if self._sort_on and self._has_trials():
