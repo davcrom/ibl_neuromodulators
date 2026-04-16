@@ -1,8 +1,11 @@
 import warnings
+from datetime import datetime
+from pathlib import Path
 
+import h5py
 import numpy as np
 import pandas as pd
-from datetime import datetime
+import xarray as xr
 
 from brainbox.io.one import PhotometrySessionLoader
 from iblphotometry.fpio import from_neurophotometrics_df_to_photometry_df
@@ -28,6 +31,335 @@ from iblnm.validation import (
     MissingBlockInfo, IncompleteEventTimes, TrialsNotInPhotometryTime,
     FewUniqueSamples, QCValidationError, AmbiguousRegionMapping,
 )
+
+
+# =============================================================================
+# HDF5 save/load helpers
+# =============================================================================
+#
+# These module-level functions handle the on-disk layout for each top-level
+# group. `save_h5` / `load_h5` on PhotometrySession are thin dispatchers over
+# the _SAVE_HANDLERS / _LOAD_HANDLERS registries at the bottom of this block.
+#
+# Photometry sub-handlers (_save_preprocessed, _save_responses, _save_qc and
+# their load counterparts) are pure: they take a parent group and a payload,
+# with no coupling to PhotometrySession. The region loop and session→payload
+# extraction live in the _save_photometry / _load_photometry orchestrators.
+
+
+def _replace_group(parent, name):
+    """Delete `name` under `parent` if present, create and return a fresh group."""
+    if name in parent:
+        del parent[name]
+    return parent.create_group(name)
+
+
+def _write_dataframe(h5_group, dataframe):
+    """Write each column of `dataframe` as a dataset under `h5_group`."""
+    for col in dataframe.columns:
+        values = dataframe[col].values
+        if values.dtype == object:
+            values = values.astype('S')
+        h5_group.create_dataset(col, data=values)
+
+
+def _read_dataframe(h5_group):
+    """Read all datasets under `h5_group` into a DataFrame, decoding bytes."""
+    data = {}
+    for col in h5_group:
+        values = h5_group[col][:]
+        if values.dtype.kind == 'S':
+            values = values.astype(str)
+        data[col] = values
+    return pd.DataFrame(data)
+
+
+_METADATA_NONE_SENTINEL = '__none__'
+_ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback')
+_RESPONSES_RESERVED_KEYS = {'times', 'trials'}
+
+
+def _save_metadata(session, h5_file, band):
+    grp = _replace_group(h5_file, 'metadata')
+    for attr, is_list in session._METADATA_FIELDS:
+        value = getattr(session, attr, None)
+        if is_list:
+            items = list(value) if value else []
+            grp.create_dataset(
+                attr,
+                data=[s.encode() if isinstance(s, str) else s for s in items],
+                dtype=h5py.string_dtype(),
+            )
+        else:
+            if attr == 'start_time' and hasattr(value, 'isoformat'):
+                value = value.isoformat()
+            grp.attrs[attr] = _METADATA_NONE_SENTINEL if value is None else value
+
+
+def _load_metadata(session, h5_file, band):
+    if 'metadata' not in h5_file:
+        return
+    grp = h5_file['metadata']
+    for attr, is_list in session._METADATA_FIELDS:
+        if is_list:
+            if attr in grp:
+                setattr(session, attr, [
+                    v.decode() if isinstance(v, bytes) else v
+                    for v in grp[attr][:]
+                ])
+            continue
+        if attr not in grp.attrs:
+            continue
+        value = grp.attrs[attr]
+        if isinstance(value, bytes):
+            value = value.decode()
+        elif hasattr(value, 'item'):
+            value = value.item()
+        if isinstance(value, str) and value == _METADATA_NONE_SENTINEL:
+            value = None
+        if attr == 'start_time' and isinstance(value, str):
+            value = datetime.fromisoformat(value)
+        setattr(session, attr, value)
+
+
+def _read_existing_errors(h5_file):
+    if 'errors' not in h5_file or not h5_file['errors'].keys():
+        return []
+    err_grp = h5_file['errors']
+    n = len(err_grp['eid'])
+    return [
+        {
+            col: (err_grp[col][i].decode()
+                  if isinstance(err_grp[col][i], bytes)
+                  else str(err_grp[col][i]))
+            for col in _ERROR_FIELDS
+        }
+        for i in range(n)
+    ]
+
+
+def _dedup_errors(errors):
+    seen = set()
+    unique = []
+    for entry in errors:
+        key = (entry.get('eid', ''), entry.get('error_type', ''),
+               entry.get('error_message', ''))
+        if key not in seen:
+            seen.add(key)
+            unique.append(entry)
+    return unique
+
+
+def _save_errors(session, h5_file, band):
+    merged = _dedup_errors(_read_existing_errors(h5_file) + session.errors)
+    grp = _replace_group(h5_file, 'errors')
+    # Empty group signals "no errors" — distinguishable from "not yet written".
+    if not merged:
+        return
+    for col in _ERROR_FIELDS:
+        grp.create_dataset(
+            col,
+            data=[str(e.get(col, '') or '') for e in merged],
+            dtype=h5py.string_dtype(),
+        )
+
+
+def _load_errors(session, h5_file, band):
+    if 'errors' not in h5_file:
+        return
+    session.errors = _read_existing_errors(h5_file)
+
+
+def _save_trials(session, h5_file, band):
+    if getattr(session, 'trials', None) is None:
+        return
+    columns = [c for c in TRIAL_COLUMNS + ['contrast', 'signed_contrast']
+               if c in session.trials.columns]
+    _write_dataframe(_replace_group(h5_file, 'trials'), session.trials[columns])
+
+
+def _load_trials(session, h5_file, band):
+    if 'trials' not in h5_file:
+        return
+    session.trials = _read_dataframe(h5_file['trials'])
+
+
+def _save_wheel(session, h5_file, band):
+    if getattr(session, 'wheel_velocity', None) is None:
+        return
+    wheel_group = h5_file.require_group('wheel')
+    responses_group = _replace_group(wheel_group, 'responses')
+    responses_group.create_dataset(
+        'velocity', data=session.wheel_velocity,
+        compression='gzip', compression_opts=4,
+    )
+    responses_group.attrs['fs'] = session.wheel_fs
+    responses_group.attrs['t0_event'] = getattr(
+        session, '_wheel_t0_event', 'stimOn_times',
+    )
+    responses_group.attrs['t1_event'] = getattr(
+        session, '_wheel_t1_event', 'feedback_times',
+    )
+
+
+def _load_wheel(session, h5_file, band):
+    if 'wheel' not in h5_file or 'responses' not in h5_file['wheel']:
+        return
+    responses_group = h5_file['wheel/responses']
+    session.wheel_velocity = responses_group['velocity'][:].astype(np.float32)
+    session.wheel_fs = responses_group.attrs['fs']
+    session._wheel_t0_event = responses_group.attrs['t0_event']
+    session._wheel_t1_event = responses_group.attrs['t1_event']
+
+
+# ----- Photometry sub-handlers (pure: parent_group + payload only) -----
+
+def _save_preprocessed(parent_group, signal_series):
+    """Write preprocessed/ subgroup from a time-indexed Series."""
+    pp_group = _replace_group(parent_group, 'preprocessed')
+    pp_group.attrs['fs'] = TARGET_FS
+    pp_group.create_dataset('times', data=signal_series.index.values)
+    pp_group.create_dataset(
+        'signal',
+        data=signal_series.values.astype(np.float64),
+        compression='gzip', compression_opts=4,
+    )
+
+
+def _load_preprocessed(parent_group):
+    """Read preprocessed/ subgroup into a time-indexed Series, or None."""
+    if 'preprocessed' not in parent_group:
+        return None
+    pp_group = parent_group['preprocessed']
+    return pd.Series(
+        pp_group['signal'][:].astype(np.float64),
+        index=pp_group['times'][:],
+    )
+
+
+def _save_responses(parent_group, responses, response_window):
+    """Write responses/ subgroup from a DataArray(event, trial, time)."""
+    responses_group = _replace_group(parent_group, 'responses')
+    responses_group.attrs['fs'] = TARGET_FS
+    responses_group.attrs['response_window'] = response_window
+    responses_group.create_dataset(
+        'times', data=responses.coords['time'].values,
+    )
+    responses_group.create_dataset(
+        'trials', data=responses.coords['trial'].values,
+    )
+    for event_name in responses.coords['event'].values:
+        responses_group.create_dataset(
+            event_name,
+            data=responses.sel(event=event_name).values.astype(np.float64),
+            compression='gzip', compression_opts=4,
+        )
+
+
+def _load_responses(parent_group):
+    """Read responses/ subgroup into a DataArray(event, trial, time), or None."""
+    if 'responses' not in parent_group:
+        return None
+    responses_group = parent_group['responses']
+    event_names = [k for k in responses_group.keys()
+                   if k not in _RESPONSES_RESERVED_KEYS]
+    return xr.DataArray(
+        np.stack([
+            responses_group[name][:].astype(np.float64)
+            for name in event_names
+        ]),
+        dims=['event', 'trial', 'time'],
+        coords={
+            'event': event_names,
+            'trial': responses_group['trials'][:],
+            'time':  responses_group['times'][:],
+        },
+    )
+
+
+def _save_qc(parent_group, qc_rows):
+    """Write qc/ subgroup from a DataFrame."""
+    _write_dataframe(_replace_group(parent_group, 'qc'), qc_rows)
+
+
+def _load_qc(parent_group):
+    """Read qc/ subgroup into a DataFrame, or None."""
+    if 'qc' not in parent_group:
+        return None
+    return _read_dataframe(parent_group['qc'])
+
+
+def _save_photometry(session, h5_file, band):
+    photometry_group = h5_file.require_group('photometry')
+    preprocessed = session.photometry.get(band)
+    has_qc = (getattr(session, 'qc', None) is not None
+              and len(session.qc) > 0)
+
+    regions = set()
+    if preprocessed is not None:
+        regions.update(preprocessed.columns)
+    regions.update(session.responses.keys())
+    if has_qc:
+        regions.update(session.qc['brain_region'].unique())
+
+    for region in sorted(regions):
+        region_group = photometry_group.require_group(region)
+
+        if preprocessed is not None and region in preprocessed.columns:
+            _save_preprocessed(region_group, preprocessed[region])
+
+        if region in session.responses:
+            _save_responses(
+                region_group, session.responses[region], session.RESPONSE_WINDOW,
+            )
+
+        if has_qc:
+            qc_rows = session.qc[session.qc['brain_region'] == region]
+            if len(qc_rows) > 0:
+                _save_qc(region_group, qc_rows)
+
+
+def _load_photometry(session, h5_file, band):
+    if 'photometry' not in h5_file:
+        return
+    photometry_group = h5_file['photometry']
+    regions = sorted(photometry_group.keys())
+
+    preprocessed_by_region = {
+        region: series for region in regions
+        if (series := _load_preprocessed(photometry_group[region])) is not None
+    }
+    if preprocessed_by_region:
+        session.photometry[band] = pd.DataFrame(preprocessed_by_region)
+
+    session.responses = {
+        region: region_responses for region in regions
+        if (region_responses := _load_responses(photometry_group[region])) is not None
+    }
+
+    qc_frames = [
+        qc_frame for region in regions
+        if (qc_frame := _load_qc(photometry_group[region])) is not None
+    ]
+    if qc_frames:
+        session.qc = pd.concat(qc_frames, ignore_index=True)
+
+
+_SAVE_HANDLERS = {
+    'metadata':   _save_metadata,
+    'errors':     _save_errors,
+    'photometry': _save_photometry,
+    'trials':     _save_trials,
+    'wheel':      _save_wheel,
+}
+
+_LOAD_HANDLERS = {
+    'metadata':   _load_metadata,
+    'errors':     _load_errors,
+    'photometry': _load_photometry,
+    'trials':     _load_trials,
+    'wheel':      _load_wheel,
+}
 
 
 class PhotometrySession(PhotometrySessionLoader):
@@ -588,176 +920,35 @@ class PhotometrySession(PhotometrySessionLoader):
         groups : sequence of str, optional
             Which data groups to write. Any subset of:
             'metadata', 'errors', 'photometry', 'trials', 'wheel'.
-            The 'photometry' group bundles preprocessed traces, peri-event
-            responses, and QC metrics under /photometry/<region>/.
             None auto-detects all available data groups.
         mode : str
             HDF5 file open mode ('a' creates/appends, 'w' truncates).
         """
-        import h5py
-        from pathlib import Path
         if fpath is None:
             fpath = SESSIONS_H5_DIR / f'{self.eid}.h5'
         fpath = Path(fpath)
         fpath.parent.mkdir(parents=True, exist_ok=True)
 
-        have_pp = band in self.photometry
-        have_resp = bool(getattr(self, 'responses', None))
-        have_qc = (hasattr(self, 'qc') and self.qc is not None
-                   and len(self.qc) > 0)
-
         if groups is None:
-            groups = [g for g, available in (
-                ('photometry', have_pp or have_resp or have_qc),
-                ('trials',     hasattr(self, 'trials') and self.trials is not None),
-                ('wheel',      hasattr(self, 'wheel_velocity') and self.wheel_velocity is not None),
-            ) if available]
+            groups = self._available_save_groups(band)
 
-        with h5py.File(fpath, mode) as f:
-            if 'metadata' in groups:
-                if 'metadata' in f:
-                    del f['metadata']
-                grp = f.create_group('metadata')
-                for attr, is_list in self._METADATA_FIELDS:
-                    val = getattr(self, attr, None)
-                    if is_list:
-                        items = list(val) if val else []
-                        grp.create_dataset(
-                            attr,
-                            data=[s.encode() if isinstance(s, str) else s
-                                  for s in items],
-                            dtype=h5py.string_dtype() if items else h5py.string_dtype(),
-                        )
-                    else:
-                        if attr == 'start_time' and hasattr(val, 'isoformat'):
-                            val = val.isoformat()
-                        if val is None:
-                            grp.attrs[attr] = '__none__'
-                        elif isinstance(val, str):
-                            grp.attrs[attr] = val
-                        else:
-                            grp.attrs[attr] = val
+        with h5py.File(fpath, mode) as h5_file:
+            for group_name in groups:
+                _SAVE_HANDLERS[group_name](self, h5_file, band)
 
-            if 'errors' in groups:
-                # In append mode, merge with existing errors
-                if mode == 'a' and 'errors' in f and f['errors'].keys():
-                    existing = [
-                        {col: (f['errors'][col][i].decode()
-                               if isinstance(f['errors'][col][i], bytes)
-                               else str(f['errors'][col][i]))
-                         for col in ('eid', 'error_type', 'error_message',
-                                     'traceback')}
-                        for i in range(len(f['errors']['eid']))
-                    ]
-                    all_errors = existing + self.errors
-                else:
-                    all_errors = self.errors
-                if 'errors' in f:
-                    del f['errors']
-                grp = f.create_group('errors')
-                seen = set()
-                unique_errors = []
-                for e in all_errors:
-                    key = (e.get('eid', ''), e.get('error_type', ''), e.get('error_message', ''))
-                    if key not in seen:
-                        seen.add(key)
-                        unique_errors.append(e)
-                if unique_errors:
-                    for col in ('eid', 'error_type', 'error_message', 'traceback'):
-                        vals = [str(e.get(col, '') or '') for e in unique_errors]
-                        grp.create_dataset(col, data=vals,
-                                           dtype=h5py.string_dtype())
-                # Empty group signals "no errors" — distinguishable from
-                # "errors not yet written" (no group at all).
+    def _available_save_groups(self, band):
+        has_photometry = (
+            band in self.photometry
+            or bool(getattr(self, 'responses', None))
+            or (getattr(self, 'qc', None) is not None and len(self.qc) > 0)
+        )
+        return [name for name, available in (
+            ('photometry', has_photometry),
+            ('trials',     getattr(self, 'trials', None) is not None),
+            ('wheel',      getattr(self, 'wheel_velocity', None) is not None),
+        ) if available]
 
-            if 'photometry' in groups:
-                phot_root = f.require_group('photometry')
-
-                preprocessed = self.photometry[band] if have_pp else None
-                regions = set()
-                if have_pp:
-                    regions.update(preprocessed.columns)
-                if have_resp:
-                    regions.update(self.responses.keys())
-                if have_qc:
-                    regions.update(self.qc['brain_region'].unique())
-
-                for region in sorted(regions):
-                    region_grp = phot_root.require_group(region)
-
-                    if have_pp and region in preprocessed.columns:
-                        if 'preprocessed' in region_grp:
-                            del region_grp['preprocessed']
-                        pp_grp = region_grp.create_group('preprocessed')
-                        pp_grp.attrs['fs'] = TARGET_FS
-                        pp_grp.create_dataset(
-                            'times', data=preprocessed.index.values,
-                        )
-                        pp_grp.create_dataset(
-                            'signal',
-                            data=preprocessed[region].values.astype(np.float64),
-                            compression='gzip', compression_opts=4,
-                        )
-
-                    if have_resp and region in self.responses:
-                        region_responses = self.responses[region]
-                        if 'responses' in region_grp:
-                            del region_grp['responses']
-                        resp_grp = region_grp.create_group('responses')
-                        resp_grp.attrs['fs'] = TARGET_FS
-                        resp_grp.attrs['response_window'] = self.RESPONSE_WINDOW
-                        resp_grp.create_dataset(
-                            'times', data=region_responses.coords['time'].values,
-                        )
-                        resp_grp.create_dataset(
-                            'trials',
-                            data=region_responses.coords['trial'].values,
-                        )
-                        for event in region_responses.coords['event'].values:
-                            vals = region_responses.sel(event=event).values
-                            resp_grp.create_dataset(
-                                event, data=vals.astype(np.float64),
-                                compression='gzip', compression_opts=4,
-                            )
-
-                    if have_qc:
-                        qc_rows = self.qc[self.qc['brain_region'] == region]
-                        if len(qc_rows) > 0:
-                            if 'qc' in region_grp:
-                                del region_grp['qc']
-                            qc_grp = region_grp.create_group('qc')
-                            for col in qc_rows.columns:
-                                vals = qc_rows[col].values
-                                if vals.dtype == object:
-                                    vals = vals.astype('S')
-                                qc_grp.create_dataset(col, data=vals)
-
-            if 'trials' in groups and hasattr(self, 'trials') and self.trials is not None:
-                if 'trials' in f:
-                    del f['trials']
-                cols = TRIAL_COLUMNS + ['contrast', 'signed_contrast']
-                available = [c for c in cols if c in self.trials.columns]
-                grp = f.create_group('trials')
-                for col in available:
-                    vals = self.trials[col].values
-                    if vals.dtype == object:
-                        vals = vals.astype('S')
-                    grp.create_dataset(col, data=vals)
-
-            if 'wheel' in groups and hasattr(self, 'wheel_velocity') and self.wheel_velocity is not None:
-                wheel_root = f.require_group('wheel')
-                if 'responses' in wheel_root:
-                    del wheel_root['responses']
-                resp_grp = wheel_root.create_group('responses')
-                resp_grp.create_dataset(
-                    'velocity', data=self.wheel_velocity,
-                    compression='gzip', compression_opts=4,
-                )
-                resp_grp.attrs['fs'] = self.wheel_fs
-                resp_grp.attrs['t0_event'] = getattr(self, '_wheel_t0_event', 'stimOn_times')
-                resp_grp.attrs['t1_event'] = getattr(self, '_wheel_t1_event', 'feedback_times')
-
-    def load_h5(self, fpath, groups=None):
+    def load_h5(self, fpath, groups=None, band='GCaMP_preprocessed'):
         """Load session data from HDF5 file.
 
         Parameters
@@ -767,118 +958,15 @@ class PhotometrySession(PhotometrySessionLoader):
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
             'metadata', 'errors', 'photometry', 'trials', 'wheel'.
-            The 'photometry' key loads preprocessed traces, responses, and
-            QC metrics from /photometry/<region>/.
             None loads all groups present in the file.
+        band : str
+            Preprocessed band name used as the key in `self.photometry`
+            when loading photometry.
         """
-        import h5py
-        import xarray as xr
-
-        with h5py.File(fpath, 'r') as f:
-            if (groups is None or 'metadata' in groups) and 'metadata' in f:
-                grp = f['metadata']
-                for attr, is_list in self._METADATA_FIELDS:
-                    if is_list:
-                        if attr in grp:
-                            vals = [v.decode() if isinstance(v, bytes) else v
-                                    for v in grp[attr][:]]
-                            setattr(self, attr, vals)
-                    else:
-                        if attr in grp.attrs:
-                            val = grp.attrs[attr]
-                            if isinstance(val, bytes):
-                                val = val.decode()
-                            elif hasattr(val, 'item'):
-                                val = val.item()
-                            if isinstance(val, str) and val == '__none__':
-                                val = None
-                            if attr == 'start_time' and isinstance(val, str):
-                                val = datetime.fromisoformat(val)
-                            setattr(self, attr, val)
-
-            if (groups is None or 'errors' in groups) and 'errors' in f:
-                err_grp = f['errors']
-                if 'error_type' in err_grp:
-                    n = len(err_grp['error_type'])
-                    self.errors = []
-                    for i in range(n):
-                        entry = {}
-                        for col in ('eid', 'error_type', 'error_message', 'traceback'):
-                            val = err_grp[col][i]
-                            entry[col] = val.decode() if isinstance(val, bytes) else val
-                        self.errors.append(entry)
-                else:
-                    self.errors = []
-
-            if (groups is None or 'trials' in groups) and 'trials' in f:
-                data = {}
-                for col in f['trials']:
-                    vals = f[f'trials/{col}'][:]
-                    if vals.dtype.kind == 'S':
-                        vals = vals.astype(str)
-                    data[col] = vals
-                self.trials = pd.DataFrame(data)
-
-            if (groups is None or 'wheel' in groups) and 'wheel' in f and 'responses' in f['wheel']:
-                resp_grp = f['wheel/responses']
-                self.wheel_velocity = resp_grp['velocity'][:].astype(np.float32)
-                self.wheel_fs = resp_grp.attrs['fs']
-                self._wheel_t0_event = resp_grp.attrs['t0_event']
-                self._wheel_t1_event = resp_grp.attrs['t1_event']
-
-            if (groups is None or 'photometry' in groups) and 'photometry' in f:
-                phot_root = f['photometry']
-                regions = list(phot_root.keys())
-
-                pp_data = {}
-                pp_times = None
-                for region in regions:
-                    rg = phot_root[region]
-                    if 'preprocessed' in rg:
-                        pp_grp = rg['preprocessed']
-                        if pp_times is None:
-                            pp_times = pp_grp['times'][:]
-                        pp_data[region] = pp_grp['signal'][:].astype(np.float64)
-                if pp_data:
-                    self.photometry['GCaMP_preprocessed'] = pd.DataFrame(
-                        pp_data, index=pp_times,
-                    )
-
-                self.responses = {}
-                for region in regions:
-                    region_group = phot_root[region]
-                    if 'responses' not in region_group:
-                        continue
-                    resp_grp = region_group['responses']
-                    reserved = {'times', 'trials'}
-                    event_names = [k for k in resp_grp.keys() if k not in reserved]
-                    self.responses[region] = xr.DataArray(
-                        np.stack([
-                            resp_grp[name][:].astype(np.float64)
-                            for name in event_names
-                        ]),
-                        dims=['event', 'trial', 'time'],
-                        coords={
-                            'event': event_names,
-                            'trial': resp_grp['trials'][:],
-                            'time': resp_grp['times'][:],
-                        },
-                    )
-
-                qc_frames = []
-                for region in regions:
-                    rg = phot_root[region]
-                    if 'qc' in rg:
-                        qc_grp = rg['qc']
-                        qc_data = {}
-                        for col in qc_grp:
-                            vals = qc_grp[col][:]
-                            if vals.dtype.kind == 'S':
-                                vals = vals.astype(str)
-                            qc_data[col] = vals
-                        qc_frames.append(pd.DataFrame(qc_data))
-                if qc_frames:
-                    self.qc = pd.concat(qc_frames, ignore_index=True)
+        group_names = list(_LOAD_HANDLERS) if groups is None else list(groups)
+        with h5py.File(fpath, 'r') as h5_file:
+            for group_name in group_names:
+                _LOAD_HANDLERS[group_name](self, h5_file, band)
 
     def _append_qc(self, brain_region: str, band: str, metrics: dict) -> None:
         """Append or update a QC row in the DataFrame."""
