@@ -485,7 +485,7 @@ class PhotometrySession(PhotometrySessionLoader):
         one : one.api.One, optional
             ONE connection instance. Not required for cached data access.
         """
-        import h5py
+
 
         # Read metadata to build the init Series
         with h5py.File(fpath, 'r') as f:
@@ -882,7 +882,7 @@ class PhotometrySession(PhotometrySessionLoader):
         dict[str, xr.DataArray]
             One DataArray per brain region, dims (event, trial, time).
         """
-        import xarray as xr
+
 
         if events is None:
             events = RESPONSE_EVENTS
@@ -1139,7 +1139,7 @@ class PhotometrySession(PhotometrySessionLoader):
         xr.DataArray
             Masked responses, same shape and coords as input.
         """
-        import xarray as xr
+
         if event_order is None:
             event_order = list(RESPONSE_EVENTS)
         if self.trials is None:
@@ -1704,7 +1704,7 @@ class PhotometrySessionGroup:
         list
             Results from fn, one per unique session. None for failed sessions.
         """
-        from pathlib import Path
+
         from tqdm import tqdm
 
         if workers > 1:
@@ -1776,7 +1776,7 @@ class PhotometrySessionGroup:
 
         Returns None if the file does not exist.
         """
-        from pathlib import Path
+
         path = Path(path)
         if not path.exists():
             return None
@@ -1806,7 +1806,7 @@ class PhotometrySessionGroup:
 
     def load_response_features(self, path):
         """Load response features from parquet, filtered to current recordings."""
-        from pathlib import Path
+
         path = Path(path)
         if not path.exists():
             self.response_features = None
@@ -1836,7 +1836,7 @@ class PhotometrySessionGroup:
         -------
         self
         """
-        from pathlib import Path
+
         from tqdm import tqdm
 
         cache = {}
@@ -2100,7 +2100,7 @@ class PhotometrySessionGroup:
 
         kwargs.setdefault('min_trials', 1)
 
-        from pathlib import Path
+
 
         rows = {}
         has_fiber_idx = 'fiber_idx' in self.recordings.columns
@@ -2942,8 +2942,8 @@ class PhotometrySessionGroup:
         -------
         self
         """
-        import h5py
-        from pathlib import Path
+
+
         from tqdm import tqdm
 
         if self.response_magnitudes is None:
