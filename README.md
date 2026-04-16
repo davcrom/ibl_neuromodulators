@@ -190,20 +190,25 @@ ps.preprocess()  # bleach → isosbestic → zscore → resample to 30 Hz
                  # → ps.photometry['GCaMP_preprocessed']
 
 ps.extract_responses(events=RESPONSE_EVENTS)
-# → ps.responses: xarray DataArray with dims (region, event, trial, time)
+# → ps.responses: dict[str, xr.DataArray] keyed by brain region,
+#   each DataArray has dims (event, trial, time)
 
 ps.save_h5()  # saves all available data groups
 ```
 
 ### Working with responses
 
+Response transforms operate on a single region's DataArray at a time:
+
 ```python
+region_responses = ps.responses['VTA']  # dims: (event, trial, time)
+
 # Baseline subtraction (mean of [-0.1, 0] window)
-responses = ps.subtract_baseline(ps.responses)
+responses = ps.subtract_baseline(region_responses)
 
 # Mask time points after the next event in a trial sequence
 responses = ps.mask_subsequent_events(
-    ps.responses,
+    region_responses,
     event_order=['stimOn_times', 'firstMovement_times', 'feedback_times']
 )
 ```
@@ -412,20 +417,46 @@ Response feature vectors indexed by `(eid, target_NM)`. Each column is a conditi
 
 ### HDF5: `data/sessions/{eid}.h5`
 
+File is organized into top-level groups (`metadata`, `errors`, `photometry`,
+`trials`, `wheel`) that mirror the `PhotometrySession` attributes. Each group
+is read/written by a dedicated handler pair registered in `_SAVE_HANDLERS`
+and `_LOAD_HANDLERS` in `iblnm/data.py`. Photometry data is organized per
+brain region so single-region loads do not require reading the full file.
+
 ```
 {eid}.h5
-├── attrs
-│   ├── eid            str       session UUID
-│   ├── subject        str       mouse name
-│   ├── session_type   str       training / biased / ephys
-│   ├── date           str       YYYY-MM-DD
-│   ├── fs             int       30  (Hz, resampled signal rate)
-│   └── response_window  float[2]  [-1.0, 1.0]  (seconds)
+├── metadata/
+│   ├── attrs: eid, subject, start_time, number, task_protocol,
+│   │          session_type, lab, NM, strain, line, end_time,
+│   │          session_length, day_n, session_n, url
+│   └── datasets (list-valued fields):
+│       genotype, projects, users, brain_region, hemisphere,
+│       target_NM, datasets
 │
-├── times              float64 (N,)    sample times at 30 Hz
+├── errors/
+│   ├── eid               str[M]
+│   ├── error_type        str[M]
+│   ├── error_message     str[M]
+│   └── traceback         str[M]
 │
-├── preprocessed/
-│   └── {brain_region} float64 (N,)   z-scored, isosbestic-corrected GCaMP
+├── photometry/
+│   └── {brain_region}/
+│       ├── preprocessed/
+│       │   ├── times     float64 (N,)    sample times at 30 Hz
+│       │   ├── signal    float64 (N,)    z-scored, isosbestic-corrected GCaMP
+│       │   └── attrs: fs=30
+│       │
+│       ├── responses/
+│       │   ├── times                float64 (W,)     time relative to event
+│       │   ├── trials               int64   (T,)     trial indices
+│       │   ├── stimOn_times         float64 (T, W)
+│       │   ├── firstMovement_times  float64 (T, W)
+│       │   ├── feedback_times       float64 (T, W)
+│       │   └── attrs: fs=30, response_window=[-1.0, 1.0]
+│       │
+│       └── qc/
+│           └── one dataset per QC metric column (band, brain_region,
+│               n_unique_samples, ar_score, bleaching_tau, ...)
 │
 ├── trials/
 │   ├── stimOn_times          float64 (T,)
@@ -438,19 +469,18 @@ Response feature vectors indexed by `(eid, target_NM)`. Each column is a conditi
 │   ├── signed_contrast       float64 (T,)   negative = left stimulus
 │   └── contrast              float64 (T,)   unsigned
 │
-├── responses/
-│   ├── time           float64 (W,)    time relative to event
-│   └── {brain_region}/
-│       ├── stimOn_times          float64 (T, W)
-│       ├── firstMovement_times   float64 (T, W)
-│       └── feedback_times        float64 (T, W)
-│
 └── wheel/
-    ├── velocity       float32 (T, W)  per-trial wheel velocity; NaN-padded
-    └── attrs: fs=1000, t0_event='stimOn_times', t1_event='feedback_times'
+    └── responses/
+        ├── velocity   float32 (T, W)  per-trial wheel velocity; NaN-padded
+        └── attrs: fs=1000, t0_event='stimOn_times', t1_event='feedback_times'
 ```
 
-`N` = samples at 30 Hz, `T` = trial count, `W` = response window samples (60 for [-1, 1] s at 30 Hz).
+`N` = samples at 30 Hz, `T` = trial count, `W` = response window samples
+(60 for [-1, 1] s at 30 Hz), `M` = logged error count.
+
+`save_h5(groups=...)` and `load_h5(groups=...)` accept the top-level group
+names (`'metadata'`, `'errors'`, `'photometry'`, `'trials'`, `'wheel'`) to
+restrict which handlers run. Omit `groups` to process everything present.
 
 ---
 

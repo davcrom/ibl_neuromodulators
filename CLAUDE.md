@@ -140,19 +140,32 @@ Lazy loading — all data attributes start empty:
 
 ```python
 ps = PhotometrySession(session_row, one=one)
-# ps.trials = None, ps.photometry = {}, ps.responses = None, ps.qc = None
+# ps.trials = None, ps.photometry = {}, ps.responses = {}, ps.qc = None
 
 ps.load_trials()       # populates ps.trials
 ps.load_photometry()   # populates ps.photometry['GCaMP'], ps.photometry['Isosbestic']
 ps.preprocess()        # adds ps.photometry['GCaMP_preprocessed']
-ps.extract_responses() # populates ps.responses (xarray DataArray)
+ps.extract_responses() # populates ps.responses: dict[region, DataArray]
 ```
+
+`ps.responses` is a `dict[str, xr.DataArray]` keyed by brain region. Each
+DataArray has dims `(event, trial, time)`. Truthiness (`if ps.responses`)
+checks whether any region has been extracted; use `region in ps.responses`
+to check a specific region. `subtract_baseline` and `mask_subsequent_events`
+operate on one region's DataArray at a time — pass `ps.responses[region]`.
 
 Access data attributes directly, not through getters. The class extends
 `PhotometrySessionLoader` from `brainbox.io.one`.
 
 HDF5 round-trip: `save_h5()` writes all available data groups.
-`load_h5(fpath)` populates all available groups.
+`load_h5(fpath)` populates all available groups. Both dispatch to per-group
+handler functions via `_SAVE_HANDLERS` / `_LOAD_HANDLERS` registries keyed
+by top-level group name (`metadata`, `errors`, `photometry`, `trials`,
+`wheel`). Photometry sub-handlers (`_save_preprocessed`, `_save_responses`,
+`_save_qc`) are pure: they take a parent `h5py.Group` plus the payload and
+do not touch the session object. Adding a new top-level group means writing
+a handler pair and registering it in both dicts. See README for the on-disk
+layout.
 
 ### 3b. PhotometrySessionGroup Lifecycle
 
