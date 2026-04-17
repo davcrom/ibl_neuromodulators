@@ -467,12 +467,13 @@ brain region so single-region loads do not require reading the full file.
 │   ├── feedbackType          float64 (T,)   1 reward, -1 punishment
 │   ├── probabilityLeft       float64 (T,)   0.2, 0.5, or 0.8
 │   ├── signed_contrast       float64 (T,)   negative = left stimulus
-│   └── contrast              float64 (T,)   unsigned
+│   ├── contrast              float64 (T,)   unsigned
+│   └── stim_side             str     (T,)   'left' or 'right'
 │
 └── wheel/
     └── responses/
         ├── velocity   float32 (T, W)  per-trial wheel velocity; NaN-padded
-        └── attrs: fs=1000, t0_event='stimOn_times', t1_event='feedback_times'
+        └── attrs: fs=100, t0_event='stimOn_times', t1_event='feedback_times'
 ```
 
 `N` = samples at 30 Hz, `T` = trial count, `W` = response window samples
