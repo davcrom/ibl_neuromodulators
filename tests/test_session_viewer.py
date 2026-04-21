@@ -1,8 +1,6 @@
 """Tests for scripts/session_viewer.py helper functions."""
-import sys
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import pytest
 
 import scripts.session_viewer as sv
@@ -181,10 +179,12 @@ def test_print_session_errors_prints_errors(capsys):
 # =========================================================================
 
 def _make_mock_ps(load_trials_side_effect=None):
-    """Build a mock PhotometrySession."""
+    """Build a mock PhotometrySession with empty data state."""
     ps = MagicMock()
     ps.eid = 'test-eid'
     ps.trials = None
+    ps.photometry = {}
+    ps.responses = {}
     if load_trials_side_effect:
         ps.load_trials.side_effect = load_trials_side_effect
     else:
@@ -194,17 +194,54 @@ def _make_mock_ps(load_trials_side_effect=None):
     return ps
 
 
-def test_load_session_data_from_h5(monkeypatch, tmp_path):
-    """When H5 exists, load_h5 is called."""
+def test_load_session_data_complete_h5_skips_pipeline(monkeypatch, tmp_path):
+    """When H5 fills every data attribute, no pipeline step runs."""
     ps = _make_mock_ps()
     h5_path = tmp_path / 'test-eid.h5'
     h5_path.touch()
     monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
+    def _populate_from_h5(path):
+        ps.trials = MagicMock()
+        ps.photometry = {'GCaMP': MagicMock(),
+                         'Isosbestic': MagicMock(),
+                         'GCaMP_preprocessed': MagicMock()}
+        ps.responses = {'VTA': MagicMock()}
+    ps.load_h5.side_effect = _populate_from_h5
+
     result = load_session_data(ps)
 
     assert result is ps
     ps.load_h5.assert_called_once_with(h5_path)
+    ps.load_trials.assert_not_called()
+    ps.load_photometry.assert_not_called()
+    ps.preprocess.assert_not_called()
+    ps.extract_responses.assert_not_called()
+
+
+def test_load_session_data_partial_h5_runs_pipeline(monkeypatch, tmp_path):
+    """When H5 exists but lacks photometry, pipeline fills the gaps."""
+    ps = _make_mock_ps()
+    h5_path = tmp_path / 'test-eid.h5'
+    h5_path.touch()
+    monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
+
+    def _populate_raw():
+        ps.photometry['GCaMP'] = MagicMock()
+        ps.photometry['Isosbestic'] = MagicMock()
+    ps.load_photometry.side_effect = _populate_raw
+
+    def _populate_preprocessed():
+        ps.photometry['GCaMP_preprocessed'] = MagicMock()
+    ps.preprocess.side_effect = _populate_preprocessed
+
+    load_session_data(ps)
+
+    ps.load_h5.assert_called_once_with(h5_path)
+    ps.load_trials.assert_called_once()
+    ps.load_photometry.assert_called_once()
+    ps.preprocess.assert_called_once()
+    ps.extract_responses.assert_called_once()
 
 
 def test_load_session_data_missing_raw_data_continues(monkeypatch, tmp_path):

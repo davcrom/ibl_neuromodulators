@@ -86,37 +86,34 @@ def print_session_errors(ps):
 
 
 def load_session_data(ps):
-    """Load data into a PhotometrySession from H5 (with raw fallback)."""
-    try:
-        ps.load_photometry()
-    except Exception as e:
-        print(f"Warning: could not load raw photometry -- {e}")
+    """Populate ps with everything the viewer needs.
 
+    Loads from the H5 cache when available, then fills any remaining gaps
+    from the pipeline. Each step is a no-op when its output is already
+    present, so full, partial, and missing H5s are all handled uniformly.
+    """
     h5_path = SESSIONS_H5_DIR / f'{ps.eid}.h5'
-
     if h5_path.exists():
         ps.load_h5(h5_path)
-    else:
-        print(f"No H5 for {ps.eid}, running pipeline...")
+
+    if ps.trials is None:
         try:
             ps.load_trials()
-        except MissingRawData:
-            print(f"Warning: task data not yet registered for {ps.eid} "
-                  f"-- viewing photometry only")
-        except MissingExtractedData:
-            print(f"Warning: trials not yet extracted for {ps.eid} "
-                  f"-- viewing photometry only")
+        except (MissingRawData, MissingExtractedData) as e:
+            print(f"Warning: trials not available for {ps.eid} -- {e}")
+
+    if 'GCaMP' not in ps.photometry:
         try:
             ps.load_photometry()
-        except MissingRawData:
-            print(f"Photometry data not yet registered for {ps.eid}.")
+        except (MissingRawData, MissingExtractedData) as e:
+            print(f"Photometry data not available for {ps.eid}: {e}")
             sys.exit(1)
-        except MissingExtractedData:
-            print(f"Photometry data not yet extracted for {ps.eid}.")
-            sys.exit(1)
+
+    if 'GCaMP_preprocessed' not in ps.photometry:
         ps.preprocess()
-        if ps.trials is not None:
-            ps.extract_responses()
+
+    if ps.trials is not None and not ps.responses:
+        ps.extract_responses()
 
     return ps
 
