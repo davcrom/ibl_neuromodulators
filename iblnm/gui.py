@@ -151,7 +151,7 @@ class PhotometrySessionViewer:
         if self._has_responses():
             controls += [('baseline', 'Baseline'), ('mask', 'Mask events')]
         if self._has_responses() and self._has_trials():
-            controls.append(('sort', 'Sort'))
+            controls.append(('sort', 'Sort trials'))
 
         region_w = len(regions) * btn_w + max(len(regions) - 1, 0) * gap
         ctrl_w   = (len(controls) * btn_w + max(len(controls) - 1, 0) * gap
@@ -252,9 +252,11 @@ class PhotometrySessionViewer:
         if 'raw' in self._axes:
             self._plot_raw(self._axes['raw'], region)
         self._plot_preprocessed(self._axes['preprocessed'], region)
-        for event, event_axes in self._axes.get('responses', {}).items():
+        response_axes = list(self._axes.get('responses', {}).items())
+        for i, (event, event_axes) in enumerate(response_axes):
             self._plot_responses(
-                event_axes['heat'], event_axes['mean'], event, region
+                event_axes['heat'], event_axes['mean'], event, region,
+                show_legend=(i == len(response_axes) - 1),
             )
 
     def _plot_raw(self, ax, region):
@@ -310,12 +312,14 @@ class PhotometrySessionViewer:
         ax.set_ylabel('Trial', fontsize=7)
         ax.tick_params(labelbottom=False)
 
-    def _plot_psth_by_type(self, ax, resp, trials, tpts, event_color):
+    def _plot_psth_by_type(self, ax, resp, trials, tpts, event_color,
+                           show_legend=False):
         """Mean traces split by feedback type × contrast.
 
         Correct trials: event color at alpha proportional to contrast.
         Incorrect trials: gray at alpha proportional to contrast.
         """
+        from matplotlib.lines import Line2D
         correct = (trials['feedbackType'] == 1).values
         contrast_vals = trials['contrast'].values
         contrasts = sorted(trials['contrast'].unique())
@@ -340,7 +344,24 @@ class PhotometrySessionViewer:
         ax.set_ylabel('z-score', fontsize=7)
         ax.set_xlabel('Time (s)', fontsize=7)
 
-    def _plot_responses(self, ax_heat, ax_mean, event, region):
+        if show_legend:
+            contrast_handles = [
+                Line2D([0], [0], color=event_color,
+                       alpha=0.25 + 0.75 * (c / max_c),
+                       lw=1, label=f'{c:g}')
+                for c in contrasts
+            ]
+            outcome_handles = [
+                Line2D([0], [0], color=event_color, lw=1, label='correct'),
+                Line2D([0], [0], color='gray',      lw=1, label='incorrect'),
+            ]
+            ax.legend(handles=contrast_handles + outcome_handles,
+                      loc='upper left', bbox_to_anchor=(1.02, 1),
+                      borderaxespad=0, fontsize=6, title='contrast',
+                      title_fontsize=6)
+
+    def _plot_responses(self, ax_heat, ax_mean, event, region,
+                        show_legend=False):
         ax_heat.cla()
         ax_mean.cla()
 
@@ -359,7 +380,8 @@ class PhotometrySessionViewer:
             ax_heat.axhline(n_incorrect, color='k', lw=0.8, ls='-')
             ax_heat.set_title(event.replace('_times', ''), fontsize=8)
 
-            self._plot_psth_by_type(ax_mean, resp, trials, tpts, color)
+            self._plot_psth_by_type(ax_mean, resp, trials, tpts, color,
+                                    show_legend=show_legend)
         else:
             self._draw_heatmap(ax_heat, raw, resp, tpts)
             ax_heat.set_title(event.replace('_times', ''), fontsize=8)
