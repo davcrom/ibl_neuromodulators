@@ -2518,6 +2518,34 @@ def _make_movement_lmm_df(n_per_cell=40, seed=0, subjects=('s1', 's2', 's3', 's4
     return pd.DataFrame(rows)
 
 
+class TestFitMovementLMMR2:
+    def test_returns_marginal_r2_and_deltas(self):
+        from iblnm.analysis import fit_movement_lmm_r2
+        df = _make_movement_lmm_df()
+        result = fit_movement_lmm_r2(df, 'response', 'log_reaction_time')
+        assert set(result) >= {
+            'r2_full', 'r2_drop_contrast', 'r2_drop_movement',
+            'delta_r2_contrast', 'delta_r2_timing',
+        }
+
+    def test_deltas_match_r2_differences(self):
+        from iblnm.analysis import fit_movement_lmm_r2
+        df = _make_movement_lmm_df()
+        r = fit_movement_lmm_r2(df, 'response', 'log_reaction_time')
+        assert r['delta_r2_contrast'] == pytest.approx(
+            r['r2_full'] - r['r2_drop_contrast'])
+        assert r['delta_r2_timing'] == pytest.approx(
+            r['r2_full'] - r['r2_drop_movement'])
+
+    def test_deltas_nonnegative_in_sample(self):
+        """Dropping a predictor cannot raise in-sample marginal R²."""
+        from iblnm.analysis import fit_movement_lmm_r2
+        df = _make_movement_lmm_df()
+        r = fit_movement_lmm_r2(df, 'response', 'log_reaction_time')
+        assert r['delta_r2_contrast'] >= -1e-9
+        assert r['delta_r2_timing'] >= -1e-9
+
+
 class TestLosoCVMovementLMM:
     def test_returns_dataframe(self):
         from iblnm.analysis import loso_cv_movement_lmm
@@ -2537,8 +2565,9 @@ class TestLosoCVMovementLMM:
         df = _make_movement_lmm_df()
         result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
         expected_cols = {
-            'subject', 'n_trials', 'r2_contrast', 'r2_timing', 'r2_full',
-            'delta_r2_contrast', 'delta_r2_timing', 'timing_col',
+            'subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
+            'r2_drop_movement', 'delta_r2_contrast', 'delta_r2_timing',
+            'timing_col',
         }
         assert expected_cols <= set(result.columns)
 
@@ -2586,9 +2615,8 @@ class TestLosoCVMovementLMM:
         assert (result['r2_full'] > 0).all()
 
     def test_model_formulas_and_intercept_only_re(self):
-        """All three models share a random intercept only ('1'), with the
-        interaction fixed-effect structures: contrast baseline, timing
-        substituted, and the four-way full model."""
+        """All three models are additive (no interactions, no side) and share a
+        random intercept only."""
         from unittest.mock import patch
         from iblnm import analysis
         df = _make_movement_lmm_df()
@@ -2597,10 +2625,42 @@ class TestLosoCVMovementLMM:
         formulas = {call.args[0] for call in mock_fit.call_args_list}
         re_formulas = {call.kwargs['re_formula'] for call in mock_fit.call_args_list}
         assert re_formulas == {'1'}
-        assert 'response ~ contrast * side * reward' in formulas
-        assert 'response ~ log_reaction_time * side * reward' in formulas
-        assert ('response ~ contrast * side * reward * log_reaction_time'
-                in formulas)
+        assert 'response ~ contrast + log_reaction_time + reward' in formulas
+        assert 'response ~ log_reaction_time + reward' in formulas
+        assert 'response ~ contrast + reward' in formulas
+
+
+class TestJackknifeMovementLMM:
+    def test_one_row_per_subject(self):
+        from iblnm.analysis import jackknife_movement_lmm
+        df = _make_movement_lmm_df()
+        result = jackknife_movement_lmm(df, 'response', 'log_reaction_time')
+        assert set(result['subject']) == set(df['subject'].unique())
+
+    def test_required_columns(self):
+        from iblnm.analysis import jackknife_movement_lmm
+        df = _make_movement_lmm_df()
+        result = jackknife_movement_lmm(df, 'response', 'log_reaction_time')
+        expected_cols = {
+            'subject', 'r2_full', 'r2_drop_contrast', 'r2_drop_movement',
+            'delta_r2_contrast', 'delta_r2_timing', 'timing_col',
+        }
+        assert expected_cols <= set(result.columns)
+
+    def test_deltas_nonnegative(self):
+        """Each fold is in-sample, so dropping a predictor cannot raise R²."""
+        from iblnm.analysis import jackknife_movement_lmm
+        df = _make_movement_lmm_df()
+        result = jackknife_movement_lmm(df, 'response', 'log_reaction_time')
+        assert (result['delta_r2_contrast'] >= -1e-9).all()
+        assert (result['delta_r2_timing'] >= -1e-9).all()
+
+    def test_too_few_subjects_returns_empty(self):
+        from iblnm.analysis import jackknife_movement_lmm
+        df = _make_movement_lmm_df()
+        df['subject'] = 's1'
+        result = jackknife_movement_lmm(df, 'response', 'log_reaction_time')
+        assert len(result) == 0
 
 
 class TestFitMovementLMMPerContrast:

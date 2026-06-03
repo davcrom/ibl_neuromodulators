@@ -2049,148 +2049,211 @@ def feature_unique_contribution(response_matrix, labels, subjects,
 # =============================================================================
 
 
-def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
-    """Leave-one-subject-out cross-validated comparison of timing vs. contrast.
+def _movement_formulas(response_col, timing_col):
+    """The three nested additive movement models, the single source of the
+    model specification shared by the full-data, jackknife, and LOSO-CV
+    routines. Side is intentionally excluded (see ``_code_movement_predictors``)."""
+    return {
+        'full': f'{response_col} ~ contrast + {timing_col} + reward',
+        'drop_contrast': f'{response_col} ~ {timing_col} + reward',
+        'drop_movement': f'{response_col} ~ contrast + reward',
+    }
 
-    For each held-out subject, fits three LMMs on the remaining subjects. All
-    three share a random intercept only ``(1 | subject)`` so that each delta-R²
-    isolates a single fully-interacted predictor group: predictions use fixed
-    effects only, so a differing random structure would otherwise perturb the
-    fixed-effect estimates and conflate "dropped the predictor" with "changed
-    the random structure".
 
-    - Contrast (baseline): ``response ~ contrast * side * reward``
-    - Timing (substituted): ``response ~ timing * side * reward``
-    - Full: ``response ~ contrast * side * reward * timing``
+def _code_movement_predictors(df, timing_col):
+    """Rank-code and mean-center contrast; deviation-code reward (±0.5).
 
-    The task structure matches the response GLM (``fit_response_lmm``), so the
-    contrast model is literally that GLM's task model. Predicts the held-out
-    subject's trials using fixed effects only, then computes
-    R² = 1 - SS_res / SS_tot after removing the subject's own intercept from
-    both the responses and the prediction (each centered on the subject's
-    mean). Centering grants the held-out subject its own baseline (the random
-    intercept we never estimated for them), so R² measures whether the
-    population FE slopes generalize to that subject's within-subject variation
-    rather than penalising the unknown baseline.
+    Side is omitted on purpose: choice-side bias is idiosyncratic per animal,
+    not a consistent population-level confound, whereas reward is (correct
+    trials are systematically more vigorous across animals). The timing column
+    is assumed already log-transformed.
+    """
+    transform, _ = get_contrast_coding('rank')
+    df = df.copy()
+    coded = transform(df['contrast'])
+    df['contrast'] = coded - float(np.mean(coded))
+    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+    return df
 
-    - ``delta_r2_timing = r2_full - r2_contrast`` — variance from all
-      timing-involving terms (including contrast×timing).
-    - ``delta_r2_contrast = r2_full - r2_timing`` — variance from all
-      contrast-involving terms (including contrast×timing).
 
-    Because contrast×timing terms are removed when dropping either block, that
-    interaction variance is counted in both deltas; they do not partition R².
+def fit_movement_lmm_r2(df, response_col, timing_col):
+    """Fit the three nested additive movement LMMs on ``df``; return in-sample
+    marginal (fixed-effects) R² and the drop-one deltas.
 
-    Contrast is rank-coded and mean-centered. Side and reward use deviation
-    coding (±0.5). The timing column should already be log-transformed.
+    Models share a random intercept ``(1 | subject)``:
+
+    - Full: ``response ~ contrast + timing + reward``
+    - Drop-contrast: ``response ~ timing + reward``
+    - Drop-movement: ``response ~ contrast + reward``
+
+    ``delta_r2_contrast`` / ``delta_r2_timing`` are the marginal R² lost when
+    contrast / the movement variable are removed from the full model (≥ 0
+    in-sample). This is the general-purpose kernel: ``jackknife_movement_lmm``
+    calls it on leave-one-subject-out subsets, and the pipeline calls it on the
+    full dataset for the absolute-R² bars.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Trial-level data with columns: contrast, side (contra/ipsi),
-        feedbackType, subject, ``response_col``, and ``timing_col``.
+        Trial-level data with columns: contrast, feedbackType, subject,
+        ``response_col``, and ``timing_col`` (already log-transformed).
     response_col : str
         Column name for the NM response magnitude.
     timing_col : str
-        Column name for the (log-transformed) timing variable.
+        Column name for the (log-transformed) movement variable.
+
+    Returns
+    -------
+    dict or None
+        Keys: r2_full, r2_drop_contrast, r2_drop_movement, delta_r2_contrast,
+        delta_r2_timing. None if fewer than two subjects or any fit fails.
+    """
+    df = _code_movement_predictors(
+        df.dropna(subset=[response_col, timing_col]), timing_col)
+    if df['subject'].nunique() < 2:
+        return None
+
+    fits = {
+        name: _fit_lmm(formula, df, groups=df['subject'], re_formula='1',
+                       reml=True)
+        for name, formula in _movement_formulas(response_col, timing_col).items()
+    }
+    if any(fit is None for fit in fits.values()):
+        return None
+
+    r2 = {name: fit.variance_explained['marginal'] for name, fit in fits.items()}
+    return {
+        'r2_full': r2['full'],
+        'r2_drop_contrast': r2['drop_contrast'],
+        'r2_drop_movement': r2['drop_movement'],
+        'delta_r2_contrast': r2['full'] - r2['drop_contrast'],
+        'delta_r2_timing': r2['full'] - r2['drop_movement'],
+    }
+
+
+def jackknife_movement_lmm(df, response_col, timing_col, min_subjects=3):
+    """Leave-one-subject-out jackknife of the movement-model marginal R².
+
+    For each subject, refits the three models (``fit_movement_lmm_r2``) on the
+    *remaining* subjects and records the in-sample marginal R² and drop-one
+    deltas. The spread across subjects shows whether any single animal drives
+    the result.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data (see ``fit_movement_lmm_r2``).
+    response_col : str
+        Column name for the NM response magnitude.
+    timing_col : str
+        Column name for the (log-transformed) movement variable.
     min_subjects : int
-        Minimum subjects required (need at least 3 so training sets have
-        ≥ 2 subjects for the random effect).
+        Minimum subjects required to run the jackknife.
 
     Returns
     -------
     pd.DataFrame
-        One row per subject with columns: subject, n_trials, r2_contrast,
-        r2_timing, r2_full, delta_r2_contrast, delta_r2_timing, timing_col.
-        Empty DataFrame if fewer than min_subjects.
+        One row per left-out subject with columns: subject, r2_full,
+        r2_drop_contrast, r2_drop_movement, delta_r2_contrast, delta_r2_timing,
+        timing_col. Empty DataFrame if fewer than min_subjects.
     """
-    from patsy import dmatrix
-    import pandas as pd
-
-    empty = pd.DataFrame(columns=[
-        'subject', 'n_trials', 'r2_contrast', 'r2_timing', 'r2_full',
-        'delta_r2_contrast', 'delta_r2_timing', 'timing_col',
-    ])
-
-    _transform, _ = get_contrast_coding('rank')
-
-    df = df.dropna(subset=[response_col, timing_col]).copy()
+    cols = ['subject', 'r2_full', 'r2_drop_contrast', 'r2_drop_movement',
+            'delta_r2_contrast', 'delta_r2_timing', 'timing_col']
+    df = df.dropna(subset=[response_col, timing_col])
     subjects = df['subject'].unique()
     if len(subjects) < min_subjects:
-        return empty
+        return pd.DataFrame(columns=cols)
 
-    # Code predictors on full dataset so coding is consistent across folds
-    coded = _transform(df['contrast'])
-    contrast_center = float(np.mean(coded))
-    df['contrast'] = coded - contrast_center
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+    rows = []
+    for held_out in subjects:
+        res = fit_movement_lmm_r2(df[df['subject'] != held_out],
+                                  response_col, timing_col)
+        if res is None:
+            continue
+        rows.append({'subject': held_out, **res, 'timing_col': timing_col})
 
-    contrast_formula = f'{response_col} ~ contrast * side * reward'
-    timing_formula = f'{response_col} ~ {timing_col} * side * reward'
-    full_formula = f'{response_col} ~ contrast * side * reward * {timing_col}'
+    return pd.DataFrame(rows, columns=cols)
 
-    def _predict_fe(lmm_result, df_held):
-        design_info = lmm_result.result.model.data.orig_exog.design_info
-        X = np.asarray(dmatrix(design_info, df_held))
-        return X @ lmm_result.result.fe_params.values
+
+def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
+    """Leave-one-subject-out cross-validation of the movement models.
+
+    Same three additive models as ``fit_movement_lmm_r2``, but each fold fits
+    on N−1 subjects and scores the *held-out* subject out-of-sample, after
+    removing that subject's own intercept (centering both responses and the
+    fixed-effects prediction on the subject's mean). This tests whether the
+    population fixed-effect slopes generalize to a new animal, rather than how
+    well they describe the training set; use ``jackknife_movement_lmm`` for the
+    in-sample influence view.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data (see ``fit_movement_lmm_r2``).
+    response_col : str
+        Column name for the NM response magnitude.
+    timing_col : str
+        Column name for the (log-transformed) movement variable.
+    min_subjects : int
+        Minimum subjects required (≥ 3 so training sets keep ≥ 2 subjects).
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per held-out subject with columns: subject, n_trials, r2_full,
+        r2_drop_contrast, r2_drop_movement, delta_r2_contrast, delta_r2_timing,
+        timing_col. Empty DataFrame if fewer than min_subjects.
+    """
+    from patsy import dmatrix
+
+    cols = ['subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
+            'r2_drop_movement', 'delta_r2_contrast', 'delta_r2_timing',
+            'timing_col']
+    df = _code_movement_predictors(
+        df.dropna(subset=[response_col, timing_col]), timing_col)
+    subjects = df['subject'].unique()
+    if len(subjects) < min_subjects:
+        return pd.DataFrame(columns=cols)
+
+    formulas = _movement_formulas(response_col, timing_col)
 
     def _centered_r2(lmm_result, df_held, y_centered, ss_tot):
-        # Remove the held-out subject's own intercept from both responses and
-        # prediction (center each on the subject's mean), so R² reflects how
-        # well the population FE slopes track within-subject variation, not the
-        # unknown baseline.
-        pred = _predict_fe(lmm_result, df_held)
-        pred_centered = pred - np.mean(pred)
-        return float(1 - np.sum((y_centered - pred_centered) ** 2) / ss_tot)
+        design_info = lmm_result.result.model.data.orig_exog.design_info
+        pred = np.asarray(dmatrix(design_info, df_held)) @ lmm_result.result.fe_params.values
+        return float(1 - np.sum((y_centered - (pred - np.mean(pred))) ** 2) / ss_tot)
 
     rows = []
     for held_out in subjects:
         df_train = df[df['subject'] != held_out]
         df_test = df[df['subject'] == held_out]
-
-        if len(df_test) < 5:
-            continue
-        if df_train['subject'].nunique() < 2:
+        if len(df_test) < 5 or df_train['subject'].nunique() < 2:
             continue
 
-        # All three models share a random intercept only.
-        contrast = _fit_lmm(contrast_formula, df_train,
-                            groups=df_train['subject'], re_formula='1',
-                            reml=False)
-        timing = _fit_lmm(timing_formula, df_train,
-                          groups=df_train['subject'], re_formula='1',
-                          reml=False)
-        full = _fit_lmm(full_formula, df_train, groups=df_train['subject'],
-                        re_formula='1', reml=False)
-
-        if contrast is None or timing is None or full is None:
+        fits = {name: _fit_lmm(formula, df_train, groups=df_train['subject'],
+                               re_formula='1', reml=False)
+                for name, formula in formulas.items()}
+        if any(fit is None for fit in fits.values()):
             continue
 
-        y_test = df_test[response_col].values
-        y_centered = y_test - np.mean(y_test)
+        y_centered = df_test[response_col].values - df_test[response_col].mean()
         ss_tot = np.sum(y_centered ** 2)
         if ss_tot == 0:
             continue
 
-        r2_contrast = _centered_r2(contrast, df_test, y_centered, ss_tot)
-        r2_timing = _centered_r2(timing, df_test, y_centered, ss_tot)
-        r2_full = _centered_r2(full, df_test, y_centered, ss_tot)
-
+        r2 = {name: _centered_r2(fit, df_test, y_centered, ss_tot)
+              for name, fit in fits.items()}
         rows.append({
             'subject': held_out,
             'n_trials': len(df_test),
-            'r2_contrast': r2_contrast,
-            'r2_timing': r2_timing,
-            'r2_full': r2_full,
-            'delta_r2_contrast': r2_full - r2_timing,
-            'delta_r2_timing': r2_full - r2_contrast,
+            'r2_full': r2['full'],
+            'r2_drop_contrast': r2['drop_contrast'],
+            'r2_drop_movement': r2['drop_movement'],
+            'delta_r2_contrast': r2['full'] - r2['drop_contrast'],
+            'delta_r2_timing': r2['full'] - r2['drop_movement'],
             'timing_col': timing_col,
         })
 
-    if not rows:
-        return empty
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=cols)
 
 
 def fit_movement_lmm_per_contrast(df, response_col, timing_col,
