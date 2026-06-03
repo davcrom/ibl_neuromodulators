@@ -145,7 +145,7 @@ class TestSaveWheelToH5:
         ps.save_h5(fpath, mode='a')
 
         with h5py.File(fpath, 'r') as f:
-            v = f['wheel/velocity'][:]
+            v = f['wheel/responses/velocity'][:]
         assert v.shape == (2, 3)
         assert v.dtype == np.float32
         assert np.isnan(v[0, 2])
@@ -162,9 +162,9 @@ class TestSaveWheelToH5:
         ps.save_h5(fpath, mode='a')
 
         with h5py.File(fpath, 'r') as f:
-            assert f['wheel'].attrs['fs'] == 1000
-            assert f['wheel'].attrs['t0_event'] == 'stimOn_times'
-            assert f['wheel'].attrs['t1_event'] == 'feedback_times'
+            assert f['wheel/responses'].attrs['fs'] == 1000
+            assert f['wheel/responses'].attrs['t0_event'] == 'stimOn_times'
+            assert f['wheel/responses'].attrs['t1_event'] == 'feedback_times'
 
     def test_overwrites_existing_wheel_group(self, mock_session_series, tmp_path):
         """Saving twice replaces the wheel group rather than raising an error."""
@@ -179,7 +179,7 @@ class TestSaveWheelToH5:
         ps.save_h5(fpath, mode='a')  # should not raise
 
         with h5py.File(fpath, 'r') as f:
-            assert f['wheel/velocity'].shape == (3, 200)
+            assert f['wheel/responses/velocity'].shape == (3, 200)
 
     def test_uses_default_path_from_config(self, mock_session_series, tmp_path):
         """Without fpath arg, saves to SESSIONS_H5_DIR / {eid}.h5."""

@@ -178,7 +178,8 @@ def collect_errors(h5_dir):
 def collect_qc(h5_dir):
     """Aggregate photometry QC metrics from all H5 files in a directory.
 
-    Reads the /photometry_qc_metrics group from each .h5 file.
+    Walks /photometry/<region>/qc/ in each .h5 file and stacks the per-region
+    QC rows into a single DataFrame.
 
     Parameters
     ----------
@@ -196,17 +197,22 @@ def collect_qc(h5_dir):
     frames = []
     for fpath in sorted(h5_dir.glob('*.h5')):
         with h5py.File(fpath, 'r') as f:
-            if 'photometry_qc_metrics' not in f:
+            if 'photometry' not in f:
                 continue
-            grp = f['photometry_qc_metrics']
-            data = {}
-            for col in grp:
-                vals = grp[col][:]
-                if vals.dtype.kind == 'S':
-                    vals = vals.astype(str)
-                data[col] = vals
-            if data:
-                frames.append(pd.DataFrame(data))
+            phot_root = f['photometry']
+            for region in phot_root:
+                rg = phot_root[region]
+                if 'qc' not in rg:
+                    continue
+                qc_grp = rg['qc']
+                data = {}
+                for col in qc_grp:
+                    vals = qc_grp[col][:]
+                    if vals.dtype.kind == 'S':
+                        vals = vals.astype(str)
+                    data[col] = vals
+                if data:
+                    frames.append(pd.DataFrame(data))
 
     if not frames:
         return pd.DataFrame()
