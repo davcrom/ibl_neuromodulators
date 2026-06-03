@@ -42,7 +42,7 @@ from iblnm.vis import (
 )
 from iblnm.analysis import (
     split_features_by_event,
-    loso_cv_movement_lmm, fit_movement_lmm_per_contrast,
+    fit_movement_lmm_r2, jackknife_movement_lmm, fit_movement_lmm_per_contrast,
 )
 
 TIMING_VARS = ['reaction_time', 'movement_time', 'peak_velocity']
@@ -306,28 +306,36 @@ def _movement_descriptive_figures(df_resp, figures_dir):
 
 
 def _movement_model_comparison(df_resp, figures_dir, data_dir):
-    """LOSO-CV ΔR² (contrast vs timing) per (target_NM, predictor)."""
-    cv_frames = []
+    """Jackknife ΔR² (dots) and full-dataset marginal R² (bars) per
+    (target_NM, movement variable)."""
+    jackknife_frames = []
+    bar_rows = []
     for target_nm, df_tnm in df_resp.groupby('target_NM'):
         for var in TIMING_VARS:
             df_valid = df_tnm.dropna(subset=[f'log_{var}'])
             if len(df_valid) < MIN_TRIALS_MOVEMENT:
                 continue
-            df_cv = loso_cv_movement_lmm(df_valid, 'response', f'log_{var}')
-            if df_cv.empty:
-                continue
-            df_cv['target_NM'] = target_nm
-            cv_frames.append(df_cv)
+            df_jk = jackknife_movement_lmm(df_valid, 'response', f'log_{var}')
+            if not df_jk.empty:
+                df_jk['target_NM'] = target_nm
+                jackknife_frames.append(df_jk)
+            full = fit_movement_lmm_r2(df_valid, 'response', f'log_{var}')
+            if full is not None:
+                bar_rows.append({'target_NM': target_nm,
+                                 'timing_col': f'log_{var}', **full})
 
-    if not cv_frames:
+    if not jackknife_frames:
         return
-    df_cv_all = pd.concat(cv_frames, ignore_index=True)
-    df_cv_all.to_csv(data_dir / 'loso_cv_model_comparison.csv', index=False)
-    fig = plot_movement_lmm_summary(df_cv_all)
+    df_jk_all = pd.concat(jackknife_frames, ignore_index=True)
+    df_jk_all.to_csv(data_dir / 'jackknife_model_comparison.csv', index=False)
+    df_bars = pd.DataFrame(bar_rows)
+    df_bars.to_csv(data_dir / 'movement_marginal_r2.csv', index=False)
+
+    fig = plot_movement_lmm_summary(df_jk_all)
     fig.savefig(figures_dir / 'model_comparison.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
-    fig = plot_movement_r2_bars(df_cv_all)
+    fig = plot_movement_r2_bars(df_bars)
     fig.savefig(figures_dir / 'r2_model_comparison.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
