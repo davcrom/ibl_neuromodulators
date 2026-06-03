@@ -74,6 +74,22 @@ def _read_dataframe(h5_group):
     return pd.DataFrame(data)
 
 
+def _event_diff(trials, end_col, start_col):
+    """Per-trial `end_col - start_col`, or all-NaN if either column is absent."""
+    if end_col in trials.columns and start_col in trials.columns:
+        return trials[end_col].values - trials[start_col].values
+    return np.full(len(trials), np.nan)
+
+
+def _peak_velocity(wheel_vel, n_trials):
+    """Per-trial max |velocity| over finite samples; NaN where unavailable."""
+    if wheel_vel is None:
+        return np.full(n_trials, np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN rows
+        return np.nanmax(np.abs(wheel_vel), axis=1)
+
+
 _METADATA_NONE_SENTINEL = '__none__'
 _ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback')
 _RESPONSES_RESERVED_KEYS = {'times', 'trials'}
@@ -1441,6 +1457,7 @@ class PhotometrySessionGroup:
         self.response_magnitudes = None
         self.trial_timing = None
         self.peak_velocity = None
+        self.trial_regressors = None
         self.response_features = None
         self.performance = None
         self.psychometric_features = None
@@ -1795,6 +1812,10 @@ class PhotometrySessionGroup:
     def load_trial_timing(self, path):
         """Load trial timing from parquet, filtered to current recordings."""
         self.trial_timing = self._load_parquet(path)
+
+    def load_trial_regressors(self, path):
+        """Load trial regressors from parquet, filtered to current recordings."""
+        self.trial_regressors = self._load_parquet(path)
 
     def load_peak_velocity(self, path):
         """Load peak velocity from parquet, filtered to current recordings."""
@@ -2927,6 +2948,52 @@ class PhotometrySessionGroup:
 
         self.anova_results = results
         return results
+
+    def get_trial_regressors(self) -> pd.DataFrame:
+        """Collect per-trial predictors for every in-scope session.
+
+        Reads each session's H5 file directly (group ``trials`` and, when
+        present, ``wheel/responses/velocity``) and assembles one row per
+        ``eid × trial``. Derived timing columns are NaN for a session when
+        the underlying event-time columns are absent; ``peak_velocity`` is
+        NaN when the wheel group is missing or holds no finite samples.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``eid, trial, signed_contrast, contrast, stim_side,
+            choice, feedbackType, probabilityLeft, reaction_time,
+            movement_time, response_time, peak_velocity``. Stored on
+            ``self.trial_regressors``.
+        """
+        from tqdm import tqdm
+
+        copy_cols = ['signed_contrast', 'contrast', 'stim_side', 'choice',
+                     'feedbackType', 'probabilityLeft']
+        frames = []
+        for eid in tqdm(self.recordings['eid'].unique(),
+                        desc="Collecting trial regressors"):
+            h5_path = Path(self.h5_dir) / f'{eid}.h5'
+            with h5py.File(h5_path, 'r') as f:
+                trials = _read_dataframe(f['trials'])
+                wheel_vel = (f['wheel/responses/velocity'][:]
+                             if 'wheel/responses/velocity' in f else None)
+
+            n_trials = len(trials)
+            df = pd.DataFrame({'eid': eid, 'trial': range(n_trials)})
+            for col in copy_cols:
+                df[col] = trials[col].values
+            df['reaction_time'] = _event_diff(
+                trials, 'firstMovement_times', 'stimOn_times')
+            df['movement_time'] = _event_diff(
+                trials, 'feedback_times', 'firstMovement_times')
+            df['response_time'] = _event_diff(
+                trials, 'feedback_times', 'stimOn_times')
+            df['peak_velocity'] = _peak_velocity(wheel_vel, n_trials)
+            frames.append(df)
+
+        self.trial_regressors = pd.concat(frames, ignore_index=True)
+        return self.trial_regressors
 
     def enrich_peak_velocity(self):
         """Extract peak wheel velocity from H5 files.

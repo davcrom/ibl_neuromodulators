@@ -4426,3 +4426,79 @@ class TestGroupCompareCCAWeights:
         group.fit_cohort_cca(n_permutations=0)
         group.compare_cca_weights()
         assert group.cohort_cca_weight_similarities is not None
+
+
+# =============================================================================
+# get_trial_regressors Tests
+# =============================================================================
+
+def _write_trial_regressor_h5(path, with_wheel=True):
+    """Write a 3-trial H5 with known trials and (optionally) wheel velocity."""
+    import h5py
+
+    stim_on = np.array([10.0, 20.0, 30.0])
+    first_move = np.array([10.5, 20.7, 31.2])
+    feedback = np.array([11.0, 21.5, 32.0])
+    with h5py.File(path, 'w') as f:
+        grp = f.create_group('trials')
+        grp.create_dataset('stimOn_times', data=stim_on)
+        grp.create_dataset('firstMovement_times', data=first_move)
+        grp.create_dataset('feedback_times', data=feedback)
+        grp.create_dataset('signed_contrast', data=np.array([-0.25, 0.0, 1.0]))
+        grp.create_dataset('contrast', data=np.array([0.25, 0.0, 1.0]))
+        grp.create_dataset('stim_side', data=np.array(['left', 'right', 'right'],
+                                                      dtype='S5'))
+        grp.create_dataset('choice', data=np.array([-1, 1, 1]))
+        grp.create_dataset('feedbackType', data=np.array([1, -1, 1]))
+        grp.create_dataset('probabilityLeft', data=np.full(3, 0.5))
+        if with_wheel:
+            wheel_grp = f.create_group('wheel/responses')
+            velocity = np.array([[0.0, 1.0, -3.0],
+                                 [np.nan, np.nan, np.nan],
+                                 [2.0, -5.0, 1.0]])
+            wheel_grp.create_dataset('velocity', data=velocity)
+    return stim_on, first_move, feedback
+
+
+class TestGetTrialRegressors:
+
+    def test_trial_regressors_schema_and_values(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        stim_on, first_move, feedback = _write_trial_regressor_h5(
+            tmp_path / 'eid-0.h5')
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+
+        df = group.get_trial_regressors()
+
+        expected_cols = {
+            'eid', 'trial', 'signed_contrast', 'contrast', 'stim_side',
+            'choice', 'feedbackType', 'probabilityLeft', 'reaction_time',
+            'movement_time', 'response_time', 'peak_velocity',
+        }
+        assert set(df.columns) == expected_cols
+        assert len(df) == 3
+        np.testing.assert_array_equal(
+            df['peak_velocity'].values, np.array([3.0, np.nan, 5.0]))
+        np.testing.assert_allclose(
+            df['reaction_time'].values, first_move - stim_on)
+        np.testing.assert_allclose(
+            df['movement_time'].values, feedback - first_move)
+        np.testing.assert_allclose(
+            df['response_time'].values, feedback - stim_on)
+
+    def test_trial_regressors_stores_result(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_trial_regressor_h5(tmp_path / 'eid-0.h5')
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        result = group.get_trial_regressors()
+        assert group.trial_regressors is result
+
+    def test_trial_regressors_no_wheel_nan_peak_velocity(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_trial_regressor_h5(tmp_path / 'eid-0.h5', with_wheel=False)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        df = group.get_trial_regressors()
+        assert df['peak_velocity'].isna().all()
