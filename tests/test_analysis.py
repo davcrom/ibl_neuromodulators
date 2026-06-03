@@ -2481,16 +2481,19 @@ class TestPairwiseMannwhitney:
 # Movement Encoding LMM
 # =============================================================================
 
-def _make_movement_lmm_df(n_per_cell=40, seed=0):
+def _make_movement_lmm_df(n_per_cell=40, seed=0, subjects=('s1', 's2', 's3', 's4'),
+                          slope_sd=0.0):
     """Synthetic trial-level data for movement LMM tests.
 
     Creates data where contrast and timing both influence the response,
-    so both should show non-zero delta-R².
+    so both should show non-zero delta-R². ``slope_sd`` adds subject-specific
+    variability to the timing slope (for random-slope tests).
     """
     rng = np.random.default_rng(seed)
     rows = []
-    for subj in ['s1', 's2', 's3', 's4']:
+    for subj in subjects:
         subj_intercept = rng.normal(0, 0.5)
+        subj_slope = 0.4 + rng.normal(0, slope_sd)
         for contrast in [0.0, 25.0, 100.0]:
             for side_label, side_val in [('contra', 0.5), ('ipsi', -0.5)]:
                 for fb, reward_val in [(1, 0.5), (-1, -0.5)]:
@@ -2501,7 +2504,7 @@ def _make_movement_lmm_df(n_per_cell=40, seed=0):
                             + 0.3 * (contrast / 100)  # contrast effect
                             + 0.2 * side_val
                             + 0.1 * reward_val
-                            + 0.4 * log_rt  # timing effect
+                            + subj_slope * log_rt  # timing effect (random slope)
                             + rng.normal(0, 0.5)
                         )
                         rows.append({
@@ -2557,6 +2560,25 @@ class TestLosoCVMovementLMM:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
 
+    def test_random_slope_re_formulas(self):
+        """Models containing the timing term use a by-subject random slope
+        '1 + timing'; the drop-timing model keeps a random intercept '1'."""
+        from unittest.mock import patch
+        from iblnm import analysis
+        df = _make_movement_lmm_df()
+        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
+            analysis.loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
+        # Each fold fits full, drop-contrast, drop-timing before the None check.
+        re_by_formula = {
+            call.args[0]: call.kwargs['re_formula']
+            for call in mock_fit.call_args_list
+        }
+        for formula, re_formula in re_by_formula.items():
+            if 'log_reaction_time' in formula:
+                assert re_formula == '1 + log_reaction_time'
+            else:
+                assert re_formula == '1'
+
 
 class TestFitMovementLMMPerContrast:
     def test_returns_dict(self):
@@ -2596,3 +2618,38 @@ class TestFitMovementLMMPerContrast:
         result = fit_movement_lmm_per_contrast(
             df_c, 'response', 'log_reaction_time')
         assert result is None
+
+    def test_includes_by_subject_random_slope(self):
+        """The fitted model adds a random slope for timing, not just an
+        intercept: _fit_lmm is called with re_formula '1 + timing_col'."""
+        from unittest.mock import patch
+        from iblnm import analysis
+        df = _make_movement_lmm_df()
+        df_c = df[df['contrast'] == 25.0]
+        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
+            analysis.fit_movement_lmm_per_contrast(
+                df_c, 'response', 'log_reaction_time')
+        assert mock_fit.call_args.kwargs['re_formula'] == '1 + log_reaction_time'
+
+    def test_random_slope_fit_six_subjects(self):
+        """With subject-specific slopes, the random-slope model converges and
+        its random-effects covariance is 2x2 (intercept + slope)."""
+        from iblnm.analysis import fit_movement_lmm_per_contrast, _fit_lmm
+        df = _make_movement_lmm_df(
+            subjects=[f's{i}' for i in range(6)], slope_sd=0.15, seed=3)
+        df_c = df[df['contrast'] == 25.0]
+        result = fit_movement_lmm_per_contrast(
+            df_c, 'response', 'log_reaction_time')
+        assert result is not None
+        assert result['n_subjects'] == 6
+        assert np.isfinite(result['timing_coef'])
+
+        # Random-effects covariance is 2x2 for the formula the function uses.
+        coded = df_c.assign(
+            side=np.where(df_c['side'] == 'contra', 0.5, -0.5),
+            reward=np.where(df_c['feedbackType'] == 1, 0.5, -0.5),
+        )
+        lmm = _fit_lmm('response ~ side + reward + log_reaction_time', coded,
+                       groups=coded['subject'],
+                       re_formula='1 + log_reaction_time', reml=True)
+        assert lmm.result.cov_re.shape == (2, 2)

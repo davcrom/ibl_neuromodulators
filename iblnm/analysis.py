@@ -2044,10 +2044,13 @@ def feature_unique_contribution(response_matrix, labels, subjects,
 def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
     """Leave-one-subject-out cross-validated comparison of timing vs. contrast.
 
-    For each held-out subject, fits three LMMs on the remaining subjects:
+    For each held-out subject, fits three LMMs on the remaining subjects.
+    Models containing the timing term carry a by-subject random slope for it
+    ``(1 + timing | subject)``; the drop-timing model keeps a random intercept
+    only ``(1 | subject)``:
 
-    - Full: ``response ~ contrast + side + reward + timing + (1 | subject)``
-    - Drop-contrast: ``response ~ side + reward + timing + (1 | subject)``
+    - Full: ``response ~ contrast + side + reward + timing + (1 + timing | subject)``
+    - Drop-contrast: ``response ~ side + reward + timing + (1 + timing | subject)``
     - Drop-timing: ``response ~ contrast + side + reward + (1 | subject)``
 
     Predicts the held-out subject's trials using fixed effects only, then
@@ -2115,12 +2118,14 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
         if df_train['subject'].nunique() < 2:
             continue
 
-        # Fit three models on training data
+        # Fit three models on training data. Models that include the timing
+        # term get a by-subject random slope for it; the drop-timing model
+        # keeps a random intercept only.
         full = _fit_lmm(full_formula, df_train, groups=df_train['subject'],
-                         re_formula='1', reml=False)
+                         re_formula=f'1 + {timing_col}', reml=False)
         drop_c = _fit_lmm(drop_contrast_formula, df_train,
                            groups=df_train['subject'],
-                           re_formula='1', reml=False)
+                           re_formula=f'1 + {timing_col}', reml=False)
         drop_t = _fit_lmm(drop_timing_formula, df_train,
                            groups=df_train['subject'],
                            re_formula='1', reml=False)
@@ -2167,7 +2172,9 @@ def fit_movement_lmm_per_contrast(df, response_col, timing_col,
                                    min_subjects=2):
     """Estimate timing-response slope at a single contrast level.
 
-    Fits: ``response ~ side + reward + timing + (1 | subject)``
+    Fits: ``response ~ side + reward + timing + (1 + timing | subject)``,
+    i.e. a by-subject random slope for the timing predictor in addition to
+    a random intercept (Barr et al. 2013, "keep it maximal").
 
     Side and reward use deviation coding (±0.5). The timing column should
     already be log-transformed.
@@ -2202,7 +2209,7 @@ def fit_movement_lmm_per_contrast(df, response_col, timing_col,
 
     formula = f'{response_col} ~ side + reward + {timing_col}'
     lmm = _fit_lmm(formula, df, groups=df['subject'],
-                    re_formula='1', reml=True)
+                    re_formula=f'1 + {timing_col}', reml=True)
     if lmm is None:
         return None
 
