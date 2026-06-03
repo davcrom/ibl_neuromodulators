@@ -1601,14 +1601,22 @@ def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
         'P>|z|': result.pvalues[fe_names],
     })
 
-    ve = _variance_explained(result, df, response_col)
-    if ve['marginal'] == 0.0 and ve['conditional'] == 0.0 and np.var(df[response_col].values) == 0:
+    # Variance explained and the random-effects dict depend on lazily-evaluated
+    # BLUPs (result.fittedvalues, result.random_effects), which raise on a
+    # singular random-effects covariance (e.g. a random slope whose variance
+    # collapsed to 0). Treat that degenerate fit as a failure, like the fit
+    # itself failing.
+    try:
+        ve = _variance_explained(result, df, response_col)
+        re_dict = {
+            subj: pd.Series(effects)
+            for subj, effects in result.random_effects.items()
+        }
+    except (np.linalg.LinAlgError, ValueError):
         return None
 
-    re_dict = {
-        subj: pd.Series(effects)
-        for subj, effects in result.random_effects.items()
-    }
+    if ve['marginal'] == 0.0 and ve['conditional'] == 0.0 and np.var(df[response_col].values) == 0:
+        return None
 
     return LMMResult(
         model=model,

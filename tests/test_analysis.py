@@ -2628,6 +2628,20 @@ class TestFitMovementLMMPerContrast:
                 df_c, 'response', 'log_reaction_time')
         assert mock_fit.call_args.kwargs['re_formula'] == '1 + log_reaction_time'
 
+    def test_singular_random_effects_returns_none(self):
+        """A degenerate fit whose singular random-effects covariance makes the
+        lazy random_effects/fittedvalues raise ValueError is rejected (None),
+        not propagated."""
+        from unittest.mock import patch
+        from iblnm import analysis
+        df = _make_movement_lmm_df()
+        df_c = df[df['contrast'] == 25.0]
+        with patch.object(analysis, '_variance_explained',
+                          side_effect=ValueError('singular covariance')):
+            result = analysis.fit_movement_lmm_per_contrast(
+                df_c, 'response', 'log_reaction_time')
+        assert result is None
+
     def test_random_slope_fit_six_subjects(self):
         """With subject-specific slopes, the random-slope model converges and
         its random-effects covariance is 2x2 (intercept + slope)."""
