@@ -1184,40 +1184,6 @@ class PhotometrySession(PhotometrySessionLoader):
     # Task Performance Methods
     # =========================================================================
 
-    def get_trial_timings(self) -> pd.DataFrame:
-        """Compute per-trial reaction, movement, and response times."""
-        trials = self.trials
-        n = len(trials)
-
-        if ('firstMovement_times' in trials.columns
-                and 'stimOn_times' in trials.columns):
-            reaction_time = (trials['firstMovement_times'].values
-                             - trials['stimOn_times'].values)
-        else:
-            reaction_time = np.full(n, np.nan)
-
-        if ('feedback_times' in trials.columns
-                and 'firstMovement_times' in trials.columns):
-            movement_time = (trials['feedback_times'].values
-                             - trials['firstMovement_times'].values)
-        else:
-            movement_time = np.full(n, np.nan)
-
-        if ('feedback_times' in trials.columns
-                and 'stimOn_times' in trials.columns):
-            response_time = (trials['feedback_times'].values
-                             - trials['stimOn_times'].values)
-        else:
-            response_time = np.full(n, np.nan)
-
-        return pd.DataFrame({
-            'eid': self.eid,
-            'trial': range(n),
-            'reaction_time': reaction_time,
-            'movement_time': movement_time,
-            'response_time': response_time,
-        })
-
     def basic_performance(self) -> dict:
         """Compute session-level performance metrics (all session types)."""
         result = {}
@@ -1455,8 +1421,6 @@ class PhotometrySessionGroup:
         self.response_traces_tpts = None
         self.mean_traces = None
         self.response_magnitudes = None
-        self.trial_timing = None
-        self.peak_velocity = None
         self.trial_regressors = None
         self.response_features = None
         self.performance = None
@@ -1809,17 +1773,9 @@ class PhotometrySessionGroup:
         """Load response magnitudes from parquet, filtered to current recordings."""
         self.response_magnitudes = self._load_parquet(path)
 
-    def load_trial_timing(self, path):
-        """Load trial timing from parquet, filtered to current recordings."""
-        self.trial_timing = self._load_parquet(path)
-
     def load_trial_regressors(self, path):
         """Load trial regressors from parquet, filtered to current recordings."""
         self.trial_regressors = self._load_parquet(path)
-
-    def load_peak_velocity(self, path):
-        """Load peak velocity from parquet, filtered to current recordings."""
-        self.peak_velocity = self._load_parquet(path)
 
     def load_mean_traces(self, path):
         """Load mean traces from parquet, filtered to current recordings."""
@@ -1922,105 +1878,70 @@ class PhotometrySessionGroup:
         """Compute trial-level response magnitudes from the trace cache.
 
         Calls :meth:`load_response_traces` if traces are not yet cached.
-        For each cached (recording × event), computes scalar magnitudes in
-        the early response window.
+        For each cached (recording × event), computes the scalar magnitude
+        in the early response window. Trial-level task/movement predictors
+        are not included here — they live in ``trial_regressors`` (populated
+        by :meth:`get_trial_regressors`).
 
         Returns
         -------
         pd.DataFrame
-            One row per (recording × event × trial) with scalar response
-            magnitudes and trial metadata.
+            One row per (recording × event × trial) with columns
+            ``eid, subject, session_type, NM, target_NM, brain_region,
+            hemisphere, event, trial, response``.
         """
         from tqdm import tqdm
 
         if self.response_traces is None:
             self.load_response_traces()
 
-        response_rows = []
-        timing_eids_seen = set()
-        timing_rows = []
+        frames = []
         for (eid, brain_region, event), entry in tqdm(
                 self.response_traces.items(),
                 desc="Computing response magnitudes"):
-            traces = entry['traces']
-            tpts = entry['tpts']
             meta = entry['meta']
-            trials = entry['trials']
-            n_trials = len(trials)
-
             early = compute_response_magnitude(
-                traces, tpts, RESPONSE_WINDOWS['early'],
+                entry['traces'], entry['tpts'], RESPONSE_WINDOWS['early'],
             )
+            frames.append(pd.DataFrame({
+                'eid': meta['eid'],
+                'subject': meta['subject'],
+                'session_type': meta.get('session_type'),
+                'NM': meta.get('NM'),
+                'target_NM': meta['target_NM'],
+                'brain_region': meta['brain_region'],
+                'hemisphere': meta['hemisphere'],
+                'event': event,
+                'trial': range(len(early)),
+                'response': early,
+            }))
 
-            # Collect timing once per eid (same across regions and events)
-            if eid not in timing_eids_seen:
-                timing_eids_seen.add(eid)
-
-                if ('firstMovement_times' in trials.columns
-                        and 'stimOn_times' in trials.columns):
-                    reaction_time = (
-                        trials['firstMovement_times'].values
-                        - trials['stimOn_times'].values
-                    )
-                else:
-                    reaction_time = np.full(n_trials, np.nan)
-
-                if ('feedback_times' in trials.columns
-                        and 'firstMovement_times' in trials.columns):
-                    movement_time = (
-                        trials['feedback_times'].values
-                        - trials['firstMovement_times'].values
-                    )
-                else:
-                    movement_time = np.full(n_trials, np.nan)
-
-                if ('feedback_times' in trials.columns
-                        and 'stimOn_times' in trials.columns):
-                    response_time = (
-                        trials['feedback_times'].values
-                        - trials['stimOn_times'].values
-                    )
-                else:
-                    response_time = np.full(n_trials, np.nan)
-
-                # FIXME: find a way to do this without looping... so inefficient
-                for t in range(n_trials):
-                    timing_rows.append({
-                        'eid': eid,
-                        'trial': t,
-                        'reaction_time': reaction_time[t],
-                        'movement_time': movement_time[t],
-                        'response_time': response_time[t]
-                    })
-
-            for t in range(n_trials):
-                response_rows.append({
-                    'eid': meta['eid'],
-                    'subject': meta['subject'],
-                    'session_type': meta.get('session_type'),
-                    'NM': meta.get('NM'),
-                    'target_NM': meta['target_NM'],
-                    'brain_region': meta['brain_region'],
-                    'hemisphere': meta['hemisphere'],
-                    'event': event,
-                    'trial': t,
-                    'stim_side': trials['stim_side'].iloc[t],
-                    'signed_contrast': trials['signed_contrast'].iloc[t],
-                    'contrast': trials['contrast'].iloc[t],
-                    'choice': trials['choice'].iloc[t],
-                    'feedbackType': trials['feedbackType'].iloc[t],
-                    'probabilityLeft': trials['probabilityLeft'].iloc[t],
-                    'response_early': early[t],
-                })
-
-        if not response_rows:
-            self.response_magnitudes = pd.DataFrame()
-            self.trial_timing = pd.DataFrame()
-            return self.response_magnitudes
-
-        self.response_magnitudes = pd.DataFrame(response_rows)
-        self.trial_timing = pd.DataFrame(timing_rows)
+        self.response_magnitudes = (
+            pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        )
         return self.response_magnitudes
+
+    def _merge_trial_regressors(self) -> pd.DataFrame:
+        """Join ``response_magnitudes`` with ``trial_regressors`` on (eid, trial).
+
+        Raises if either is unpopulated. Trial-level predictors
+        (contrast, side, choice, timing, peak velocity) come from
+        ``trial_regressors``; recording keys and ``response`` come from
+        ``response_magnitudes``.
+        """
+        if self.response_magnitudes is None:
+            raise ValueError(
+                "response_magnitudes not populated. "
+                "Call get_response_magnitudes() first."
+            )
+        if self.trial_regressors is None:
+            raise ValueError(
+                "trial_regressors not populated. "
+                "Call get_trial_regressors() first."
+            )
+        return self.response_magnitudes.merge(
+            self.trial_regressors, on=['eid', 'trial'], how='left',
+        )
 
     def get_mean_traces(self):
         """Compute trial-averaged traces from the trace cache.
@@ -2200,15 +2121,8 @@ class PhotometrySessionGroup:
             self.get_response_magnitudes()
 
         # FIXME: this method should iterate over sessions, filter trials and select the event type,  not the underlying function
-        events = self.response_magnitudes.copy()
-        if self.trial_timing is not None:
-            events = events.merge(
-                self.trial_timing[['eid', 'trial', 'response_time']],
-                on=['eid', 'trial'], how='left',
-            )
-            events = events.query('choice != 0 and response_time > 0.05')
-        else:
-            events = events.query('choice != 0')
+        events = self._merge_trial_regressors()
+        events = events.query('choice != 0 and response_time > 0.05')
 
         if len(events) == 0:
             self.glm_response_features = pd.DataFrame()
@@ -2729,7 +2643,7 @@ class PhotometrySessionGroup:
         self.cohort_cca_weight_similarities = df
         return df
 
-    def fit_lmm(self, response_col='response_early',
+    def fit_lmm(self, response_col='response',
                  min_subjects=2, re_formulas=None, contrast_coding='log'):
         """Fit LMMs per (target_NM, event) on trial-level events data.
 
@@ -2771,27 +2685,9 @@ class PhotometrySessionGroup:
         if re_formulas is None:
             re_formulas = ['1']
 
-        if self.response_magnitudes is None:
-            raise ValueError(
-                "response_magnitudes not populated. Call get_response_magnitudes() first."
-            )
-        # ~ if self.trial_timing is None:
-            # ~ raise ValueError(
-                # ~ "trial_timing not populated. Call get_response_magnitudes() first."
-            # ~ )
-
-        if self.trial_timing is None:
-            raise ValueError(
-                "trial_timing not populated. Call get_response_magnitudes() first."
-            )
-
         # FIXME: do this once insead of several different places (see
         # plotting in responses.py)
-        df = add_relative_contrast(self.response_magnitudes.copy())
-        df = df.merge(
-            self.trial_timing[['eid', 'trial', 'response_time']],
-            on=['eid', 'trial'], how='left',
-        )
+        df = add_relative_contrast(self._merge_trial_regressors())
         df = df.query('probabilityLeft == 0.5')
         df = df.dropna(subset=[response_col])
         df = df.query('choice != 0 and response_time > 0.05')
@@ -2869,7 +2765,7 @@ class PhotometrySessionGroup:
 
         return results
 
-    def anova_response_magnitudes(self, response_col='response_early',
+    def anova_response_magnitudes(self, response_col='response',
                                     min_subjects=2, min_trials=10):
         """Run repeated-measures ANOVA on subject-mean response magnitudes.
 
@@ -2877,8 +2773,8 @@ class PhotometrySessionGroup:
         subject means by (contrast, side, feedbackType), then runs a 3-way
         repeated-measures ANOVA via ``anova_rm``.
 
-        Requires ``self.response_magnitudes`` and ``self.trial_timing`` to
-        be populated.
+        Requires ``self.response_magnitudes`` and ``self.trial_regressors``
+        to be populated.
 
         Parameters
         ----------
@@ -2899,22 +2795,7 @@ class PhotometrySessionGroup:
         from iblnm.analysis import anova_rm
         from iblnm.task import add_relative_contrast
 
-        if self.response_magnitudes is None:
-            raise ValueError(
-                "response_magnitudes not populated. "
-                "Call get_response_magnitudes() first."
-            )
-        if self.trial_timing is None:
-            raise ValueError(
-                "trial_timing not populated. "
-                "Call get_response_magnitudes() first."
-            )
-
-        df = add_relative_contrast(self.response_magnitudes.copy())
-        df = df.merge(
-            self.trial_timing[['eid', 'trial', 'response_time']],
-            on=['eid', 'trial'], how='left',
-        )
+        df = add_relative_contrast(self._merge_trial_regressors())
         df = df.query('probabilityLeft == 0.5')
         df = df.dropna(subset=[response_col])
         df = df.query('choice != 0 and response_time > 0.05')
@@ -2995,66 +2876,15 @@ class PhotometrySessionGroup:
         self.trial_regressors = pd.concat(frames, ignore_index=True)
         return self.trial_regressors
 
-    def enrich_peak_velocity(self):
-        """Extract peak wheel velocity from H5 files.
-
-        Loads per-trial wheel velocity from H5 and computes the maximum
-        absolute velocity for each trial. Stores result in
-        ``self.peak_velocity``.
-
-        Requires ``self.response_magnitudes`` to be populated (uses its
-        eid/trial index to know which trials to extract).
-
-        Returns
-        -------
-        self
-        """
-
-
-        from tqdm import tqdm
-
-        if self.response_magnitudes is None:
-            raise ValueError(
-                "response_magnitudes not populated. "
-                "Call get_response_magnitudes() first."
-            )
-
-        df = self.response_magnitudes
-        # Get unique (eid, trial) pairs
-        trial_keys = df[['eid', 'trial']].drop_duplicates()
-
-        rows = []
-        for eid in tqdm(df['eid'].unique(), desc="Enriching peak velocity"):
-            h5_path = Path(self.h5_dir) / f'{eid}.h5'
-            wheel_vel = None
-
-            if h5_path.exists():
-                with h5py.File(h5_path, 'r') as f:
-                    if 'wheel/responses' in f:
-                        wheel_vel = f['wheel/responses/velocity'][:]
-
-            eid_trials = trial_keys[trial_keys['eid'] == eid]['trial']
-            for trial in eid_trials:
-                pv = np.nan
-                if wheel_vel is not None and trial < len(wheel_vel):
-                    trial_vel = wheel_vel[trial]
-                    valid = trial_vel[~np.isnan(trial_vel)]
-                    if len(valid) > 0:
-                        pv = float(np.max(np.abs(valid)))
-                rows.append({'eid': eid, 'trial': trial, 'peak_velocity': pv})
-
-        self.peak_velocity = pd.DataFrame(rows)
-        return self
-
-    def fit_wheel_lmm(self, response_col='response_early', min_subjects=2):
+    def fit_wheel_lmm(self, response_col='response', min_subjects=2):
         """Fit nested LMMs for wheel kinematics predicted by NM activity.
 
         For each (target_NM, contrast_level, dv), fits:
           Base:  ``dv ~ C(stim_side) * C(choice) + (1 | subject)``
-          Full:  ``dv ~ C(stim_side) * C(choice) + response_early + (1|subject)``
+          Full:  ``dv ~ C(stim_side) * C(choice) + response + (1|subject)``
 
-        Requires ``response_magnitudes``, ``trial_timing``, and
-        ``peak_velocity`` to be populated.
+        Requires ``response_magnitudes`` and ``trial_regressors`` to be
+        populated.
 
         Parameters
         ----------
@@ -3072,36 +2902,8 @@ class PhotometrySessionGroup:
         from iblnm.analysis import fit_wheel_lmm as _fit_wheel_lmm
         from tqdm import tqdm
 
-        if self.response_magnitudes is None:
-            raise ValueError(
-                "response_magnitudes not populated. "
-                "Call get_response_magnitudes() first."
-            )
-        if self.trial_timing is None:
-            raise ValueError(
-                "trial_timing not populated. "
-                "Call get_response_magnitudes() first."
-            )
-        if self.peak_velocity is None:
-            raise ValueError(
-                "peak_velocity not populated. "
-                "Call enrich_peak_velocity() first."
-            )
-
         dvs = ['reaction_time', 'movement_time', 'peak_velocity']
-        df = self.response_magnitudes.copy()
-        timing_cols = ['eid', 'trial'] + [
-            c for c in ['reaction_time', 'movement_time']
-            if c in self.trial_timing.columns
-        ]
-        df = df.merge(
-            self.trial_timing[timing_cols],
-            on=['eid', 'trial'], how='left',
-        )
-        df = df.merge(
-            self.peak_velocity[['eid', 'trial', 'peak_velocity']],
-            on=['eid', 'trial'], how='left',
-        )
+        df = self._merge_trial_regressors()
 
         # Filter to stimOn event, unbiased blocks, valid trials
         df = df[df['event'] == 'stimOn_times']

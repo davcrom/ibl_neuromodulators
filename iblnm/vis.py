@@ -2164,7 +2164,7 @@ def plot_marginal_means(emm_dict, event, fig=None):
             levels = sample_emm['level'].values
             x = np.arange(len(levels))
             ax.set_xticks(x)
-            ax.set_xticklabels([level_labels.get(l, str(l)) for l in levels])
+            ax.set_xticklabels([level_labels.get(lvl, str(lvl)) for lvl in levels])
 
         ax.set_ylabel('z-score (EMM)')
         ax.set_title(f'Effect of {factor}')
@@ -2205,7 +2205,6 @@ def plot_lmm_coefficient_heatmap(df_coefs):
         One figure per event, keyed by event name.
     """
     df_coefs = df_coefs[df_coefs['term'] != 'Intercept']
-    all_terms = df_coefs['term'].unique()
 
     term_order = [
         'side', 'reward', 'contrast',
@@ -3371,7 +3370,7 @@ def plot_cohort_cca_summary(cohort_results, cross_projections, weight_sims,
     ax = axes[0]
     colors = [TARGETNM_COLORS.get(t, 'gray') for t in targets]
     corrs = [cohort_results[t].correlations[0] for t in targets]
-    bars = ax.bar(range(len(targets)), corrs, color=colors)
+    ax.bar(range(len(targets)), corrs, color=colors)
     ax.set_xticks(range(len(targets)))
     ax.set_xticklabels(targets, rotation=45, ha='right')
     ax.set_ylim(0, 1)
@@ -3751,13 +3750,13 @@ def plot_rt_by_contrast(group, ax=None):
     """Response time by contrast from a PhotometrySessionGroup.
 
     Builds the trial DataFrame from ``group.response_magnitudes`` and
-    ``group.trial_timing``, filters to 50-50 block unbiased trials, and
+    ``group.trial_regressors``, filters to 50-50 block unbiased trials, and
     draws RT violins.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have ``response_magnitudes`` and ``trial_timing`` loaded.
+        Must have ``response_magnitudes`` and ``trial_regressors`` loaded.
     ax : plt.Axes, optional
         Axes to draw on.
 
@@ -3770,7 +3769,7 @@ def plot_rt_by_contrast(group, ax=None):
     else:
         fig = ax.figure
 
-    if group.response_magnitudes is None or group.trial_timing is None:
+    if group.response_magnitudes is None or group.trial_regressors is None:
         ax.set_xlabel('Response time (s)')
         ax.set_ylabel('Contrast (%)')
         return fig
@@ -3778,7 +3777,8 @@ def plot_rt_by_contrast(group, ax=None):
     df_resp = group.response_magnitudes.drop_duplicates(
         subset=['eid', 'trial', 'target_NM'])
     df_trial = df_resp.merge(
-        group.trial_timing[['eid', 'trial', 'response_time']],
+        group.trial_regressors[['eid', 'trial', 'response_time',
+                                'contrast', 'probabilityLeft', 'choice']],
         on=['eid', 'trial'], how='inner',
     )
     df_trial = df_trial.query(

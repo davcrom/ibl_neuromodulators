@@ -29,7 +29,7 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
-    RESPONSES_FPATH, TRIAL_TIMING_FPATH, TASK_ENCODING_DIR,
+    RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH, TASK_ENCODING_DIR,
     RESPONSE_EVENTS, FIGURE_DPI, TARGETNM_COLORS,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
@@ -290,7 +290,7 @@ def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
 
     # If weight_by_se, re-fit GLM with t-statistics for CCA
     if args.weight_by_se:
-        print(f"  Re-fitting GLM with t-statistics for CCA...")
+        print("  Re-fitting GLM with t-statistics for CCA...")
         group.get_glm_response_features(
             event_name=event, weight_by_se=True,
             contrast_coding=args.contrast_coding,
@@ -456,13 +456,13 @@ if __name__ == '__main__':
     )
     print(f"  {len(group)} recordings after filtering")
 
-    # Load pre-computed response magnitudes and trial timing
+    # Load pre-computed response magnitudes and trial regressors
     if not RESPONSES_FPATH.exists():
         print(f"Error: {RESPONSES_FPATH} not found. "
               "Run scripts/responses.py first.")
         raise SystemExit(1)
     group.load_response_magnitudes(RESPONSES_FPATH)
-    group.load_trial_timing(TRIAL_TIMING_FPATH)
+    group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
 
     # =====================================================================
     # Plot-only mode

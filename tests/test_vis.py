@@ -361,8 +361,6 @@ class TestPlotSimilarityMatrix:
         fig = plot_similarity_matrix(sim, labels, subjects=subjects)
         # The returned figure's data should be reordered
         # s0 (e1, e3) should come before s1 (e2) before s2 (e0)
-        ax = fig.axes[0]
-        # Just verify it doesn't crash and returns a figure
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
@@ -1588,8 +1586,7 @@ def _make_mock_glm_pca_result():
     # 8 VTA-DA recordings from 5 subjects (s1 has 3 sessions, s2 has 2)
     # 4 DR-5HT recordings from 3 subjects (s6 has 2)
     # 3 LC-NE recordings from 3 subjects
-    eids =    ['e0','e1','e2','e3','e4','e5','e6','e7','e8','e9','e10','e11','e12','e13','e14']
-    subjects = ['s1','s1','s1','s2','s2','s3','s4','s5','s6','s6','s7', 's8', 's9','s10','s11']
+    eids = ['e0','e1','e2','e3','e4','e5','e6','e7','e8','e9','e10','e11','e12','e13','e14']
     targets = (['VTA-DA'] * 8 + ['DR-5HT'] * 4 + ['LC-NE'] * 3)
     n = len(eids)
     index = pd.MultiIndex.from_tuples(
@@ -1660,9 +1657,7 @@ class TestPlotGlmPcaScores:
 
     def test_target_colors_used(self):
         """Each target should use its configured color."""
-        import matplotlib as mpl
         from iblnm.vis import plot_glm_pca_scores
-        from iblnm.config import TARGETNM_COLORS
         result = _make_mock_glm_pca_result()
         fig = plot_glm_pca_scores(result)
         ax = fig.axes[0]
@@ -1731,7 +1726,6 @@ class TestPlotGlmPcaSummary:
 
     def test_significance_brackets_are_lines(self):
         """Significant pairwise comparisons should draw bracket lines, not text."""
-        from matplotlib.lines import Line2D
         from iblnm.vis import plot_glm_pca_summary
         # Use a result where groups are well-separated so some pairs are significant
         from iblnm.analysis import GLMPCAResult
@@ -1767,8 +1761,8 @@ class TestPlotGlmPcaSummary:
         subject_ax = next(
             ax for ax in fig.axes if 'subject means' in ax.get_title())
         bracket_lines = [
-            l for l in subject_ax.get_lines()
-            if len(l.get_xdata()) == 2 and l.get_color() == 'k'
+            line for line in subject_ax.get_lines()
+            if len(line.get_xdata()) == 2 and line.get_color() == 'k'
         ]
         assert len(bracket_lines) > 0
         plt.close(fig)
@@ -2131,7 +2125,7 @@ class TestPlotTargetComparison:
 # =============================================================================
 
 def _make_mock_group_with_rt():
-    """Build a mock group with response_magnitudes and trial_timing."""
+    """Build a mock group with response_magnitudes and trial_regressors."""
     from iblnm.data import PhotometrySessionGroup
     rng = np.random.default_rng(42)
     rows = []
@@ -2156,8 +2150,9 @@ def _make_mock_group_with_rt():
         min_performance=False, required_contrasts=False,
     )
 
-    # Build response_magnitudes with required columns
+    # response_magnitudes carries recording keys + event only
     resp_rows = []
+    regressor_rows = []
     for i in range(4):
         tnm = 'VTA-DA' if i < 2 else 'LC-NE'
         for t in range(20):
@@ -2166,23 +2161,18 @@ def _make_mock_group_with_rt():
                 'subject': f'subj-{i % 2}',
                 'target_NM': tnm,
                 'trial': t,
+                'event': 'stimOn_times',
+            })
+            regressor_rows.append({
+                'eid': f'eid-{i}',
+                'trial': t,
                 'contrast': rng.choice([6.25, 25.0, 100.0]),
                 'choice': rng.choice([-1, 1]),
                 'probabilityLeft': rng.choice([0.2, 0.5, 0.8]),
-                'event': 'stimOn_times',
-            })
-    group.response_magnitudes = pd.DataFrame(resp_rows)
-
-    # Build trial_timing
-    timing_rows = []
-    for i in range(4):
-        for t in range(20):
-            timing_rows.append({
-                'eid': f'eid-{i}',
-                'trial': t,
                 'response_time': rng.uniform(0.1, 2.0),
             })
-    group.trial_timing = pd.DataFrame(timing_rows)
+    group.response_magnitudes = pd.DataFrame(resp_rows)
+    group.trial_regressors = pd.DataFrame(regressor_rows)
     return group
 
 
@@ -2198,7 +2188,7 @@ class TestPlotRtByContrastGroup:
     def test_none_timing_returns_empty(self):
         from iblnm.vis import plot_rt_by_contrast
         group = _make_mock_group_with_rt()
-        group.trial_timing = None
+        group.trial_regressors = None
         fig = plot_rt_by_contrast(group)
         assert isinstance(fig, plt.Figure)
         plt.close('all')
@@ -2221,7 +2211,7 @@ def _make_movement_df(n_per_cell=30, seed=42):
                         'eid': f'eid_{subj}',
                         'side': side,
                         'feedbackType': fb,
-                        'response_early': rng.normal(0, 1),
+                        'response': rng.normal(0, 1),
                         'log_reaction_time': rng.normal(-0.7, 0.3),
                     })
     return pd.DataFrame(rows)
@@ -2232,7 +2222,7 @@ class TestPlotMovementResponse:
         from iblnm.vis import plot_movement_response
         df = _make_movement_df()
         fig = plot_movement_response(
-            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
@@ -2240,7 +2230,7 @@ class TestPlotMovementResponse:
         from iblnm.vis import plot_movement_response
         df = _make_movement_df()
         fig = plot_movement_response(
-            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
         assert len(fig.axes) == 2
         plt.close(fig)
 
@@ -2248,7 +2238,7 @@ class TestPlotMovementResponse:
         from iblnm.vis import plot_movement_response
         df = _make_movement_df()
         fig = plot_movement_response(
-            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
         ax_contra = fig.axes[0]
         xlim = ax_contra.get_xlim()
         assert xlim[0] > xlim[1], "Contra x-axis should be inverted"
@@ -2259,7 +2249,7 @@ class TestPlotMovementResponse:
         from iblnm.vis import plot_movement_response
         df = _make_movement_df(n_per_cell=50)
         fig = plot_movement_response(
-            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
         ax = fig.axes[0]
         labels = [t.get_text() for t in ax.get_xticklabels()]
         # Labels should be parseable as floats (real timing values)
@@ -2282,12 +2272,12 @@ class TestPlotMovementResponse:
                             'eid': f'eid_{subj}',
                             'side': side,
                             'feedbackType': fb,
-                            'response_early': offset + rng.normal(0, 0.1),
+                            'response': offset + rng.normal(0, 0.1),
                             'log_reaction_time': rng.normal(-0.7, 0.3),
                         })
         df = pd.DataFrame(rows)
         fig = plot_movement_response(
-            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
         for ax in fig.axes:
             for line in ax.get_lines():
                 ydata = line.get_ydata()
@@ -2301,10 +2291,10 @@ class TestPlotMovementResponse:
         from iblnm.vis import plot_movement_response
         df = pd.DataFrame(columns=[
             'subject', 'eid', 'side', 'feedbackType',
-            'response_early', 'log_reaction_time',
+            'response', 'log_reaction_time',
         ])
         fig = plot_movement_response(
-            df, 'response_early', 'log_reaction_time', 'VTA-DA', 25.0)
+            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 

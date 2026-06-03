@@ -532,11 +532,6 @@ class TestProcessTaskContrasts:
         ps.basic_performance.return_value = {'fraction_correct': 0.8}
         ps.validate_block_structure = _load
         ps.block_performance.return_value = {}
-        ps.get_trial_timings.return_value = pd.DataFrame({
-            'eid': 'test-eid', 'trial': range(len(trials)),
-            'reaction_time': np.nan, 'movement_time': np.nan,
-            'response_time': np.nan,
-        })
 
         result = process_task(ps)
         assert 'contrasts' in result['performance']
@@ -575,71 +570,7 @@ class TestProcessTaskContrasts:
         ps.basic_performance.return_value = {'fraction_correct': 0.9}
         ps.validate_block_structure = _load
         ps.block_performance.return_value = {}
-        ps.get_trial_timings.return_value = pd.DataFrame({
-            'eid': 'eid-1', 'trial': range(n),
-            'reaction_time': np.nan, 'movement_time': np.nan,
-            'response_time': np.nan,
-        })
 
         result = process_task(ps)
         assert result['performance']['contrasts'] == sorted([0.0, 25.0, 100.0])
-
-
-class TestProcessTaskTrialTiming:
-
-    def test_returns_trial_timing(self):
-        from scripts.task import process_task
-        from iblnm.task import compute_trial_contrasts
-        from unittest.mock import MagicMock
-
-        n = 30
-        np.random.seed(0)
-        sides = np.random.choice([-1, 1], size=n)
-        contrasts_frac = np.random.choice([0, 0.25, 1.0], size=n)
-        stim = np.sort(np.random.uniform(100, 500, n))
-        move = stim + 0.2
-        feedback = move + 0.15
-
-        trials = pd.DataFrame({
-            'contrastLeft': np.where(sides == -1, contrasts_frac, np.nan),
-            'contrastRight': np.where(sides == 1, contrasts_frac, np.nan),
-            'choice': sides,
-            'feedbackType': np.ones(n, dtype=int),
-            'probabilityLeft': np.full(n, 0.5),
-            'stimOn_times': stim,
-            'firstMovement_times': move,
-            'feedback_times': feedback,
-        })
-        ct = compute_trial_contrasts(trials)
-        trials['contrast'] = ct['contrast']
-
-        expected_timing = pd.DataFrame({
-            'eid': 'eid-1',
-            'trial': range(n),
-            'reaction_time': move - stim,
-            'movement_time': feedback - move,
-            'response_time': feedback - stim,
-        })
-
-        ps = MagicMock()
-        ps.eid = 'eid-1'
-        ps.trials = trials
-
-        def _load():
-            pass
-        ps.load_trials = _load
-        ps.validate_n_trials = _load
-        ps.validate_event_completeness = _load
-        ps.basic_performance.return_value = {'fraction_correct': 0.9}
-        ps.validate_block_structure = _load
-        ps.block_performance.return_value = {}
-        ps.get_trial_timings.return_value = expected_timing
-
-        result = process_task(ps)
-        df_timing = result['timing']
-        assert isinstance(df_timing, pd.DataFrame)
-        assert set(df_timing.columns) >= {'eid', 'trial', 'reaction_time',
-                                           'movement_time', 'response_time'}
-        assert len(df_timing) == n
-        assert (df_timing['eid'] == 'eid-1').all()
 

@@ -822,11 +822,12 @@ def pca_subject_score_stats(pca_result, recordings):
     return subject_means, stats
 
 
-def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
+def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log',
+                     response_col='response'):
     """Fit per-recording OLS models and return coefficients as features.
 
     For each recording in the events DataFrame, fits:
-    ``response_early ~ 1 + contrast + side + reward
+    ``response ~ 1 + contrast + side + reward
     + contrast:side + contrast:reward + side:reward``
 
     The contrast predictor is mean-centered per recording. Uses deviation
@@ -842,11 +843,13 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
         Trial-level data from ``get_response_magnitudes`` with ``add_relative_contrast``
         applied (must have ``side`` column). Required columns: ``eid``,
         ``brain_region``, ``target_NM``, ``event``, ``contrast``, ``side``,
-        ``feedbackType``, ``probabilityLeft``, ``response_early``.
+        ``feedbackType``, ``probabilityLeft``, ``response_col``.
     event_name : str
         Event to model (e.g., ``'stimOn_times'``).
     min_trials : int
         Minimum valid trials per recording. Recordings with fewer are skipped.
+    response_col : str
+        Column holding the response magnitude (default ``'response'``).
 
     Returns
     -------
@@ -889,11 +892,11 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log'):
     # FIXME: this loop should be in the group method, not in the function
     for (eid, brain_region), grp in df.groupby(['eid', 'brain_region']):
         # Drop NaN responses
-        valid = grp.dropna(subset=['response_early'])
+        valid = grp.dropna(subset=[response_col])
         if len(valid) < min_trials:
             continue
 
-        y = valid['response_early'].values
+        y = valid[response_col].values
         coded_c = _transform(valid['contrast'].values)
         coded_c = coded_c - coded_c.mean()
         # Deviation coding ±0.5, matching fit_response_lmm
@@ -1451,7 +1454,6 @@ def compare_cca_weights(result_a, result_b):
 # Linear Mixed-Effects Models
 # =============================================================================
 
-import warnings
 
 
 class LMMResult:
@@ -2219,7 +2221,7 @@ def fit_movement_lmm_per_contrast(df, response_col, timing_col,
 # =============================================================================
 
 
-def fit_wheel_lmm(df, dv_col, response_col='response_early',
+def fit_wheel_lmm(df, dv_col, response_col='response',
                    target_nm='', contrast=0.0, min_subjects=2):
     """Fit nested LMMs comparing base (task structure) vs full (+ NM predictor).
 
@@ -2373,7 +2375,6 @@ def compute_recording_projection(n_analysis_ready, n_total, target_n,
     # Recording days: total effective sessions across all targets / capacity
     total_effective = df['effective_sessions_needed'].replace([np.inf], np.nan).sum()
     if np.isfinite(total_effective) and total_effective > 0:
-        total_days = np.ceil(total_effective / capacity_per_day)
         # Distribute days proportionally to each target's share
         finite_mask = np.isfinite(df['effective_sessions_needed'])
         finite_sum = df.loc[finite_mask, 'effective_sessions_needed'].sum()

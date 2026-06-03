@@ -1,6 +1,7 @@
 """Tests for iblnm.analysis module."""
 import numpy as np
 import pandas as pd
+import pytest
 
 from iblnm.analysis import get_responses, normalize_responses, resample_signal
 from iblnm.util import contrast_transform
@@ -271,8 +272,6 @@ class TestResampleSignal:
 # =============================================================================
 # Response Vector Analysis Tests
 # =============================================================================
-
-import pytest
 
 
 def _make_response_matrix(n_recordings=4, n_features=10, seed=42):
@@ -642,7 +641,6 @@ class TestCTuning:
         mat, labels, subjects = _make_separable_data()
         decoder = TargetNMDecoder(mat, labels, subjects)
         decoder.fit()
-        best_c = decoder.best_C_
         decoder.unique_contribution()
         # full_accuracy in contributions should match decoder.accuracy
         # (same C used, same data)
@@ -1029,7 +1027,7 @@ class TestContrastCenteringAndNaming:
         """
         from iblnm.analysis import fit_response_glm
         events = _make_glm_events(n=200, seed=0)
-        events['response_early'] = 1.0  # constant response
+        events['response'] = 1.0  # constant response
         coefs, _ = fit_response_glm(events, 'stimOn_times')
         # All non-intercept coefficients should be near zero
         non_intercept = coefs.drop(columns='intercept').values
@@ -1509,7 +1507,7 @@ class TestFitSparseCCA:
 def _make_wheel_lmm_data(n_subjects=3, n_per_subject=80, seed=42):
     """Synthetic trial data for wheel kinematics LMM testing.
 
-    Creates data where response_early has a known positive effect on
+    Creates data where response has a known positive effect on
     reaction_time within each contrast group.
     """
     rng = np.random.default_rng(seed)
@@ -1525,11 +1523,11 @@ def _make_wheel_lmm_data(n_subjects=3, n_per_subject=80, seed=42):
             contrast = rng.choice(contrasts)
             side = rng.choice(sides)
             choice = rng.choice(choices)
-            response_early = rng.normal(1.0, 0.5)
-            # reaction_time has known relationship with response_early
+            response = rng.normal(1.0, 0.5)
+            # reaction_time has known relationship with response
             reaction_time = (
                 0.3
-                + 0.1 * response_early  # known effect
+                + 0.1 * response  # known effect
                 + subj_intercept
                 + rng.normal(0, 0.1)
             )
@@ -1539,7 +1537,7 @@ def _make_wheel_lmm_data(n_subjects=3, n_per_subject=80, seed=42):
                 'choice': choice,
                 'stim_side': side,
                 'subject': subj,
-                'response_early': response_early,
+                'response': response,
                 'reaction_time': max(reaction_time, 0.06),
                 'movement_time': max(rng.normal(0.3, 0.1), 0.01),
                 'peak_velocity': abs(rng.normal(5.0, 2.0)),
@@ -1553,7 +1551,7 @@ class TestFitWheelLMM:
         from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data()
         result = fit_wheel_lmm(df, dv_col='reaction_time',
-                                response_col='response_early')
+                                response_col='response')
         assert isinstance(result, dict)
         assert 'delta_r2' in result
         assert 'lrt_pvalue' in result
@@ -1562,7 +1560,7 @@ class TestFitWheelLMM:
         from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data()
         result = fit_wheel_lmm(df, dv_col='reaction_time',
-                                response_col='response_early')
+                                response_col='response')
         assert result['dv'] == 'reaction_time'
         assert result['delta_r2'] is not None
         assert result['lrt_pvalue'] is not None
@@ -1574,18 +1572,18 @@ class TestFitWheelLMM:
         from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data()
         result = fit_wheel_lmm(df, dv_col='reaction_time',
-                                response_col='response_early')
+                                response_col='response')
         assert 0 <= result['base_r2_marginal'] <= 1
         assert 0 <= result['full_r2_marginal'] <= 1
         assert 0 <= result['lrt_pvalue'] <= 1
 
     def test_detects_known_nm_effect(self):
-        """Data has known positive relationship between response_early and RT."""
+        """Data has known positive relationship between response and RT."""
         from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data(n_subjects=5, n_per_subject=200, seed=0)
         df_c = df[np.isclose(df['contrast'], 0.125)]
         result = fit_wheel_lmm(df_c, dv_col='reaction_time',
-                                response_col='response_early')
+                                response_col='response')
         assert result is not None
         assert result['nm_coefficient'] > 0
         assert result['lrt_pvalue'] < 0.05
@@ -1594,7 +1592,7 @@ class TestFitWheelLMM:
         from iblnm.analysis import fit_wheel_lmm
         df = _make_wheel_lmm_data(n_subjects=1, n_per_subject=50)
         result = fit_wheel_lmm(df, dv_col='reaction_time',
-                                response_col='response_early')
+                                response_col='response')
         assert result is None
 
     def test_delta_r2_positive_with_true_effect(self):
@@ -1603,7 +1601,7 @@ class TestFitWheelLMM:
         df = _make_wheel_lmm_data(n_subjects=5, n_per_subject=200, seed=0)
         df_c = df[np.isclose(df['contrast'], 0.125)]
         result = fit_wheel_lmm(df_c, dv_col='reaction_time',
-                                response_col='response_early')
+                                response_col='response')
         assert result['delta_r2'] > 0
 
 
@@ -1689,7 +1687,7 @@ def _make_glm_events(n=200, eid='eid1', brain_region='VTA', hemisphere='l',
         'contrast': contrast, 'stim_side': stim_side,
         'signed_contrast': np.where(stim_side == 'left', -contrast, contrast),
         'feedbackType': feedback_type, 'probabilityLeft': 0.5,
-        'response_early': response,
+        'response': response,
     })
 
 
@@ -1931,7 +1929,7 @@ class TestFitResponseGLM:
             'signed_contrast': np.where(stim_side == 'left', -contrast, contrast),
             'feedbackType': feedback_type,
             'probabilityLeft': 0.5,
-            'response_early': response,
+            'response': response,
         })
         coefs, ses = fit_response_glm(events, 'stimOn_times')
         np.testing.assert_allclose(coefs.iloc[0].values, true_beta, atol=0.15)
@@ -1964,7 +1962,7 @@ class TestFitResponseGLM:
         """Trials with NaN response are excluded; fit proceeds on remainder."""
         from iblnm.analysis import fit_response_glm
         events = _make_glm_events(n=100, seed=0)
-        events.loc[:29, 'response_early'] = np.nan
+        events.loc[:29, 'response'] = np.nan
         coefs, ses = fit_response_glm(events, 'stimOn_times', min_trials=20)
         assert len(coefs) == 1  # fits on 70 valid trials
 
@@ -2511,7 +2509,7 @@ def _make_movement_lmm_df(n_per_cell=40, seed=0):
                             'contrast': contrast,
                             'side': side_label,
                             'feedbackType': fb,
-                            'response_early': response,
+                            'response': response,
                             'log_reaction_time': log_rt,
                         })
     return pd.DataFrame(rows)
@@ -2521,20 +2519,20 @@ class TestLosoCVMovementLMM:
     def test_returns_dataframe(self):
         from iblnm.analysis import loso_cv_movement_lmm
         df = _make_movement_lmm_df()
-        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
         assert isinstance(result, pd.DataFrame)
 
     def test_one_row_per_subject(self):
         from iblnm.analysis import loso_cv_movement_lmm
         df = _make_movement_lmm_df()
-        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
         assert len(result) == df['subject'].nunique()
         assert set(result['subject']) == set(df['subject'].unique())
 
     def test_required_columns(self):
         from iblnm.analysis import loso_cv_movement_lmm
         df = _make_movement_lmm_df()
-        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
         expected_cols = {
             'subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
             'r2_drop_timing', 'delta_r2_contrast', 'delta_r2_timing',
@@ -2547,7 +2545,7 @@ class TestLosoCVMovementLMM:
         subjects should be positive."""
         from iblnm.analysis import loso_cv_movement_lmm
         df = _make_movement_lmm_df()
-        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
         assert result['delta_r2_contrast'].mean() > 0
         assert result['delta_r2_timing'].mean() > 0
 
@@ -2555,7 +2553,7 @@ class TestLosoCVMovementLMM:
         from iblnm.analysis import loso_cv_movement_lmm
         df = _make_movement_lmm_df()
         df['subject'] = 's1'
-        result = loso_cv_movement_lmm(df, 'response_early', 'log_reaction_time')
+        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
 
@@ -2566,7 +2564,7 @@ class TestFitMovementLMMPerContrast:
         df = _make_movement_lmm_df()
         df_c = df[df['contrast'] == 25.0]
         result = fit_movement_lmm_per_contrast(
-            df_c, 'response_early', 'log_reaction_time')
+            df_c, 'response', 'log_reaction_time')
         assert isinstance(result, dict)
 
     def test_required_keys(self):
@@ -2574,7 +2572,7 @@ class TestFitMovementLMMPerContrast:
         df = _make_movement_lmm_df()
         df_c = df[df['contrast'] == 25.0]
         result = fit_movement_lmm_per_contrast(
-            df_c, 'response_early', 'log_reaction_time')
+            df_c, 'response', 'log_reaction_time')
         expected_keys = {
             'timing_coef', 'timing_se', 'timing_p',
             'r2_marginal', 'n_trials', 'n_subjects', 'timing_col',
@@ -2587,7 +2585,7 @@ class TestFitMovementLMMPerContrast:
         df = _make_movement_lmm_df()
         df_c = df[df['contrast'] == 25.0]
         result = fit_movement_lmm_per_contrast(
-            df_c, 'response_early', 'log_reaction_time')
+            df_c, 'response', 'log_reaction_time')
         assert result['timing_coef'] > 0
 
     def test_too_few_subjects_returns_none(self):
@@ -2596,5 +2594,5 @@ class TestFitMovementLMMPerContrast:
         df_c = df[df['contrast'] == 25.0].copy()
         df_c['subject'] = 's1'
         result = fit_movement_lmm_per_contrast(
-            df_c, 'response_early', 'log_reaction_time')
+            df_c, 'response', 'log_reaction_time')
         assert result is None

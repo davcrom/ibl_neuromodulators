@@ -19,10 +19,8 @@ from pathlib import Path
 
 import pandas as pd
 
-import pandas as pd
-
 from iblnm.config import (
-    SESSIONS_FPATH, PERFORMANCE_FPATH, TASK_LOG_FPATH, TRIAL_TIMING_FPATH,
+    SESSIONS_FPATH, PERFORMANCE_FPATH, TASK_LOG_FPATH,
     SESSIONS_H5_DIR,
 )
 from iblnm.data import PhotometrySessionGroup
@@ -31,8 +29,18 @@ from iblnm.util import collect_errors
 from iblnm.validation import BlockStructureBug
 
 
-def process_task(ps):
+def process_task(ps, reprocess=False):
     """Compute task performance metrics for a single session."""
+    import h5py
+
+    # Skip if already processed (trials group exists in H5)
+    if not reprocess:
+        h5_path = SESSIONS_H5_DIR / f'{ps.eid}.h5'
+        if h5_path.exists():
+            with h5py.File(h5_path, 'r') as f:
+                if 'trials' in f:
+                    return 'skipped'
+
     ps.load_trials()
     ps.validate_n_trials()
 
@@ -49,18 +57,19 @@ def process_task(ps):
         ps.validate_block_structure()
     except BlockStructureBug as e:
         ps.log_error(e)
-        if ps.fix_block_structure():
-            ps.save_h5(groups=['trials'])
+        ps.fix_block_structure()
 
     if 'probabilityLeft' in ps.trials.columns:
         result.update(ps.block_performance())
 
-    timing = ps.get_trial_timings()
-    return {'performance': result, 'timing': timing}
+    ps.save_h5(groups=['trials'])
+    return {'performance': result}
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Task performance analysis')
+    parser.add_argument('--reprocess', action='store_true',
+                        help='Re-process all sessions, ignoring existing trials data')
     parser.add_argument('--workers', '-w', type=int, default=1,
                         help='Number of parallel workers')
     args = parser.parse_args()
@@ -76,31 +85,30 @@ if __name__ == '__main__':
     )
     print(f"  {len(group.sessions)} sessions after filtering")
 
-    results = group.process(process_task, workers=args.workers)
+    results = group.process(process_task, workers=args.workers,
+                             reprocess=args.reprocess)
 
     # Aggregate results
-    perf_rows = [r['performance'] for r in results if r is not None]
-    timing_frames = [r['timing'] for r in results if r is not None]
+    processed = [r for r in results if isinstance(r, dict)]
+    perf_rows = [r['performance'] for r in processed]
 
     df_performance = pd.DataFrame(perf_rows) if perf_rows else pd.DataFrame()
-    df_trial_timing = (
-        pd.concat(timing_frames, ignore_index=True) if timing_frames
-        else pd.DataFrame(
-            columns=['eid', 'trial', 'reaction_time', 'movement_time',
-                     'response_time']
-        )
-    )
 
-    n_processed = sum(1 for r in results if r is not None)
+    # Merge with existing parquet for skipped sessions (unless --reprocess)
+    if not args.reprocess and Path(PERFORMANCE_FPATH).exists():
+        df_prev = pd.read_parquet(PERFORMANCE_FPATH)
+        keep = df_prev[~df_prev['eid'].isin(df_performance['eid'])]
+        df_performance = pd.concat([keep, df_performance], ignore_index=True)
+
+    n_processed = len(processed)
+    n_skipped = sum(1 for r in results if r == 'skipped')
     n_failed = sum(1 for r in results if r is None)
-    print(f"\nResults: {n_processed} processed, {n_failed} failed")
+    print(f"\nResults: {n_processed} processed, {n_skipped} skipped, {n_failed} failed")
 
     # Save outputs
     Path(PERFORMANCE_FPATH).parent.mkdir(parents=True, exist_ok=True)
     df_performance.to_parquet(PERFORMANCE_FPATH)
-    df_trial_timing.to_parquet(TRIAL_TIMING_FPATH, index=False)
     print(f"Saved {len(df_performance)} sessions to {PERFORMANCE_FPATH}")
-    print(f"Saved trial timing to {TRIAL_TIMING_FPATH}")
 
     # Collect errors from H5 files
     df_errors = collect_errors(SESSIONS_H5_DIR)

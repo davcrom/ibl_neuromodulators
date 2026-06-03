@@ -1535,79 +1535,6 @@ class TestBasicPerformance:
 
 
 # =============================================================================
-# get_trial_timings Tests
-# =============================================================================
-
-class TestGetTrialTimings:
-
-    def _make_trials_with_times(self, n=50):
-        np.random.seed(42)
-        stim = np.sort(np.random.uniform(100, 500, n))
-        move = stim + np.random.uniform(0.1, 0.5, n)
-        feedback = move + np.random.uniform(0.1, 0.3, n)
-        trials = _make_training_trials(n=n)
-        trials['stimOn_times'] = stim
-        trials['firstMovement_times'] = move
-        trials['feedback_times'] = feedback
-        return trials
-
-    def test_returns_dataframe_with_timing_columns(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = self._make_trials_with_times()
-        result = session.get_trial_timings()
-        assert isinstance(result, pd.DataFrame)
-        for col in ['reaction_time', 'movement_time', 'response_time']:
-            assert col in result.columns
-
-    def test_reaction_time_is_movement_minus_stim(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = self._make_trials_with_times()
-        result = session.get_trial_timings()
-        expected = (session.trials['firstMovement_times'].values
-                    - session.trials['stimOn_times'].values)
-        np.testing.assert_allclose(result['reaction_time'].values, expected)
-
-    def test_movement_time_is_feedback_minus_movement(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = self._make_trials_with_times()
-        result = session.get_trial_timings()
-        expected = (session.trials['feedback_times'].values
-                    - session.trials['firstMovement_times'].values)
-        np.testing.assert_allclose(result['movement_time'].values, expected)
-
-    def test_response_time_is_feedback_minus_stim(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = self._make_trials_with_times()
-        result = session.get_trial_timings()
-        expected = (session.trials['feedback_times'].values
-                    - session.trials['stimOn_times'].values)
-        np.testing.assert_allclose(result['response_time'].values, expected)
-
-    def test_missing_columns_produce_nans(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = _make_training_trials(n=20)  # no timing columns
-        result = session.get_trial_timings()
-        assert result['reaction_time'].isna().all()
-        assert result['movement_time'].isna().all()
-        assert result['response_time'].isna().all()
-
-    def test_includes_eid_and_trial_columns(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = self._make_trials_with_times(n=10)
-        result = session.get_trial_timings()
-        assert 'eid' in result.columns
-        assert 'trial' in result.columns
-        assert (result['eid'] == session.eid).all()
-        assert list(result['trial']) == list(range(10))
-
-
-# =============================================================================
 # QC Method Tests
 # =============================================================================
 
@@ -3074,10 +3001,10 @@ class TestLoaderMethods:
     def test_load_response_magnitudes(self, tmp_path):
         group = self._make_group()
         df = pd.DataFrame([
-            {'eid': 'eid-0', 'trial': 0, 'response_early': 1.0},
-            {'eid': 'eid-0', 'trial': 1, 'response_early': 2.0},
-            {'eid': 'eid-1', 'trial': 0, 'response_early': 3.0},
-            {'eid': 'eid-99', 'trial': 0, 'response_early': 4.0},  # not in group
+            {'eid': 'eid-0', 'trial': 0, 'response': 1.0},
+            {'eid': 'eid-0', 'trial': 1, 'response': 2.0},
+            {'eid': 'eid-1', 'trial': 0, 'response': 3.0},
+            {'eid': 'eid-99', 'trial': 0, 'response': 4.0},  # not in group
         ])
         path = tmp_path / 'responses.pqt'
         df.to_parquet(path, index=False)
@@ -3086,30 +3013,20 @@ class TestLoaderMethods:
         assert len(group.response_magnitudes) == 3
         assert 'eid-99' not in group.response_magnitudes['eid'].values
 
-    def test_load_trial_timing(self, tmp_path):
+    def test_load_trial_regressors(self, tmp_path):
         group = self._make_group()
         df = pd.DataFrame([
-            {'eid': 'eid-0', 'trial': 0, 'reaction_time': 0.1},
-            {'eid': 'eid-99', 'trial': 0, 'reaction_time': 0.2},
+            {'eid': 'eid-0', 'trial': 0, 'reaction_time': 0.1,
+             'peak_velocity': 5.0},
+            {'eid': 'eid-99', 'trial': 0, 'reaction_time': 0.2,
+             'peak_velocity': 6.0},
         ])
-        path = tmp_path / 'timing.pqt'
+        path = tmp_path / 'trial_regressors.pqt'
         df.to_parquet(path, index=False)
 
-        group.load_trial_timing(path)
-        assert len(group.trial_timing) == 1
-        assert group.trial_timing['eid'].iloc[0] == 'eid-0'
-
-    def test_load_peak_velocity(self, tmp_path):
-        group = self._make_group()
-        df = pd.DataFrame([
-            {'eid': 'eid-0', 'trial': 0, 'peak_velocity': 5.0},
-            {'eid': 'eid-99', 'trial': 0, 'peak_velocity': 6.0},
-        ])
-        path = tmp_path / 'velocity.pqt'
-        df.to_parquet(path, index=False)
-
-        group.load_peak_velocity(path)
-        assert len(group.peak_velocity) == 1
+        group.load_trial_regressors(path)
+        assert len(group.trial_regressors) == 1
+        assert group.trial_regressors['eid'].iloc[0] == 'eid-0'
 
     def test_load_mean_traces(self, tmp_path):
         group = self._make_group()
@@ -3171,9 +3088,9 @@ class TestLoaderMethods:
         )
 
         resp = pd.DataFrame([
-            {'eid': 'eid-0', 'trial': 0, 'response_early': 1.0},
-            {'eid': 'eid-1', 'trial': 0, 'response_early': 2.0},
-            {'eid': 'eid-2', 'trial': 0, 'response_early': 3.0},
+            {'eid': 'eid-0', 'trial': 0, 'response': 1.0},
+            {'eid': 'eid-1', 'trial': 0, 'response': 2.0},
+            {'eid': 'eid-2', 'trial': 0, 'response': 3.0},
         ])
         path = tmp_path / 'responses.pqt'
         resp.to_parquet(path, index=False)
@@ -3215,43 +3132,21 @@ class TestGetResponseMagnitudes:
         df_events = group.get_response_magnitudes()
         expected_cols = {
             'eid', 'subject', 'session_type', 'NM', 'target_NM',
-            'brain_region', 'hemisphere', 'event', 'trial',
-            'stim_side', 'signed_contrast', 'contrast', 'choice',
-            'feedbackType', 'probabilityLeft',
-            'response_early',
+            'brain_region', 'hemisphere', 'event', 'trial', 'response',
         }
         assert expected_cols.issubset(set(df_events.columns))
 
-    def test_response_magnitudes_excludes_timing(self, tmp_path):
+    def test_response_magnitudes_excludes_predictors(self, tmp_path):
+        """Trial-level task/movement predictors live in trial_regressors."""
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.get_response_magnitudes()
-        assert 'reaction_time' not in group.response_magnitudes.columns
-        assert 'movement_time' not in group.response_magnitudes.columns
-
-    def test_trial_timing_populated(self, tmp_path):
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        group.get_response_magnitudes()
-        assert group.trial_timing is not None
-        assert {'eid', 'trial', 'reaction_time', 'movement_time'}.issubset(
-            group.trial_timing.columns)
-        assert 'event' not in group.trial_timing.columns
-
-    def test_trial_timing_keyed_by_eid_trial(self, tmp_path):
-        """trial_timing has one row per (eid, trial), not per event."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        n_trials = 50
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=n_trials)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        group.get_response_magnitudes()
-        assert len(group.trial_timing) == n_trials
-        assert group.trial_timing.duplicated(subset=['eid', 'trial']).sum() == 0
+        cols = group.response_magnitudes.columns
+        for excluded in ['reaction_time', 'movement_time', 'contrast',
+                         'signed_contrast', 'choice', 'probabilityLeft']:
+            assert excluded not in cols
 
     def test_one_row_per_trial_per_event(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
@@ -3264,7 +3159,7 @@ class TestGetResponseMagnitudes:
         assert len(df_events) == n_trials * n_events
 
     def test_response_magnitude_known_signal(self, tmp_path):
-        """Post-event = 1.0, baseline = 0 → response_early should be ~1.0."""
+        """Post-event = 1.0, baseline = 0 → response should be ~1.0."""
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
@@ -3272,7 +3167,7 @@ class TestGetResponseMagnitudes:
         df_events = group.get_response_magnitudes()
         # After baseline subtraction, post-event signal = 1.0
         # Response magnitude in early window should be ~1.0
-        magnitudes = df_events['response_early'].dropna()
+        magnitudes = df_events['response'].dropna()
         np.testing.assert_allclose(magnitudes.values, 1.0, atol=0.1)
 
     def test_skips_missing_h5(self, tmp_path):
@@ -3301,16 +3196,6 @@ class TestGetResponseMagnitudes:
         df_events = group.get_response_magnitudes()
         assert isinstance(df_events, pd.DataFrame)
         assert len(df_events) == 0
-
-    def test_trial_timing_has_movement_time(self, tmp_path):
-        """movement_time should be computed from trial times."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        group.get_response_magnitudes()
-        assert 'movement_time' in group.trial_timing.columns
-        assert group.trial_timing['movement_time'].notna().any()
 
 
 # =============================================================================
@@ -3367,21 +3252,28 @@ def _make_group_with_events():
                                     'feedbackType': fb,
                                     'probabilityLeft': 0.5,
                                     'reaction_time': 0.2,
-                                    'response_early': response,
+                                    'response': response,
                                     'session_type': 'biased',
                                 })
 
     df_events = pd.DataFrame(rows)
 
-    # Separate trial_timing from response_magnitudes
-    trial_timing = (
-        df_events[['eid', 'trial', 'reaction_time']]
+    # Split trial-level predictors (trial_regressors) from the response
+    # magnitudes (recording keys + response only), per the schema.
+    regressor_cols = ['stim_side', 'signed_contrast', 'contrast', 'choice',
+                      'feedbackType', 'probabilityLeft', 'reaction_time']
+    trial_regressors = (
+        df_events[['eid', 'trial'] + regressor_cols]
         .drop_duplicates(subset=['eid', 'trial'])
         .copy()
     )
-    trial_timing['movement_time'] = 0.15
-    trial_timing['response_time'] = 1.0
-    df_events = df_events.drop(columns=['reaction_time'])
+    trial_regressors['movement_time'] = 0.15
+    trial_regressors['response_time'] = 1.0
+    trial_regressors['peak_velocity'] = 1.0
+    response_magnitudes = df_events[[
+        'eid', 'subject', 'target_NM', 'NM', 'brain_region', 'hemisphere',
+        'event', 'trial', 'session_type', 'response',
+    ]].copy()
 
     # Build minimal recordings DataFrame
     rec_rows = []
@@ -3402,8 +3294,8 @@ def _make_group_with_events():
     recs = pd.DataFrame(rec_rows)
 
     group = PhotometrySessionGroup(recs, one=MagicMock())
-    group.response_magnitudes = df_events
-    group.trial_timing = trial_timing
+    group.response_magnitudes = response_magnitudes
+    group.trial_regressors = trial_regressors
     return group
 
 
@@ -3462,16 +3354,16 @@ class TestFitLMM:
         with pytest.raises(ValueError, match='response_magnitudes'):
             group.fit_lmm()
 
-    def test_requires_trial_timing(self):
+    def test_requires_trial_regressors(self):
         group = _make_group_with_events()
-        group.trial_timing = None
-        with pytest.raises(ValueError, match='trial_timing'):
+        group.trial_regressors = None
+        with pytest.raises(ValueError, match='trial_regressors'):
             group.fit_lmm()
 
     def test_excludes_false_start_trials(self):
         """Trials with response_time <= 0.05 must be excluded; all-fast → empty results."""
         group = _make_group_with_events()
-        group.trial_timing['response_time'] = 0.01
+        group.trial_regressors['response_time'] = 0.01
         group.fit_lmm()
         assert len(group.lmm_results) == 0
 
@@ -3542,10 +3434,10 @@ class TestAnovaResponseMagnitudes:
         with pytest.raises(ValueError, match='response_magnitudes'):
             group.anova_response_magnitudes()
 
-    def test_requires_trial_timing(self):
+    def test_requires_trial_regressors(self):
         group = _make_group_with_events()
-        group.trial_timing = None
-        with pytest.raises(ValueError, match='trial_timing'):
+        group.trial_regressors = None
+        with pytest.raises(ValueError, match='trial_regressors'):
             group.anova_response_magnitudes()
 
     def test_stores_results_on_self(self):
@@ -3833,15 +3725,15 @@ class TestGetGLMResponseFeatures:
     def test_excludes_false_start_trials(self):
         """Trials with response_time <= 0.05 must be excluded; all-fast → empty result."""
         group = _make_group_with_events()
-        group.trial_timing['response_time'] = 0.01
+        group.trial_regressors['response_time'] = 0.01
         result = group.get_glm_response_features(event_name='stimOn_times')
         assert len(result) == 0
 
     def test_excludes_nogo_trials(self):
         """Trials with choice == 0 must be excluded; all-nogo → empty result."""
         group = _make_group_with_events()
-        group.response_magnitudes = group.response_magnitudes.copy()
-        group.response_magnitudes['choice'] = 0
+        group.trial_regressors = group.trial_regressors.copy()
+        group.trial_regressors['choice'] = 0
         result = group.get_glm_response_features(event_name='stimOn_times')
         assert len(result) == 0
 
@@ -4153,66 +4045,9 @@ def _write_h5_with_wheel(path, n_trials=100, seed=42):
         w_grp.attrs['t1_event'] = 'feedback_times'
 
 
-class TestEnrichPeakVelocity:
-
-    def test_peak_velocity_stored_separately(self, tmp_path):
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=1)
-        for i in range(2):
-            _write_h5_with_wheel(tmp_path / f'eid-{i}.h5', n_trials=50, seed=i)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        group.load_response_traces()
-        group.get_response_magnitudes()
-        group.enrich_peak_velocity()
-        assert 'peak_velocity' not in group.response_magnitudes.columns
-        assert group.peak_velocity is not None
-        assert {'eid', 'trial', 'peak_velocity'}.issubset(
-            group.peak_velocity.columns)
-
-    def test_peak_velocity_is_positive(self, tmp_path):
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5_with_wheel(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        group.load_response_traces()
-        group.get_response_magnitudes()
-        group.enrich_peak_velocity()
-        valid = group.peak_velocity['peak_velocity'].dropna()
-        assert (valid >= 0).all()
-
-    def test_does_not_modify_response_magnitudes(self, tmp_path):
-        """enrich_peak_velocity should not add columns to response_magnitudes."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5_with_wheel(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        group.get_response_magnitudes()
-        cols_before = set(group.response_magnitudes.columns)
-        group.enrich_peak_velocity()
-        cols_after = set(group.response_magnitudes.columns)
-        assert cols_before == cols_after
-
-    def test_skips_sessions_without_wheel(self, tmp_path):
-        """Sessions without wheel data get NaN for peak_velocity."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=1)
-        # Write one with wheel, one without
-        _write_h5_with_wheel(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
-        _write_h5(tmp_path / 'eid-1.h5', n_trials=50, seed=1)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        group.load_response_traces()
-        group.get_response_magnitudes()
-        group.enrich_peak_velocity()
-        df = group.peak_velocity
-        eid0_pv = df[df['eid'] == 'eid-0']['peak_velocity']
-        eid1_pv = df[df['eid'] == 'eid-1']['peak_velocity']
-        assert eid0_pv.notna().any()
-        assert eid1_pv.isna().all()
-
-
 class TestFitWheelLMM:
 
-    def test_requires_peak_velocity(self, tmp_path):
+    def test_requires_trial_regressors(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=4, regions_per=1)
         for i in range(4):
@@ -4221,8 +4056,8 @@ class TestFitWheelLMM:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         group.get_response_magnitudes()
-        # Don't call enrich_peak_velocity
-        with pytest.raises(ValueError, match='peak_velocity'):
+        # Don't call get_trial_regressors
+        with pytest.raises(ValueError, match='trial_regressors'):
             group.fit_wheel_lmm()
 
     def test_returns_results(self, tmp_path):
@@ -4235,7 +4070,7 @@ class TestFitWheelLMM:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         group.get_response_magnitudes()
-        group.enrich_peak_velocity()
+        group.get_trial_regressors()
         group.fit_wheel_lmm()
         assert group.wheel_lmm_results is not None
         assert group.wheel_lmm_summary is not None
@@ -4249,7 +4084,7 @@ class TestFitWheelLMM:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         group.get_response_magnitudes()
-        group.enrich_peak_velocity()
+        group.get_trial_regressors()
         group.fit_wheel_lmm()
         if len(group.wheel_lmm_summary) > 0:
             expected = {'target_NM', 'contrast', 'dv', 'delta_r2',

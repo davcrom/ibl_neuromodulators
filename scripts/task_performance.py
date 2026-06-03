@@ -15,7 +15,7 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH, FIGURE_DPI,
-    RESPONSES_FPATH, TRIAL_TIMING_FPATH,
+    RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
@@ -62,9 +62,9 @@ if __name__ == '__main__':
         raise SystemExit(1)
 
     group.load_performance(PERFORMANCE_FPATH)
-    if RESPONSES_FPATH.exists() and TRIAL_TIMING_FPATH.exists():
+    if RESPONSES_FPATH.exists() and TRIAL_REGRESSORS_FPATH.exists():
         group.load_response_magnitudes(RESPONSES_FPATH)
-        group.load_trial_timing(TRIAL_TIMING_FPATH)
+        group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
 
     # =====================================================================
     # Figures
@@ -89,14 +89,14 @@ if __name__ == '__main__':
     print(f"Saved: {output_dir / 'target_comparison.svg'}")
 
     # --- RT distributions by contrast ---
-    if group.response_magnitudes is not None and group.trial_timing is not None:
+    if group.response_magnitudes is not None and group.trial_regressors is not None:
         print("\nGenerating RT-by-contrast figure...")
         fig3 = plot_rt_by_contrast(group)
         fig3.savefig(output_dir / 'rt_by_contrast.svg',
                      dpi=FIGURE_DPI, bbox_inches='tight')
         print(f"Saved: {output_dir / 'rt_by_contrast.svg'}")
     else:
-        print("\nSkipping RT figure: responses.pqt or trial_timing.pqt not found.")
+        print("\nSkipping RT figure: responses.pqt or trial_regressors.pqt not found.")
 
     # =====================================================================
     # Variance stabilization analysis — at what training performance level

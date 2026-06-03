@@ -23,10 +23,10 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
-    RESPONSES_DIR, RESPONSES_FPATH, TRIAL_TIMING_FPATH,
+    RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI,
-    ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
+    ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -34,16 +34,11 @@ from iblnm.task import add_relative_contrast
 from iblnm.util import collect_session_errors
 from iblnm.vis import (
     plot_relative_contrast,
-    plot_similarity_matrix,
-    plot_mean_response_vectors, plot_empirical_similarity,
-    plot_lmm_response, plot_lmm_summary,
-    plot_within_target_similarity,
+    plot_mean_response_vectors, plot_lmm_summary,
     plot_mean_response_traces,
 )
 from iblnm.analysis import (
     split_features_by_event,
-    cosine_similarity_matrix, within_between_similarity,
-    mean_similarity_by_target,
 )
 
 plt.ion()
@@ -72,7 +67,7 @@ def print_response_summary(df_responses):
     print(summary.to_string())
 
 
-def plot_response_figures(group, figures_dir, response_col='response_early'):
+def plot_response_figures(group, figures_dir, response_col='response'):
     """Plot response magnitude by contrast x feedback x hemisphere.
 
     Produces two sets of plots per (target_NM, event):
@@ -88,9 +83,11 @@ def plot_response_figures(group, figures_dir, response_col='response_early'):
     response_col : str
         Column name for the response magnitude.
     """
-    df_responses = add_relative_contrast(group.response_magnitudes.copy())
+    df_responses = group.response_magnitudes.merge(
+        group.trial_regressors, on=['eid', 'trial'], how='left')
+    df_responses = add_relative_contrast(df_responses)
 
-    window_label = response_col.replace('response_', '')
+    window_label = response_col
     df = df_responses.query('probabilityLeft == 0.5').dropna(subset=[response_col]).copy()
     df = df.query('choice != 0')
 
@@ -114,7 +111,7 @@ def plot_response_figures(group, figures_dir, response_col='response_early'):
 # =========================================================================
 
 def plot_lmm_figures(group, figures_dir, data_dir,
-                     response_col='response_early'):
+                     response_col='response'):
     """Generate per-target LMM response plots and consolidated summaries.
 
     Parameters
@@ -128,14 +125,16 @@ def plot_lmm_figures(group, figures_dir, data_dir,
     response_col : str
         Column name for the response magnitude (used for raw data overlay).
     """
-    window_label = response_col.replace('response_', '')
+    window_label = response_col
 
     if not group.lmm_results:
         print("  No LMM results to plot.")
         return
 
     # Prepare raw data for overlay
-    df_raw = add_relative_contrast(group.response_magnitudes.copy())
+    df_raw = group.response_magnitudes.merge(
+        group.trial_regressors, on=['eid', 'trial'], how='left')
+    df_raw = add_relative_contrast(df_raw)
     df_raw = df_raw.query('probabilityLeft == 0.5')
     df_raw = df_raw.dropna(subset=[response_col])
     df_raw = df_raw.query('choice != 0')
@@ -201,17 +200,6 @@ def plot_similarity_figures(group, similarity_dir, data_dir):
     """
     features = group.response_features
     per_event = split_features_by_event(features)
-
-    # Build subject lookup from recordings
-    recs = group.recordings.copy()
-    if 'fiber_idx' not in recs.columns:
-        recs['fiber_idx'] = 0
-    idx_cols = ['eid', 'target_NM', 'fiber_idx']
-    rec_indexed = (
-        recs[idx_cols + ['subject']]
-        .drop_duplicates(subset=idx_cols)
-        .set_index(idx_cols)
-    )
 
     for event_stem, event_features in per_event.items():
         print(f"\n  [{event_stem}] {len(event_features.columns)} features, "
@@ -313,7 +301,7 @@ if __name__ == '__main__':
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one)
     group.filter_sessions(
-        session_types=SESSION_TYPES_TO_ANALYZE,
+        session_types=('biased', 'ephys'),
         qc_blockers=ANALYSIS_QC_BLOCKERS,
         targetnms=TARGETNMS_TO_ANALYZE,
     )
@@ -329,9 +317,12 @@ if __name__ == '__main__':
         if not RESPONSE_MATRIX_FPATH.exists():
             print(f"Error: {RESPONSE_MATRIX_FPATH} not found. Run without --plot first.")
             raise SystemExit(1)
+        if not TRIAL_REGRESSORS_FPATH.exists():
+            print(f"Error: {TRIAL_REGRESSORS_FPATH} not found. Run without --plot first.")
+            raise SystemExit(1)
 
         group.load_response_magnitudes(RESPONSES_FPATH)
-        group.load_trial_timing(TRIAL_TIMING_FPATH)
+        group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
         group.load_response_features(RESPONSE_MATRIX_FPATH)
         group.load_mean_traces(MEAN_TRACES_FPATH)
 
@@ -348,16 +339,18 @@ if __name__ == '__main__':
         print("Computing trial-level response magnitudes...")
         group.get_response_magnitudes()
 
-        if group.trial_timing is not None:
-            group.trial_timing.to_parquet(TRIAL_TIMING_FPATH, index=False)
-            print(f"Saved trial timing to {TRIAL_TIMING_FPATH}")
-
         if len(group.response_magnitudes) == 0:
             print("No response magnitudes extracted. Check H5 files exist.")
             raise SystemExit(1)
 
         group.response_magnitudes.to_parquet(RESPONSES_FPATH, index=False)
         print(f"Saved response magnitudes to {RESPONSES_FPATH}")
+
+        # --- Trial regressors ---
+        print("Collecting trial regressors...")
+        group.get_trial_regressors()
+        group.trial_regressors.to_parquet(TRIAL_REGRESSORS_FPATH, index=False)
+        print(f"Saved trial regressors to {TRIAL_REGRESSORS_FPATH}")
 
         # --- Mean traces ---
         print("Computing mean traces...")
