@@ -3027,30 +3027,30 @@ def plot_movement_slopes(slopes_df):
         ax = axes[j]
         df_tv = slopes_df[slopes_df['timing_col'] == tvar]
 
+        # Map this panel's contrast levels to ranks for the x-axis.
+        panel_contrasts = sorted(df_tv['contrast'].unique())
+        rank = {c: i for i, c in enumerate(panel_contrasts)}
+
         for tnm in targets:
             df_tnm = df_tv[df_tv['target_NM'] == tnm].sort_values('contrast')
             if len(df_tnm) == 0:
                 continue
             color = TARGETNM_COLORS.get(tnm, 'gray')
-            contrasts = df_tnm['contrast'].values
-            coefs = df_tnm['timing_coef'].values
-            ci = 1.96 * df_tnm['timing_se'].values
-
-            ax.errorbar(contrasts, coefs, yerr=ci,
-                        marker='o', color=color, label=tnm,
-                        markersize=5, capsize=3)
-
-            # Mark significant slopes
-            sig = df_tnm['timing_p'] < 0.05
-            if sig.any():
-                ax.scatter(df_tnm.loc[sig.values, 'contrast'].values,
-                           df_tnm.loc[sig.values, 'timing_coef'].values,
-                           color=color, s=50, zorder=5,
-                           edgecolors='black', linewidths=0.5)
+            # One errorbar per point so marker fill can encode significance
+            # (filled = p < 0.05, open = n.s.), matching plot_lmm_summary. No
+            # connecting line.
+            for k, (_, row) in enumerate(df_tnm.iterrows()):
+                fs = 'full' if row['timing_p'] < 0.05 else 'none'
+                ax.errorbar(rank[row['contrast']], row['timing_coef'],
+                            yerr=1.96 * row['timing_se'], fmt='o', color=color,
+                            markersize=6, capsize=3, fillstyle=fs,
+                            label=tnm if k == 0 else '')
 
         timing_label = tvar.replace('log_', '')
         ax.set_title(timing_label)
         ax.set_xlabel('Contrast (%)')
+        ax.set_xticks(range(len(panel_contrasts)))
+        ax.set_xticklabels([f'{c:g}' for c in panel_contrasts])
         ax.axhline(0, ls='--', color='gray', lw=0.5)
         if j == 0:
             ax.set_ylabel('Timing slope (z / log₁₀ s)')

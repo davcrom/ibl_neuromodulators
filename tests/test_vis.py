@@ -2389,6 +2389,17 @@ class TestPlotMovementSlopes:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
+    def test_x_axis_is_contrast_rank(self):
+        """Contrasts (0, 25, 100) map to ranks (0, 1, 2) on the x-axis,
+        labelled with the raw contrast values."""
+        from iblnm.vis import plot_movement_slopes
+        df = _make_movement_slopes()
+        fig = plot_movement_slopes(df)
+        ax = fig.axes[0]
+        assert list(ax.get_xticks()) == [0, 1, 2]
+        assert [t.get_text() for t in ax.get_xticklabels()] == ['0', '25', '100']
+        plt.close(fig)
+
 
 # ---- Barplot orientation tests ----
 
