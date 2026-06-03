@@ -2749,6 +2749,31 @@ class TestFilterSessions:
         )
         assert 'subj-0' not in group.sessions['subject'].values
 
+    def test_excludes_eids_to_drop_by_default(self):
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.config import EIDS_TO_DROP
+        df = _make_sessions_df(n_eids=2, regions_per=1)
+        df.loc[0, 'eid'] = EIDS_TO_DROP[0]
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            qc_blockers=set(), targetnms=False,
+            min_performance=False, required_contrasts=False,
+        )
+        assert EIDS_TO_DROP[0] not in group.sessions['eid'].values
+        assert 'eid-1' in group.sessions['eid'].values
+
+    def test_exclude_eids_false_keeps_dropped(self):
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.config import EIDS_TO_DROP
+        df = _make_sessions_df(n_eids=2, regions_per=1)
+        df.loc[0, 'eid'] = EIDS_TO_DROP[0]
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            exclude_eids=False, qc_blockers=set(), targetnms=False,
+            min_performance=False, required_contrasts=False,
+        )
+        assert EIDS_TO_DROP[0] in group.sessions['eid'].values
+
     def test_filters_qc_blockers(self):
         from iblnm.data import PhotometrySessionGroup
         from iblnm.util import collect_session_errors

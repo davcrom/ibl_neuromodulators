@@ -15,7 +15,8 @@ from iblphotometry.qc import qc_signals
 from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
-    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EVENT_COMPLETENESS_THRESHOLD,
+    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EIDS_TO_DROP,
+    EVENT_COMPLETENESS_THRESHOLD,
     MIN_NTRIALS, MIN_PERFORMANCE, N_UNIQUE_SAMPLES_THRESHOLD,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
@@ -1488,6 +1489,7 @@ class PhotometrySessionGroup:
 
     def filter_sessions(self, session_types=SESSION_TYPES_TO_ANALYZE,
                         exclude_subjects=SUBJECTS_TO_EXCLUDE,
+                        exclude_eids=EIDS_TO_DROP,
                         qc_blockers=ANALYSIS_QC_BLOCKERS,
                         targetnms=TARGETNMS_TO_ANALYZE,
                         min_performance=MIN_PERFORMANCE,
@@ -1507,6 +1509,9 @@ class PhotometrySessionGroup:
             Session types to keep. Defaults to config.SESSION_TYPES_TO_ANALYZE.
         exclude_subjects : list of str or False
             Subjects to exclude. Defaults to config.SUBJECTS_TO_EXCLUDE.
+        exclude_eids : list of str or False
+            Specific session eids to exclude (curated drop-list). Defaults
+            to config.EIDS_TO_DROP.
         qc_blockers : set of str or False
             Error types that block a session. Defaults to
             config.ANALYSIS_QC_BLOCKERS. Silently skipped if
@@ -1535,6 +1540,7 @@ class PhotometrySessionGroup:
         # Build individual masks — False skips any filter
         type_mask = df['session_type'].isin(session_types) if session_types is not False else true
         subject_mask = ~df['subject'].isin(exclude_subjects) if exclude_subjects is not False else true
+        eid_mask = ~df['eid'].isin(exclude_eids) if exclude_eids is not False else true
         lab_mask = (df['lab'] == lab) if (lab is not False and 'lab' in df.columns) else true
 
         if start_time_min is not False and 'start_time' in df.columns:
@@ -1581,7 +1587,7 @@ class PhotometrySessionGroup:
         else:
             contrast_mask = true
 
-        mask = type_mask & subject_mask & lab_mask & start_mask & qc_mask & target_mask & perf_mask & contrast_mask
+        mask = type_mask & subject_mask & eid_mask & lab_mask & start_mask & qc_mask & target_mask & perf_mask & contrast_mask
 
         self._filter_mask = mask
         self._recordings_targetnms = targetnms
@@ -1590,6 +1596,7 @@ class PhotometrySessionGroup:
         lines = [f"filter_sessions: {n} -> {int(mask.sum())}"]
         for label, m in [
             ('session_type', type_mask), ('excluded_subjects', subject_mask),
+            ('excluded_eids', eid_mask),
             ('lab', lab_mask), ('start_time', start_mask),
             ('qc_errors', qc_mask), ('target_NM', target_mask),
             ('performance', perf_mask), ('contrasts', contrast_mask),
