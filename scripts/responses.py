@@ -416,6 +416,8 @@ if __name__ == '__main__':
         qc_blockers=ANALYSIS_QC_BLOCKERS,
         targetnms=TARGETNMS_TO_ANALYZE,
     )
+    dup_log = group.deduplicate()
+    print(f"  Deduplicated ({len(dup_log)} true-duplicate groups resolved)")
     print(f"  Recordings (session x region): {len(group)}")
 
     if args.plot:
