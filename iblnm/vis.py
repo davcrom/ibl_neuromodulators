@@ -2787,12 +2787,13 @@ _DV_LABELS = {
 
 
 def plot_movement_lmm_summary(summary_df):
-    """Dot-and-whisker plot of per-subject LOSO-CV delta-R².
+    """Dot-and-whisker plot of per-subject jackknife delta-R².
 
-    Two rows of panels: top shows delta_r2_contrast (unique variance from
-    contrast), bottom shows delta_r2_timing (unique variance from timing).
-    One column per timing variable. Each dot is one subject; horizontal bar
-    shows mean ± SEM.
+    Two rows of panels: top shows the marginal R² lost when contrast is removed
+    from the full model, bottom shows the R² lost when the movement variable is
+    removed. One column per movement variable. Each dot is one left-out subject;
+    horizontal bar shows mean ± SEM, so the spread flags whether one animal
+    drives the effect.
 
     Parameters
     ----------
@@ -2815,7 +2816,7 @@ def plot_movement_lmm_summary(summary_df):
         axes = axes.reshape(2, 1)
 
     if len(summary_df) == 0:
-        fig.suptitle('Movement encoding — LOSO-CV model comparison',
+        fig.suptitle('Movement encoding — jackknife ΔR²',
                      fontsize=LABELFONTSIZE)
         return fig
 
@@ -2827,8 +2828,8 @@ def plot_movement_lmm_summary(summary_df):
         timing_label = tvar.replace('log_', '')
 
         for row_idx, (delta_col, label) in enumerate([
-            ('delta_r2_contrast', r'$\Delta R^2$ (contrast unique)'),
-            ('delta_r2_timing', r'$\Delta R^2$ (timing unique)'),
+            ('delta_r2_contrast', r'$\Delta R^2$ lost removing contrast'),
+            ('delta_r2_timing', r'$\Delta R^2$ lost removing movement'),
         ]):
             ax = axes[row_idx, j]
 
@@ -2860,33 +2861,32 @@ def plot_movement_lmm_summary(summary_df):
             if row_idx == 0:
                 ax.set_title(timing_label)
 
-    fig.suptitle('Movement encoding — LOSO-CV model comparison',
+    fig.suptitle('Movement encoding — jackknife ΔR²',
                  fontsize=LABELFONTSIZE)
     return fig
 
 
 def plot_movement_r2_bars(summary_df):
-    """Out-of-sample R² of the three LOSO-CV models, per target-NM.
+    """In-sample marginal (FE) R² of the three additive models, per target-NM.
 
-    One panel per timing variable. Within a panel each target-NM gets a cluster
-    of three bars — contrast-only, timing-only, and full model — showing the
-    mean across held-out subjects (± SEM). Heights read two ways: contrast vs.
-    timing = proxy check; full vs. either = added value.
+    Full-dataset fit, no cross-validation. One panel per movement variable;
+    each target-NM gets three bars — contrast model (contrast + reward),
+    movement model (movement + reward), and full model. Heights read two ways:
+    contrast vs. movement = which predictor explains more; full vs. either =
+    added value.
 
     Parameters
     ----------
     summary_df : pd.DataFrame
-        One row per (target_NM, timing_col, subject). Required columns:
-        target_NM, timing_col, r2_contrast, r2_timing, r2_full.
+        One row per (target_NM, timing_col). Required columns: target_NM,
+        timing_col, r2_drop_movement, r2_drop_contrast, r2_full.
 
     Returns
     -------
     plt.Figure
     """
-    from scipy.stats import sem as scipy_sem
-
-    models = [('r2_contrast', 'contrast', '#888888'),
-              ('r2_timing', 'timing', '#1f77b4'),
+    models = [('r2_drop_movement', 'contrast', '#888888'),
+              ('r2_drop_contrast', 'movement', '#1f77b4'),
               ('r2_full', 'full', '#d62728')]
     timing_vars = sorted(summary_df['timing_col'].unique()) if len(summary_df) > 0 else []
     n_panels = max(len(timing_vars), 1)
@@ -2897,7 +2897,7 @@ def plot_movement_r2_bars(summary_df):
         axes = [axes]
 
     if len(summary_df) == 0:
-        fig.suptitle('Movement encoding — out-of-sample R²', fontsize=LABELFONTSIZE)
+        fig.suptitle('Movement encoding — marginal R²', fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(summary_df['target_NM'].unique(),
@@ -2907,23 +2907,22 @@ def plot_movement_r2_bars(summary_df):
     for ax, tvar in zip(axes, timing_vars):
         df_tv = summary_df[summary_df['timing_col'] == tvar]
         for i, tnm in enumerate(targets):
-            vals = df_tv[df_tv['target_NM'] == tnm]
-            if len(vals) == 0:
+            row = df_tv[df_tv['target_NM'] == tnm]
+            if len(row) == 0:
                 continue
             for k, (col, label, color) in enumerate(models):
                 offset = (k - (len(models) - 1) / 2) * bar_w
-                se = scipy_sem(vals[col]) if len(vals) > 1 else 0
-                ax.bar(i + offset, vals[col].mean(), width=bar_w, color=color,
-                       yerr=se, capsize=2, label=label if i == 0 else '')
+                ax.bar(i + offset, row[col].iloc[0], width=bar_w, color=color,
+                       label=label if i == 0 else '')
         ax.set_xticks(range(len(targets)))
         ax.set_xticklabels(targets, rotation=30, ha='right', fontsize=TICKFONTSIZE)
         ax.axhline(0, ls='--', color='gray', lw=0.5)
         ax.set_title(tvar.replace('log_', ''))
 
-    axes[0].set_ylabel('Out-of-sample R²')
+    axes[0].set_ylabel('Marginal R²')
     axes[-1].legend(frameon=False, fontsize=TICKFONTSIZE,
                     loc='upper left', bbox_to_anchor=(1, 1))
-    fig.suptitle('Movement encoding — out-of-sample R²', fontsize=LABELFONTSIZE)
+    fig.suptitle('Movement encoding — marginal R²', fontsize=LABELFONTSIZE)
     return fig
 
 
