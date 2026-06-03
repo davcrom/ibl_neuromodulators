@@ -2931,6 +2931,68 @@ def plot_movement_lmm_summary(summary_df):
     return fig
 
 
+def plot_movement_r2_bars(summary_df):
+    """Out-of-sample R² of the three LOSO-CV models, per target-NM.
+
+    One panel per timing variable. Within a panel each target-NM gets a cluster
+    of three bars — contrast-only, timing-only, and full model — showing the
+    mean across held-out subjects (± SEM). Heights read two ways: contrast vs.
+    timing = proxy check; full vs. either = added value.
+
+    Parameters
+    ----------
+    summary_df : pd.DataFrame
+        One row per (target_NM, timing_col, subject). Required columns:
+        target_NM, timing_col, r2_contrast, r2_timing, r2_full.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    from scipy.stats import sem as scipy_sem
+
+    models = [('r2_contrast', 'contrast', '#888888'),
+              ('r2_timing', 'timing', '#1f77b4'),
+              ('r2_full', 'full', '#d62728')]
+    timing_vars = sorted(summary_df['timing_col'].unique()) if len(summary_df) > 0 else []
+    n_panels = max(len(timing_vars), 1)
+
+    fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels + 1, 4),
+                             sharey=True, layout='constrained')
+    if n_panels == 1:
+        axes = [axes]
+
+    if len(summary_df) == 0:
+        fig.suptitle('Movement encoding — out-of-sample R²', fontsize=LABELFONTSIZE)
+        return fig
+
+    targets = sorted(summary_df['target_NM'].unique(),
+                     key=lambda x: TARGETNM2POSITION.get(x, 999))
+    bar_w = 0.8 / len(models)
+
+    for ax, tvar in zip(axes, timing_vars):
+        df_tv = summary_df[summary_df['timing_col'] == tvar]
+        for i, tnm in enumerate(targets):
+            vals = df_tv[df_tv['target_NM'] == tnm]
+            if len(vals) == 0:
+                continue
+            for k, (col, label, color) in enumerate(models):
+                offset = (k - (len(models) - 1) / 2) * bar_w
+                se = scipy_sem(vals[col]) if len(vals) > 1 else 0
+                ax.bar(i + offset, vals[col].mean(), width=bar_w, color=color,
+                       yerr=se, capsize=2, label=label if i == 0 else '')
+        ax.set_xticks(range(len(targets)))
+        ax.set_xticklabels(targets, rotation=30, ha='right', fontsize=TICKFONTSIZE)
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+        ax.set_title(tvar.replace('log_', ''))
+
+    axes[0].set_ylabel('Out-of-sample R²')
+    axes[-1].legend(frameon=False, fontsize=TICKFONTSIZE,
+                    loc='upper left', bbox_to_anchor=(1, 1))
+    fig.suptitle('Movement encoding — out-of-sample R²', fontsize=LABELFONTSIZE)
+    return fig
+
+
 def plot_movement_slopes(slopes_df):
     """Timing slope (± 95% CI) as a function of contrast, per target_NM.
 

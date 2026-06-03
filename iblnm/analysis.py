@@ -2044,18 +2044,29 @@ def feature_unique_contribution(response_matrix, labels, subjects,
 def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
     """Leave-one-subject-out cross-validated comparison of timing vs. contrast.
 
-    For each held-out subject, fits three LMMs on the remaining subjects.
-    Models containing the timing term carry a by-subject random slope for it
-    ``(1 + timing | subject)``; the drop-timing model keeps a random intercept
-    only ``(1 | subject)``:
+    For each held-out subject, fits three LMMs on the remaining subjects. All
+    three share a random intercept only ``(1 | subject)`` so that each delta-R²
+    isolates a single fully-interacted predictor group: predictions use fixed
+    effects only, so a differing random structure would otherwise perturb the
+    fixed-effect estimates and conflate "dropped the predictor" with "changed
+    the random structure".
 
-    - Full: ``response ~ contrast + side + reward + timing + (1 + timing | subject)``
-    - Drop-contrast: ``response ~ side + reward + timing + (1 + timing | subject)``
-    - Drop-timing: ``response ~ contrast + side + reward + (1 | subject)``
+    - Contrast (baseline): ``response ~ contrast * side * reward``
+    - Timing (substituted): ``response ~ timing * side * reward``
+    - Full: ``response ~ contrast * side * reward * timing``
 
-    Predicts the held-out subject's trials using fixed effects only, then
-    computes R² = 1 - SS_res / SS_tot on those trials. The delta-R² between
-    models is a fair comparison because the missing random intercept cancels.
+    The task structure matches the response GLM (``fit_response_lmm``), so the
+    contrast model is literally that GLM's task model. Predicts the held-out
+    subject's trials using fixed effects only, then computes
+    R² = 1 - SS_res / SS_tot on those trials.
+
+    - ``delta_r2_timing = r2_full - r2_contrast`` — variance from all
+      timing-involving terms (including contrast×timing).
+    - ``delta_r2_contrast = r2_full - r2_timing`` — variance from all
+      contrast-involving terms (including contrast×timing).
+
+    Because contrast×timing terms are removed when dropping either block, that
+    interaction variance is counted in both deltas; they do not partition R².
 
     Contrast is rank-coded and mean-centered. Side and reward use deviation
     coding (±0.5). The timing column should already be log-transformed.
@@ -2076,18 +2087,16 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
     Returns
     -------
     pd.DataFrame
-        One row per subject with columns: subject, n_trials, r2_full,
-        r2_drop_contrast, r2_drop_timing, delta_r2_contrast,
-        delta_r2_timing, timing_col. Empty DataFrame if fewer than
-        min_subjects.
+        One row per subject with columns: subject, n_trials, r2_contrast,
+        r2_timing, r2_full, delta_r2_contrast, delta_r2_timing, timing_col.
+        Empty DataFrame if fewer than min_subjects.
     """
     from patsy import dmatrix
     import pandas as pd
 
     empty = pd.DataFrame(columns=[
-        'subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
-        'r2_drop_timing', 'delta_r2_contrast', 'delta_r2_timing',
-        'timing_col',
+        'subject', 'n_trials', 'r2_contrast', 'r2_timing', 'r2_full',
+        'delta_r2_contrast', 'delta_r2_timing', 'timing_col',
     ])
 
     _transform, _ = get_contrast_coding('rank')
@@ -2104,9 +2113,14 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
     df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
     df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
 
-    full_formula = f'{response_col} ~ contrast + side + reward + {timing_col}'
-    drop_contrast_formula = f'{response_col} ~ side + reward + {timing_col}'
-    drop_timing_formula = f'{response_col} ~ contrast + side + reward'
+    contrast_formula = f'{response_col} ~ contrast * side * reward'
+    timing_formula = f'{response_col} ~ {timing_col} * side * reward'
+    full_formula = f'{response_col} ~ contrast * side * reward * {timing_col}'
+
+    def _predict_fe(lmm_result, df_held):
+        design_info = lmm_result.result.model.data.orig_exog.design_info
+        X = np.asarray(dmatrix(design_info, df_held))
+        return X @ lmm_result.result.fe_params.values
 
     rows = []
     for held_out in subjects:
@@ -2118,19 +2132,17 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
         if df_train['subject'].nunique() < 2:
             continue
 
-        # Fit three models on training data. Models that include the timing
-        # term get a by-subject random slope for it; the drop-timing model
-        # keeps a random intercept only.
+        # All three models share a random intercept only.
+        contrast = _fit_lmm(contrast_formula, df_train,
+                            groups=df_train['subject'], re_formula='1',
+                            reml=False)
+        timing = _fit_lmm(timing_formula, df_train,
+                          groups=df_train['subject'], re_formula='1',
+                          reml=False)
         full = _fit_lmm(full_formula, df_train, groups=df_train['subject'],
-                         re_formula=f'1 + {timing_col}', reml=False)
-        drop_c = _fit_lmm(drop_contrast_formula, df_train,
-                           groups=df_train['subject'],
-                           re_formula=f'1 + {timing_col}', reml=False)
-        drop_t = _fit_lmm(drop_timing_formula, df_train,
-                           groups=df_train['subject'],
-                           re_formula='1', reml=False)
+                        re_formula='1', reml=False)
 
-        if full is None or drop_c is None or drop_t is None:
+        if contrast is None or timing is None or full is None:
             continue
 
         # Predict held-out trials using fixed effects only
@@ -2139,27 +2151,18 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
         if ss_tot == 0:
             continue
 
-        def _predict_fe(lmm_result, df_held):
-            design_info = lmm_result.result.model.data.orig_exog.design_info
-            X = np.asarray(dmatrix(design_info, df_held))
-            return X @ lmm_result.result.fe_params.values
-
-        pred_full = _predict_fe(full, df_test)
-        pred_drop_c = _predict_fe(drop_c, df_test)
-        pred_drop_t = _predict_fe(drop_t, df_test)
-
-        r2_full = 1 - np.sum((y_test - pred_full) ** 2) / ss_tot
-        r2_dc = 1 - np.sum((y_test - pred_drop_c) ** 2) / ss_tot
-        r2_dt = 1 - np.sum((y_test - pred_drop_t) ** 2) / ss_tot
+        r2_contrast = 1 - np.sum((y_test - _predict_fe(contrast, df_test)) ** 2) / ss_tot
+        r2_timing = 1 - np.sum((y_test - _predict_fe(timing, df_test)) ** 2) / ss_tot
+        r2_full = 1 - np.sum((y_test - _predict_fe(full, df_test)) ** 2) / ss_tot
 
         rows.append({
             'subject': held_out,
             'n_trials': len(df_test),
+            'r2_contrast': float(r2_contrast),
+            'r2_timing': float(r2_timing),
             'r2_full': float(r2_full),
-            'r2_drop_contrast': float(r2_dc),
-            'r2_drop_timing': float(r2_dt),
-            'delta_r2_contrast': float(r2_full - r2_dc),
-            'delta_r2_timing': float(r2_full - r2_dt),
+            'delta_r2_contrast': float(r2_full - r2_timing),
+            'delta_r2_timing': float(r2_full - r2_contrast),
             'timing_col': timing_col,
         })
 

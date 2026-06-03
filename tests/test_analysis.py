@@ -2537,9 +2537,8 @@ class TestLosoCVMovementLMM:
         df = _make_movement_lmm_df()
         result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
         expected_cols = {
-            'subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
-            'r2_drop_timing', 'delta_r2_contrast', 'delta_r2_timing',
-            'timing_col',
+            'subject', 'n_trials', 'r2_contrast', 'r2_timing', 'r2_full',
+            'delta_r2_contrast', 'delta_r2_timing', 'timing_col',
         }
         assert expected_cols <= set(result.columns)
 
@@ -2560,24 +2559,22 @@ class TestLosoCVMovementLMM:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
 
-    def test_random_slope_re_formulas(self):
-        """Models containing the timing term use a by-subject random slope
-        '1 + timing'; the drop-timing model keeps a random intercept '1'."""
+    def test_model_formulas_and_intercept_only_re(self):
+        """All three models share a random intercept only ('1'), with the
+        interaction fixed-effect structures: contrast baseline, timing
+        substituted, and the four-way full model."""
         from unittest.mock import patch
         from iblnm import analysis
         df = _make_movement_lmm_df()
         with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
             analysis.loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
-        # Each fold fits full, drop-contrast, drop-timing before the None check.
-        re_by_formula = {
-            call.args[0]: call.kwargs['re_formula']
-            for call in mock_fit.call_args_list
-        }
-        for formula, re_formula in re_by_formula.items():
-            if 'log_reaction_time' in formula:
-                assert re_formula == '1 + log_reaction_time'
-            else:
-                assert re_formula == '1'
+        formulas = {call.args[0] for call in mock_fit.call_args_list}
+        re_formulas = {call.kwargs['re_formula'] for call in mock_fit.call_args_list}
+        assert re_formulas == {'1'}
+        assert 'response ~ contrast * side * reward' in formulas
+        assert 'response ~ log_reaction_time * side * reward' in formulas
+        assert ('response ~ contrast * side * reward * log_reaction_time'
+                in formulas)
 
 
 class TestFitMovementLMMPerContrast:

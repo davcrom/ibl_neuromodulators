@@ -38,6 +38,7 @@ from iblnm.vis import (
     plot_mean_response_vectors, plot_lmm_summary,
     plot_mean_response_traces,
     plot_movement_response, plot_movement_lmm_summary, plot_movement_slopes,
+    plot_movement_r2_bars,
 )
 from iblnm.analysis import (
     split_features_by_event,
@@ -325,6 +326,10 @@ def _movement_model_comparison(df_resp, figures_dir, data_dir):
     df_cv_all.to_csv(data_dir / 'loso_cv_model_comparison.csv', index=False)
     fig = plot_movement_lmm_summary(df_cv_all)
     fig.savefig(figures_dir / 'model_comparison.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+    fig = plot_movement_r2_bars(df_cv_all)
+    fig.savefig(figures_dir / 'r2_model_comparison.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
 

@@ -2312,8 +2312,7 @@ def _make_movement_lmm_summary():
                 rows.append({
                     'target_NM': tnm, 'timing_col': tvar, 'subject': subj,
                     'n_trials': 200,
-                    'r2_full': 0.05, 'r2_drop_contrast': 0.02,
-                    'r2_drop_timing': 0.03,
+                    'r2_contrast': 0.03, 'r2_timing': 0.02, 'r2_full': 0.05,
                     'delta_r2_contrast': 0.03, 'delta_r2_timing': 0.02,
                 })
     return pd.DataFrame(rows)
@@ -2349,6 +2348,25 @@ class TestPlotMovementLMMSummary:
             'lrt_contrast_p', 'lrt_timing_p', 'bf_contrast', 'bf_timing',
         ])
         fig = plot_movement_lmm_summary(df)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
+class TestPlotMovementR2Bars:
+    def test_returns_figure(self):
+        from iblnm.vis import plot_movement_r2_bars
+        df = _make_movement_lmm_summary()
+        fig = plot_movement_r2_bars(df)
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_empty_df(self):
+        from iblnm.vis import plot_movement_r2_bars
+        df = pd.DataFrame(columns=[
+            'target_NM', 'timing_col', 'subject',
+            'r2_contrast', 'r2_timing', 'r2_full',
+        ])
+        fig = plot_movement_r2_bars(df)
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
