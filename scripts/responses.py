@@ -17,6 +17,7 @@ Usage:
 """
 import argparse
 
+import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 
@@ -36,10 +37,16 @@ from iblnm.vis import (
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
     plot_mean_response_traces,
+    plot_movement_response, plot_movement_lmm_summary, plot_movement_slopes,
 )
 from iblnm.analysis import (
     split_features_by_event,
+    loso_cv_movement_lmm, fit_movement_lmm_per_contrast,
 )
+
+TIMING_VARS = ['reaction_time', 'movement_time', 'peak_velocity']
+MIN_SUBJECTS_MOVEMENT = 2
+MIN_TRIALS_MOVEMENT = 20
 
 plt.ion()
 
@@ -259,6 +266,107 @@ def plot_similarity_figures(group, similarity_dir, data_dir):
         # sim.to_parquet(data_dir / f'similarity_matrix_{event_stem}.pqt')
 
 
+# =========================================================================
+# Movement encoding
+# =========================================================================
+
+def build_movement_df(group):
+    """Merge stimOn response magnitudes with trial regressors for modeling.
+
+    Keeps unbiased-block go trials with ``response_time > 0.05`` and a
+    non-null response, adds hemisphere-relative contrast/side, and appends a
+    ``log_<var>`` column per timing variable (NaN where the value is ≤ 0).
+    """
+    df = group.response_magnitudes.query("event == 'stimOn_times'").merge(
+        group.trial_regressors, on=['eid', 'trial'], how='left')
+    df = add_relative_contrast(df)
+    df = df.query(
+        'probabilityLeft == 0.5 and choice != 0 and response_time > 0.05')
+    df = df.dropna(subset=['response']).copy()
+    for var in TIMING_VARS:
+        df[f'log_{var}'] = np.where(df[var] > 0, np.log10(df[var]), np.nan)
+    return df
+
+
+def _movement_descriptive_figures(df_resp, figures_dir):
+    """NM response vs log(timing) per (target_NM, contrast, predictor)."""
+    for (target_nm, contrast), df_group in df_resp.groupby(
+            ['target_NM', 'contrast']):
+        if df_group['subject'].nunique() < MIN_SUBJECTS_MOVEMENT:
+            continue
+        for var in TIMING_VARS:
+            df_valid = df_group.dropna(subset=[f'log_{var}'])
+            if len(df_valid) < MIN_TRIALS_MOVEMENT:
+                continue
+            fig = plot_movement_response(
+                df_valid, 'response', f'log_{var}', target_nm, contrast)
+            fname = f'{target_nm}_stimOn_{var}_c{contrast:g}.svg'
+            fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+            plt.close(fig)
+
+
+def _movement_model_comparison(df_resp, figures_dir, data_dir):
+    """LOSO-CV ΔR² (contrast vs timing) per (target_NM, predictor)."""
+    cv_frames = []
+    for target_nm, df_tnm in df_resp.groupby('target_NM'):
+        for var in TIMING_VARS:
+            df_valid = df_tnm.dropna(subset=[f'log_{var}'])
+            if len(df_valid) < MIN_TRIALS_MOVEMENT:
+                continue
+            df_cv = loso_cv_movement_lmm(df_valid, 'response', f'log_{var}')
+            if df_cv.empty:
+                continue
+            df_cv['target_NM'] = target_nm
+            cv_frames.append(df_cv)
+
+    if not cv_frames:
+        return
+    df_cv_all = pd.concat(cv_frames, ignore_index=True)
+    df_cv_all.to_csv(data_dir / 'loso_cv_model_comparison.csv', index=False)
+    fig = plot_movement_lmm_summary(df_cv_all)
+    fig.savefig(figures_dir / 'model_comparison.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _movement_per_contrast_slopes(df_resp, figures_dir, data_dir):
+    """Per-(target_NM, contrast, predictor) timing slopes."""
+    slope_rows = []
+    for (target_nm, contrast), df_group in df_resp.groupby(
+            ['target_NM', 'contrast']):
+        if df_group['subject'].nunique() < MIN_SUBJECTS_MOVEMENT:
+            continue
+        for var in TIMING_VARS:
+            df_valid = df_group.dropna(subset=[f'log_{var}'])
+            if len(df_valid) < MIN_TRIALS_MOVEMENT:
+                continue
+            result = fit_movement_lmm_per_contrast(
+                df_valid, 'response', f'log_{var}')
+            if result is None:
+                continue
+            slope_rows.append({**result, 'target_NM': target_nm,
+                               'contrast': contrast})
+
+    if not slope_rows:
+        return
+    df_slopes = pd.DataFrame(slope_rows)
+    df_slopes.to_csv(data_dir / 'per_contrast_slopes.csv', index=False)
+    fig = plot_movement_slopes(df_slopes)
+    fig.savefig(figures_dir / 'timing_slopes_by_contrast.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_movement_figures(group, fig_dirs, data_dir):
+    """Run the three movement-variable analyses off the merged modeling frame."""
+    df_resp = build_movement_df(group)
+    _movement_descriptive_figures(df_resp, fig_dirs['movement_descriptive'])
+    _movement_model_comparison(
+        df_resp, fig_dirs['movement_model_comparison'], data_dir)
+    _movement_per_contrast_slopes(
+        df_resp, fig_dirs['movement_slopes'], data_dir)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -282,6 +390,9 @@ if __name__ == '__main__':
         'similarity': fig_base / 'similarity',
         'target_decoding': fig_base / 'target_decoding',
         'traces': fig_base / 'traces',
+        'movement_descriptive': fig_base / 'movement/descriptive',
+        'movement_model_comparison': fig_base / 'movement/model_comparison',
+        'movement_slopes': fig_base / 'movement/slopes',
     }
     for d in fig_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
@@ -430,6 +541,13 @@ if __name__ == '__main__':
         print(f"  {tnm} x {ev}: R2 marginal={ve['marginal']:.3f}, "
               f"conditional={ve['conditional']:.3f}")
     plot_lmm_figures(group, fig_dirs['lmm'], data_dir)
+
+    # =====================================================================
+    # Movement encoding (descriptive, LOSO ΔR², per-contrast slopes)
+    # =====================================================================
+    print("\nRunning movement-variable encoding analyses...")
+    plot_movement_figures(group, fig_dirs, data_dir)
+    print(f"Movement figures saved under {fig_base / 'movement'}")
 
     # =====================================================================
     # Response vectors: per-event similarity
