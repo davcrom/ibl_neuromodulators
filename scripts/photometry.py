@@ -39,12 +39,12 @@ def process_session(ps, reprocess=False):
     """
     import h5py
 
-    # Skip if already processed (signal group exists in H5)
+    # Skip if already processed (photometry group exists in H5)
     if not reprocess:
         h5_path = SESSIONS_H5_DIR / f'{ps.eid}.h5'
         if h5_path.exists():
             with h5py.File(h5_path, 'r') as f:
-                if 'preprocessed' in f:
+                if 'photometry' in f:
                     return 'skipped'
 
     # Block 1: Load data (fatal)
@@ -69,7 +69,7 @@ def process_session(ps, reprocess=False):
 
     # Block 3: Preprocess + save signal and QC (fatal)
     ps.preprocess()
-    ps.save_h5(groups=['signal', 'photometry_qc_metrics'])
+    ps.save_h5(groups=['photometry'])
 
     # Block 4: Extract responses
     # Too few trials (fatal)
@@ -88,7 +88,7 @@ def process_session(ps, reprocess=False):
 
     if events_to_extract:
         ps.extract_responses(events=events_to_extract)
-        ps.save_h5(groups=['responses'])
+        ps.save_h5(groups=['photometry'])
 
     return 'processed'
 

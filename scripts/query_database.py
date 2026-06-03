@@ -7,12 +7,12 @@ metadata into a catalog parquet and an aggregated error log.
 Usage:
     python scripts/query_database.py                  # incremental (skip existing)
     python scripts/query_database.py --redownload     # re-query all sessions
-    python scripts/query_database.py --workers 4      # parallel queries
     python scripts/query_database.py --extended-qc    # also fetch extended QC
 """
 import argparse
 
 import pandas as pd
+from tqdm import tqdm
 
 from one.api import ONE
 
@@ -20,7 +20,7 @@ from iblnm.config import (
     SESSION_SCHEMA, SESSIONS_FPATH, SESSIONS_QC_FPATH, SESSIONS_H5_DIR,
     QUERY_DATABASE_LOG_FPATH,
 )
-from iblnm.data import PhotometrySessionGroup
+from iblnm.data import PhotometrySession
 from iblnm.io import get_extended_qc
 from iblnm.util import (
     collect_catalog, collect_errors,
@@ -29,10 +29,33 @@ from iblnm.util import (
 )
 
 
-def query_session(ps):
-    """Query Alyx metadata for a single session and save to H5."""
-    ps.from_alyx()
-    ps.save_h5(groups=['metadata', 'errors'])
+def query_session(row, one):
+    """Query Alyx metadata for a single session and save to H5.
+
+    Parameters
+    ----------
+    row : pd.Series
+        Session row from the Alyx DataFrame.
+    one : one.api.One
+        ONE connection instance.
+
+    Returns
+    -------
+    str or None
+        The eid on success, None on constructor failure.
+    """
+    h5_path = SESSIONS_H5_DIR / f"{row['eid']}.h5"
+    try:
+        ps = PhotometrySession(row, one=one, load_data=False)
+    except Exception:
+        return None
+
+    try:
+        ps.from_alyx()
+    except Exception as e:
+        ps.log_error(e)
+
+    ps.save_h5(h5_path, groups=['metadata', 'errors'], mode='w')
     return ps.eid
 
 
@@ -40,8 +63,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Query IBL fibrephotometry database')
     parser.add_argument('--redownload', action='store_true',
                         help='Re-query all sessions, ignoring existing H5 files')
-    parser.add_argument('--workers', '-w', type=int, default=1,
-                        help='Number of parallel workers')
     parser.add_argument('--extended-qc', action='store_true',
                         help='Fetch extended QC data (saved to separate file)')
     args = parser.parse_args()
@@ -70,11 +91,11 @@ if __name__ == '__main__':
 
     # Process sessions
     if len(df) > 0:
-        group = PhotometrySessionGroup(df, one=one)
-        results = group.process(query_session, workers=args.workers)
+        tqdm.pandas(desc="Querying Alyx")
+        results = df.progress_apply(query_session, axis=1, one=one)
 
-        n_ok = sum(1 for r in results if r is not None)
-        n_failed = sum(1 for r in results if r is None)
+        n_ok = results.notna().sum()
+        n_failed = results.isna().sum()
         print(f"\nQueried: {n_ok} succeeded, {n_failed} failed")
 
     # Collect catalog from all H5 files
@@ -112,9 +133,8 @@ if __name__ == '__main__':
     error_log = []
     df_qc = None
     if args.extended_qc:
-        from tqdm import tqdm
         print("Fetching extended QC...")
-        tqdm.pandas()
+        tqdm.pandas(desc="Fetching extended QC")
         df_qc = df_sessions[['eid']].copy()
         df_qc = df_qc.progress_apply(
             get_extended_qc, axis='columns', exlog=error_log
