@@ -62,7 +62,7 @@ metadata/fibers.csv  # Fiber insertion coordinates (tracked)
 # Generated outputs (gitignored)
 metadata/            # sessions.pqt, error logs (*.pqt)
 data/                # qc_photometry.pqt, performance.pqt, sessions/*.h5
-results/             # Analysis CSVs (responses/, movement_encoding/, task_encoding/)
+results/             # Analysis CSVs (responses/, task_encoding/)
 figures/             # Output plots
 
 # Local working files (gitignored)
@@ -229,8 +229,8 @@ and initializes list columns (replaces NaN with `[]`). Called when loading
 - **Parquet for tabular data, HDF5 for session data**: `sessions.pqt` is the
   central catalog; signals, trials, and responses live in `data/sessions/{eid}.h5`.
 - **Analysis outputs go in `results/`**: each analysis script writes to its
-  own subdirectory (`results/responses/`, `results/movement_encoding/`,
-  `results/task_encoding/`). Output paths are defined in `config.py`.
+  own subdirectory (`results/responses/`, `results/task_encoding/`). Output
+  paths are defined in `config.py`.
 - **Error logs**: unified schema `['eid', 'error_type', 'error_message', 'traceback']`.
   One parquet log per pipeline stage in `metadata/`.
 - **Signed-zero in `signed_contrast`**: zero-contrast trials encode stimulus

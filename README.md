@@ -113,8 +113,7 @@ Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and all error logs
 
 | Script | Purpose |
 |---|---|
-| `responses.py` | Trial-level response magnitudes, LMM fits, response feature vectors, similarity, and decoding |
-| `movement_encoding.py` | LOSO cross-validated model comparison of contrast vs. timing predictors, per-contrast slopes |
+| `responses.py` | Trial-level response magnitudes, LMM fits, response feature vectors, similarity, decoding, and movement-variable encoding (descriptive, LOSO ΔR², per-contrast timing slopes) |
 | `task_encoding.py` | Per-session GLM encoding decomposed via PCA/ICA, per-cohort CCA |
 | `task_performance.py` | Learning curves, psychometric trajectories per target |
 | `qc_overview.py` | QC metric distributions (histograms, violins, PCA, temporal trends) |
@@ -360,6 +359,9 @@ Downstream scripts read upstream error logs via `collect_session_errors()` and f
 
 ### `results/responses/responses.pqt` — one row per (recording x event x trial)
 
+Recording keys + response magnitude only. Trial-level task and movement
+predictors live in `trial_regressors.pqt` (join on `eid`, `trial`).
+
 | Column | Type | Description |
 |---|---|---|
 | `eid` | str | Session UUID |
@@ -371,14 +373,26 @@ Downstream scripts read upstream error logs via `collect_session_errors()` and f
 | `hemisphere` | str | l / r |
 | `event` | str | stimOn_times / firstMovement_times / feedback_times |
 | `trial` | int | Trial index |
+| `response` | float | Mean response in early window (0.1-0.35s) |
+
+### `results/responses/trial_regressors.pqt` — one row per (eid x trial)
+
+Per-trial task and movement predictors. Join to `responses.pqt` on `eid`, `trial`.
+
+| Column | Type | Description |
+|---|---|---|
+| `eid` | str | Session UUID |
+| `trial` | int | Trial index |
 | `signed_contrast` | float | Signed stimulus contrast |
 | `contrast` | float | Unsigned stimulus contrast |
+| `stim_side` | str | left / right |
 | `choice` | float | -1 left / 0 no-go / 1 right |
 | `feedbackType` | float | 1 reward / -1 punishment |
 | `probabilityLeft` | float | Block probability |
-| `stim_side` | str | left / right |
 | `reaction_time` | float | firstMovement - stimOn (seconds) |
-| `response_early` | float | Mean response in early window (0.1-0.35s) |
+| `movement_time` | float | feedback - firstMovement (seconds) |
+| `response_time` | float | feedback - stimOn (seconds) |
+| `peak_velocity` | float | Max abs wheel velocity per trial |
 
 ### `results/responses/response_matrix.pqt` — one row per recording
 
@@ -505,7 +519,7 @@ tests/                      # pytest (synthetic fixtures, no Alyx calls)
 # Generated outputs (gitignored)
 metadata/                   # sessions.pqt, error logs (fibers.csv is tracked)
 data/                       # qc_photometry.pqt, performance.pqt, sessions/*.h5
-results/                    # Analysis outputs (responses/, movement_encoding/, task_encoding/)
+results/                    # Analysis outputs (responses/, task_encoding/)
 figures/                    # Output plots
 specs/                      # Design specs (gitignored, local working docs)
 ```
