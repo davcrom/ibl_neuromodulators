@@ -290,9 +290,8 @@ def build_movement_df(group):
 
 
 def _movement_descriptive_figures(df_resp, figures_dir):
-    """NM response vs log(timing) per (target_NM, contrast, predictor)."""
-    for (target_nm, contrast), df_group in df_resp.groupby(
-            ['target_NM', 'contrast']):
+    """NM response vs log(timing) per (target_NM, predictor); contrast as color."""
+    for target_nm, df_group in df_resp.groupby('target_NM'):
         if df_group['subject'].nunique() < MIN_SUBJECTS_MOVEMENT:
             continue
         for var in TIMING_VARS:
@@ -300,8 +299,8 @@ def _movement_descriptive_figures(df_resp, figures_dir):
             if len(df_valid) < MIN_TRIALS_MOVEMENT:
                 continue
             fig = plot_movement_response(
-                df_valid, 'response', f'log_{var}', target_nm, contrast)
-            fname = f'{target_nm}_stimOn_{var}_c{contrast:g}.svg'
+                df_valid, 'response', f'log_{var}', target_nm)
+            fname = f'{target_nm}_stimOn_{var}.svg'
             fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
             plt.close(fig)
 

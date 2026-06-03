@@ -1451,122 +1451,56 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
 
 
 def plot_movement_response(df_group, response_col, timing_col, target_nm,
-                           contrast, fig=None, n_bins=8, min_trials=10):
-    """Plot response magnitude by timing-variable quantile bins, contra vs ipsi.
+                           fig=None):
+    """Scatter response magnitude against a timing variable, colored by contrast.
 
-    Analogous to ``plot_relative_contrast`` but with a continuous timing
-    variable (log-transformed, quantile-binned) on the x-axis instead of
-    contrast levels.
+    One point per trial (low alpha to show density), with contrast level mapped
+    to a continuous color scale. Pools all contrasts and sides into a single
+    panel.
 
     Parameters
     ----------
     df_group : pd.DataFrame
-        Pre-filtered rows for one (target_NM, contrast) group with columns
-        ``side`` ('contra' / 'ipsi'), ``feedbackType``, ``subject``,
-        ``<response_col>``, and ``<timing_col>`` (already log10-transformed).
+        Rows for one (target_NM, timing variable) group with columns
+        ``subject``, ``contrast``, ``<response_col>``, and ``<timing_col>``
+        (already log10-transformed).
     response_col : str
         Column name for the response magnitude.
     timing_col : str
         Column name for the log-transformed timing variable.
     target_nm : str
-        Target neuromodulator label; used for title and color lookup.
-    contrast : float
-        Contrast level; used for the title.
+        Target neuromodulator label; used for the title.
     fig : plt.Figure or None
-        Figure with two existing axes to draw on. If None, a new figure is
+        Figure with one existing axis to draw on. If None, a new figure is
         created.
-    n_bins : int
-        Number of quantile bins.
-    min_trials : int
-        Minimum trials per (subject, side, feedback, bin) cell to include.
 
     Returns
     -------
     plt.Figure
     """
     if fig is None:
-        fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05},
-                              layout='constrained')
+        fig, _ = plt.subplots(1, 1, layout='constrained')
+    ax = fig.axes[0]
 
-    ax_c, ax_i = fig.axes[0], fig.axes[1]
-
-    color = TARGETNM_COLORS.get(target_nm, 'black')
     n_sessions = df_group['eid'].nunique() if 'eid' in df_group.columns else '?'
     n_subjects = df_group['subject'].nunique() if len(df_group) > 0 else 0
     timing_label = timing_col.replace('log_', '')
     fig.suptitle(
         f'{target_nm} — stimOn ({timing_label})\n'
-        f'{n_sessions} sessions, {n_subjects} subjects, contrast={contrast:g}',
+        f'{n_sessions} sessions, {n_subjects} subjects',
         fontsize=LABELFONTSIZE,
     )
 
     if len(df_group) == 0:
         return fig
 
-    # Subject-mean removal
-    grand_mean = df_group[response_col].mean()
-    subj_means = df_group.groupby('subject')[response_col].transform('mean')
-    df_group = df_group.copy()
-    df_group[response_col] = df_group[response_col] - subj_means + grand_mean
-
-    # Quantile binning on the full dataset (both sides pooled)
-    df_group['bin'] = pd.qcut(df_group[timing_col], n_bins, duplicates='drop')
-    bin_cats = df_group['bin'].cat.categories
-    bin_midpoints = np.arange(len(bin_cats))
-
-    # Tick labels: bin edges in real (non-log) units
-    edges = sorted(set(
-        [cat.left for cat in bin_cats] + [bin_cats[-1].right]
-    ))
-    tick_labels = [f'{10**e:.2f}' for e in edges]
-    tick_positions = np.linspace(-0.5, len(bin_cats) - 0.5, len(edges))
-
-    # Remove cells with too few trials
-    group_cols = ['subject', 'side', 'feedbackType', 'bin']
-    trial_counts = df_group.groupby(group_cols, observed=True)[response_col].transform('count')
-    df_group = df_group[trial_counts >= min_trials]
-
-    for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
-        df_side = df_group[df_group['side'] == side]
-
-        for feedback, ls in ((1, '-'), (-1, '--')):
-            df_fb = df_side[df_side['feedbackType'] == feedback]
-            if len(df_fb) == 0:
-                continue
-
-            means, sems = [], []
-            for b in bin_cats:
-                df_b = df_fb[df_fb['bin'] == b]
-                vals = df_b[response_col].dropna()
-                means.append(vals.mean() if len(vals) > 0 else np.nan)
-                sems.append(scipy_sem(vals, nan_policy='omit')
-                            if len(vals) > 0 else np.nan)
-
-            label = 'correct' if feedback == 1 else 'incorrect'
-            ax.errorbar(bin_midpoints, means,
-                        yerr=np.array(sems, dtype=float),
-                        marker='o', color=color, linestyle=ls, label=label)
-
-        ax.set_xticks(tick_positions)
-        ax.set_xticklabels(tick_labels, rotation=45, ha='right',
-                           fontsize=TICKFONTSIZE)
-        ax.set_xlabel(f'{timing_label} (s)')
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-    ax_c.invert_xaxis()
-
-    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes,
-              fontsize=TICKFONTSIZE)
-    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes,
-              fontsize=TICKFONTSIZE)
-
-    ax_c.set_ylabel(r'$\Delta$ activity (z-score)')
-    ax_i.tick_params(left=False)
-    ax_i.spines['left'].set_visible(False)
-    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
-                fontsize=TICKFONTSIZE)
-
-    ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+    sc = ax.scatter(df_group[timing_col], df_group[response_col],
+                    c=df_group['contrast'], cmap='viridis', s=8, alpha=0.15,
+                    edgecolors='none')
+    fig.colorbar(sc, ax=ax, label='Contrast (%)')
+    ax.set_xlabel(f'{timing_label} (log₁₀ s)')
+    ax.set_ylabel(r'$\Delta$ activity (z-score)')
+    ax.axhline(0, ls='--', color='gray', lw=0.5)
     return fig
 
 

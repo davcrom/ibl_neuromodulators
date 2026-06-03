@@ -2199,21 +2199,19 @@ class TestPlotRtByContrastGroup:
 # =========================================================================
 
 def _make_movement_df(n_per_cell=30, seed=42):
-    """Synthetic data for plot_movement_response tests."""
+    """Synthetic data for plot_movement_response tests, spanning contrasts."""
     rng = np.random.default_rng(seed)
     rows = []
     for subj in ['s1', 's2', 's3']:
-        for side in ['contra', 'ipsi']:
-            for fb in [1, -1]:
-                for _ in range(n_per_cell):
-                    rows.append({
-                        'subject': subj,
-                        'eid': f'eid_{subj}',
-                        'side': side,
-                        'feedbackType': fb,
-                        'response': rng.normal(0, 1),
-                        'log_reaction_time': rng.normal(-0.7, 0.3),
-                    })
+        for contrast in [0.0, 25.0, 100.0]:
+            for _ in range(n_per_cell):
+                rows.append({
+                    'subject': subj,
+                    'eid': f'eid_{subj}',
+                    'contrast': contrast,
+                    'response': rng.normal(0, 1),
+                    'log_reaction_time': rng.normal(-0.7, 0.3),
+                })
     return pd.DataFrame(rows)
 
 
@@ -2222,79 +2220,37 @@ class TestPlotMovementResponse:
         from iblnm.vis import plot_movement_response
         df = _make_movement_df()
         fig = plot_movement_response(
-            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
+            df, 'response', 'log_reaction_time', 'VTA-DA')
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_has_two_axes(self):
+    def test_plots_every_trial(self):
+        """Individual trials, not aggregated: one scatter point per row."""
         from iblnm.vis import plot_movement_response
         df = _make_movement_df()
         fig = plot_movement_response(
-            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
-        assert len(fig.axes) == 2
+            df, 'response', 'log_reaction_time', 'VTA-DA')
+        offsets = fig.axes[0].collections[0].get_offsets()
+        assert len(offsets) == len(df)
         plt.close(fig)
 
-    def test_contra_axis_inverted(self):
+    def test_color_encodes_contrast(self):
+        """Point colors map to the contrast column."""
         from iblnm.vis import plot_movement_response
         df = _make_movement_df()
         fig = plot_movement_response(
-            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
-        ax_contra = fig.axes[0]
-        xlim = ax_contra.get_xlim()
-        assert xlim[0] > xlim[1], "Contra x-axis should be inverted"
-        plt.close(fig)
-
-    def test_tick_labels_are_real_units(self):
-        """Tick labels should show bin edges in real (non-log) timing units."""
-        from iblnm.vis import plot_movement_response
-        df = _make_movement_df(n_per_cell=50)
-        fig = plot_movement_response(
-            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
-        ax = fig.axes[0]
-        labels = [t.get_text() for t in ax.get_xticklabels()]
-        # Labels should be parseable as floats (real timing values)
-        for label in labels:
-            if label:
-                float(label)
-        plt.close(fig)
-
-    def test_subject_mean_removal(self):
-        """Large subject offsets should be removed from plotted values."""
-        from iblnm.vis import plot_movement_response
-        rng = np.random.default_rng(99)
-        rows = []
-        for subj, offset in [('s1', 10.0), ('s2', -10.0), ('s3', 5.0)]:
-            for side in ['contra', 'ipsi']:
-                for fb in [1, -1]:
-                    for _ in range(40):
-                        rows.append({
-                            'subject': subj,
-                            'eid': f'eid_{subj}',
-                            'side': side,
-                            'feedbackType': fb,
-                            'response': offset + rng.normal(0, 0.1),
-                            'log_reaction_time': rng.normal(-0.7, 0.3),
-                        })
-        df = pd.DataFrame(rows)
-        fig = plot_movement_response(
-            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
-        for ax in fig.axes:
-            for line in ax.get_lines():
-                ydata = line.get_ydata()
-                if len(ydata) > 1:
-                    # Grand mean is ~1.67, values should cluster near it
-                    assert np.ptp(ydata) < 2.0, (
-                        f"Subject-mean removal failed: spread {np.ptp(ydata):.2f}")
+            df, 'response', 'log_reaction_time', 'VTA-DA')
+        carray = fig.axes[0].collections[0].get_array()
+        assert np.array_equal(np.asarray(carray), df['contrast'].values)
         plt.close(fig)
 
     def test_empty_df_no_crash(self):
         from iblnm.vis import plot_movement_response
         df = pd.DataFrame(columns=[
-            'subject', 'eid', 'side', 'feedbackType',
-            'response', 'log_reaction_time',
+            'subject', 'eid', 'contrast', 'response', 'log_reaction_time',
         ])
         fig = plot_movement_response(
-            df, 'response', 'log_reaction_time', 'VTA-DA', 25.0)
+            df, 'response', 'log_reaction_time', 'VTA-DA')
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
