@@ -2559,6 +2559,32 @@ class TestLosoCVMovementLMM:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
 
+    def test_r2_robust_to_subject_baseline(self):
+        """Held-out R² is computed after removing the subject's own intercept,
+        so huge between-subject baseline offsets do not drive it negative when
+        the FE slopes genuinely track within-subject variation."""
+        from iblnm.analysis import loso_cv_movement_lmm
+        rng = np.random.default_rng(0)
+        rows = []
+        for i, subj in enumerate(['s1', 's2', 's3', 's4']):
+            baseline = 50.0 * i  # massive between-subject intercept differences
+            for contrast in [0.0, 25.0, 100.0]:
+                for _ in range(40):
+                    t = rng.normal(-0.7, 0.3)
+                    sv = 0.5 if rng.random() < 0.5 else -0.5
+                    rv = 0.5 if rng.random() < 0.5 else -0.5
+                    resp = (baseline + 0.3 * (contrast / 100) + 0.4 * t
+                            + 0.2 * sv + rng.normal(0, 0.3))
+                    rows.append({
+                        'subject': subj, 'contrast': contrast,
+                        'side': 'contra' if sv > 0 else 'ipsi',
+                        'feedbackType': 1 if rv > 0 else -1,
+                        'response': resp, 'log_reaction_time': t,
+                    })
+        df = pd.DataFrame(rows)
+        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
+        assert (result['r2_full'] > 0).all()
+
     def test_model_formulas_and_intercept_only_re(self):
         """All three models share a random intercept only ('1'), with the
         interaction fixed-effect structures: contrast baseline, timing

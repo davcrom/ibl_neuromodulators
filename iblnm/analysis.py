@@ -2066,7 +2066,12 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
     The task structure matches the response GLM (``fit_response_lmm``), so the
     contrast model is literally that GLM's task model. Predicts the held-out
     subject's trials using fixed effects only, then computes
-    R² = 1 - SS_res / SS_tot on those trials.
+    R² = 1 - SS_res / SS_tot after removing the subject's own intercept from
+    both the responses and the prediction (each centered on the subject's
+    mean). Centering grants the held-out subject its own baseline (the random
+    intercept we never estimated for them), so R² measures whether the
+    population FE slopes generalize to that subject's within-subject variation
+    rather than penalising the unknown baseline.
 
     - ``delta_r2_timing = r2_full - r2_contrast`` — variance from all
       timing-involving terms (including contrast×timing).
@@ -2130,6 +2135,15 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
         X = np.asarray(dmatrix(design_info, df_held))
         return X @ lmm_result.result.fe_params.values
 
+    def _centered_r2(lmm_result, df_held, y_centered, ss_tot):
+        # Remove the held-out subject's own intercept from both responses and
+        # prediction (center each on the subject's mean), so R² reflects how
+        # well the population FE slopes track within-subject variation, not the
+        # unknown baseline.
+        pred = _predict_fe(lmm_result, df_held)
+        pred_centered = pred - np.mean(pred)
+        return float(1 - np.sum((y_centered - pred_centered) ** 2) / ss_tot)
+
     rows = []
     for held_out in subjects:
         df_train = df[df['subject'] != held_out]
@@ -2153,24 +2167,24 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
         if contrast is None or timing is None or full is None:
             continue
 
-        # Predict held-out trials using fixed effects only
         y_test = df_test[response_col].values
-        ss_tot = np.sum((y_test - np.mean(y_test)) ** 2)
+        y_centered = y_test - np.mean(y_test)
+        ss_tot = np.sum(y_centered ** 2)
         if ss_tot == 0:
             continue
 
-        r2_contrast = 1 - np.sum((y_test - _predict_fe(contrast, df_test)) ** 2) / ss_tot
-        r2_timing = 1 - np.sum((y_test - _predict_fe(timing, df_test)) ** 2) / ss_tot
-        r2_full = 1 - np.sum((y_test - _predict_fe(full, df_test)) ** 2) / ss_tot
+        r2_contrast = _centered_r2(contrast, df_test, y_centered, ss_tot)
+        r2_timing = _centered_r2(timing, df_test, y_centered, ss_tot)
+        r2_full = _centered_r2(full, df_test, y_centered, ss_tot)
 
         rows.append({
             'subject': held_out,
             'n_trials': len(df_test),
-            'r2_contrast': float(r2_contrast),
-            'r2_timing': float(r2_timing),
-            'r2_full': float(r2_full),
-            'delta_r2_contrast': float(r2_full - r2_timing),
-            'delta_r2_timing': float(r2_full - r2_contrast),
+            'r2_contrast': r2_contrast,
+            'r2_timing': r2_timing,
+            'r2_full': r2_full,
+            'delta_r2_contrast': r2_full - r2_timing,
+            'delta_r2_timing': r2_full - r2_contrast,
             'timing_col': timing_col,
         })
 
