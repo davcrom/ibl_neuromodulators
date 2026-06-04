@@ -2131,7 +2131,7 @@ def fit_movement_lmm_r2(df, response_col, timing_col):
 
     fits = {
         name: _fit_lmm(formula, df, groups=df['subject'], re_formula='1',
-                       reml=True)
+                       reml=False)
         for name, formula in _movement_formulas(response_col, timing_col).items()
     }
     if any(fit is None for fit in fits.values()):
