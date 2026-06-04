@@ -1507,7 +1507,18 @@ class LMMResult:
 
 
 def _variance_explained(result, df, response_col):
-    """Compute Nakagawa & Schielzeth R² for a fitted MixedLM.
+    """Partition the variance of the observed response explained by a MixedLM.
+
+    A data-based variance partition, not Nakagawa & Schielzeth R². The
+    denominator is the empirical ``var(observed y)``, fixed across the nested
+    models compared in a drop-one analysis. Holding the denominator constant is
+    what makes the difference of two marginal values a clean unique (semipartial)
+    R²: the variance the dropped predictor explains over and above the rest.
+
+    The ratios are returned unclipped. With a shared empirical denominator the
+    fitted-value variance can exceed ``var(y)`` (sampling noise, misfit), so
+    values may fall outside [0, 1]; a value outside that range signals model
+    misfit rather than an error to be hidden.
 
     Parameters
     ----------
@@ -1520,7 +1531,9 @@ def _variance_explained(result, df, response_col):
     Returns
     -------
     dict
-        Keys: 'marginal', 'conditional' (both float, 0–1).
+        Keys: 'marginal' (fixed effects only) and 'conditional' (fixed +
+        random), both float and unclipped. ``conditional >= marginal`` always
+        holds because the random-effect variance is non-negative.
     """
     y = df[response_col].values
     var_y = np.var(y)
@@ -1535,9 +1548,10 @@ def _variance_explained(result, df, response_col):
     var_fixed = np.var(y_pred_fe)
     var_random = np.var(y_pred_full - y_pred_fe)
 
-    r2_m = float(np.clip(var_fixed / var_y, 0, 1))
-    r2_c = float(np.clip((var_fixed + var_random) / var_y, 0, 1))
-    return {'marginal': r2_m, 'conditional': r2_c}
+    return {
+        'marginal': float(var_fixed / var_y),
+        'conditional': float((var_fixed + var_random) / var_y),
+    }
 
 
 def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
@@ -2087,8 +2101,10 @@ def fit_movement_lmm_r2(df, response_col, timing_col):
     - Drop-movement: ``response ~ contrast + reward``
 
     ``delta_r2_contrast`` / ``delta_r2_timing`` are the marginal R² lost when
-    contrast / the movement variable are removed from the full model (≥ 0
-    in-sample). This is the general-purpose kernel: ``jackknife_movement_lmm``
+    contrast / the movement variable are removed from the full model. The
+    marginal R² uses a fixed empirical denominator (``var(observed y)``), so each
+    delta is a unique (semipartial) R²; it can be negative when a predictor does
+    not help. This is the general-purpose kernel: ``jackknife_movement_lmm``
     calls it on leave-one-subject-out subsets, and the pipeline calls it on the
     full dataset for the absolute-R² bars.
 
