@@ -2750,3 +2750,32 @@ class TestFitMovementLMMPerContrast:
                        groups=coded['subject'],
                        re_formula='1 + log_reaction_time', reml=True)
         assert lmm.result.cov_re.shape == (2, 2)
+
+
+class TestFitLMMFailLoud:
+    def test_missing_column_propagates(self):
+        """A formula referencing a column that does not exist is a coding bug,
+        not a numerical failure: it must propagate, not be swallowed as None."""
+        from iblnm.analysis import _fit_lmm
+        df = _make_movement_lmm_df()
+        with pytest.raises(Exception):
+            _fit_lmm('response ~ nonexistent_col', df, groups=df['subject'])
+
+    def test_singular_fit_returns_none_and_warns(self):
+        """A degenerate fit whose lazy BLUP evaluation raises ValueError returns
+        None and emits a warning, so a dropped fit is never silent."""
+        from unittest.mock import patch
+        from iblnm import analysis
+        df = _make_movement_lmm_df()
+        df_c = df[df['contrast'] == 25.0]
+        coded = df_c.assign(
+            side=np.where(df_c['side'] == 'contra', 0.5, -0.5),
+            reward=np.where(df_c['feedbackType'] == 1, 0.5, -0.5),
+        )
+        with patch.object(analysis, '_variance_explained',
+                          side_effect=ValueError('singular covariance')):
+            with pytest.warns(UserWarning):
+                result = analysis._fit_lmm(
+                    'response ~ side + reward + log_reaction_time', coded,
+                    groups=coded['subject'])
+        assert result is None

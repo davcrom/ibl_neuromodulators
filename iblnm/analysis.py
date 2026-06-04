@@ -1554,6 +1554,15 @@ def _variance_explained(result, df, response_col):
     }
 
 
+def _warn_dropped_fit(formula: str, groups: pd.Series, exc: Exception) -> None:
+    """Warn that a singular/degenerate LMM fit was dropped, so the loss of a
+    fit from a result set is never silent."""
+    warnings.warn(
+        f"_fit_lmm dropped a singular/degenerate fit "
+        f"(formula={formula!r}, groups={groups.name!r}): {exc}"
+    )
+
+
 def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
              contrast_coding='log', contrast_center=0.0):
     """Fit a linear mixed-effects model and return an LMMResult.
@@ -1598,9 +1607,8 @@ def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
         )
         if fatal:
             return None
-    except (np.linalg.LinAlgError, ValueError):
-        return None
-    except Exception:
+    except (np.linalg.LinAlgError, ValueError) as exc:
+        _warn_dropped_fit(formula, groups, exc)
         return None
 
     # Determine response column from formula
@@ -1626,7 +1634,8 @@ def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
             subj: pd.Series(effects)
             for subj, effects in result.random_effects.items()
         }
-    except (np.linalg.LinAlgError, ValueError):
+    except (np.linalg.LinAlgError, ValueError) as exc:
+        _warn_dropped_fit(formula, groups, exc)
         return None
 
     if ve['marginal'] == 0.0 and ve['conditional'] == 0.0 and np.var(df[response_col].values) == 0:
