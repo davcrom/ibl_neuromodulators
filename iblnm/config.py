@@ -399,6 +399,11 @@ RESPONSE_WINDOWS = {
     'late': (0.35, 0.6)
 }
 
+# Movement encoding analyses
+TIMING_VARS = ['reaction_time', 'movement_time', 'peak_velocity']
+MIN_SUBJECTS_MOVEMENT = 2
+MIN_TRIALS_MOVEMENT = 20
+
 
 # Plotting parameters
 FIGURE_DPI = 150

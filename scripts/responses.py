@@ -28,6 +28,7 @@ from iblnm.config import (
     RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
+    TIMING_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -44,10 +45,6 @@ from iblnm.analysis import (
     split_features_by_event,
     fit_movement_lmm_r2, jackknife_movement_lmm, fit_movement_lmm_per_contrast,
 )
-
-TIMING_VARS = ['reaction_time', 'movement_time', 'peak_velocity']
-MIN_SUBJECTS_MOVEMENT = 2
-MIN_TRIALS_MOVEMENT = 20
 
 plt.ion()
 
