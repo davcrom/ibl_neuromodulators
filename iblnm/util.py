@@ -890,7 +890,7 @@ def get_contrast_coding(coding='log'):
     Parameters
     ----------
     coding : str
-        One of 'log', 'linear', or 'rank'.
+        One of 'log', 'log2', 'linear', or 'rank'.
 
     Returns
     -------
@@ -901,6 +901,24 @@ def get_contrast_coding(coding='log'):
     """
     if coding == 'log':
         return contrast_transform, contrast_inverse
+
+    if coding == 'log2':
+        def _log2_transform(c):
+            c = np.asarray(c, dtype=float)
+            nonzero = c != 0
+            if np.any(c[nonzero] < 1):
+                raise ValueError(
+                    "log2 contrast coding expects contrast in percent units "
+                    "(nonzero values >= 1); got fractional input. A "
+                    "fraction-unit 100% (=1.0) would collide with the 0->0 "
+                    "clamp.")
+            return np.where(nonzero, np.log2(np.where(nonzero, c, 1)), 0.0)
+
+        def _log2_inverse(x):
+            x = np.asarray(x, dtype=float)
+            return np.where(x != 0, 2 ** x, 0.0)
+
+        return _log2_transform, _log2_inverse
 
     if coding == 'linear':
         def _identity(c):
@@ -935,7 +953,7 @@ def get_contrast_coding(coding='log'):
         return _rank_transform, _rank_inverse
 
     raise ValueError(f"Unknown contrast coding: {coding!r}. "
-                     f"Choose from 'log', 'linear', 'rank'.")
+                     f"Choose from 'log', 'log2', 'linear', 'rank'.")
 
 
 def derive_target_nm(df, brain_region_col='brain_region'):

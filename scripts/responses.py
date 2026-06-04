@@ -386,9 +386,10 @@ if __name__ == '__main__':
     )
     parser.add_argument('--plot', action='store_true',
                         help='skip extraction; plot from existing parquet files')
-    parser.add_argument('--contrast-coding', choices=['log', 'linear', 'rank'],
-                        default='rank',
-                        help='contrast transform for LMM (default: log)')
+    parser.add_argument('--contrast-coding',
+                        choices=['log', 'log2', 'linear', 'rank'],
+                        default='log2',
+                        help='contrast transform for LMM (default: log2)')
     args = parser.parse_args()
 
     # Create output directories

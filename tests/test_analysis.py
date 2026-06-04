@@ -73,10 +73,30 @@ class TestGetContrastCoding:
         transform(np.array([0.0, 6.25, 12.5, 25, 100]))
         assert transform(12.5) == 2.0
 
+    def test_log2_known_values(self):
+        from iblnm.util import get_contrast_coding
+        transform, _ = get_contrast_coding('log2')
+        c = np.array([0.0, 6.25, 12.5, 25, 100])
+        np.testing.assert_allclose(
+            transform(c), [0, 2.644, 3.644, 4.644, 6.644], atol=1e-3)
+
+    def test_log2_roundtrip(self):
+        from iblnm.util import get_contrast_coding
+        transform, inverse = get_contrast_coding('log2')
+        c = np.array([0.0, 6.25, 12.5, 25, 100])
+        np.testing.assert_allclose(inverse(transform(c)), c)
+
+    def test_log2_rejects_fractional_contrast(self):
+        import pytest
+        from iblnm.util import get_contrast_coding
+        transform, _ = get_contrast_coding('log2')
+        with pytest.raises(ValueError):
+            transform(np.array([0.0, 0.0625, 1.0]))
+
     def test_all_monotonic(self):
         from iblnm.util import get_contrast_coding
         c = np.array([0.0, 6.25, 12.5, 25, 100])
-        for coding in ('linear', 'rank', 'log'):
+        for coding in ('linear', 'rank', 'log', 'log2'):
             transform, _ = get_contrast_coding(coding)
             assert np.all(np.diff(transform(c)) > 0), f"{coding} not monotonic"
 

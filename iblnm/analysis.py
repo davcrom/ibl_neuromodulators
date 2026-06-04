@@ -2084,14 +2084,14 @@ def _movement_formulas(response_col, timing_col):
 
 
 def _code_movement_predictors(df, timing_col):
-    """Rank-code and mean-center contrast; deviation-code reward (±0.5).
+    """log2-code and mean-center contrast; deviation-code reward (±0.5).
 
     Side is omitted on purpose: choice-side bias is idiosyncratic per animal,
     not a consistent population-level confound, whereas reward is (correct
     trials are systematically more vigorous across animals). The timing column
     is assumed already log-transformed.
     """
-    transform, _ = get_contrast_coding('rank')
+    transform, _ = get_contrast_coding('log2')
     df = df.copy()
     coded = transform(df['contrast'])
     df['contrast'] = coded - float(np.mean(coded))
