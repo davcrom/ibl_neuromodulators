@@ -144,22 +144,6 @@ def plot_lmm_figures(group, figures_dir, data_dir,
     df_raw = df_raw.dropna(subset=[response_col])
     df_raw = df_raw.query('choice != 0')
 
-    # Per-target modeled response plots (save and close)
-    # ~ for (target_nm, event_label), result in group.lmm_results.items():
-        # ~ event = event_label + '_times'
-        # ~ df_group = df_raw[
-            # ~ (df_raw['target_NM'] == target_nm) & (df_raw['event'] == event)
-        # ~ ]
-        # ~ fig = plot_lmm_response(
-            # ~ result.predictions, target_nm, event,
-            # ~ window_label=window_label,
-            # ~ df_raw=df_group, response_col=response_col,
-            # ~ contrast_coding=result.contrast_coding,
-        # ~ )
-        # ~ fname = f'{target_nm}_{event_label}_{window_label}_lmm.svg'
-        # ~ fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
-        # ~ plt.close(fig)
-
     # FIXME: saving doesn't belong in a plot function
     # Save coefficients to data dir
     if len(group.lmm_coefficients) > 0:
@@ -176,10 +160,6 @@ def plot_lmm_figures(group, figures_dir, data_dir,
             dpi=FIGURE_DPI, bbox_inches='tight')
     print("  LMM summary plots saved")
 
-
-# =========================================================================
-# Wheel kinematics LMM analysis
-# =========================================================================
 
 # =========================================================================
 # Response vectors plotting (per-event)
@@ -216,52 +196,6 @@ def plot_similarity_figures(group, similarity_dir, data_dir):
             similarity_dir / f'mean_response_vectors_{event_stem}.svg',
             dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
-
-        # # Similarity analysis (suppressed)
-        # sim = cosine_similarity_matrix(event_features)
-        # if len(sim) < 2:
-        #     print(f"  [{event_stem}] Too few valid recordings, skipping")
-        #     continue
-        #
-        # labels = pd.Series(
-        #     sim.index.get_level_values('target_NM').values,
-        #     index=sim.index,
-        # )
-        # subjects = rec_indexed['subject'].reindex(sim.index)
-        #
-        # # Full similarity matrix
-        # fig = plot_similarity_matrix(sim, labels, subjects=subjects)
-        # fig.savefig(similarity_dir / f'similarity_matrix_{event_stem}.svg',
-        #             dpi=FIGURE_DPI, bbox_inches='tight')
-        # plt.close(fig)
-        #
-        # # Within / between summary
-        # wb = within_between_similarity(sim, labels)
-        # within_mean = wb[wb['comparison'] == 'within']['similarity'].mean()
-        # between_mean = wb[wb['comparison'] == 'between']['similarity'].mean()
-        # print(f"  [{event_stem}] Within: {within_mean:.3f}, "
-        #       f"Between: {between_mean:.3f}")
-        #
-        # # Reduced target × target summary matrices
-        # target_sim = mean_similarity_by_target(sim, labels)
-        # target_sim_loso = mean_similarity_by_target(
-        #     sim, labels, subjects=subjects)
-        # fig = plot_empirical_similarity(
-        #     target_sim, loso_matrix=target_sim_loso)
-        # fig.savefig(
-        #     similarity_dir / f'empirical_similarity_{event_stem}.svg',
-        #     dpi=FIGURE_DPI, bbox_inches='tight')
-        # plt.close(fig)
-        #
-        # # Within-target barplot
-        # fig = plot_within_target_similarity(sim, labels, subjects)
-        # fig.savefig(
-        #     similarity_dir / f'within_target_similarity_{event_stem}.svg',
-        #     dpi=FIGURE_DPI, bbox_inches='tight')
-        # plt.close(fig)
-        #
-        # # Save similarity matrix
-        # sim.to_parquet(data_dir / f'similarity_matrix_{event_stem}.pqt')
 
 
 # =========================================================================
