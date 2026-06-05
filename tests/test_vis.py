@@ -1020,13 +1020,12 @@ class TestPlotLMMSummary:
         plt.close(fig)
 
     def test_summary_annotates_formula(self):
-        """A formula passed in is rendered as a figure annotation (#7)."""
+        """A formula passed in is rendered in the figure title (#7)."""
         from iblnm.vis import plot_lmm_summary
         group = self._make_mock_group()
         formula = 'response ~ contrast * side * reward'
         fig = plot_lmm_summary(group, 'stimOn', formula=formula)
-        texts = [t.get_text() for t in fig.texts]
-        assert formula in texts
+        assert formula in fig._suptitle.get_text()
         plt.close(fig)
 
 
@@ -1091,6 +1090,13 @@ class TestPlotLMMSuiteFigures:
         fig = plot_lmm_ceiling(self._ceiling())
         patches = [p for p in fig.axes[0].patches if p.get_height() != 0]
         assert len(patches) == 4  # 2 targets × (marginal, conditional)
+        plt.close(fig)
+
+    def test_ceiling_formula_in_title(self):
+        """The saturated-model formula is shown in the title, not bottom text."""
+        from iblnm.vis import plot_lmm_ceiling
+        fig = plot_lmm_ceiling(self._ceiling())
+        assert 'response ~ C(contrast) * side * reward' in fig._suptitle.get_text()
         plt.close(fig)
 
     def test_main_effects_fill_encodes_significance(self):

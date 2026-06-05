@@ -2448,10 +2448,10 @@ def plot_lmm_summary(group, event, fig=None, formula=None):
         cax = divider.append_axes('right', size='5%', pad=0.08)
         fig.colorbar(im, cax=cax, label='β')
 
-    fig.suptitle(f'LMM summary — {event}', fontsize=LABELFONTSIZE)
+    title = f'LMM summary — {event}'
     if formula is not None:
-        fig.text(0.5, 0.005, formula, ha='center', va='bottom',
-                 fontsize=TICKFONTSIZE, style='italic')
+        title += f'\n{formula}'
+    fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
 
@@ -2479,7 +2479,7 @@ def plot_lmm_ceiling(ceiling_df):
                              sharey=True, layout='constrained')
     axes = np.atleast_1d(axes)
     if len(ceiling_df) == 0:
-        fig.suptitle('Ceiling R² (saturated categorical model)',
+        fig.suptitle('Ceiling R²\nresponse ~ C(contrast) * side * reward',
                      fontsize=LABELFONTSIZE)
         return fig
 
@@ -2501,10 +2501,8 @@ def plot_lmm_ceiling(ceiling_df):
         ax.set_title(event)
     axes[0].set_ylabel('Ceiling R²')
     axes[0].legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
-    fig.suptitle('Ceiling R² (saturated categorical model)',
+    fig.suptitle('Ceiling R²\nresponse ~ C(contrast) * side * reward',
                  fontsize=LABELFONTSIZE)
-    fig.text(0.5, 0.005, 'response ~ C(contrast) * side * reward',
-             ha='center', va='bottom', fontsize=TICKFONTSIZE, style='italic')
     return fig
 
 
