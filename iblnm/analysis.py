@@ -2336,6 +2336,28 @@ def fit_movement_vs_contrast(df, timing_col, min_subjects=2):
     return _tidy_lmm_row(lmm, 'contrast', df, timing_col)
 
 
+def fit_movement_predicts_response(df, response_col, timing_col, min_subjects=2):
+    """Unadjusted movement-predicts-response claim (deliberately
+    contrast-confounded).
+
+    Model ``{response_col} ~ {timing_col}`` with a by-subject random slope
+    ``(1 + timing | subject)``. No contrast control — establishes the gross
+    phenomenon before the within-contrast model. ``df`` is one
+    ``(target_NM, event, timing_var)`` subset. Reports the timing slope.
+
+    Returns a one-row tidy frame (``_TIDY_LMM_COLS``), empty if fewer than
+    ``min_subjects`` subjects or the fit fails.
+    """
+    df = df.dropna(subset=[response_col, timing_col]).copy()
+    if df['subject'].nunique() < min_subjects:
+        return _empty_tidy_lmm()
+    lmm = _fit_lmm(f'{response_col} ~ {timing_col}', df, groups=df['subject'],
+                   re_formula=f'1 + {timing_col}', reml=True)
+    if lmm is None:
+        return _empty_tidy_lmm()
+    return _tidy_lmm_row(lmm, timing_col, df, timing_col)
+
+
 def fit_movement_lmm_per_contrast(df, response_col, timing_col,
                                    min_subjects=2):
     """Estimate timing-response slope at a single contrast level.
