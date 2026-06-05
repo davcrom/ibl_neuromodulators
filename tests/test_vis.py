@@ -1150,6 +1150,18 @@ class TestPlotLMMSuiteFigures:
         assert max(sizes) > min(sizes)
         plt.close(fig)
 
+    def test_loso_has_legend(self):
+        """Legend names target-NMs and distinguishes per-subject vs aggregate."""
+        from iblnm.vis import plot_lmm_loso
+        fig = plot_lmm_loso(self._loso())
+        legend = fig.axes[-1].get_legend()
+        assert legend is not None
+        labels = [t.get_text() for t in legend.get_texts()]
+        assert 'VTA-DA' in labels
+        assert any('subject' in label for label in labels)
+        assert any('aggregate' in label for label in labels)
+        plt.close(fig)
+
     def test_suite_plots_handle_empty_frames(self):
         """Each suite plot returns a labelled figure on an empty frame."""
         from iblnm.vis import (plot_lmm_ceiling, plot_lmm_main_effects,

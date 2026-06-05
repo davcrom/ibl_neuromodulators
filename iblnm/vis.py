@@ -2633,6 +2633,26 @@ def plot_lmm_loso(loso_df):
         ax.axhline(0, ls='--', color='gray', lw=0.5)
         ax.set_title(event)
     axes[0].set_ylabel('Out-of-sample ΔR² (full − reduced)')
+
+    from matplotlib.lines import Line2D
+    targets_all = sorted(loso_df['target_NM'].unique(),
+                         key=lambda x: TARGETNM2POSITION.get(x, 999))
+    target_handles = [
+        Line2D([0], [0], marker='o', color=TARGETNM_COLORS.get(t, 'gray'),
+               ls='none', markersize=6)
+        for t in targets_all
+    ]
+    role_handles = [
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
+               alpha=0.5),
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=9,
+               markeredgecolor='k'),
+    ]
+    axes[-1].legend(
+        target_handles + role_handles,
+        targets_all + ['per-subject fold', 'across-fold aggregate'],
+        frameon=False, fontsize=TICKFONTSIZE, loc='upper left',
+        bbox_to_anchor=(1, 1))
     fig.suptitle('LOSO-CV generalizability (full − no-interaction ΔR²)',
                  fontsize=LABELFONTSIZE)
     return fig
