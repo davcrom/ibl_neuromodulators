@@ -1031,6 +1031,28 @@ class TestPlotLMMSummary:
 
 
 # =============================================================================
+# _sort_events Tests
+# =============================================================================
+
+
+class TestSortEvents:
+
+    def test_orders_events_chronologically(self):
+        """Events sort baseline → stimOn → firstMovement → feedback regardless
+        of input order, not alphabetically."""
+        from iblnm.vis import _sort_events
+        shuffled = ['feedback', 'baseline', 'firstMovement', 'stimOn']
+        assert _sort_events(shuffled) == [
+            'baseline', 'stimOn', 'firstMovement', 'feedback']
+
+    def test_unknown_events_sort_last_alphabetically(self):
+        """Events outside the chronology fall after known ones, in name order."""
+        from iblnm.vis import _sort_events
+        assert _sort_events(['zzz', 'stimOn', 'aaa']) == [
+            'stimOn', 'aaa', 'zzz']
+
+
+# =============================================================================
 # plot_lmm_ceiling / plot_lmm_main_effects / plot_lmm_loso Tests
 # =============================================================================
 

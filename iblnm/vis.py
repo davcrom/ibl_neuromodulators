@@ -1,4 +1,5 @@
 import re
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
@@ -1680,6 +1681,16 @@ def plot_feature_contributions(contributions, fig=None):
 _SIDE_ORDER = {'contra': 0, 'ipsi': 1}
 _EVENT_ORDER = {'stimOn': 0, 'firstMovement': 1, 'feedback': 2}
 _FB_ORDER = {'correct': 0, 'incorrect': 1}
+
+# Chronological trial-event order for LMM/response plots; baseline precedes the
+# task events. Used to keep event axes consistent across figures.
+_EVENT_CHRONOLOGY = ('baseline', 'stimOn', 'firstMovement', 'feedback')
+
+
+def _sort_events(events: Iterable[str]) -> list[str]:
+    """Sort event labels into trial chronology; unknowns sort last by name."""
+    order = {e: i for i, e in enumerate(_EVENT_CHRONOLOGY)}
+    return sorted(events, key=lambda e: (order.get(e, len(order)), e))
 _FEATURE_RE = re.compile(
     r'^(?P<event>[a-zA-Z]+)_c(?P<contrast>[\d.]+)_(?P<side>contra|ipsi)_(?P<fb>correct|incorrect)$'
 )
@@ -2462,7 +2473,7 @@ def plot_lmm_ceiling(ceiling_df):
     -------
     plt.Figure
     """
-    events = sorted(ceiling_df['event'].unique()) if len(ceiling_df) else []
+    events = _sort_events(ceiling_df['event'].unique()) if len(ceiling_df) else []
     n_panels = max(len(events), 1)
     fig, axes = plt.subplots(1, n_panels, figsize=(3 * n_panels + 1, 4),
                              sharey=True, layout='constrained')
@@ -2579,7 +2590,7 @@ def plot_lmm_loso(loso_df):
     -------
     plt.Figure
     """
-    events = sorted(loso_df['event'].unique()) if len(loso_df) else []
+    events = _sort_events(loso_df['event'].unique()) if len(loso_df) else []
     n_panels = max(len(events), 1)
     fig, axes = plt.subplots(1, n_panels, figsize=(3 * n_panels + 1, 4),
                              sharey=True, layout='constrained')
