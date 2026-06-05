@@ -2703,6 +2703,26 @@ class TestFitMovementWithinContrast:
         assert result.empty
 
 
+class TestWithinContrastVariation:
+    def test_returns_finite_within_and_between_variances(self):
+        from iblnm.analysis import within_contrast_variation
+        df = _make_movement_lmm_df()
+        result = within_contrast_variation(df, 'log_reaction_time')
+        assert len(result) == 1
+        assert np.isfinite(result['var_within'].iloc[0])
+        assert np.isfinite(result['var_between'].iloc[0])
+        assert result['n_contrasts'].iloc[0] == df['contrast'].nunique()
+
+    def test_within_dominates_when_timing_independent_of_contrast(self):
+        """Synthetic timing is drawn independently of contrast, so almost all
+        spread is within-contrast (between-contrast variance near zero)."""
+        from iblnm.analysis import within_contrast_variation
+        df = _make_movement_lmm_df()
+        result = within_contrast_variation(df, 'log_reaction_time')
+        assert (result['var_within'].iloc[0]
+                > result['var_between'].iloc[0])
+
+
 class TestFitMovementLMMPerContrast:
     def test_returns_dict(self):
         from iblnm.analysis import fit_movement_lmm_per_contrast

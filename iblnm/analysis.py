@@ -2385,6 +2385,31 @@ def fit_movement_within_contrast(df, response_col, timing_col, min_subjects=2):
     return _tidy_lmm_row(lmm, timing_col, df, timing_col)
 
 
+def within_contrast_variation(df, timing_col):
+    """Descriptive precondition for the within-contrast model: does the timing
+    variable still vary *within* a contrast level?
+
+    Partitions the timing variable's spread into within- and between-contrast
+    components: ``var_within`` is the mean of the per-contrast variances,
+    ``var_between`` is the variance of the per-contrast means. A within
+    component comparable to (or larger than) the between component means there
+    is within-contrast movement variation for the model to exploit. No model
+    fit. ``df`` is one ``(target_NM, timing_var)`` subset.
+
+    Returns a one-row tidy frame with columns ``timing_col``, ``var_within``,
+    ``var_between``, ``n_contrasts``, ``n_trials``.
+    """
+    df = df.dropna(subset=[timing_col])
+    by_contrast = df.groupby('contrast')[timing_col]
+    return pd.DataFrame([{
+        'timing_col': timing_col,
+        'var_within': float(by_contrast.var(ddof=1).mean()),
+        'var_between': float(by_contrast.mean().var(ddof=1)),
+        'n_contrasts': df['contrast'].nunique(),
+        'n_trials': len(df),
+    }])
+
+
 def fit_movement_lmm_per_contrast(df, response_col, timing_col,
                                    min_subjects=2):
     """Estimate timing-response slope at a single contrast level.
