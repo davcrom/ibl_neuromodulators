@@ -1700,6 +1700,18 @@ def _target_legend_handles(targets: Iterable[str]) -> list[Line2D]:
                    color=TARGETNM_COLORS.get(t, 'gray')) for t in targets]
 
 
+def _scatter_loso_folds(ax, x, df_group, color):
+    """Plot one LOSO group at x-position ``x``: per-subject fold ΔR² as small
+    faint markers and the across-fold aggregate as a large black-edged marker."""
+    folds = df_group[df_group['subject'] != 'aggregate']
+    ax.scatter(np.full(len(folds), x), folds['delta_r2'], color=color, s=20,
+               alpha=0.5, zorder=2)
+    agg = df_group[df_group['subject'] == 'aggregate']
+    if len(agg):
+        ax.scatter(x, agg['delta_r2'].iloc[0], color=color, s=90,
+                   edgecolor='k', zorder=3)
+
+
 _FEATURE_RE = re.compile(
     r'^(?P<event>[a-zA-Z]+)_c(?P<contrast>[\d.]+)_(?P<side>contra|ipsi)_(?P<fb>correct|incorrect)$'
 )
@@ -2619,15 +2631,8 @@ def plot_lmm_loso(loso_df):
         targets = sorted(df_ev['target_NM'].unique(),
                          key=lambda x: TARGETNM2POSITION.get(x, 999))
         for i, tnm in enumerate(targets):
-            df_t = df_ev[df_ev['target_NM'] == tnm]
             color = TARGETNM_COLORS.get(tnm, f'C{i}')
-            folds = df_t[df_t['subject'] != 'aggregate']
-            ax.scatter(np.full(len(folds), i), folds['delta_r2'],
-                       color=color, s=20, alpha=0.5, zorder=2)
-            agg = df_t[df_t['subject'] == 'aggregate']
-            if len(agg):
-                ax.scatter(i, agg['delta_r2'].iloc[0], color=color, s=90,
-                           edgecolor='k', zorder=3)
+            _scatter_loso_folds(ax, i, df_ev[df_ev['target_NM'] == tnm], color)
         ax.set_xticks(range(len(targets)))
         ax.set_xticklabels(targets, rotation=45, ha='right',
                            fontsize=TICKFONTSIZE)
@@ -2651,6 +2656,72 @@ def plot_lmm_loso(loso_df):
         bbox_to_anchor=(1, 1))
     fig.suptitle('LOSO-CV generalizability (full − no-interaction ΔR²)',
                  fontsize=LABELFONTSIZE)
+    return fig
+
+
+# Order of task terms on the reliability x-axis: main effects, then the
+# omnibus interaction block.
+_RELIABILITY_TERMS = ['contrast', 'side', 'reward', 'interactions']
+
+
+def plot_lmm_reliability(reliability_df, target_nm):
+    """Out-of-sample ΔR² per task term for one target-NM, one panel per event.
+
+    Each panel shows leave-one-subject-out ΔR² for the four task terms on a
+    common x-axis: the three main effects (R² lost when that term is dropped
+    from the additive model) and the omnibus interaction block (R² gained by
+    the full model over the additive model). Small markers are the per-held-out-
+    subject folds, the large marker is the across-fold mean. Positive = the term
+    helps predict a new animal. Same target-NM color throughout.
+
+    Parameters
+    ----------
+    reliability_df : pd.DataFrame
+        ``PhotometrySessionGroup.lmm_reliability`` rows: ``target_NM``,
+        ``event``, ``predictor``, ``subject``, ``delta_r2``.
+    target_nm : str
+        Target-NM to plot.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    df_t = reliability_df[reliability_df['target_NM'] == target_nm]
+    events = _sort_events(df_t['event'].unique()) if len(df_t) else []
+    n_panels = max(len(events), 1)
+    fig, axes = plt.subplots(1, n_panels, figsize=(3 * n_panels + 1, 4),
+                             sharey=True, layout='constrained')
+    axes = np.atleast_1d(axes)
+    color = TARGETNM_COLORS.get(target_nm, 'gray')
+
+    suptitle = (f'{target_nm} — out-of-sample ΔR² (leave-one-subject-out)\n'
+                'main effects: R²(additive) − R²(dropping term);  '
+                'interactions: R²(full) − R²(additive)')
+    if len(df_t) == 0:
+        fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
+        return fig
+
+    terms = [t for t in _RELIABILITY_TERMS if t in set(df_t['predictor'])]
+    for ax, event in zip(axes, events):
+        df_ev = df_t[df_t['event'] == event]
+        for x, term in enumerate(terms):
+            _scatter_loso_folds(ax, x, df_ev[df_ev['predictor'] == term], color)
+        ax.set_xticks(range(len(terms)))
+        ax.set_xticklabels(terms, rotation=30, ha='right', fontsize=TICKFONTSIZE)
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+        ax.set_title(event)
+    axes[0].set_ylabel('Out-of-sample ΔR²')
+
+    role_handles = [
+        Line2D([0], [0], marker='o', color=color, ls='none', markersize=5,
+               alpha=0.5),
+        Line2D([0], [0], marker='o', color=color, ls='none', markersize=9,
+               markeredgecolor='k'),
+    ]
+    axes[-1].legend(role_handles, ['per-subject fold', 'across-fold aggregate'],
+                    frameon=False, fontsize=TICKFONTSIZE, loc='upper left',
+                    bbox_to_anchor=(1, 1))
+    fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
     return fig
 
 
