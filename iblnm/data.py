@@ -1948,6 +1948,27 @@ class PhotometrySessionGroup:
             self.trial_regressors, on=['eid', 'trial'], how='left',
         )
 
+    def _modeling_frame(self, response_col: str = 'response') -> pd.DataFrame:
+        """Canonical trial selection shared by every model and plot.
+
+        Merges ``response_magnitudes`` with ``trial_regressors``, adds
+        hemisphere-relative contrast/side, then keeps unbiased-block go trials
+        (``probabilityLeft == 0.5``, ``choice != 0``) with a real response
+        (``response_time > 0.05`` and non-null ``response_col``). Every model
+        and plot derives from this frame so they share identical trials.
+
+        Parameters
+        ----------
+        response_col : str
+            Column name for the response magnitude whose NaNs are dropped.
+        """
+        from iblnm.task import add_relative_contrast
+
+        df = add_relative_contrast(self._merge_trial_regressors())
+        df = df.query('probabilityLeft == 0.5')
+        df = df.dropna(subset=[response_col])
+        return df.query('choice != 0 and response_time > 0.05')
+
     def get_mean_traces(self):
         """Compute trial-averaged traces from the trace cache.
 
@@ -2685,17 +2706,11 @@ class PhotometrySessionGroup:
             fit_response_lmm, compute_marginal_means,
             compute_contrast_slopes, compute_interaction_effects,
         )
-        from iblnm.task import add_relative_contrast
 
         if re_formulas is None:
             re_formulas = ['1']
 
-        # FIXME: do this once insead of several different places (see
-        # plotting in responses.py)
-        df = add_relative_contrast(self._merge_trial_regressors())
-        df = df.query('probabilityLeft == 0.5')
-        df = df.dropna(subset=[response_col])
-        df = df.query('choice != 0 and response_time > 0.05')
+        df = self._modeling_frame(response_col)
 
         # Identify valid groups
         groups = {}
@@ -2798,12 +2813,8 @@ class PhotometrySessionGroup:
             Values: ANOVA result DataFrames (from ``anova_rm``).
         """
         from iblnm.analysis import anova_rm
-        from iblnm.task import add_relative_contrast
 
-        df = add_relative_contrast(self._merge_trial_regressors())
-        df = df.query('probabilityLeft == 0.5')
-        df = df.dropna(subset=[response_col])
-        df = df.query('choice != 0 and response_time > 0.05')
+        df = self._modeling_frame(response_col)
 
         results = {}
         for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):

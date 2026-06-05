@@ -32,7 +32,6 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.task import add_relative_contrast
 from iblnm.util import collect_session_errors
 from iblnm.vis import (
     plot_relative_contrast,
@@ -88,13 +87,8 @@ def plot_response_figures(group, figures_dir, response_col='response'):
     response_col : str
         Column name for the response magnitude.
     """
-    df_responses = group.response_magnitudes.merge(
-        group.trial_regressors, on=['eid', 'trial'], how='left')
-    df_responses = add_relative_contrast(df_responses)
-
     window_label = response_col
-    df = df_responses.query('probabilityLeft == 0.5').dropna(subset=[response_col]).copy()
-    df = df.query('choice != 0')
+    df = group._modeling_frame(response_col)
 
     for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
         n_subjects = df_group['subject'].nunique()
@@ -128,21 +122,13 @@ def plot_lmm_figures(group, figures_dir, data_dir,
     data_dir : Path
         Output directory for CSV files.
     response_col : str
-        Column name for the response magnitude (used for raw data overlay).
+        Column name for the response magnitude.
     """
     window_label = response_col
 
     if not group.lmm_results:
         print("  No LMM results to plot.")
         return
-
-    # Prepare raw data for overlay
-    df_raw = group.response_magnitudes.merge(
-        group.trial_regressors, on=['eid', 'trial'], how='left')
-    df_raw = add_relative_contrast(df_raw)
-    df_raw = df_raw.query('probabilityLeft == 0.5')
-    df_raw = df_raw.dropna(subset=[response_col])
-    df_raw = df_raw.query('choice != 0')
 
     # FIXME: saving doesn't belong in a plot function
     # Save coefficients to data dir
@@ -209,12 +195,7 @@ def build_movement_df(group):
     non-null response, adds hemisphere-relative contrast/side, and appends a
     ``log_<var>`` column per timing variable (NaN where the value is ≤ 0).
     """
-    df = group.response_magnitudes.query("event == 'stimOn_times'").merge(
-        group.trial_regressors, on=['eid', 'trial'], how='left')
-    df = add_relative_contrast(df)
-    df = df.query(
-        'probabilityLeft == 0.5 and choice != 0 and response_time > 0.05')
-    df = df.dropna(subset=['response']).copy()
+    df = group._modeling_frame().query("event == 'stimOn_times'").copy()
     for var in TIMING_VARS:
         df[f'log_{var}'] = np.where(df[var] > 0, np.log10(df[var]), np.nan)
     return df

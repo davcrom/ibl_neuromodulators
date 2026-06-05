@@ -3473,6 +3473,72 @@ class TestAnovaResponseMagnitudes:
 
 
 # =============================================================================
+# _modeling_frame Tests
+# =============================================================================
+
+
+def _make_group_with_planted_trials():
+    """Group with one kept trial and three that each violate one filter.
+
+    Single eid, single recording, single event. Trial 0 passes all filters;
+    trials 1-3 each break exactly one of response_time>0.05, choice!=0,
+    probabilityLeft==0.5.
+    """
+    from iblnm.data import PhotometrySessionGroup
+
+    response_magnitudes = pd.DataFrame({
+        'eid': 'eid-0',
+        'subject': 's0',
+        'target_NM': 'VTA-DA',
+        'NM': 'DA',
+        'brain_region': 'VTA',
+        'hemisphere': 'r',
+        'event': 'stimOn_times',
+        'trial': [0, 1, 2, 3],
+        'session_type': 'biased',
+        'response': [1.0, 1.1, 1.2, 1.3],
+    })
+    trial_regressors = pd.DataFrame({
+        'eid': 'eid-0',
+        'trial': [0, 1, 2, 3],
+        'stim_side': ['right', 'right', 'right', 'right'],
+        'signed_contrast': [0.25, 0.25, 0.25, 0.25],
+        'contrast': [0.25, 0.25, 0.25, 0.25],
+        'choice': [1, 1, 0, 1],          # trial 2: no-go
+        'feedbackType': [1, 1, 1, 1],
+        'probabilityLeft': [0.5, 0.5, 0.5, 0.8],  # trial 3: biased block
+        'reaction_time': [0.2, 0.2, 0.2, 0.2],
+        'movement_time': [0.15, 0.15, 0.15, 0.15],
+        'response_time': [1.0, 0.01, 1.0, 1.0],   # trial 1: false start
+        'peak_velocity': [1.0, 1.0, 1.0, 1.0],
+    })
+    recs = pd.DataFrame([{
+        'eid': 'eid-0', 'subject': 's0', 'brain_region': 'VTA',
+        'hemisphere': 'r', 'target_NM': 'VTA-DA', 'NM': 'DA',
+        'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
+        'number': 1, 'task_protocol': 'biased_protocol',
+    }])
+    group = PhotometrySessionGroup(recs, one=MagicMock())
+    group.response_magnitudes = response_magnitudes
+    group.trial_regressors = trial_regressors
+    return group
+
+
+class TestModelingFrame:
+
+    def test_excludes_filtered_trials(self):
+        group = _make_group_with_planted_trials()
+        df = group._modeling_frame()
+        assert df['trial'].tolist() == [0]
+
+    def test_includes_derived_columns(self):
+        group = _make_group_with_planted_trials()
+        df = group._modeling_frame()
+        for col in ('relative_contrast', 'contrast', 'side'):
+            assert col in df.columns
+
+
+# =============================================================================
 # CCA Tests
 # =============================================================================
 
