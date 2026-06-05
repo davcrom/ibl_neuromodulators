@@ -1104,6 +1104,37 @@ class TestPlotLMMSuiteFigures:
         assert 'none' in side_fs      # side p=0.4
         plt.close(fig)
 
+    def test_main_effects_colored_by_target(self):
+        """Marker color encodes target-NM (TARGETNM_COLORS), not event."""
+        from iblnm.vis import plot_lmm_main_effects
+        from iblnm.config import TARGETNM_COLORS
+        from matplotlib.colors import to_rgba
+        df = pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'predictor': 'contrast',
+             'Coef.': 0.3, 'ci_lower': 0.2, 'ci_upper': 0.4, 'P>|z|': 0.001},
+            {'target_NM': 'DR-5HT', 'event': 'stimOn', 'predictor': 'contrast',
+             'Coef.': 0.1, 'ci_lower': 0.0, 'ci_upper': 0.2, 'P>|z|': 0.2},
+        ])
+        fig = plot_lmm_main_effects(df)
+        colors = {to_rgba(c[0].get_color()) for c in fig.axes[0].containers}
+        assert to_rgba(TARGETNM_COLORS['VTA-DA']) in colors
+        assert to_rgba(TARGETNM_COLORS['DR-5HT']) in colors
+        plt.close(fig)
+
+    def test_main_effects_event_axis_chronological(self):
+        """Events span the x-axis in trial chronology, not alphabetical."""
+        from iblnm.vis import plot_lmm_main_effects
+        df = pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'feedback', 'predictor': 'contrast',
+             'Coef.': 0.2, 'ci_lower': 0.1, 'ci_upper': 0.3, 'P>|z|': 0.01},
+            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'predictor': 'contrast',
+             'Coef.': 0.3, 'ci_lower': 0.2, 'ci_upper': 0.4, 'P>|z|': 0.001},
+        ])
+        fig = plot_lmm_main_effects(df)
+        labels = [t.get_text() for t in fig.axes[0].get_xticklabels()]
+        assert labels == ['stimOn', 'feedback']
+        plt.close(fig)
+
     def test_loso_aggregate_marker_distinct_from_folds(self):
         """The aggregate marker is drawn larger than the per-fold markers."""
         from iblnm.vis import plot_lmm_loso

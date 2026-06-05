@@ -2509,13 +2509,13 @@ def plot_lmm_ceiling(ceiling_df):
 
 
 def plot_lmm_main_effects(main_effects_df):
-    """Main-effect estimates (coef ± 95% CI) per target-NM, one panel per
-    predictor.
+    """Main-effect estimates (coef ± 95% CI), one panel per predictor.
 
     Each estimate is read from the model carrying that predictor's own random
     slope (``response ~ contrast * side * reward`` with one random slope).
-    Filled markers are significant (p < 0.05); events are offset along x within
-    each target and distinguished by color.
+    Events span the x-axis in trial chronology; target-NMs are offset within
+    each event and distinguished by color (``TARGETNM_COLORS``). Filled markers
+    are significant (p < 0.05), open markers not.
 
     Parameters
     ----------
@@ -2527,6 +2527,8 @@ def plot_lmm_main_effects(main_effects_df):
     -------
     plt.Figure
     """
+    from matplotlib.lines import Line2D
+
     predictors = (['contrast', 'side', 'reward'] if len(main_effects_df)
                   else ['contrast'])
     fig, axes = plt.subplots(1, len(predictors),
@@ -2534,20 +2536,20 @@ def plot_lmm_main_effects(main_effects_df):
                              sharey=True, layout='constrained')
     axes = np.atleast_1d(axes)
     if len(main_effects_df) == 0:
-        fig.suptitle('Main-effect estimates (single-random-slope models)',
+        fig.suptitle('Main-effect estimates\nresponse ~ contrast * side * reward',
                      fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(main_effects_df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
-    events = sorted(main_effects_df['event'].unique())
-    offsets = np.linspace(-0.25, 0.25, len(events)) if len(events) > 1 else [0.0]
-    event_colors = {ev: f'C{k}' for k, ev in enumerate(events)}
+    events = _sort_events(main_effects_df['event'].unique())
+    offsets = np.linspace(-0.3, 0.3, len(targets)) if len(targets) > 1 else [0.0]
 
     for ax, predictor in zip(axes, predictors):
         df_p = main_effects_df[main_effects_df['predictor'] == predictor]
-        for i, tnm in enumerate(targets):
-            for ev, dx in zip(events, offsets):
+        for tnm, dx in zip(targets, offsets):
+            color = TARGETNM_COLORS.get(tnm, 'gray')
+            for x, ev in enumerate(events):
                 row = df_p[(df_p['target_NM'] == tnm) & (df_p['event'] == ev)]
                 if len(row) == 0:
                     continue
@@ -2555,19 +2557,32 @@ def plot_lmm_main_effects(main_effects_df):
                 fs = 'full' if row['P>|z|'] < 0.05 else 'none'
                 yerr = [[row['Coef.'] - row['ci_lower']],
                         [row['ci_upper'] - row['Coef.']]]
-                ax.errorbar(i + dx, row['Coef.'], yerr=yerr, fmt='o',
-                            color=event_colors[ev], markersize=6, capsize=3,
-                            fillstyle=fs, label=ev if i == 0 else '')
+                ax.errorbar(x + dx, row['Coef.'], yerr=yerr, fmt='o',
+                            color=color, markersize=6, capsize=3, fillstyle=fs)
         ax.set_title(predictor)
-        ax.set_xticks(range(len(targets)))
-        ax.set_xticklabels(targets, rotation=30, ha='right',
+        ax.set_xticks(range(len(events)))
+        ax.set_xticklabels(events, rotation=30, ha='right',
                            fontsize=TICKFONTSIZE)
         ax.axhline(0, ls='--', color='gray', lw=0.5)
     axes[0].set_ylabel('Main effect (coef ± 95% CI)')
-    if axes[-1].get_legend_handles_labels()[0]:
-        axes[-1].legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
-                        fontsize=TICKFONTSIZE)
-    fig.suptitle('Main-effect estimates (single-random-slope models)',
+
+    target_handles = [
+        Line2D([0], [0], marker='o', color=TARGETNM_COLORS.get(t, 'gray'),
+               ls='none', markersize=6)
+        for t in targets
+    ]
+    sig_handles = [
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6,
+               fillstyle='full'),
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6,
+               fillstyle='none'),
+    ]
+    axes[-1].legend(
+        target_handles + sig_handles,
+        targets + ['p < 0.05', 'n.s.'],
+        frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
+        fontsize=TICKFONTSIZE)
+    fig.suptitle('Main-effect estimates\nresponse ~ contrast * side * reward',
                  fontsize=LABELFONTSIZE)
     return fig
 
