@@ -2242,6 +2242,23 @@ def jackknife_movement_lmm(df, response_col, timing_col, min_subjects=3):
     return pd.DataFrame(rows, columns=cols)
 
 
+def _centered_r2(lmm_result, df_held, y_centered, ss_tot):
+    """Out-of-sample R² for a held-out subject after removing its intercept.
+
+    Builds the held-out design from the fitted model's ``design_info``, predicts
+    with the fixed effects only, then centers both the prediction and the
+    observed response on the held-out subject's mean — removing the subject's
+    own random intercept, which a population fit cannot know. ``y_centered`` is
+    the already-mean-centered response and ``ss_tot`` its total sum of squares.
+    Shared by the movement and task-model LOSO-CV routines.
+    """
+    from patsy import dmatrix
+
+    design_info = lmm_result.result.model.data.orig_exog.design_info
+    pred = np.asarray(dmatrix(design_info, df_held)) @ lmm_result.result.fe_params.values
+    return float(1 - np.sum((y_centered - (pred - np.mean(pred))) ** 2) / ss_tot)
+
+
 def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
     """Leave-one-subject-out cross-validation of the movement models.
 
@@ -2271,8 +2288,6 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
         r2_drop_contrast, r2_drop_movement, delta_r2_contrast, delta_r2_timing,
         timing_col. Empty DataFrame if fewer than min_subjects.
     """
-    from patsy import dmatrix
-
     cols = ['subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
             'r2_drop_movement', 'delta_r2_contrast', 'delta_r2_timing',
             'timing_col']
@@ -2283,11 +2298,6 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
         return pd.DataFrame(columns=cols)
 
     formulas = _movement_formulas(response_col, timing_col)
-
-    def _centered_r2(lmm_result, df_held, y_centered, ss_tot):
-        design_info = lmm_result.result.model.data.orig_exog.design_info
-        pred = np.asarray(dmatrix(design_info, df_held)) @ lmm_result.result.fe_params.values
-        return float(1 - np.sum((y_centered - (pred - np.mean(pred))) ** 2) / ss_tot)
 
     rows = []
     for held_out in subjects:
