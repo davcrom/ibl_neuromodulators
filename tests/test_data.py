@@ -3475,6 +3475,21 @@ class TestFitLMM:
         first = me.groupby(['target_NM', 'event'])['marginal_r2'].nunique()
         assert (first > 1).any()
 
+    def test_stores_loso_cv(self):
+        """LOSO-CV of the task model: per-subject rows plus an aggregate, per
+        fitted (target, event) group, tagged with the group identifiers."""
+        group = _make_group_with_events()
+        group.fit_lmm()
+        loso = group.lmm_loso
+        assert isinstance(loso, pd.DataFrame)
+        for col in ('target_NM', 'event', 'subject', 'n_trials', 'r2_full',
+                    'r2_reduced', 'delta_r2'):
+            assert col in loso.columns
+        # Each fitted group contributes one aggregate row.
+        agg = loso[loso['subject'] == 'aggregate']
+        assert len(agg) == len(group.lmm_results)
+        assert agg['delta_r2'].notna().all()
+
 
 class TestAnovaResponseMagnitudes:
 

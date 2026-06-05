@@ -1438,6 +1438,7 @@ class PhotometrySessionGroup:
         self.lmm_coefficients = None
         self.lmm_ceiling = None
         self.lmm_main_effects = None
+        self.lmm_loso = None
 
     @classmethod
     def from_catalog(cls, catalog, one, h5_dir=None):
@@ -2706,6 +2707,11 @@ class PhotometrySessionGroup:
           each with one random slope (``contrast``, ``side``, ``reward``). Each
           model's own main effect (coef, SE, z, p, CI, marginal R²) is stored
           in ``self.lmm_main_effects``.
+        - **LOSO-CV** — leave-one-subject-out cross-validation of the full
+          model vs the no-interaction model, testing whether the interaction
+          structure generalizes across animals. Per-held-out-subject and
+          aggregate out-of-sample R² (full, reduced, ΔR²) is stored in
+          ``self.lmm_loso``.
 
         Requires ``self.response_magnitudes`` and ``self.trial_regressors`` to
         be populated (via ``get_response_magnitudes()`` / direct assignment).
@@ -2730,8 +2736,9 @@ class PhotometrySessionGroup:
         """
         from tqdm import tqdm
         from iblnm.analysis import (
-            fit_response_lmm, fit_ceiling_lmm, compute_marginal_means,
-            compute_contrast_slopes, compute_interaction_effects,
+            fit_response_lmm, fit_ceiling_lmm, loso_cv_task_lmm,
+            compute_marginal_means, compute_contrast_slopes,
+            compute_interaction_effects,
         )
 
         df = self._modeling_frame(response_col)
@@ -2747,6 +2754,7 @@ class PhotometrySessionGroup:
         all_summaries = []
         ceiling_rows = []
         main_effect_rows = []
+        loso_frames = []
 
         for (target_nm, event_label), df_g in tqdm(groups.items(),
                                                     desc="Fitting LMMs"):
@@ -2786,11 +2794,20 @@ class PhotometrySessionGroup:
                 self._fit_main_effect_models(df_g, response_col, target_nm,
                                              event_label, contrast_coding))
 
+            loso = loso_cv_task_lmm(df_g, response_col,
+                                    contrast_coding=contrast_coding)
+            if not loso.empty:
+                loso.insert(0, 'target_NM', target_nm)
+                loso.insert(1, 'event', event_label)
+                loso_frames.append(loso)
+
         self.lmm_results = results
         self.lmm_coefficients = (pd.concat(all_summaries, ignore_index=True)
                                  if all_summaries else pd.DataFrame())
         self.lmm_ceiling = pd.DataFrame(ceiling_rows)
         self.lmm_main_effects = pd.DataFrame(main_effect_rows)
+        self.lmm_loso = (pd.concat(loso_frames, ignore_index=True)
+                         if loso_frames else pd.DataFrame())
 
         return results
 
