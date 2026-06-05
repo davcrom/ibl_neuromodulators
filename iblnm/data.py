@@ -1809,7 +1809,9 @@ class PhotometrySessionGroup:
 
         For each recording and event, loads the response xarray from H5,
         applies ``mask_subsequent_events`` and ``subtract_baseline``, and
-        stores the per-trial traces in ``self.response_traces``.
+        stores the per-trial traces in ``self.response_traces``. A
+        ``baseline`` pseudo-event holds the masked but **un-subtracted**
+        stimOn trace, so its magnitude reports the raw pre-stimulus level.
 
         The cache is keyed by ``(eid, brain_region, event)`` with values
         containing ``traces``, ``tpts``, ``meta``, and ``trials``.
@@ -1842,8 +1844,8 @@ class PhotometrySessionGroup:
             if brain_region not in ps.responses:
                 continue
 
-            responses = ps.mask_subsequent_events(ps.responses[brain_region])
-            responses = ps.subtract_baseline(responses)
+            masked = ps.mask_subsequent_events(ps.responses[brain_region])
+            responses = ps.subtract_baseline(masked)
 
             sample_times = responses.coords['time'].values
             if self.response_traces_tpts is None:
@@ -1871,6 +1873,15 @@ class PhotometrySessionGroup:
                     'trials': ps.trials.copy(),
                 }
 
+            # Pre-stimulus baseline from the raw (pre-subtraction) stimOn trace.
+            if 'stimOn_times' in masked.coords['event'].values:
+                cache[(eid, brain_region, 'baseline')] = {
+                    'traces': masked.sel(event='stimOn_times').values,
+                    'tpts': sample_times,
+                    'meta': {**meta, 'event': 'baseline'},
+                    'trials': ps.trials.copy(),
+                }
+
         self.response_traces = cache
         return self
 
@@ -1884,7 +1895,9 @@ class PhotometrySessionGroup:
 
         Calls :meth:`load_response_traces` if traces are not yet cached.
         For each cached (recording × event), computes the scalar magnitude
-        in the early response window. Trial-level task/movement predictors
+        in the early response window. The ``baseline`` pseudo-event uses
+        ``BASELINE_WINDOW`` on the raw (pre-subtraction) stimOn trace, giving
+        the per-trial pre-stimulus level. Trial-level task/movement predictors
         are not included here — they live in ``trial_regressors`` (populated
         by :meth:`get_trial_regressors`).
 
@@ -1893,7 +1906,8 @@ class PhotometrySessionGroup:
         pd.DataFrame
             One row per (recording × event × trial) with columns
             ``eid, subject, session_type, NM, target_NM, brain_region,
-            hemisphere, event, trial, response``.
+            hemisphere, event, trial, response``. ``event`` includes a
+            ``baseline`` pseudo-event row per trial.
         """
         from tqdm import tqdm
 
@@ -1905,8 +1919,10 @@ class PhotometrySessionGroup:
                 self.response_traces.items(),
                 desc="Computing response magnitudes"):
             meta = entry['meta']
-            early = compute_response_magnitude(
-                entry['traces'], entry['tpts'], RESPONSE_WINDOWS['early'],
+            window = (BASELINE_WINDOW if event == 'baseline'
+                      else RESPONSE_WINDOWS['early'])
+            magnitude = compute_response_magnitude(
+                entry['traces'], entry['tpts'], window,
             )
             frames.append(pd.DataFrame({
                 'eid': meta['eid'],
@@ -1917,8 +1933,8 @@ class PhotometrySessionGroup:
                 'brain_region': meta['brain_region'],
                 'hemisphere': meta['hemisphere'],
                 'event': event,
-                'trial': range(len(early)),
-                'response': early,
+                'trial': range(len(magnitude)),
+                'response': magnitude,
             }))
 
         self.response_magnitudes = (
@@ -1987,6 +2003,8 @@ class PhotometrySessionGroup:
 
         rows = []
         for (_eid, _region, _event), entry in self.response_traces.items():
+            if _event == 'baseline':  # pseudo-event, magnitude-only
+                continue
             traces = entry['traces']  # (n_trials, n_time)
             tpts = entry['tpts']
             meta = entry['meta']

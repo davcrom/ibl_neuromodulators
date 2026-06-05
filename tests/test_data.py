@@ -2473,7 +2473,8 @@ class TestGetResponseVector:
 # =============================================================================
 
 def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
-              all_biased=False, all_nogo=False, fast_response=False):
+              all_biased=False, all_nogo=False, fast_response=False,
+              baseline_value=0.0):
     """Write a minimal H5 file with trials and responses.
 
     Parameters
@@ -2484,6 +2485,9 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
         If True, set all choice to 0 (no-go).
     fast_response : bool
         If True, set feedback_times = stimOn_times + 0.01 (response_time < 0.05).
+    baseline_value : float
+        Pre-event (t < 0) signal level. Defaults to 0; set non-zero to give
+        the raw pre-stimulus baseline a known magnitude.
     """
     import h5py
 
@@ -2493,8 +2497,9 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
     events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
     contrasts = np.array([0.0, 0.0625, 0.125, 0.25, 1.0])
 
-    # Baseline = 0, post-event = 1.0
+    # Pre-event = baseline_value, post-event = 1.0
     post_mask = tpts >= 0
+    pre_mask = tpts < 0
 
     stim_on = np.linspace(10, 10 + n_trials, n_trials)
     feedback = stim_on + 0.01 if fast_response else np.linspace(11, 11 + n_trials, n_trials)
@@ -2530,6 +2535,7 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
             for event in events:
                 data = np.zeros((n_trials, n_time))
                 data[:, post_mask] = 1.0
+                data[:, pre_mask] = baseline_value
                 resp_grp.create_dataset(event, data=data)
 
 
@@ -3190,10 +3196,45 @@ class TestGetResponseMagnitudes:
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         df_events = group.get_response_magnitudes()
-        # After baseline subtraction, post-event signal = 1.0
-        # Response magnitude in early window should be ~1.0
-        magnitudes = df_events['response'].dropna()
+        # After baseline subtraction, post-event signal = 1.0.
+        # The 'baseline' pseudo-event carries the raw pre-stimulus level (0
+        # here), so exclude it from the post-event magnitude check.
+        magnitudes = df_events.loc[
+            df_events['event'] != 'baseline', 'response'].dropna()
         np.testing.assert_allclose(magnitudes.values, 1.0, atol=0.1)
+
+    def test_includes_baseline_event_with_raw_premagnitude(self, tmp_path):
+        """A 'baseline' pseudo-event row carries the raw pre-stimulus mean,
+        one per trial, not the ~0 left by baseline subtraction."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        n_trials = 50
+        baseline_value = 3.0
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=n_trials,
+                  baseline_value=baseline_value)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+
+        df = group.get_response_magnitudes()
+
+        baseline = df[df['event'] == 'baseline']
+        assert len(baseline) == n_trials
+        np.testing.assert_allclose(baseline['response'].values, baseline_value)
+        # Subtracted stimOn rows are NOT the raw baseline level.
+        stim = df[df['event'] == 'stimOn_times']
+        assert not np.allclose(stim['response'].values, baseline_value)
+
+    def test_baseline_rows_share_recording_columns(self, tmp_path):
+        """Baseline rows carry the same recording-key columns as event rows."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=30, baseline_value=2.0)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+
+        df = group.get_response_magnitudes()
+        baseline = df[df['event'] == 'baseline'].iloc[0]
+        assert baseline['eid'] == 'eid-0'
+        assert baseline['brain_region'] == 'VTA-r'
+        assert baseline['target_NM'] == 'target-0'
 
     def test_skips_missing_h5(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
@@ -3931,14 +3972,16 @@ class TestLoadResponseTraces:
         assert 'eid-1' not in eids
 
     def test_multiple_events_per_recording(self, tmp_path):
-        """Each recording should produce one cache entry per event."""
+        """Each recording produces one cache entry per response event plus
+        the pre-stimulus baseline pseudo-event."""
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         events = {k[2] for k in group.response_traces.keys()}
-        assert len(events) == 3  # stimOn, firstMovement, feedback
+        assert events == {'stimOn_times', 'firstMovement_times',
+                          'feedback_times', 'baseline'}
 
 
 class TestGetResponseMagnitudesFromCache:
