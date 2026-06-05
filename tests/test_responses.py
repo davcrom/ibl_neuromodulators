@@ -40,7 +40,9 @@ def _make_movement_group(n_per_cell=50, seed=0):
                             response = (0.3 * (contrast / 100)
                                         + subj_slope * log_rt
                                         + rng.normal(0, 0.5))
-                            for event in ['stimOn_times', 'feedback_times']:
+                            for event in ['baseline', 'stimOn_times',
+                                          'firstMovement_times',
+                                          'feedback_times']:
                                 resp_rows.append({
                                     'eid': eid, 'subject': f'subj-{s}',
                                     'target_NM': tnm, 'NM': tnm.split('-')[1],
@@ -144,7 +146,7 @@ class TestBuildMovementDF:
 
 class TestPlotMovementFigures:
 
-    def test_writes_csvs_and_figures(self, tmp_path):
+    def _run(self, tmp_path):
         from scripts.responses import plot_movement_figures
         group = _make_movement_group()
         fig_dirs = {
@@ -154,9 +156,40 @@ class TestPlotMovementFigures:
         }
         for d in fig_dirs.values():
             d.mkdir(parents=True, exist_ok=True)
-
         plot_movement_figures(group, fig_dirs, tmp_path)
+        return fig_dirs
 
+    def test_writes_model_comparison_csvs_and_descriptive_figures(self, tmp_path):
+        fig_dirs = self._run(tmp_path)
         assert (tmp_path / 'jackknife_model_comparison.csv').exists()
         assert (tmp_path / 'movement_marginal_r2.csv').exists()
         assert any(fig_dirs['movement_descriptive'].glob('*.svg'))
+
+    def test_writes_claim_csvs_with_tidy_schema(self, tmp_path):
+        from iblnm.analysis import _TIDY_LMM_COLS
+        self._run(tmp_path)
+        # Slope claims share the tidy LMM schema plus their identifiers.
+        for fname, ids in [
+            ('movement_vs_contrast.csv', ['target_NM']),
+            ('movement_predicts_response.csv', ['target_NM', 'event']),
+            ('movement_within_contrast.csv', ['target_NM', 'event']),
+        ]:
+            df = pd.read_csv(tmp_path / fname)
+            assert set(_TIDY_LMM_COLS).issubset(df.columns)
+            assert set(ids).issubset(df.columns)
+        # Behavioral claims fit on every target, so rows are non-empty.
+        assert len(pd.read_csv(tmp_path / 'movement_vs_contrast.csv')) > 0
+        assert len(pd.read_csv(tmp_path / 'movement_predicts_response.csv')) > 0
+
+    def test_writes_within_contrast_variation_csv(self, tmp_path):
+        self._run(tmp_path)
+        df = pd.read_csv(tmp_path / 'within_contrast_variation.csv')
+        assert {'target_NM', 'timing_col', 'var_within',
+                'var_between'}.issubset(df.columns)
+        assert len(df) > 0
+
+    def test_predicts_response_covers_all_events(self, tmp_path):
+        self._run(tmp_path)
+        df = pd.read_csv(tmp_path / 'movement_predicts_response.csv')
+        assert set(df['event']) == {
+            'baseline', 'stimOn_times', 'firstMovement_times'}

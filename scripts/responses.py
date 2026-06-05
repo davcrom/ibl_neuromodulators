@@ -38,11 +38,13 @@ from iblnm.vis import (
     plot_mean_response_vectors, plot_lmm_summary,
     plot_mean_response_traces,
     plot_movement_response, plot_movement_lmm_summary,
-    plot_movement_r2_bars,
+    plot_movement_r2_bars, plot_movement_slope_summary,
 )
 from iblnm.analysis import (
     split_features_by_event,
     fit_movement_lmm_r2, jackknife_movement_lmm,
+    fit_movement_vs_contrast, fit_movement_predicts_response,
+    fit_movement_within_contrast, within_contrast_variation,
 )
 
 plt.ion()
@@ -210,8 +212,9 @@ def build_movement_df(group):
 
 
 def _movement_descriptive_figures(df_resp, figures_dir):
-    """NM response vs log(timing) per (target_NM, predictor); contrast as color."""
-    for target_nm, df_group in df_resp.groupby('target_NM'):
+    """Raw-data within-contrast check: NM response vs log(timing) per
+    (target_NM, event, predictor), with contrast as color."""
+    for (target_nm, event), df_group in df_resp.groupby(['target_NM', 'event']):
         if df_group['subject'].nunique() < MIN_SUBJECTS_MOVEMENT:
             continue
         for var in TIMING_VARS:
@@ -219,10 +222,70 @@ def _movement_descriptive_figures(df_resp, figures_dir):
             if len(df_valid) < MIN_TRIALS_MOVEMENT:
                 continue
             fig = plot_movement_response(
-                df_valid, 'response', f'log_{var}', target_nm)
-            fname = f'{target_nm}_stimOn_{var}.svg'
+                df_valid, 'response', f'log_{var}', target_nm, event=event)
+            fname = f'{target_nm}_{event}_{var}.svg'
             fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
             plt.close(fig)
+
+
+def _fit_claim_over_grid(df, group_cols, fit_fn):
+    """Apply a per-group movement fit ``fit_fn(df_group, timing_col)`` across
+    every (group × timing variable) cell, tag each tidy result with its group
+    identifiers, and concatenate. Empty fits (too few subjects / non-convergence)
+    contribute their columns but no rows."""
+    frames = []
+    for keys, df_group in df.groupby(group_cols):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        for var in TIMING_VARS:
+            res = fit_fn(df_group, f'log_{var}')
+            for col, val in zip(reversed(group_cols), reversed(keys)):
+                res.insert(0, col, val)
+            frames.append(res)
+    # Drop empty fits before concat (avoids the all-NA concat dtype warning);
+    # fall back to the first (schema-carrying) frame if every fit was empty.
+    nonempty = [f for f in frames if len(f)]
+    if nonempty:
+        return pd.concat(nonempty, ignore_index=True)
+    return frames[0] if frames else pd.DataFrame()
+
+
+def _fit_movement_claims(df_resp, figures_dir, data_dir):
+    """Fit the three movement claims plus the within-contrast variation check off
+    the shared frame, save one tidy CSV per claim, and plot the slope summaries.
+
+    Behavioral claims (movement vs contrast; within-contrast variation) use one
+    row per trial (the stimOn event); the response claims (unadjusted and
+    within-contrast) run per (target_NM, event, timing variable).
+    """
+    behavioral = df_resp[df_resp['event'] == 'stimOn_times']
+    vs_contrast = _fit_claim_over_grid(
+        behavioral, ['target_NM'], fit_movement_vs_contrast)
+    variation = _fit_claim_over_grid(
+        behavioral, ['target_NM'], within_contrast_variation)
+    predicts = _fit_claim_over_grid(
+        df_resp, ['target_NM', 'event'],
+        lambda df, col: fit_movement_predicts_response(df, 'response', col))
+    within = _fit_claim_over_grid(
+        df_resp, ['target_NM', 'event'],
+        lambda df, col: fit_movement_within_contrast(df, 'response', col))
+
+    vs_contrast.to_csv(data_dir / 'movement_vs_contrast.csv', index=False)
+    variation.to_csv(data_dir / 'within_contrast_variation.csv', index=False)
+    predicts.to_csv(data_dir / 'movement_predicts_response.csv', index=False)
+    within.to_csv(data_dir / 'movement_within_contrast.csv', index=False)
+
+    for tidy, title, formula, fname in [
+        (vs_contrast, 'Movement vs contrast', 'timing ~ contrast',
+         'movement_vs_contrast.svg'),
+        (predicts, 'Movement predicts response (unadjusted)', 'response ~ timing',
+         'movement_predicts_response.svg'),
+        (within, 'Movement predicts response within contrast',
+         'response ~ C(contrast) + timing + side + reward',
+         'movement_within_contrast.svg'),
+    ]:
+        fig = plot_movement_slope_summary(tidy, title, formula=formula)
+        fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
 
 
 def _movement_model_comparison(df_resp, figures_dir, data_dir):
@@ -262,11 +325,15 @@ def _movement_model_comparison(df_resp, figures_dir, data_dir):
 
 
 def plot_movement_figures(group, fig_dirs, data_dir):
-    """Run the three movement-variable analyses off the merged modeling frame."""
+    """Run the movement-encoding analyses off the merged modeling frame: the
+    ordered claims, the raw-data within-contrast check, and the ΔR²
+    unique-contribution comparison (stimOn only, unchanged)."""
     df_resp = build_movement_df(group)
+    _fit_movement_claims(df_resp, fig_dirs['movement_slopes'], data_dir)
     _movement_descriptive_figures(df_resp, fig_dirs['movement_descriptive'])
     _movement_model_comparison(
-        df_resp, fig_dirs['movement_model_comparison'], data_dir)
+        df_resp.query("event == 'stimOn_times'"),
+        fig_dirs['movement_model_comparison'], data_dir)
 
 
 if __name__ == '__main__':
@@ -448,7 +515,7 @@ if __name__ == '__main__':
     plot_lmm_figures(group, fig_dirs['lmm'], data_dir)
 
     # =====================================================================
-    # Movement encoding (descriptive, LOSO ΔR², per-contrast slopes)
+    # Movement encoding (ordered claims, raw-data check, ΔR² comparison)
     # =====================================================================
     print("\nRunning movement-variable encoding analyses...")
     plot_movement_figures(group, fig_dirs, data_dir)
