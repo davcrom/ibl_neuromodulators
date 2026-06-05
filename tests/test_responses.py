@@ -119,6 +119,28 @@ class TestBuildMovementDF:
         df = build_movement_df(_make_group(resp, reg))
         assert df['log_peak_velocity'].isna().all()
 
+    def test_retains_baseline_stimon_firstmovement_events(self):
+        """The movement DV set is baseline, stimOn, firstMovement; feedback is
+        excluded (no longer filtered to stimOn only)."""
+        from scripts.responses import build_movement_df
+        events = ['baseline', 'stimOn_times', 'firstMovement_times',
+                  'feedback_times']
+        resp = pd.DataFrame([
+            {'eid': 'e0', 'subject': 's0', 'target_NM': 'VTA-DA', 'NM': 'DA',
+             'brain_region': 'VTA', 'hemisphere': 'r', 'event': event,
+             'trial': 0, 'response': 1.0}
+            for event in events
+        ])
+        reg = pd.DataFrame([
+            {'eid': 'e0', 'trial': 0, 'signed_contrast': 0.25, 'contrast': 25.0,
+             'stim_side': 'right', 'choice': 1, 'feedbackType': 1,
+             'probabilityLeft': 0.5, 'reaction_time': 0.2, 'movement_time': 0.3,
+             'response_time': 0.8, 'peak_velocity': 5.0},
+        ])
+        df = build_movement_df(_make_group(resp, reg))
+        assert set(df['event']) == {
+            'baseline', 'stimOn_times', 'firstMovement_times'}
+
 
 class TestPlotMovementFigures:
 

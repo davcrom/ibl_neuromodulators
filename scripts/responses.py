@@ -188,14 +188,22 @@ def plot_similarity_figures(group, similarity_dir, data_dir):
 # Movement encoding
 # =========================================================================
 
+# Response DV set for the movement claims: pre-stimulus baseline, stimulus
+# onset, and first-movement aligned magnitudes (feedback excluded).
+MOVEMENT_EVENTS = ('baseline', 'stimOn_times', 'firstMovement_times')
+
+
 def build_movement_df(group):
-    """Merge stimOn response magnitudes with trial regressors for modeling.
+    """Merge response magnitudes with trial regressors for movement modeling.
 
     Keeps unbiased-block go trials with ``response_time > 0.05`` and a
-    non-null response, adds hemisphere-relative contrast/side, and appends a
+    non-null response (via :meth:`_modeling_frame`), restricts the response DV
+    set to the ``baseline``, ``stimOn``, and ``firstMovement`` events (feedback
+    excluded), adds hemisphere-relative contrast/side, and appends a
     ``log_<var>`` column per timing variable (NaN where the value is ≤ 0).
     """
-    df = group._modeling_frame().query("event == 'stimOn_times'").copy()
+    df = group._modeling_frame()
+    df = df[df['event'].isin(MOVEMENT_EVENTS)].copy()
     for var in TIMING_VARS:
         df[f'log_{var}'] = np.where(df[var] > 0, np.log10(df[var]), np.nan)
     return df
