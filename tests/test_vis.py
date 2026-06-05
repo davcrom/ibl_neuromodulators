@@ -2474,6 +2474,13 @@ class TestPlotMovementLMMSummary:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
+    def test_formula_in_title(self):
+        """The fitted model formula appears in the figure title."""
+        from iblnm.vis import plot_movement_lmm_summary
+        fig = plot_movement_lmm_summary(_make_movement_lmm_summary())
+        assert 'response ~ contrast + timing + reward' in fig._suptitle.get_text()
+        plt.close(fig)
+
 
 def _make_movement_r2_bars():
     """Full-dataset marginal R²: one row per (target_NM, timing var)."""
@@ -2517,6 +2524,13 @@ class TestPlotMovementR2Bars:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
+    def test_formula_in_title(self):
+        """The full model formula appears in the figure title."""
+        from iblnm.vis import plot_movement_r2_bars
+        fig = plot_movement_r2_bars(_make_movement_r2_bars())
+        assert 'response ~ contrast + timing + reward' in fig._suptitle.get_text()
+        plt.close(fig)
+
 
 class TestPlotMovementSlopeSummary:
     def test_returns_figure(self):
@@ -2533,13 +2547,13 @@ class TestPlotMovementSlopeSummary:
         assert len(fig.axes) == 2  # log_reaction_time, log_movement_time
         plt.close(fig)
 
-    def test_formula_annotated(self):
+    def test_formula_in_title(self):
+        """A formula passed in is rendered in the figure title, not bottom text."""
         from iblnm.vis import plot_movement_slope_summary
+        formula = 'response ~ C(contrast) + timing + side + reward'
         fig = plot_movement_slope_summary(
-            _make_claim_slopes(), 'within contrast',
-            formula='response ~ C(contrast) + timing + side + reward')
-        texts = [t.get_text() for t in fig.findobj(plt.Text)]
-        assert any('C(contrast)' in t for t in texts)
+            _make_claim_slopes(), 'within contrast', formula=formula)
+        assert formula in fig._suptitle.get_text()
         plt.close(fig)
 
     def test_no_event_column(self):

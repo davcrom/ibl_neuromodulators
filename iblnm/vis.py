@@ -3104,9 +3104,10 @@ def plot_movement_lmm_summary(summary_df):
     if n_panels == 1:
         axes = axes.reshape(2, 1)
 
+    _title = ('Jackknife ΔR² (leave-one-subject-out)\n'
+              'response ~ contrast + timing + reward')
     if len(summary_df) == 0:
-        fig.suptitle('Movement encoding — jackknife ΔR²',
-                     fontsize=LABELFONTSIZE)
+        fig.suptitle(_title, fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(summary_df['target_NM'].unique(),
@@ -3150,13 +3151,12 @@ def plot_movement_lmm_summary(summary_df):
             if row_idx == 0:
                 ax.set_title(timing_label)
 
-    fig.suptitle('Movement encoding — jackknife ΔR²',
-                 fontsize=LABELFONTSIZE)
+    fig.suptitle(_title, fontsize=LABELFONTSIZE)
     return fig
 
 
 def plot_movement_r2_bars(summary_df):
-    """In-sample marginal (FE) R² of the three additive models, per target-NM.
+    """Fixed-effects R² of the three additive models, per target-NM.
 
     Full-dataset fit, no cross-validation. One panel per movement variable;
     each target-NM gets three bars — contrast model (contrast + reward),
@@ -3185,8 +3185,10 @@ def plot_movement_r2_bars(summary_df):
     if n_panels == 1:
         axes = [axes]
 
+    _title = ('Fixed-effects R² (full-data fit)\n'
+              'full: response ~ contrast + timing + reward')
     if len(summary_df) == 0:
-        fig.suptitle('Movement encoding — marginal R²', fontsize=LABELFONTSIZE)
+        fig.suptitle(_title, fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(summary_df['target_NM'].unique(),
@@ -3208,10 +3210,10 @@ def plot_movement_r2_bars(summary_df):
         ax.axhline(0, ls='--', color='gray', lw=0.5)
         ax.set_title(tvar.replace('log_', ''))
 
-    axes[0].set_ylabel('Marginal R²')
+    axes[0].set_ylabel('Fixed-effects R²')
     axes[-1].legend(frameon=False, fontsize=TICKFONTSIZE,
                     loc='upper left', bbox_to_anchor=(1, 1))
-    fig.suptitle('Movement encoding — marginal R²', fontsize=LABELFONTSIZE)
+    fig.suptitle(_title, fontsize=LABELFONTSIZE)
     return fig
 
 
@@ -3223,7 +3225,7 @@ def plot_movement_slope_summary(tidy_df, title, formula=None):
     response-based claims), the events are separated along the x-axis within each
     target and distinguished by color; the behavioral movement-vs-contrast frame
     has no event column and shows one point per target. ``formula``, if given, is
-    annotated under the title to identify the model.
+    shown in the title to identify the model.
 
     Parameters
     ----------
@@ -3246,11 +3248,9 @@ def plot_movement_slope_summary(tidy_df, title, formula=None):
     if n_panels == 1:
         axes = [axes]
 
-    if formula is not None:
-        fig.text(0.5, 0.005, formula, ha='center', va='bottom',
-                 fontsize=TICKFONTSIZE, style='italic')
+    suptitle = f'{title}\n{formula}' if formula is not None else title
     if len(tidy_df) == 0:
-        fig.suptitle(title, fontsize=LABELFONTSIZE)
+        fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(tidy_df['target_NM'].unique(),
@@ -3288,7 +3288,7 @@ def plot_movement_slope_summary(tidy_df, title, formula=None):
     if has_event:
         axes[-1].legend(frameon=False, loc='upper left',
                         bbox_to_anchor=(1, 1), fontsize=TICKFONTSIZE)
-    fig.suptitle(title, fontsize=LABELFONTSIZE)
+    fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
     return fig
 
 
