@@ -2410,62 +2410,6 @@ def within_contrast_variation(df, timing_col):
     }])
 
 
-def fit_movement_lmm_per_contrast(df, response_col, timing_col,
-                                   min_subjects=2):
-    """Estimate timing-response slope at a single contrast level.
-
-    Fits: ``response ~ side + reward + timing + (1 + timing | subject)``,
-    i.e. a by-subject random slope for the timing predictor in addition to
-    a random intercept (Barr et al. 2013, "keep it maximal").
-
-    Side and reward use deviation coding (±0.5). The timing column should
-    already be log-transformed.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Trial-level data for a single contrast level.
-    response_col : str
-        Column name for the NM response magnitude.
-    timing_col : str
-        Column name for the (log-transformed) timing variable.
-    min_subjects : int
-        Minimum subjects required to fit.
-
-    Returns
-    -------
-    dict or None
-        None if fewer than min_subjects or model fails to converge.
-        Otherwise a dict with keys: timing_coef, timing_se, timing_p,
-        r2_marginal, n_trials, n_subjects, timing_col.
-    """
-    df = df.dropna(subset=[response_col, timing_col]).copy()
-    if df['subject'].nunique() < min_subjects:
-        return None
-
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-
-    if df['side'].nunique() < 2 or df['reward'].nunique() < 2:
-        return None
-
-    formula = f'{response_col} ~ side + reward + {timing_col}'
-    lmm = _fit_lmm(formula, df, groups=df['subject'],
-                    re_formula=f'1 + {timing_col}', reml=True)
-    if lmm is None:
-        return None
-
-    return {
-        'timing_coef': float(lmm.result.fe_params[timing_col]),
-        'timing_se': float(lmm.result.bse[timing_col]),
-        'timing_p': float(lmm.result.pvalues[timing_col]),
-        'r2_marginal': lmm.variance_explained['marginal'],
-        'n_trials': len(df),
-        'n_subjects': df['subject'].nunique(),
-        'timing_col': timing_col,
-    }
-
-
 def compute_recording_projection(n_analysis_ready, n_total, target_n,
                                  deadline, capacity_per_day, today=None):
     """Compute recording capacity projection per target.

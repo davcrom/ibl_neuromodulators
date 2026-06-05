@@ -37,12 +37,12 @@ from iblnm.vis import (
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
     plot_mean_response_traces,
-    plot_movement_response, plot_movement_lmm_summary, plot_movement_slopes,
+    plot_movement_response, plot_movement_lmm_summary,
     plot_movement_r2_bars,
 )
 from iblnm.analysis import (
     split_features_by_event,
-    fit_movement_lmm_r2, jackknife_movement_lmm, fit_movement_lmm_per_contrast,
+    fit_movement_lmm_r2, jackknife_movement_lmm,
 )
 
 plt.ion()
@@ -253,42 +253,12 @@ def _movement_model_comparison(df_resp, figures_dir, data_dir):
     plt.close(fig)
 
 
-def _movement_per_contrast_slopes(df_resp, figures_dir, data_dir):
-    """Per-(target_NM, contrast, predictor) timing slopes."""
-    slope_rows = []
-    for (target_nm, contrast), df_group in df_resp.groupby(
-            ['target_NM', 'contrast']):
-        if df_group['subject'].nunique() < MIN_SUBJECTS_MOVEMENT:
-            continue
-        for var in TIMING_VARS:
-            df_valid = df_group.dropna(subset=[f'log_{var}'])
-            if len(df_valid) < MIN_TRIALS_MOVEMENT:
-                continue
-            result = fit_movement_lmm_per_contrast(
-                df_valid, 'response', f'log_{var}')
-            if result is None:
-                continue
-            slope_rows.append({**result, 'target_NM': target_nm,
-                               'contrast': contrast})
-
-    if not slope_rows:
-        return
-    df_slopes = pd.DataFrame(slope_rows)
-    df_slopes.to_csv(data_dir / 'per_contrast_slopes.csv', index=False)
-    fig = plot_movement_slopes(df_slopes)
-    fig.savefig(figures_dir / 'timing_slopes_by_contrast.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
-
-
 def plot_movement_figures(group, fig_dirs, data_dir):
     """Run the three movement-variable analyses off the merged modeling frame."""
     df_resp = build_movement_df(group)
     _movement_descriptive_figures(df_resp, fig_dirs['movement_descriptive'])
     _movement_model_comparison(
         df_resp, fig_dirs['movement_model_comparison'], data_dir)
-    _movement_per_contrast_slopes(
-        df_resp, fig_dirs['movement_slopes'], data_dir)
 
 
 if __name__ == '__main__':

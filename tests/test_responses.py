@@ -137,5 +137,4 @@ class TestPlotMovementFigures:
 
         assert (tmp_path / 'jackknife_model_comparison.csv').exists()
         assert (tmp_path / 'movement_marginal_r2.csv').exists()
-        assert (tmp_path / 'per_contrast_slopes.csv').exists()
         assert any(fig_dirs['movement_descriptive'].glob('*.svg'))
