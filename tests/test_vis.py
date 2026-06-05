@@ -1019,6 +1019,90 @@ class TestPlotLMMSummary:
             assert len(ax.containers) > 0 or len(ax.collections) > 0
         plt.close(fig)
 
+    def test_summary_annotates_formula(self):
+        """A formula passed in is rendered as a figure annotation (#7)."""
+        from iblnm.vis import plot_lmm_summary
+        group = self._make_mock_group()
+        formula = 'response ~ contrast * side * reward'
+        fig = plot_lmm_summary(group, 'stimOn', formula=formula)
+        texts = [t.get_text() for t in fig.texts]
+        assert formula in texts
+        plt.close(fig)
+
+
+# =============================================================================
+# plot_lmm_ceiling / plot_lmm_main_effects / plot_lmm_loso Tests
+# =============================================================================
+
+
+class TestPlotLMMSuiteFigures:
+
+    def _ceiling(self):
+        return pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'stimOn',
+             'marginal': 0.12, 'conditional': 0.30},
+            {'target_NM': 'DR-5HT', 'event': 'stimOn',
+             'marginal': 0.05, 'conditional': 0.18},
+        ])
+
+    def _main_effects(self):
+        return pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'predictor': 'contrast',
+             'Coef.': 0.3, 'ci_lower': 0.2, 'ci_upper': 0.4, 'P>|z|': 0.001},
+            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'predictor': 'side',
+             'Coef.': 0.05, 'ci_lower': -0.1, 'ci_upper': 0.2, 'P>|z|': 0.4},
+        ])
+
+    def _loso(self):
+        return pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'subject': 's0',
+             'delta_r2': 0.02},
+            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'subject': 's1',
+             'delta_r2': -0.01},
+            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'subject': 'aggregate',
+             'delta_r2': 0.005},
+        ])
+
+    def test_ceiling_paired_bars_per_target(self):
+        """Two bars (marginal, conditional) per target_NM."""
+        from iblnm.vis import plot_lmm_ceiling
+        fig = plot_lmm_ceiling(self._ceiling())
+        patches = [p for p in fig.axes[0].patches if p.get_height() != 0]
+        assert len(patches) == 4  # 2 targets × (marginal, conditional)
+        plt.close(fig)
+
+    def test_main_effects_fill_encodes_significance(self):
+        """Filled marker for p<0.05, open for non-significant."""
+        from iblnm.vis import plot_lmm_main_effects
+        fig = plot_lmm_main_effects(self._main_effects())
+        contrast_ax, side_ax = fig.axes[0], fig.axes[1]
+        contrast_fs = {c[0].get_fillstyle() for c in contrast_ax.containers}
+        side_fs = {c[0].get_fillstyle() for c in side_ax.containers}
+        assert 'full' in contrast_fs  # contrast p=0.001
+        assert 'none' in side_fs      # side p=0.4
+        plt.close(fig)
+
+    def test_loso_aggregate_marker_distinct_from_folds(self):
+        """The aggregate marker is drawn larger than the per-fold markers."""
+        from iblnm.vis import plot_lmm_loso
+        fig = plot_lmm_loso(self._loso())
+        sizes = [c.get_sizes()[0] for c in fig.axes[0].collections
+                 if len(c.get_sizes())]
+        assert max(sizes) > min(sizes)
+        plt.close(fig)
+
+    def test_suite_plots_handle_empty_frames(self):
+        """Each suite plot returns a labelled figure on an empty frame."""
+        from iblnm.vis import (plot_lmm_ceiling, plot_lmm_main_effects,
+                               plot_lmm_loso)
+        for fn, df in [(plot_lmm_ceiling, self._ceiling()),
+                       (plot_lmm_main_effects, self._main_effects()),
+                       (plot_lmm_loso, self._loso())]:
+            fig = fn(df.iloc[0:0])
+            assert isinstance(fig, plt.Figure)
+            assert fig._suptitle is not None
+            plt.close(fig)
+
 
 # =============================================================================
 # plot_within_target_similarity Tests

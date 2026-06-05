@@ -36,6 +36,7 @@ from iblnm.util import collect_session_errors
 from iblnm.vis import (
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
+    plot_lmm_ceiling, plot_lmm_main_effects, plot_lmm_loso,
     plot_mean_response_traces,
     plot_movement_response, plot_movement_lmm_summary,
     plot_movement_r2_bars, plot_movement_slope_summary,
@@ -111,41 +112,72 @@ def plot_response_figures(group, figures_dir, response_col='response'):
 # LMM statistical analysis
 # =========================================================================
 
+# Base model whose EMM/interaction/CRF summary figure is annotated.
+LMM_BASE_FORMULA = 'response ~ contrast * side * reward'
+
+
 def plot_lmm_figures(group, figures_dir, data_dir,
-                     response_col='response'):
-    """Generate per-target LMM response plots and consolidated summaries.
+                     contrast_coding='log2', response_col='response'):
+    """Run the initial-LMM suite, save every result as a CSV, and plot the
+    labelled summaries.
+
+    Fits the suite (base + ceiling + three main-effect models + LOSO-CV) via
+    :meth:`PhotometrySessionGroup.fit_lmm`, then writes one tidy CSV per result
+    (coefficients, ceiling R², main-effect estimates, LOSO-CV) — saving lives
+    here, not in the plot functions. Produces the per-event base-model summary
+    (annotated with its formula) plus the ceiling, main-effect, and LOSO-CV
+    generalizability figures.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have lmm_results populated.
+        Must have ``response_magnitudes`` and ``trial_regressors`` populated.
     figures_dir : Path
         Output directory for SVG files.
     data_dir : Path
         Output directory for CSV files.
+    contrast_coding : str
+        Continuous contrast transform passed to ``fit_lmm``.
     response_col : str
         Column name for the response magnitude.
     """
     window_label = response_col
-
+    group.fit_lmm(contrast_coding=contrast_coding)
     if not group.lmm_results:
-        print("  No LMM results to plot.")
+        print("  No LMM results.")
         return
 
-    # FIXME: saving doesn't belong in a plot function
-    # Save coefficients to data dir
-    if len(group.lmm_coefficients) > 0:
-        csv_path = data_dir / f'lmm_coefficients_{window_label}.csv'
-        group.lmm_coefficients.to_csv(csv_path, index=False)
-        print(f"  LMM coefficients saved to {csv_path}")
+    # Saving lives in the orchestration; plot functions only plot (#10).
+    for result, name in [
+        (group.lmm_coefficients, 'lmm_coefficients'),
+        (group.lmm_ceiling, 'lmm_ceiling'),
+        (group.lmm_main_effects, 'lmm_main_effects'),
+        (group.lmm_loso, 'lmm_loso'),
+    ]:
+        if len(result) > 0:
+            result.to_csv(data_dir / f'{name}_{window_label}.csv', index=False)
+    print(f"  LMM suite CSVs saved to {data_dir}")
 
-    # Consolidated summary — one figure per event
+    # Single-model base summary, annotated with its formula — one per event.
     events_seen = sorted(set(ev for _, ev in group.lmm_results.keys()))
     for event_label in events_seen:
-        fig = plot_lmm_summary(group, event_label)
+        fig = plot_lmm_summary(group, event_label, formula=LMM_BASE_FORMULA)
         fig.savefig(
             figures_dir / f'lmm_summary_{event_label}_{window_label}.svg',
             dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
+
+    # Suite figures: ceiling R², main-effect estimates, LOSO-CV.
+    for fig, fname in [
+        (plot_lmm_ceiling(group.lmm_ceiling),
+         f'lmm_ceiling_{window_label}.svg'),
+        (plot_lmm_main_effects(group.lmm_main_effects),
+         f'lmm_main_effects_{window_label}.svg'),
+        (plot_lmm_loso(group.lmm_loso),
+         f'lmm_loso_{window_label}.svg'),
+    ]:
+        fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
     print("  LMM summary plots saved")
 
 
@@ -507,12 +539,8 @@ if __name__ == '__main__':
     # LMM statistical analysis
     # =====================================================================
     print(f"\nFitting linear mixed-effects models (contrast coding: {args.contrast_coding})...")
-    group.fit_lmm(contrast_coding=args.contrast_coding)
-    for (tnm, ev), result in group.lmm_results.items():
-        ve = result.variance_explained
-        print(f"  {tnm} x {ev}: R2 marginal={ve['marginal']:.3f}, "
-              f"conditional={ve['conditional']:.3f}")
-    plot_lmm_figures(group, fig_dirs['lmm'], data_dir)
+    plot_lmm_figures(group, fig_dirs['lmm'], data_dir,
+                     contrast_coding=args.contrast_coding)
 
     # =====================================================================
     # Movement encoding (ordered claims, raw-data check, ΔR² comparison)

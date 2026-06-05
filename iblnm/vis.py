@@ -2201,7 +2201,7 @@ def plot_lmm_coefficient_heatmap(df_coefs):
     return figs
 
 
-def plot_lmm_summary(group, event, fig=None):
+def plot_lmm_summary(group, event, fig=None, formula=None):
     """5-panel LMM summary for one event.
 
     Panels:
@@ -2223,6 +2223,8 @@ def plot_lmm_summary(group, event, fig=None):
     event : str
         Event label to plot (e.g. 'stimOn').
     fig : plt.Figure, optional
+    formula : str or None
+        Base-model formula; annotated under the title when given.
 
     Returns
     -------
@@ -2436,6 +2438,179 @@ def plot_lmm_summary(group, event, fig=None):
         fig.colorbar(im, cax=cax, label='β')
 
     fig.suptitle(f'LMM summary — {event}', fontsize=LABELFONTSIZE)
+    if formula is not None:
+        fig.text(0.5, 0.005, formula, ha='center', va='bottom',
+                 fontsize=TICKFONTSIZE, style='italic')
+    return fig
+
+
+def plot_lmm_ceiling(ceiling_df):
+    """Saturated-model ceiling R² (marginal and conditional) per target-NM.
+
+    One panel per event; within each, paired bars per target-NM give the
+    fixed-effects (marginal) and fixed+random (conditional) R² of the
+    saturated categorical model ``response ~ C(contrast) * side * reward`` —
+    the upper bound the parametric models are compared against.
+
+    Parameters
+    ----------
+    ceiling_df : pd.DataFrame
+        ``fit_lmm`` ceiling rows: ``target_NM``, ``event``, ``marginal``,
+        ``conditional``.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    events = sorted(ceiling_df['event'].unique()) if len(ceiling_df) else []
+    n_panels = max(len(events), 1)
+    fig, axes = plt.subplots(1, n_panels, figsize=(3 * n_panels + 1, 4),
+                             sharey=True, layout='constrained')
+    axes = np.atleast_1d(axes)
+    if len(ceiling_df) == 0:
+        fig.suptitle('Ceiling R² (saturated categorical model)',
+                     fontsize=LABELFONTSIZE)
+        return fig
+
+    bar_w = 0.35
+    for ax, event in zip(axes, events):
+        df_ev = ceiling_df[ceiling_df['event'] == event]
+        targets = sorted(df_ev['target_NM'].unique(),
+                         key=lambda x: TARGETNM2POSITION.get(x, 999))
+        for i, tnm in enumerate(targets):
+            row = df_ev[df_ev['target_NM'] == tnm].iloc[0]
+            color = TARGETNM_COLORS.get(tnm, f'C{i}')
+            ax.bar(i - bar_w / 2, row['marginal'], width=bar_w, color=color,
+                   alpha=0.5, label='Fixed' if i == 0 else '')
+            ax.bar(i + bar_w / 2, row['conditional'], width=bar_w, color=color,
+                   alpha=1.0, label='Fixed + random' if i == 0 else '')
+        ax.set_xticks(range(len(targets)))
+        ax.set_xticklabels(targets, rotation=45, ha='right',
+                           fontsize=TICKFONTSIZE)
+        ax.set_title(event)
+    axes[0].set_ylabel('Ceiling R²')
+    axes[0].legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
+    fig.suptitle('Ceiling R² (saturated categorical model)',
+                 fontsize=LABELFONTSIZE)
+    fig.text(0.5, 0.005, 'response ~ C(contrast) * side * reward',
+             ha='center', va='bottom', fontsize=TICKFONTSIZE, style='italic')
+    return fig
+
+
+def plot_lmm_main_effects(main_effects_df):
+    """Main-effect estimates (coef ± 95% CI) per target-NM, one panel per
+    predictor.
+
+    Each estimate is read from the model carrying that predictor's own random
+    slope (``response ~ contrast * side * reward`` with one random slope).
+    Filled markers are significant (p < 0.05); events are offset along x within
+    each target and distinguished by color.
+
+    Parameters
+    ----------
+    main_effects_df : pd.DataFrame
+        ``fit_lmm`` main-effect rows: ``target_NM``, ``event``, ``predictor``,
+        ``Coef.``, ``ci_lower``, ``ci_upper``, ``P>|z|``.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    predictors = (['contrast', 'side', 'reward'] if len(main_effects_df)
+                  else ['contrast'])
+    fig, axes = plt.subplots(1, len(predictors),
+                             figsize=(4 * len(predictors) + 1, 4),
+                             sharey=True, layout='constrained')
+    axes = np.atleast_1d(axes)
+    if len(main_effects_df) == 0:
+        fig.suptitle('Main-effect estimates (single-random-slope models)',
+                     fontsize=LABELFONTSIZE)
+        return fig
+
+    targets = sorted(main_effects_df['target_NM'].unique(),
+                     key=lambda x: TARGETNM2POSITION.get(x, 999))
+    events = sorted(main_effects_df['event'].unique())
+    offsets = np.linspace(-0.25, 0.25, len(events)) if len(events) > 1 else [0.0]
+    event_colors = {ev: f'C{k}' for k, ev in enumerate(events)}
+
+    for ax, predictor in zip(axes, predictors):
+        df_p = main_effects_df[main_effects_df['predictor'] == predictor]
+        for i, tnm in enumerate(targets):
+            for ev, dx in zip(events, offsets):
+                row = df_p[(df_p['target_NM'] == tnm) & (df_p['event'] == ev)]
+                if len(row) == 0:
+                    continue
+                row = row.iloc[0]
+                fs = 'full' if row['P>|z|'] < 0.05 else 'none'
+                yerr = [[row['Coef.'] - row['ci_lower']],
+                        [row['ci_upper'] - row['Coef.']]]
+                ax.errorbar(i + dx, row['Coef.'], yerr=yerr, fmt='o',
+                            color=event_colors[ev], markersize=6, capsize=3,
+                            fillstyle=fs, label=ev if i == 0 else '')
+        ax.set_title(predictor)
+        ax.set_xticks(range(len(targets)))
+        ax.set_xticklabels(targets, rotation=30, ha='right',
+                           fontsize=TICKFONTSIZE)
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+    axes[0].set_ylabel('Main effect (coef ± 95% CI)')
+    if axes[-1].get_legend_handles_labels()[0]:
+        axes[-1].legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
+                        fontsize=TICKFONTSIZE)
+    fig.suptitle('Main-effect estimates (single-random-slope models)',
+                 fontsize=LABELFONTSIZE)
+    return fig
+
+
+def plot_lmm_loso(loso_df):
+    """LOSO-CV generalizability: ΔR² (full − no-interaction) out of sample.
+
+    One panel per event. Per target-NM, the small markers are the per-held-out-
+    subject ΔR² (positive = interactions help generalize to a new animal) and
+    the large marker is the across-fold aggregate. At 6–11 subjects the CV
+    estimate is noisy and qualitative.
+
+    Parameters
+    ----------
+    loso_df : pd.DataFrame
+        ``fit_lmm`` LOSO rows: ``target_NM``, ``event``, ``subject``,
+        ``delta_r2`` (with a per-group ``subject == 'aggregate'`` row).
+
+    Returns
+    -------
+    plt.Figure
+    """
+    events = sorted(loso_df['event'].unique()) if len(loso_df) else []
+    n_panels = max(len(events), 1)
+    fig, axes = plt.subplots(1, n_panels, figsize=(3 * n_panels + 1, 4),
+                             sharey=True, layout='constrained')
+    axes = np.atleast_1d(axes)
+    if len(loso_df) == 0:
+        fig.suptitle('LOSO-CV generalizability (full − no-interaction ΔR²)',
+                     fontsize=LABELFONTSIZE)
+        return fig
+
+    for ax, event in zip(axes, events):
+        df_ev = loso_df[loso_df['event'] == event]
+        targets = sorted(df_ev['target_NM'].unique(),
+                         key=lambda x: TARGETNM2POSITION.get(x, 999))
+        for i, tnm in enumerate(targets):
+            df_t = df_ev[df_ev['target_NM'] == tnm]
+            color = TARGETNM_COLORS.get(tnm, f'C{i}')
+            folds = df_t[df_t['subject'] != 'aggregate']
+            ax.scatter(np.full(len(folds), i), folds['delta_r2'],
+                       color=color, s=20, alpha=0.5, zorder=2)
+            agg = df_t[df_t['subject'] == 'aggregate']
+            if len(agg):
+                ax.scatter(i, agg['delta_r2'].iloc[0], color=color, s=90,
+                           edgecolor='k', zorder=3)
+        ax.set_xticks(range(len(targets)))
+        ax.set_xticklabels(targets, rotation=45, ha='right',
+                           fontsize=TICKFONTSIZE)
+        ax.axhline(0, ls='--', color='gray', lw=0.5)
+        ax.set_title(event)
+    axes[0].set_ylabel('Out-of-sample ΔR² (full − reduced)')
+    fig.suptitle('LOSO-CV generalizability (full − no-interaction ΔR²)',
+                 fontsize=LABELFONTSIZE)
     return fig
 
 

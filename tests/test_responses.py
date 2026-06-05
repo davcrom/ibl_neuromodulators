@@ -144,6 +144,39 @@ class TestBuildMovementDF:
             'baseline', 'stimOn_times', 'firstMovement_times'}
 
 
+class TestPlotLMMFigures:
+
+    def _run(self, tmp_path):
+        from scripts.responses import plot_lmm_figures
+        group = _make_movement_group()
+        fig_dir = tmp_path / 'lmm'
+        fig_dir.mkdir(parents=True, exist_ok=True)
+        plot_lmm_figures(group, fig_dir, tmp_path)
+        return fig_dir
+
+    def test_writes_suite_csvs_with_consistent_identifiers(self, tmp_path):
+        """The orchestration saves the ceiling, main-effects, and LOSO-CV
+        results, each carrying the (target_NM, event) identifiers and the
+        reported quantities, with non-empty rows."""
+        self._run(tmp_path)
+        expected = {
+            'lmm_ceiling_response.csv': {'target_NM', 'event',
+                                         'marginal', 'conditional'},
+            'lmm_main_effects_response.csv': {'target_NM', 'event', 'predictor',
+                                              'Coef.', 'marginal_r2'},
+            'lmm_loso_response.csv': {'target_NM', 'event', 'subject',
+                                      'r2_full', 'r2_reduced', 'delta_r2'},
+        }
+        for fname, cols in expected.items():
+            df = pd.read_csv(tmp_path / fname)
+            assert cols.issubset(df.columns), fname
+            assert len(df) > 0, fname
+
+    def test_renders_labelled_summary_figures(self, tmp_path):
+        fig_dir = self._run(tmp_path)
+        assert any(fig_dir.glob('*.svg'))
+
+
 class TestPlotMovementFigures:
 
     def _run(self, tmp_path):
