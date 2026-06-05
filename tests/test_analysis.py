@@ -2660,6 +2660,49 @@ class TestFitMovementPredictsResponse:
         assert result.empty
 
 
+class TestFitMovementWithinContrast:
+    def test_returns_one_row_tidy_frame(self):
+        from iblnm.analysis import (fit_movement_within_contrast,
+                                    _TIDY_LMM_COLS)
+        df = _make_movement_lmm_df()
+        result = fit_movement_within_contrast(
+            df, 'response', 'log_reaction_time')
+        assert list(result.columns) == _TIDY_LMM_COLS
+        assert len(result) == 1
+        assert result['term'].iloc[0] == 'log_reaction_time'
+        assert np.isfinite(result['marginal_r2'].iloc[0])
+
+    def test_recovers_positive_timing_slope_with_contrast_controlled(self):
+        """Timing effect (+0.4) is within-contrast in the synthetic data, so the
+        slope stays positive when C(contrast) absorbs between-contrast variance."""
+        from iblnm.analysis import fit_movement_within_contrast
+        df = _make_movement_lmm_df()
+        result = fit_movement_within_contrast(
+            df, 'response', 'log_reaction_time')
+        assert result['coef'].iloc[0] > 0
+
+    def test_controls_contrast_categorically(self):
+        from unittest.mock import patch
+        from iblnm import analysis
+        df = _make_movement_lmm_df()
+        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
+            analysis.fit_movement_within_contrast(
+                df, 'response', 'log_reaction_time')
+        formula = mock_fit.call_args.args[0]
+        assert 'C(contrast)' in formula
+        assert 'C(contrast):log_reaction_time' not in formula
+        assert (mock_fit.call_args.kwargs['re_formula']
+                == '1 + log_reaction_time')
+
+    def test_too_few_subjects_returns_empty(self):
+        from iblnm.analysis import fit_movement_within_contrast
+        df = _make_movement_lmm_df()
+        df['subject'] = 's1'
+        result = fit_movement_within_contrast(
+            df, 'response', 'log_reaction_time')
+        assert result.empty
+
+
 class TestFitMovementLMMPerContrast:
     def test_returns_dict(self):
         from iblnm.analysis import fit_movement_lmm_per_contrast

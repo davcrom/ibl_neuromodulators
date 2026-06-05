@@ -2358,6 +2358,33 @@ def fit_movement_predicts_response(df, response_col, timing_col, min_subjects=2)
     return _tidy_lmm_row(lmm, timing_col, df, timing_col)
 
 
+def fit_movement_within_contrast(df, response_col, timing_col, min_subjects=2):
+    """Within-contrast movement-predicts-response claim (collinearity-controlled).
+
+    Model ``{response_col} ~ C(contrast) + {timing_col} + side + reward`` with a
+    by-subject random slope ``(1 + timing | subject)``. Categorical
+    ``C(contrast)`` absorbs all between-contrast variation, so the timing slope
+    is the within-contrast estimator; no ``C(contrast):timing`` interaction.
+    Side and reward are deviation-coded (±0.5). ``df`` is one
+    ``(target_NM, event, timing_var)`` subset. Reports the timing slope and the
+    model's marginal R².
+
+    Returns a one-row tidy frame (``_TIDY_LMM_COLS``), empty if fewer than
+    ``min_subjects`` subjects or the fit fails.
+    """
+    df = df.dropna(subset=[response_col, timing_col]).copy()
+    if df['subject'].nunique() < min_subjects:
+        return _empty_tidy_lmm()
+    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+    formula = f'{response_col} ~ C(contrast) + {timing_col} + side + reward'
+    lmm = _fit_lmm(formula, df, groups=df['subject'],
+                   re_formula=f'1 + {timing_col}', reml=True)
+    if lmm is None:
+        return _empty_tidy_lmm()
+    return _tidy_lmm_row(lmm, timing_col, df, timing_col)
+
+
 def fit_movement_lmm_per_contrast(df, response_col, timing_col,
                                    min_subjects=2):
     """Estimate timing-response slope at a single contrast level.
