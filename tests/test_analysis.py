@@ -2573,6 +2573,102 @@ class TestLosoCVMovementLMM:
         assert 'response ~ contrast + reward' in formulas
 
 
+def _make_task_lmm_df(n_per_cell=20, seed=0,
+                      subjects=('s0', 's1', 's2', 's3')):
+    """Synthetic task-model trial data: contrast x side x reward x subject.
+
+    Response has linear contrast, side, and reward main effects plus a
+    contrast:reward interaction, so the full model can outperform the
+    no-interaction model out of sample.
+    """
+    rng = np.random.default_rng(seed)
+    sides = ['contra', 'ipsi']
+    rewards = [1, -1]
+    contrasts = [0.0, 6.25, 12.5, 25.0, 100.0]
+
+    rows = []
+    for subj in subjects:
+        subj_intercept = rng.normal(0, 0.3)
+        for side in sides:
+            for reward in rewards:
+                for contrast in contrasts:
+                    for _ in range(n_per_cell):
+                        log_c = np.log2(contrast) if contrast > 0 else 0.0
+                        sv = 0.5 if side == 'contra' else -0.5
+                        rv = 0.5 if reward == 1 else -0.5
+                        response = (
+                            1.0
+                            + 0.5 * log_c
+                            + 0.3 * sv
+                            + 0.2 * rv
+                            + 0.25 * log_c * rv   # contrast:reward interaction
+                            + subj_intercept
+                            + rng.normal(0, 0.5)
+                        )
+                        rows.append({
+                            'contrast': contrast,
+                            'side': side,
+                            'feedbackType': reward,
+                            'subject': subj,
+                            'response': response,
+                        })
+    return pd.DataFrame(rows)
+
+
+class TestLosoCVTaskLMM:
+    def test_one_row_per_subject(self):
+        from iblnm.analysis import loso_cv_task_lmm
+        df = _make_task_lmm_df()
+        result = loso_cv_task_lmm(df, 'response')
+        subject_rows = result[result['subject'] != 'aggregate']
+        assert set(subject_rows['subject']) == set(df['subject'].unique())
+
+    def test_required_columns(self):
+        from iblnm.analysis import loso_cv_task_lmm
+        df = _make_task_lmm_df()
+        result = loso_cv_task_lmm(df, 'response')
+        expected_cols = {'subject', 'n_trials', 'r2_full', 'r2_reduced',
+                         'delta_r2'}
+        assert expected_cols <= set(result.columns)
+
+    def test_aggregate_row_is_finite(self):
+        from iblnm.analysis import loso_cv_task_lmm
+        df = _make_task_lmm_df()
+        result = loso_cv_task_lmm(df, 'response')
+        agg = result[result['subject'] == 'aggregate']
+        assert len(agg) == 1
+        assert np.isfinite(agg[['r2_full', 'r2_reduced', 'delta_r2']]).all().all()
+
+    def test_delta_equals_difference(self):
+        from iblnm.analysis import loso_cv_task_lmm
+        df = _make_task_lmm_df()
+        result = loso_cv_task_lmm(df, 'response')
+        assert result['delta_r2'].values == pytest.approx(
+            (result['r2_full'] - result['r2_reduced']).values)
+
+    def test_too_few_subjects_returns_empty(self):
+        from iblnm.analysis import loso_cv_task_lmm
+        df = _make_task_lmm_df()
+        df['subject'] = 's0'
+        result = loso_cv_task_lmm(df, 'response')
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+
+    def test_full_vs_reduced_formulas_intercept_only_re(self):
+        """Full model has interactions, reduced is additive; both share a
+        random intercept only."""
+        from unittest.mock import patch
+        from iblnm import analysis
+        df = _make_task_lmm_df()
+        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
+            analysis.loso_cv_task_lmm(df, 'response')
+        formulas = {call.args[0] for call in mock_fit.call_args_list}
+        re_formulas = {call.kwargs['re_formula'] for call in mock_fit.call_args_list}
+        assert re_formulas == {'1'}
+        assert 'response ~ contrast * side * reward' in formulas
+        assert 'response ~ contrast + side + reward' in formulas
+
+
 class TestJackknifeMovementLMM:
     def test_one_row_per_subject(self):
         from iblnm.analysis import jackknife_movement_lmm

@@ -2333,6 +2333,105 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
     return pd.DataFrame(rows, columns=cols)
 
 
+def loso_cv_task_lmm(df, response_col, contrast_coding='log2', min_subjects=3):
+    """Leave-one-subject-out cross-validation of the task model.
+
+    Full model = ``response ~ contrast * side * reward``; reduced =
+    ``response ~ contrast + side + reward`` (no interactions). Both share a
+    random intercept ``(1 | subject)`` and are fit with ML (so the two
+    fixed-effects designs are on a comparable scale). Each fold fits on N−1
+    subjects and scores the held-out subject out of sample, centering out that
+    subject's own intercept (``_centered_r2``). Comparing full vs reduced
+    out-of-sample R² tests whether the interaction structure generalizes to a
+    new animal — the substitute for random interaction slopes, which the
+    subject count cannot support.
+
+    Predictors are coded as in ``fit_response_lmm``: contrast via
+    ``contrast_coding`` then mean-centered, side and reward deviation-coded
+    (±0.5). Contrast is centered once on the full data before splitting, so
+    every fold shares the same coding.
+
+    At 6–11 subjects (one fold each) the CV estimate is noisy and should be
+    read qualitatively, not as a precise generalization score.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data with columns ``contrast``, ``side``, ``feedbackType``,
+        ``subject``, and ``response_col``.
+    response_col : str
+        Column name for the response magnitude.
+    contrast_coding : str
+        Continuous contrast coding passed to ``get_contrast_coding``.
+    min_subjects : int
+        Minimum subjects required (≥ 3 so training sets keep ≥ 2 subjects).
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per held-out subject (``subject``, ``n_trials``, ``r2_full``,
+        ``r2_reduced``, ``delta_r2``) plus a final ``subject == 'aggregate'``
+        row holding the across-fold means and total trial count. Empty
+        DataFrame if fewer than ``min_subjects``.
+    """
+    cols = ['subject', 'n_trials', 'r2_full', 'r2_reduced', 'delta_r2']
+    transform, _ = get_contrast_coding(contrast_coding)
+    df = df.dropna(subset=[response_col]).copy()
+    coded = transform(df['contrast'])
+    df['contrast'] = coded - float(np.mean(coded))
+    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+
+    subjects = df['subject'].unique()
+    if len(subjects) < min_subjects:
+        return pd.DataFrame(columns=cols)
+
+    formulas = {
+        'full': f'{response_col} ~ contrast * side * reward',
+        'reduced': f'{response_col} ~ contrast + side + reward',
+    }
+
+    rows = []
+    for held_out in subjects:
+        df_train = df[df['subject'] != held_out]
+        df_test = df[df['subject'] == held_out]
+        if len(df_test) < 5 or df_train['subject'].nunique() < 2:
+            continue
+
+        fits = {name: _fit_lmm(formula, df_train, groups=df_train['subject'],
+                               re_formula='1', reml=False)
+                for name, formula in formulas.items()}
+        if any(fit is None for fit in fits.values()):
+            continue
+
+        y_centered = df_test[response_col].values - df_test[response_col].mean()
+        ss_tot = np.sum(y_centered ** 2)
+        if ss_tot == 0:
+            continue
+
+        r2 = {name: _centered_r2(fit, df_test, y_centered, ss_tot)
+              for name, fit in fits.items()}
+        rows.append({
+            'subject': held_out,
+            'n_trials': len(df_test),
+            'r2_full': r2['full'],
+            'r2_reduced': r2['reduced'],
+            'delta_r2': r2['full'] - r2['reduced'],
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=cols)
+
+    rows.append({
+        'subject': 'aggregate',
+        'n_trials': sum(r['n_trials'] for r in rows),
+        'r2_full': float(np.mean([r['r2_full'] for r in rows])),
+        'r2_reduced': float(np.mean([r['r2_reduced'] for r in rows])),
+        'delta_r2': float(np.mean([r['delta_r2'] for r in rows])),
+    })
+    return pd.DataFrame(rows, columns=cols)
+
+
 _TIDY_LMM_COLS = ['term', 'coef', 'se', 'z', 'p', 'ci_low', 'ci_high',
                   'marginal_r2', 'n_trials', 'n_subjects', 'timing_col']
 
