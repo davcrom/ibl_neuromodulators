@@ -2102,6 +2102,49 @@ class TestFromCatalog:
         assert all(group.recordings['session_type'] == 'training')
 
 
+class TestBuildLmmReliability:
+    """Tests for PhotometrySessionGroup._build_lmm_reliability."""
+
+    def _group(self):
+        from iblnm.data import PhotometrySessionGroup
+        df = pd.DataFrame([
+            {'eid': 'e1', 'subject': 'A', 'day_n': 0, 'session_type': 'biased',
+             'brain_region': ['VTA'], 'hemisphere': ['l'],
+             'target_NM': ['VTA-DA'], 'logged_errors': []},
+        ])
+        return PhotometrySessionGroup(df, one=MagicMock())
+
+    def test_combines_main_effects_and_omnibus_interactions(self):
+        """Reliability frame carries per-main-effect rows plus an 'interactions'
+        row sourced from the omnibus task LOSO."""
+        group = self._group()
+        group.lmm_main_effects_loso = pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'feedback', 'predictor': 'contrast',
+             'subject': 's0', 'delta_r2': 0.04},
+            {'target_NM': 'VTA-DA', 'event': 'feedback', 'predictor': 'reward',
+             'subject': 's0', 'delta_r2': 0.02},
+        ])
+        group.lmm_loso = pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'feedback', 'subject': 's0',
+             'delta_r2': 0.01},
+        ])
+        rel = group._build_lmm_reliability()
+        assert {'target_NM', 'event', 'predictor', 'subject',
+                'delta_r2'} <= set(rel.columns)
+        assert set(rel['predictor']) == {'contrast', 'reward', 'interactions'}
+        interactions = rel[rel['predictor'] == 'interactions']
+        assert interactions['delta_r2'].iloc[0] == 0.01
+
+    def test_empty_inputs_give_empty_frame(self):
+        group = self._group()
+        group.lmm_main_effects_loso = pd.DataFrame()
+        group.lmm_loso = pd.DataFrame()
+        rel = group._build_lmm_reliability()
+        assert len(rel) == 0
+        assert {'target_NM', 'event', 'predictor', 'subject',
+                'delta_r2'} <= set(rel.columns)
+
+
 class TestDeduplicate:
     """Tests for PhotometrySessionGroup.deduplicate."""
 

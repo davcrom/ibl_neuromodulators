@@ -1439,6 +1439,8 @@ class PhotometrySessionGroup:
         self.lmm_ceiling = None
         self.lmm_main_effects = None
         self.lmm_loso = None
+        self.lmm_main_effects_loso = None
+        self.lmm_reliability = None
 
     @classmethod
     def from_catalog(cls, catalog, one, h5_dir=None):
@@ -2737,6 +2739,7 @@ class PhotometrySessionGroup:
         from tqdm import tqdm
         from iblnm.analysis import (
             fit_response_lmm, fit_ceiling_lmm, loso_cv_task_lmm,
+            loso_cv_main_effects_lmm,
             compute_marginal_means, compute_contrast_slopes,
             compute_interaction_effects,
         )
@@ -2755,6 +2758,7 @@ class PhotometrySessionGroup:
         ceiling_rows = []
         main_effect_rows = []
         loso_frames = []
+        main_effect_loso_frames = []
 
         for (target_nm, event_label), df_g in tqdm(groups.items(),
                                                     desc="Fitting LMMs"):
@@ -2801,6 +2805,13 @@ class PhotometrySessionGroup:
                 loso.insert(1, 'event', event_label)
                 loso_frames.append(loso)
 
+            me_loso = loso_cv_main_effects_lmm(df_g, response_col,
+                                               contrast_coding=contrast_coding)
+            if not me_loso.empty:
+                me_loso.insert(0, 'target_NM', target_nm)
+                me_loso.insert(1, 'event', event_label)
+                main_effect_loso_frames.append(me_loso)
+
         self.lmm_results = results
         self.lmm_coefficients = (pd.concat(all_summaries, ignore_index=True)
                                  if all_summaries else pd.DataFrame())
@@ -2808,8 +2819,33 @@ class PhotometrySessionGroup:
         self.lmm_main_effects = pd.DataFrame(main_effect_rows)
         self.lmm_loso = (pd.concat(loso_frames, ignore_index=True)
                          if loso_frames else pd.DataFrame())
+        self.lmm_main_effects_loso = (
+            pd.concat(main_effect_loso_frames, ignore_index=True)
+            if main_effect_loso_frames else pd.DataFrame())
+        self.lmm_reliability = self._build_lmm_reliability()
 
         return results
+
+    def _build_lmm_reliability(self) -> pd.DataFrame:
+        """Stack the per-main-effect and omnibus-interaction LOSO ΔR² into one
+        tidy frame for the per-target generalization figure.
+
+        Columns: ``target_NM``, ``event``, ``predictor``, ``subject``,
+        ``delta_r2``. ``predictor`` is one of contrast/side/reward (the
+        main-effect rows from ``lmm_main_effects_loso``) or ``'interactions'``
+        (the omnibus full-vs-additive ΔR² from ``lmm_loso``), putting main
+        effects and interactions on one out-of-sample axis.
+        """
+        cols = ['target_NM', 'event', 'predictor', 'subject', 'delta_r2']
+        frames = []
+        if self.lmm_main_effects_loso is not None \
+                and not self.lmm_main_effects_loso.empty:
+            frames.append(self.lmm_main_effects_loso[cols])
+        if self.lmm_loso is not None and not self.lmm_loso.empty:
+            interactions = self.lmm_loso.assign(predictor='interactions')
+            frames.append(interactions[cols])
+        return (pd.concat(frames, ignore_index=True) if frames
+                else pd.DataFrame(columns=cols))
 
     @staticmethod
     def _fit_main_effect_models(df_g, response_col, target_nm, event_label,
