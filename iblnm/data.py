@@ -1436,6 +1436,8 @@ class PhotometrySessionGroup:
         self.cohort_cca_weight_similarities = None
         self.lmm_results = None
         self.lmm_coefficients = None
+        self.lmm_ceiling = None
+        self.lmm_main_effects = None
 
     @classmethod
     def from_catalog(cls, catalog, one, h5_dir=None):
@@ -2688,18 +2690,25 @@ class PhotometrySessionGroup:
         return df
 
     def fit_lmm(self, response_col='response',
-                 min_subjects=2, re_formulas=None, contrast_coding='log'):
-        """Fit LMMs per (target_NM, event) on trial-level events data.
+                 min_subjects=2, contrast_coding='log'):
+        """Fit the initial-LMM suite per (target_NM, event).
 
-        For each group, fits: response ~ log(contrast) * side * reward | subject.
-        Computes estimated marginal means and contrast slopes for each fit.
+        Per group, fits:
 
-        When ``re_formulas`` contains multiple entries (ordered most complex to
-        simplest), the method selects the most complex formula that converges
-        for **all** groups and refits everyone with that formula.
+        - **Base model** — ``response ~ contrast * side * reward``, random
+          intercept. The estimated marginal means, full interaction suite, and
+          contrast slopes are read from this fit (``self.lmm_results``,
+          ``self.lmm_coefficients``).
+        - **Ceiling** — saturated ``C(contrast) * side * reward``, random
+          intercept. Its marginal (and conditional) R² is stored in
+          ``self.lmm_ceiling``.
+        - **Three main-effect models** — ``contrast * side * reward`` fixed,
+          each with one random slope (``contrast``, ``side``, ``reward``). Each
+          model's own main effect (coef, SE, z, p, CI, marginal R²) is stored
+          in ``self.lmm_main_effects``.
 
-        Requires ``self.response_magnitudes`` to be populated (via
-        ``get_response_magnitudes()`` or direct assignment).
+        Requires ``self.response_magnitudes`` and ``self.trial_regressors`` to
+        be populated (via ``get_response_magnitudes()`` / direct assignment).
 
         Parameters
         ----------
@@ -2707,30 +2716,26 @@ class PhotometrySessionGroup:
             Column name for the response magnitude.
         min_subjects : int
             Minimum subjects per group to attempt fitting.
-        re_formulas : list of str, optional
-            Random-effects formulas to try, ordered from most complex to
-            simplest. Default ``['1']`` (random intercept only).
+        contrast_coding : str
+            Continuous contrast coding for the base and main-effect models
+            (passed to ``fit_response_lmm``). The ceiling model is always
+            categorical.
 
         Returns
         -------
         dict
-            Keys: (target_NM, event_label) tuples.
-            Values: LMMResult objects with emm_reward, emm_side,
-            emm_contrast, and contrast_slopes populated.
+            Keys: (target_NM, event_label) tuples. Values: base-model
+            LMMResult objects with emm_reward, emm_side, emm_contrast,
+            contrast_slopes, and the interaction suite populated.
         """
-        # CHECK: why imports inside functions? isn't this poor form?
         from tqdm import tqdm
         from iblnm.analysis import (
-            fit_response_lmm, compute_marginal_means,
+            fit_response_lmm, fit_ceiling_lmm, compute_marginal_means,
             compute_contrast_slopes, compute_interaction_effects,
         )
 
-        if re_formulas is None:
-            re_formulas = ['1']
-
         df = self._modeling_frame(response_col)
 
-        # Identify valid groups
         groups = {}
         for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
             if df_group['subject'].nunique() < min_subjects:
@@ -2738,40 +2743,15 @@ class PhotometrySessionGroup:
             event_label = event.replace('_times', '')
             groups[(target_nm, event_label)] = df_group
 
-        if not groups:
-            self.lmm_results = {}
-            self.lmm_coefficients = pd.DataFrame()
-            self.lmm_re_formula = re_formulas[-1]
-            return self.lmm_results
-
-        # Select the most complex RE formula that converges for all groups.
-        # Cache fits to avoid refitting with the selected formula.
-        selected_re = None
-        cached_fits = None
-        for re_formula in re_formulas:
-            fits = {
-                key: fit_response_lmm(df_g, response_col, re_formula=re_formula,
-                                      contrast_coding=contrast_coding)
-                for key, df_g in tqdm(groups.items(),
-                                      desc=f"Fitting LMMs (re={re_formula})")
-            }
-            if all(lmm is not None for lmm in fits.values()):
-                selected_re = re_formula
-                cached_fits = fits
-                break
-
-        if selected_re is None:
-            self.lmm_results = {}
-            self.lmm_coefficients = pd.DataFrame()
-            self.lmm_re_formula = None
-            return self.lmm_results
-
-        self.lmm_re_formula = selected_re
-
         results = {}
         all_summaries = []
+        ceiling_rows = []
+        main_effect_rows = []
 
-        for (target_nm, event_label), lmm in cached_fits.items():
+        for (target_nm, event_label), df_g in tqdm(groups.items(),
+                                                    desc="Fitting LMMs"):
+            lmm = fit_response_lmm(df_g, response_col, re_formula='1',
+                                   contrast_coding=contrast_coding)
             if lmm is None:
                 continue
 
@@ -2785,7 +2765,6 @@ class PhotometrySessionGroup:
                 lmm, 'contrast', 'side')
             lmm.interaction_reward_side = compute_interaction_effects(
                 lmm, 'reward', 'side')
-
             results[(target_nm, event_label)] = lmm
 
             summary = lmm.summary_df.copy()
@@ -2794,14 +2773,60 @@ class PhotometrySessionGroup:
             summary.index.name = 'term'
             all_summaries.append(summary.reset_index())
 
-        self.lmm_results = results
+            ceiling = fit_ceiling_lmm(df_g, response_col)
+            if ceiling is not None:
+                ceiling_rows.append({
+                    'target_NM': target_nm,
+                    'event': event_label,
+                    'marginal': ceiling.variance_explained['marginal'],
+                    'conditional': ceiling.variance_explained['conditional'],
+                })
 
-        if all_summaries:
-            self.lmm_coefficients = pd.concat(all_summaries, ignore_index=True)
-        else:
-            self.lmm_coefficients = pd.DataFrame()
+            main_effect_rows.extend(
+                self._fit_main_effect_models(df_g, response_col, target_nm,
+                                             event_label, contrast_coding))
+
+        self.lmm_results = results
+        self.lmm_coefficients = (pd.concat(all_summaries, ignore_index=True)
+                                 if all_summaries else pd.DataFrame())
+        self.lmm_ceiling = pd.DataFrame(ceiling_rows)
+        self.lmm_main_effects = pd.DataFrame(main_effect_rows)
 
         return results
+
+    @staticmethod
+    def _fit_main_effect_models(df_g, response_col, target_nm, event_label,
+                                contrast_coding):
+        """Fit the three single-random-slope main-effect models for one group.
+
+        Each predictor's main effect is read only from the model carrying its
+        own random slope, giving honest per-effect inference without the
+        infeasible full random-effects structure. Returns one tidy row per
+        predictor (coef, SE, z, p, CI, marginal R²).
+        """
+        from iblnm.analysis import fit_response_lmm
+
+        rows = []
+        for predictor in ('contrast', 'side', 'reward'):
+            lmm = fit_response_lmm(df_g, response_col,
+                                   re_formula=f'1 + {predictor}',
+                                   contrast_coding=contrast_coding)
+            if lmm is None or predictor not in lmm.summary_df.index:
+                continue
+            coef = lmm.summary_df.loc[predictor]
+            rows.append({
+                'target_NM': target_nm,
+                'event': event_label,
+                'predictor': predictor,
+                'Coef.': coef['Coef.'],
+                'Std.Err.': coef['Std.Err.'],
+                'z': coef['z'],
+                'P>|z|': coef['P>|z|'],
+                'ci_lower': coef['Coef.'] - 1.96 * coef['Std.Err.'],
+                'ci_upper': coef['Coef.'] + 1.96 * coef['Std.Err.'],
+                'marginal_r2': lmm.variance_explained['marginal'],
+            })
+        return rows
 
     def anova_response_magnitudes(self, response_col='response',
                                     min_subjects=2, min_trials=10):

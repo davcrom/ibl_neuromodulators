@@ -3433,32 +3433,47 @@ class TestFitLMM:
         group.fit_lmm()
         assert len(group.lmm_results) == 0
 
-    def test_re_formulas_default_intercept_only(self):
-        """Default re_formulas=['1'] should produce intercept-only models."""
+    def test_base_model_intercept_only(self):
+        """The base EMM/interaction/slope model uses a random intercept only."""
         group = _make_group_with_events()
         group.fit_lmm()
         for result in group.lmm_results.values():
             for effects in result.random_effects.values():
                 assert result.contrast_col not in effects.index
 
-    def test_re_formulas_selects_maximal_converging(self):
-        """When given multiple re_formulas, selects the most complex
-        that converges for all groups."""
+    def test_stores_ceiling_r2(self):
+        """A ceiling R² row per fitted (target, event) group."""
         group = _make_group_with_events()
-        group.fit_lmm(re_formulas=['contrast', '1'])
-        # All results should use the same RE structure
-        re_structures = set()
-        for result in group.lmm_results.values():
-            effects = list(result.random_effects.values())[0]
-            re_structures.add(tuple(sorted(effects.index)))
-        assert len(re_structures) == 1
+        group.fit_lmm()
+        ceiling = group.lmm_ceiling
+        assert isinstance(ceiling, pd.DataFrame)
+        for col in ('target_NM', 'event', 'marginal', 'conditional'):
+            assert col in ceiling.columns
+        assert len(ceiling) == len(group.lmm_results)
+        assert ceiling['marginal'].notna().all()
 
-    def test_re_formulas_stores_selected_formula(self):
-        """The selected RE formula should be stored on the group."""
+    def test_stores_three_main_effects(self):
+        """Three single-slope main-effect rows per fitted (target, event)."""
         group = _make_group_with_events()
-        group.fit_lmm(re_formulas=['contrast', '1'])
-        assert hasattr(group, 'lmm_re_formula')
-        assert group.lmm_re_formula in ('contrast', '1')
+        group.fit_lmm()
+        me = group.lmm_main_effects
+        assert isinstance(me, pd.DataFrame)
+        for col in ('target_NM', 'event', 'predictor', 'Coef.', 'Std.Err.',
+                    'z', 'P>|z|', 'ci_lower', 'ci_upper', 'marginal_r2'):
+            assert col in me.columns
+        # One row per predictor per group.
+        per_group = me.groupby(['target_NM', 'event'])['predictor'].apply(set)
+        for predictors in per_group:
+            assert predictors == {'contrast', 'side', 'reward'}
+
+    def test_main_effect_read_from_own_model(self):
+        """Each main effect's marginal R² comes from its own single-slope model,
+        so the three rows of a group need not share a marginal R²."""
+        group = _make_group_with_events()
+        group.fit_lmm()
+        me = group.lmm_main_effects
+        first = me.groupby(['target_NM', 'event'])['marginal_r2'].nunique()
+        assert (first > 1).any()
 
 
 class TestAnovaResponseMagnitudes:
