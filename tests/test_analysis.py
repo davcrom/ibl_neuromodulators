@@ -1054,6 +1054,35 @@ class TestContrastCenteringAndNaming:
         np.testing.assert_allclose(non_intercept, 0, atol=1e-10)
 
 
+class TestFitCeilingLMM:
+    """Saturated categorical 'ceiling' model: response ~ C(contrast)*side*reward."""
+
+    def test_returns_lmm_result(self):
+        from iblnm.analysis import fit_ceiling_lmm
+        df = _make_lmm_data()
+        result = fit_ceiling_lmm(df, 'response')
+        assert result is not None
+
+    def test_variance_explained_finite(self):
+        from iblnm.analysis import fit_ceiling_lmm
+        df = _make_lmm_data()
+        result = fit_ceiling_lmm(df, 'response')
+        ve = result.variance_explained
+        assert np.isfinite(ve['marginal'])
+        assert np.isfinite(ve['conditional'])
+
+    def test_contrast_is_categorical(self):
+        """Saturated model codes contrast as a categorical factor, so each
+        non-zero level gets its own dummy term."""
+        from iblnm.analysis import fit_ceiling_lmm
+        df = _make_lmm_data()
+        result = fit_ceiling_lmm(df, 'response')
+        contrast_terms = [t for t in result.summary_df.index
+                          if 'C(contrast)' in t and ':' not in t]
+        # 5 contrast levels → 4 dummy main-effect terms.
+        assert len(contrast_terms) == 4
+
+
 class TestComputeMarginalMeans:
 
     def test_returns_dataframe(self):

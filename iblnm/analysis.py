@@ -1751,6 +1751,48 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
     return lmm_result
 
 
+def fit_ceiling_lmm(df: pd.DataFrame, response_col: str) -> 'LMMResult | None':
+    """Fit the saturated 'ceiling' model and return its variance partition.
+
+    Model: ``response ~ C(contrast) * side * reward`` with a random intercept
+    per subject. Coding contrast as a categorical factor saturates the
+    task-condition design, so the marginal R² is the upper bound on the
+    variance any task-condition model can explain for that target/event. This
+    is a standalone reference, not a decomposition.
+
+    Side and reward use the same deviation coding (±0.5) as
+    ``fit_response_lmm``; their coding does not change the fitted subspace
+    (and hence the R²) for two-level factors.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data with columns ``contrast``, ``side``, ``feedbackType``,
+        ``subject``, and ``response_col``.
+    response_col : str
+        Column name for the response magnitude.
+
+    Returns
+    -------
+    LMMResult or None
+        None if the model fails to converge or data is degenerate.
+    """
+    df = df.copy()
+    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+
+    if df['subject'].nunique() < 2:
+        return None
+    if df['side'].nunique() < 2 or df['reward'].nunique() < 2:
+        return None
+    if df[response_col].std() == 0:
+        return None
+
+    formula = f'{response_col} ~ C(contrast) * side * reward'
+    return _fit_lmm(formula, df, groups=df['subject'], re_formula='1',
+                    reml=True)
+
+
 def compute_marginal_means(lmm_result, factor):
     """Compute estimated marginal means for a factor from an LMM fit.
 
