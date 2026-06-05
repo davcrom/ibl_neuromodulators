@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib import colors
+from matplotlib.lines import Line2D
 from matplotlib.ticker import FormatStrFormatter
 from scipy.stats import sem as scipy_sem
 from sklearn.preprocessing import quantile_transform
@@ -1691,6 +1692,14 @@ def _sort_events(events: Iterable[str]) -> list[str]:
     """Sort event labels into trial chronology; unknowns sort last by name."""
     order = {e: i for i, e in enumerate(_EVENT_CHRONOLOGY)}
     return sorted(events, key=lambda e: (order.get(e, len(order)), e))
+
+
+def _target_legend_handles(targets: Iterable[str]) -> list[Line2D]:
+    """Round colored legend markers, one per target-NM (``TARGETNM_COLORS``)."""
+    return [Line2D([0], [0], marker='o', ls='none', markersize=6,
+                   color=TARGETNM_COLORS.get(t, 'gray')) for t in targets]
+
+
 _FEATURE_RE = re.compile(
     r'^(?P<event>[a-zA-Z]+)_c(?P<contrast>[\d.]+)_(?P<side>contra|ipsi)_(?P<fb>correct|incorrect)$'
 )
@@ -2241,8 +2250,6 @@ def plot_lmm_summary(group, event, fig=None, formula=None):
     -------
     plt.Figure
     """
-    from matplotlib.lines import Line2D
-
     lmm_results = group.lmm_results
 
     if fig is None:
@@ -2525,8 +2532,6 @@ def plot_lmm_main_effects(main_effects_df):
     -------
     plt.Figure
     """
-    from matplotlib.lines import Line2D
-
     predictors = (['contrast', 'side', 'reward'] if len(main_effects_df)
                   else ['contrast'])
     fig, axes = plt.subplots(1, len(predictors),
@@ -2564,11 +2569,7 @@ def plot_lmm_main_effects(main_effects_df):
         ax.axhline(0, ls='--', color='gray', lw=0.5)
     axes[0].set_ylabel('Main effect (coef ± 95% CI)')
 
-    target_handles = [
-        Line2D([0], [0], marker='o', color=TARGETNM_COLORS.get(t, 'gray'),
-               ls='none', markersize=6)
-        for t in targets
-    ]
+    target_handles = _target_legend_handles(targets)
     sig_handles = [
         Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6,
                fillstyle='full'),
@@ -2634,14 +2635,9 @@ def plot_lmm_loso(loso_df):
         ax.set_title(event)
     axes[0].set_ylabel('Out-of-sample ΔR² (full − reduced)')
 
-    from matplotlib.lines import Line2D
     targets_all = sorted(loso_df['target_NM'].unique(),
                          key=lambda x: TARGETNM2POSITION.get(x, 999))
-    target_handles = [
-        Line2D([0], [0], marker='o', color=TARGETNM_COLORS.get(t, 'gray'),
-               ls='none', markersize=6)
-        for t in targets_all
-    ]
+    target_handles = _target_legend_handles(targets_all)
     role_handles = [
         Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
                alpha=0.5),
