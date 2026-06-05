@@ -2281,6 +2281,61 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
     return pd.DataFrame(rows, columns=cols)
 
 
+_TIDY_LMM_COLS = ['term', 'coef', 'se', 'z', 'p', 'ci_low', 'ci_high',
+                  'marginal_r2', 'n_trials', 'n_subjects', 'timing_col']
+
+
+def _empty_tidy_lmm() -> pd.DataFrame:
+    """Empty tidy frame with the standard movement-LMM result columns, returned
+    when a group has too few subjects or the fit fails."""
+    return pd.DataFrame(columns=_TIDY_LMM_COLS)
+
+
+def _tidy_lmm_row(lmm: 'LMMResult', term: str, df: pd.DataFrame,
+                  timing_col: str) -> pd.DataFrame:
+    """One-row tidy frame for the fixed-effect ``term`` of a fitted ``lmm``.
+
+    ``term`` is the coefficient reported (the contrast or timing slope);
+    ``timing_col`` is the timing-variable identifier carried on every row.
+    """
+    res = lmm.result
+    ci = res.conf_int().loc[term]
+    return pd.DataFrame([{
+        'term': term,
+        'coef': float(res.fe_params[term]),
+        'se': float(res.bse_fe[term]),
+        'z': float(res.tvalues[term]),
+        'p': float(res.pvalues[term]),
+        'ci_low': float(ci.iloc[0]),
+        'ci_high': float(ci.iloc[1]),
+        'marginal_r2': lmm.variance_explained['marginal'],
+        'n_trials': len(df),
+        'n_subjects': df['subject'].nunique(),
+        'timing_col': timing_col,
+    }], columns=_TIDY_LMM_COLS)
+
+
+def fit_movement_vs_contrast(df, timing_col, min_subjects=2):
+    """Movement-vs-contrast claim: does the timing variable track contrast?
+
+    Marginal model ``{timing_col} ~ contrast`` with a by-subject random slope
+    ``(1 + contrast | subject)``; no side/reward nuisance terms. Contrast is
+    log2-floored and mean-centered (``_code_movement_predictors``). Reports the
+    contrast slope. ``df`` is one ``(target_NM, timing_var)`` subset.
+
+    Returns a one-row tidy frame (``_TIDY_LMM_COLS``), empty if fewer than
+    ``min_subjects`` subjects or the fit fails.
+    """
+    df = _code_movement_predictors(df.dropna(subset=[timing_col]), timing_col)
+    if df['subject'].nunique() < min_subjects:
+        return _empty_tidy_lmm()
+    lmm = _fit_lmm(f'{timing_col} ~ contrast', df, groups=df['subject'],
+                   re_formula='1 + contrast', reml=True)
+    if lmm is None:
+        return _empty_tidy_lmm()
+    return _tidy_lmm_row(lmm, 'contrast', df, timing_col)
+
+
 def fit_movement_lmm_per_contrast(df, response_col, timing_col,
                                    min_subjects=2):
     """Estimate timing-response slope at a single contrast level.

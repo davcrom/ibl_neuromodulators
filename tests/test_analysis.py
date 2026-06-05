@@ -2577,6 +2577,51 @@ class TestJackknifeMovementLMM:
         assert len(result) == 0
 
 
+def _make_movement_vs_contrast_df(seed=0, subjects=('s1', 's2', 's3', 's4')):
+    """Synthetic data where the timing variable rises with contrast, so the
+    movement-vs-contrast slope is positive."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for subj in subjects:
+        subj_intercept = rng.normal(0, 0.3)
+        for contrast in [6.25, 25.0, 100.0]:
+            for _ in range(40):
+                log_rt = (subj_intercept + 0.3 * np.log2(contrast)
+                          + rng.normal(0, 0.2))
+                rows.append({
+                    'subject': subj,
+                    'contrast': contrast,
+                    'feedbackType': 1 if rng.random() < 0.5 else -1,
+                    'log_reaction_time': log_rt,
+                })
+    return pd.DataFrame(rows)
+
+
+class TestFitMovementVsContrast:
+    def test_returns_one_row_tidy_frame(self):
+        from iblnm.analysis import fit_movement_vs_contrast, _TIDY_LMM_COLS
+        df = _make_movement_vs_contrast_df()
+        result = fit_movement_vs_contrast(df, 'log_reaction_time')
+        assert list(result.columns) == _TIDY_LMM_COLS
+        assert len(result) == 1
+        assert result['term'].iloc[0] == 'contrast'
+        assert result['timing_col'].iloc[0] == 'log_reaction_time'
+
+    def test_recovers_positive_contrast_slope(self):
+        from iblnm.analysis import fit_movement_vs_contrast
+        df = _make_movement_vs_contrast_df()
+        result = fit_movement_vs_contrast(df, 'log_reaction_time')
+        assert result['coef'].iloc[0] > 0
+
+    def test_too_few_subjects_returns_empty(self):
+        from iblnm.analysis import fit_movement_vs_contrast, _TIDY_LMM_COLS
+        df = _make_movement_vs_contrast_df()
+        df['subject'] = 's1'
+        result = fit_movement_vs_contrast(df, 'log_reaction_time')
+        assert result.empty
+        assert list(result.columns) == _TIDY_LMM_COLS
+
+
 class TestFitMovementLMMPerContrast:
     def test_returns_dict(self):
         from iblnm.analysis import fit_movement_lmm_per_contrast
