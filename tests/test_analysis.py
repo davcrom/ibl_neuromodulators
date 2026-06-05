@@ -2669,6 +2669,48 @@ class TestLosoCVTaskLMM:
         assert 'response ~ contrast + side + reward' in formulas
 
 
+class TestLosoCVMainEffectsLMM:
+    def test_one_row_per_subject_and_predictor(self):
+        from iblnm.analysis import loso_cv_main_effects_lmm
+        df = _make_task_lmm_df()
+        result = loso_cv_main_effects_lmm(df, 'response')
+        folds = result[result['subject'] != 'aggregate']
+        n_subjects = df['subject'].nunique()
+        assert set(folds['predictor']) == {'contrast', 'side', 'reward'}
+        assert len(folds) == n_subjects * 3
+
+    def test_required_columns(self):
+        from iblnm.analysis import loso_cv_main_effects_lmm
+        df = _make_task_lmm_df()
+        result = loso_cv_main_effects_lmm(df, 'response')
+        assert {'subject', 'predictor', 'n_trials', 'r2_additive', 'r2_drop',
+                'delta_r2'} <= set(result.columns)
+
+    def test_delta_is_additive_minus_drop(self):
+        """ΔR² is the out-of-sample R² lost when that main effect is removed
+        from the additive model."""
+        from iblnm.analysis import loso_cv_main_effects_lmm
+        df = _make_task_lmm_df()
+        result = loso_cv_main_effects_lmm(df, 'response')
+        assert result['delta_r2'].values == pytest.approx(
+            (result['r2_additive'] - result['r2_drop']).values)
+
+    def test_aggregate_row_per_predictor(self):
+        from iblnm.analysis import loso_cv_main_effects_lmm
+        df = _make_task_lmm_df()
+        result = loso_cv_main_effects_lmm(df, 'response')
+        agg = result[result['subject'] == 'aggregate']
+        assert set(agg['predictor']) == {'contrast', 'side', 'reward'}
+        assert np.isfinite(agg['delta_r2']).all()
+
+    def test_too_few_subjects_returns_empty(self):
+        from iblnm.analysis import loso_cv_main_effects_lmm
+        df = _make_task_lmm_df()
+        df['subject'] = 's0'
+        result = loso_cv_main_effects_lmm(df, 'response')
+        assert len(result) == 0
+
+
 class TestJackknifeMovementLMM:
     def test_one_row_per_subject(self):
         from iblnm.analysis import jackknife_movement_lmm

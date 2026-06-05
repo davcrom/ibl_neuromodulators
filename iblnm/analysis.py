@@ -2333,6 +2333,19 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
     return pd.DataFrame(rows, columns=cols)
 
 
+def _code_task_predictors(df, response_col, contrast_coding):
+    """Drop null responses and code task predictors for the LOSO models:
+    contrast transformed then mean-centered, side and reward deviation-coded
+    (±0.5). Shared by the interaction and main-effect LOSO routines."""
+    transform, _ = get_contrast_coding(contrast_coding)
+    df = df.dropna(subset=[response_col]).copy()
+    coded = transform(df['contrast'])
+    df['contrast'] = coded - float(np.mean(coded))
+    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+    return df
+
+
 def loso_cv_task_lmm(df, response_col, contrast_coding='log2', min_subjects=3):
     """Leave-one-subject-out cross-validation of the task model.
 
@@ -2375,12 +2388,7 @@ def loso_cv_task_lmm(df, response_col, contrast_coding='log2', min_subjects=3):
         DataFrame if fewer than ``min_subjects``.
     """
     cols = ['subject', 'n_trials', 'r2_full', 'r2_reduced', 'delta_r2']
-    transform, _ = get_contrast_coding(contrast_coding)
-    df = df.dropna(subset=[response_col]).copy()
-    coded = transform(df['contrast'])
-    df['contrast'] = coded - float(np.mean(coded))
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+    df = _code_task_predictors(df, response_col, contrast_coding)
 
     subjects = df['subject'].unique()
     if len(subjects) < min_subjects:
@@ -2430,6 +2438,104 @@ def loso_cv_task_lmm(df, response_col, contrast_coding='log2', min_subjects=3):
         'delta_r2': float(np.mean([r['delta_r2'] for r in rows])),
     })
     return pd.DataFrame(rows, columns=cols)
+
+
+def loso_cv_main_effects_lmm(df, response_col, contrast_coding='log2',
+                             min_subjects=3):
+    """Leave-one-subject-out reliability of each additive main effect.
+
+    Companion to ``loso_cv_task_lmm``, applying the same out-of-sample logic to
+    the main effects instead of the interactions. The baseline is the additive
+    model ``response ~ contrast + side + reward``; for each main effect, a
+    reduced model drops just that term. Each fold fits both on N−1 subjects and
+    scores the held-out subject out of sample (``_centered_r2``); the per-term
+    ΔR² = R²(additive) − R²(additive without that term) is the out-of-sample
+    variance that main effect uniquely carries to a new animal. This is the
+    generalization counterpart to the random-slope coefficient estimates, on the
+    same axis as the interaction LOSO.
+
+    Predictors are coded as in ``loso_cv_task_lmm`` (contrast transformed then
+    mean-centered, side and reward deviation-coded ±0.5), all share a random
+    intercept ``(1 | subject)``, and are fit with ML.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data with columns ``contrast``, ``side``, ``feedbackType``,
+        ``subject``, and ``response_col``.
+    response_col : str
+        Column name for the response magnitude.
+    contrast_coding : str
+        Continuous contrast coding passed to ``get_contrast_coding``.
+    min_subjects : int
+        Minimum subjects required (≥ 3 so training sets keep ≥ 2 subjects).
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per (held-out subject × main effect) with columns ``subject``,
+        ``predictor``, ``n_trials``, ``r2_additive``, ``r2_drop``, ``delta_r2``,
+        plus a ``subject == 'aggregate'`` row per predictor holding across-fold
+        means. Empty DataFrame if fewer than ``min_subjects``.
+    """
+    cols = ['subject', 'predictor', 'n_trials', 'r2_additive', 'r2_drop',
+            'delta_r2']
+    df = _code_task_predictors(df, response_col, contrast_coding)
+
+    subjects = df['subject'].unique()
+    if len(subjects) < min_subjects:
+        return pd.DataFrame(columns=cols)
+
+    predictors = ['contrast', 'side', 'reward']
+    additive = f'{response_col} ~ contrast + side + reward'
+    drop_formulas = {
+        p: f'{response_col} ~ ' + ' + '.join(q for q in predictors if q != p)
+        for p in predictors
+    }
+
+    rows = []
+    for held_out in subjects:
+        df_train = df[df['subject'] != held_out]
+        df_test = df[df['subject'] == held_out]
+        if len(df_test) < 5 or df_train['subject'].nunique() < 2:
+            continue
+
+        formulas = {'additive': additive, **drop_formulas}
+        fits = {name: _fit_lmm(formula, df_train, groups=df_train['subject'],
+                               re_formula='1', reml=False)
+                for name, formula in formulas.items()}
+        if any(fit is None for fit in fits.values()):
+            continue
+
+        y_centered = df_test[response_col].values - df_test[response_col].mean()
+        ss_tot = np.sum(y_centered ** 2)
+        if ss_tot == 0:
+            continue
+
+        r2 = {name: _centered_r2(fit, df_test, y_centered, ss_tot)
+              for name, fit in fits.items()}
+        for p in predictors:
+            rows.append({
+                'subject': held_out,
+                'predictor': p,
+                'n_trials': len(df_test),
+                'r2_additive': r2['additive'],
+                'r2_drop': r2[p],
+                'delta_r2': r2['additive'] - r2[p],
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=cols)
+
+    fold_rows = pd.DataFrame(rows, columns=cols)
+    aggregate = (fold_rows.groupby('predictor', sort=False)
+                 .agg(n_trials=('n_trials', 'sum'),
+                      r2_additive=('r2_additive', 'mean'),
+                      r2_drop=('r2_drop', 'mean'),
+                      delta_r2=('delta_r2', 'mean'))
+                 .reset_index())
+    aggregate.insert(0, 'subject', 'aggregate')
+    return pd.concat([fold_rows, aggregate], ignore_index=True)
 
 
 _TIDY_LMM_COLS = ['term', 'coef', 'se', 'z', 'p', 'ci_low', 'ci_high',
