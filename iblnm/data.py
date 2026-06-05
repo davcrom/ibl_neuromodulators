@@ -1436,8 +1436,6 @@ class PhotometrySessionGroup:
         self.cohort_cca_weight_similarities = None
         self.lmm_results = None
         self.lmm_coefficients = None
-        self.wheel_lmm_results = None
-        self.wheel_lmm_summary = None
 
     @classmethod
     def from_catalog(cls, catalog, one, h5_dir=None):
@@ -2882,105 +2880,4 @@ class PhotometrySessionGroup:
 
         self.trial_regressors = pd.concat(frames, ignore_index=True)
         return self.trial_regressors
-
-    def fit_wheel_lmm(self, response_col='response', min_subjects=2):
-        """Fit nested LMMs for wheel kinematics predicted by NM activity.
-
-        For each (target_NM, contrast_level, dv), fits:
-          Base:  ``dv ~ C(stim_side) * C(choice) + (1 | subject)``
-          Full:  ``dv ~ C(stim_side) * C(choice) + response + (1|subject)``
-
-        Requires ``response_magnitudes`` and ``trial_regressors`` to be
-        populated.
-
-        Parameters
-        ----------
-        response_col : str
-            Column name for NM response magnitude.
-        min_subjects : int
-            Minimum subjects per group.
-
-        Returns
-        -------
-        dict
-            Keys: ``(target_NM, contrast, dv_name)`` tuples.
-            Values: dict with comparison results.
-        """
-        from iblnm.analysis import fit_wheel_lmm as _fit_wheel_lmm
-        from tqdm import tqdm
-
-        dvs = ['reaction_time', 'movement_time', 'peak_velocity']
-        df = self._merge_trial_regressors()
-
-        # Filter to stimOn event, unbiased blocks, valid trials
-        df = df[df['event'] == 'stimOn_times']
-        df = df[df['probabilityLeft'] == 0.5]
-        df = df[df['choice'] != 0]
-        df = df.dropna(subset=[response_col])
-
-        # Lateralize stim_side relative to hemisphere
-        # stim_side is already 'left'/'right' — convert to contra/ipsi
-        if 'hemisphere' in df.columns:
-            contra_map = {'l': 'right', 'r': 'left'}
-            df['stim_side_lateral'] = df.apply(
-                lambda row: 'contra' if row['stim_side'] == contra_map.get(
-                    row['hemisphere'], '') else 'ipsi',
-                axis=1,
-            )
-        else:
-            df['stim_side_lateral'] = df['stim_side']
-        df['stim_side'] = df['stim_side_lateral']
-
-        # Build list of (target_nm, contrast, dv, df_dv) jobs
-        jobs = []
-        for target_nm in df['target_NM'].unique():
-            df_target = df[df['target_NM'] == target_nm]
-            for contrast in sorted(df_target['contrast'].unique()):
-                df_c = df_target[np.isclose(df_target['contrast'], contrast)]
-                if df_c['subject'].nunique() < min_subjects:
-                    continue
-                for dv in dvs:
-                    if dv not in df_c.columns:
-                        continue
-                    df_dv = df_c.dropna(subset=[dv])
-                    if len(df_dv) < 10:
-                        continue
-                    jobs.append((target_nm, contrast, dv, df_dv))
-
-        results = {}
-        summary_rows = []
-
-        for target_nm, contrast, dv, df_dv in tqdm(
-                jobs, desc="Fitting wheel LMMs"):
-                    result = _fit_wheel_lmm(
-                        df_dv, dv_col=dv, response_col=response_col,
-                        target_nm=target_nm, contrast=contrast,
-                        min_subjects=min_subjects,
-                    )
-
-                    if result is not None:
-                        key = (target_nm, contrast, dv)
-                        results[key] = result
-                        summary_rows.append({
-                            'target_NM': target_nm,
-                            'contrast': contrast,
-                            'dv': dv,
-                            **{k: result[k] for k in [
-                                'delta_r2', 'base_r2_marginal',
-                                'full_r2_marginal', 'lrt_chi2', 'lrt_pvalue',
-                                'nm_coefficient', 'nm_pvalue', 'n_trials',
-                                'n_subjects',
-                            ]},
-                        })
-
-        self.wheel_lmm_results = results
-        self.wheel_lmm_summary = (
-            pd.DataFrame(summary_rows) if summary_rows
-            else pd.DataFrame(columns=[
-                'target_NM', 'contrast', 'dv', 'delta_r2',
-                'lrt_pvalue', 'nm_coefficient', 'nm_pvalue',
-                'n_trials', 'n_subjects',
-            ])
-        )
-        return results
 

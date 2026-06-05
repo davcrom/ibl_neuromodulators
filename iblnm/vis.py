@@ -2994,58 +2994,6 @@ def plot_movement_slopes(slopes_df):
     return fig
 
 
-def plot_wheel_lmm_summary(summary_df):
-    """Plot delta R² across contrasts for each DV, one line per target_NM.
-
-    Parameters
-    ----------
-    summary_df : pd.DataFrame
-        Output from ``PhotometrySessionGroup.fit_wheel_lmm()``.
-
-    Returns
-    -------
-    matplotlib.Figure
-    """
-    dvs = ['reaction_time', 'movement_time', 'peak_velocity']
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4), sharey=True)
-
-    if len(summary_df) == 0:
-        for ax, dv in zip(axes, dvs):
-            ax.set_title(_DV_LABELS.get(dv, dv))
-            ax.set_xlabel('Contrast (%)')
-        axes[0].set_ylabel('ΔR² (marginal)')
-        fig.suptitle('NM activity contribution to behavioral vigor', fontsize=LABELFONTSIZE)
-        fig.tight_layout()
-        return fig
-
-    for ax, dv in zip(axes, dvs):
-        df_dv = summary_df[summary_df['dv'] == dv]
-        for target_nm, df_tnm in df_dv.groupby('target_NM'):
-            df_tnm = df_tnm.sort_values('contrast')
-            color = TARGETNM_COLORS.get(target_nm, 'gray')
-            ax.plot(df_tnm['contrast'], df_tnm['delta_r2'],
-                    'o-', color=color, label=target_nm, markersize=5)
-            # Mark significant results (p < 0.05) with filled markers
-            sig = df_tnm['lrt_pvalue'] < 0.05
-            if sig.any():
-                ax.scatter(df_tnm.loc[sig, 'contrast'],
-                           df_tnm.loc[sig, 'delta_r2'],
-                           color=color, s=40, zorder=5, edgecolors='black',
-                           linewidths=0.5)
-
-        ax.axhline(0, color='gray', linewidth=0.5, linestyle='--')
-        ax.set_title(_DV_LABELS.get(dv, dv))
-        ax.set_xlabel('Contrast (%)')
-
-    axes[0].set_ylabel('ΔR² (marginal)')
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
-        axes[-1].legend(handles, labels, fontsize=TICKFONTSIZE)
-    fig.suptitle('NM activity contribution to behavioral vigor', fontsize=LABELFONTSIZE)
-    fig.tight_layout()
-    return fig
-
-
 def plot_glm_pca_weights(pca_result, fig=None):
     """Heatmap of PCA component loadings on GLM coefficients.
 

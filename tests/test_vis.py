@@ -1248,62 +1248,6 @@ class TestPlotLMMCoefficientHeatmap:
 # =============================================================================
 
 
-# =============================================================================
-# Wheel LMM Plot Tests
-# =============================================================================
-
-
-def _make_wheel_lmm_summary():
-    """Synthetic wheel LMM summary DataFrame."""
-    rows = []
-    for tnm in ['VTA-DA', 'DR-5HT']:
-        for contrast in [0.0, 0.125, 1.0]:
-            for dv in ['reaction_time', 'movement_time', 'peak_velocity']:
-                rows.append({
-                    'target_NM': tnm,
-                    'contrast': contrast,
-                    'dv': dv,
-                    'delta_r2': np.random.uniform(0, 0.1),
-                    'base_r2_marginal': np.random.uniform(0, 0.05),
-                    'full_r2_marginal': np.random.uniform(0.02, 0.15),
-                    'lrt_chi2': np.random.uniform(0, 10),
-                    'lrt_pvalue': np.random.uniform(0, 1),
-                    'nm_coefficient': np.random.normal(0, 0.5),
-                    'nm_pvalue': np.random.uniform(0, 1),
-                    'n_trials': 200,
-                    'n_subjects': 5,
-                })
-    return pd.DataFrame(rows)
-
-
-class TestPlotWheelLMMSummary:
-
-    def test_returns_figure(self):
-        from iblnm.vis import plot_wheel_lmm_summary
-        summary = _make_wheel_lmm_summary()
-        fig = plot_wheel_lmm_summary(summary)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_has_three_axes(self):
-        """One panel per DV (reaction_time, movement_time, peak_velocity)."""
-        from iblnm.vis import plot_wheel_lmm_summary
-        summary = _make_wheel_lmm_summary()
-        fig = plot_wheel_lmm_summary(summary)
-        assert len(fig.axes) == 3
-        plt.close(fig)
-
-    def test_empty_summary(self):
-        from iblnm.vis import plot_wheel_lmm_summary
-        summary = pd.DataFrame(columns=[
-            'target_NM', 'contrast', 'dv', 'delta_r2', 'lrt_pvalue',
-            'nm_coefficient', 'nm_pvalue', 'n_trials', 'n_subjects',
-        ])
-        fig = plot_wheel_lmm_summary(summary)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-
 def _make_traces_df(n_targets=2, n_subjects=3, n_recs_per=2,
                     n_timepoints=100, events=None, min_trials_per=12):
     """Synthetic mean traces for testing.
