@@ -1451,17 +1451,18 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
 
 
 def plot_movement_response(df_group, response_col, timing_col, target_nm,
-                           fig=None):
+                           event='stimOn_times', fig=None):
     """Scatter response magnitude against a timing variable, colored by contrast.
 
-    One point per trial (low alpha to show density), with contrast level mapped
-    to a continuous color scale. Pools all contrasts and sides into a single
-    panel.
+    The raw-data within-contrast check for the within-contrast model: one point
+    per trial (low alpha to show density), with contrast level mapped to a
+    continuous color scale, so the response-vs-timing relationship is readable
+    within each contrast band. Pools all sides into a single panel.
 
     Parameters
     ----------
     df_group : pd.DataFrame
-        Rows for one (target_NM, timing variable) group with columns
+        Rows for one (target_NM, event, timing variable) group with columns
         ``subject``, ``contrast``, ``<response_col>``, and ``<timing_col>``
         (already log10-transformed).
     response_col : str
@@ -1470,6 +1471,8 @@ def plot_movement_response(df_group, response_col, timing_col, target_nm,
         Column name for the log-transformed timing variable.
     target_nm : str
         Target neuromodulator label; used for the title.
+    event : str
+        Alignment event label for the response magnitude; used for the title.
     fig : plt.Figure or None
         Figure with one existing axis to draw on. If None, a new figure is
         created.
@@ -1486,7 +1489,7 @@ def plot_movement_response(df_group, response_col, timing_col, target_nm,
     n_subjects = df_group['subject'].nunique() if len(df_group) > 0 else 0
     timing_label = timing_col.replace('log_', '')
     fig.suptitle(
-        f'{target_nm} — stimOn ({timing_label})\n'
+        f'{target_nm} — {event} ({timing_label})\n'
         f'{n_sessions} sessions, {n_subjects} subjects',
         fontsize=LABELFONTSIZE,
     )
@@ -2926,71 +2929,80 @@ def plot_movement_r2_bars(summary_df):
     return fig
 
 
-def plot_movement_slopes(slopes_df):
-    """Timing slope (± 95% CI) as a function of contrast, per target_NM.
+def plot_movement_slope_summary(tidy_df, title, formula=None):
+    """Dot-and-whisker of the reported slope (± 95% CI) per target_NM.
 
-    One panel per timing variable.
+    One panel per timing variable. Filled markers are significant (p < 0.05),
+    open markers are not. When the frame carries an ``event`` column (the
+    response-based claims), the events are separated along the x-axis within each
+    target and distinguished by color; the behavioral movement-vs-contrast frame
+    has no event column and shows one point per target. ``formula``, if given, is
+    annotated under the title to identify the model.
 
     Parameters
     ----------
-    slopes_df : pd.DataFrame
-        One row per (target_NM, contrast, timing_variable). Required columns:
-        target_NM, contrast, timing_col, timing_coef, timing_se, timing_p.
+    tidy_df : pd.DataFrame
+        Movement-claim result rows (``analysis._TIDY_LMM_COLS`` plus
+        ``target_NM`` and, for the response-based claims, ``event``).
+    title : str
+        Figure title naming the claim.
+    formula : str or None
+        Model formula to annotate.
 
     Returns
     -------
     plt.Figure
     """
-    timing_vars = sorted(slopes_df['timing_col'].unique()) if len(slopes_df) > 0 else []
+    timing_vars = sorted(tidy_df['timing_col'].unique()) if len(tidy_df) else []
     n_panels = max(len(timing_vars), 1)
-
     fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels + 1, 4),
                              sharey=True, layout='constrained')
     if n_panels == 1:
         axes = [axes]
 
-    if len(slopes_df) == 0:
-        fig.suptitle('Timing slopes by contrast', fontsize=LABELFONTSIZE)
+    if formula is not None:
+        fig.text(0.5, 0.005, formula, ha='center', va='bottom',
+                 fontsize=TICKFONTSIZE, style='italic')
+    if len(tidy_df) == 0:
+        fig.suptitle(title, fontsize=LABELFONTSIZE)
         return fig
 
-    targets = sorted(slopes_df['target_NM'].unique(),
+    targets = sorted(tidy_df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
+    has_event = 'event' in tidy_df.columns
+    events = sorted(tidy_df['event'].unique()) if has_event else [None]
+    offsets = np.linspace(-0.25, 0.25, len(events)) if len(events) > 1 else [0.0]
+    event_colors = {ev: f'C{k}' for k, ev in enumerate(events)}
 
-    for j, tvar in enumerate(timing_vars):
-        ax = axes[j]
-        df_tv = slopes_df[slopes_df['timing_col'] == tvar]
-
-        # Map this panel's contrast levels to ranks for the x-axis.
-        panel_contrasts = sorted(df_tv['contrast'].unique())
-        rank = {c: i for i, c in enumerate(panel_contrasts)}
-
-        for tnm in targets:
-            df_tnm = df_tv[df_tv['target_NM'] == tnm].sort_values('contrast')
-            if len(df_tnm) == 0:
-                continue
-            color = TARGETNM_COLORS.get(tnm, 'gray')
-            # One errorbar per point so marker fill can encode significance
-            # (filled = p < 0.05, open = n.s.), matching plot_lmm_summary. No
-            # connecting line.
-            for k, (_, row) in enumerate(df_tnm.iterrows()):
-                fs = 'full' if row['timing_p'] < 0.05 else 'none'
-                ax.errorbar(rank[row['contrast']], row['timing_coef'],
-                            yerr=1.96 * row['timing_se'], fmt='o', color=color,
-                            markersize=6, capsize=3, fillstyle=fs,
-                            label=tnm if k == 0 else '')
-
-        timing_label = tvar.replace('log_', '')
-        ax.set_title(timing_label)
-        ax.set_xlabel('Contrast (%)')
-        ax.set_xticks(range(len(panel_contrasts)))
-        ax.set_xticklabels([f'{c:g}' for c in panel_contrasts])
+    for ax, tvar in zip(axes, timing_vars):
+        df_tv = tidy_df[tidy_df['timing_col'] == tvar]
+        for i, tnm in enumerate(targets):
+            for ev, dx in zip(events, offsets):
+                row = df_tv[df_tv['target_NM'] == tnm]
+                if has_event:
+                    row = row[row['event'] == ev]
+                if len(row) == 0:
+                    continue
+                row = row.iloc[0]
+                color = (event_colors[ev] if has_event
+                         else TARGETNM_COLORS.get(tnm, 'gray'))
+                fs = 'full' if row['p'] < 0.05 else 'none'
+                yerr = [[row['coef'] - row['ci_low']],
+                        [row['ci_high'] - row['coef']]]
+                ax.errorbar(i + dx, row['coef'], yerr=yerr, fmt='o',
+                            color=color, markersize=6, capsize=3, fillstyle=fs,
+                            label=ev if (has_event and i == 0) else '')
+        ax.set_title(tvar.replace('log_', ''))
+        ax.set_xticks(range(len(targets)))
+        ax.set_xticklabels(targets, rotation=30, ha='right',
+                           fontsize=TICKFONTSIZE)
         ax.axhline(0, ls='--', color='gray', lw=0.5)
-        if j == 0:
-            ax.set_ylabel('Timing slope (z / log₁₀ s)')
 
-    axes[-1].legend(frameon=False, loc='upper left',
-                    bbox_to_anchor=(1, 1), fontsize=TICKFONTSIZE)
-    fig.suptitle('Timing slopes by contrast', fontsize=LABELFONTSIZE)
+    axes[0].set_ylabel('Slope (coef ± 95% CI)')
+    if has_event:
+        axes[-1].legend(frameon=False, loc='upper left',
+                        bbox_to_anchor=(1, 1), fontsize=TICKFONTSIZE)
+    fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
 

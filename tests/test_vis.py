@@ -2198,9 +2198,20 @@ class TestPlotMovementResponse:
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
+    def test_event_label_in_suptitle(self):
+        """The event label appears in the title so per-event raw-data plots are
+        distinguishable."""
+        from iblnm.vis import plot_movement_response
+        df = _make_movement_df()
+        fig = plot_movement_response(
+            df, 'response', 'log_reaction_time', 'VTA-DA',
+            event='firstMovement_times')
+        assert 'firstMovement_times' in fig._suptitle.get_text()
+        plt.close(fig)
+
 
 # =========================================================================
-# plot_movement_lmm_summary / plot_movement_slopes
+# plot_movement_lmm_summary / plot_movement_slope_summary
 # =========================================================================
 
 def _make_movement_lmm_summary():
@@ -2218,17 +2229,23 @@ def _make_movement_lmm_summary():
     return pd.DataFrame(rows)
 
 
-def _make_movement_slopes():
+def _make_claim_slopes(with_event=True):
+    """Tidy movement-claim result frame (one row per fit)."""
     rows = []
     for tnm in ['VTA-DA', 'DR-5HT']:
-        for c in [0.0, 25.0, 100.0]:
-            for tc in ['log_reaction_time', 'log_movement_time']:
-                rows.append({
-                    'target_NM': tnm, 'contrast': c, 'timing_col': tc,
-                    'timing_coef': 0.1 + c * 0.001,
-                    'timing_se': 0.03,
-                    'timing_p': 0.01 if c > 0 else 0.10,
-                })
+        for tc in ['log_reaction_time', 'log_movement_time']:
+            events = ['baseline', 'stimOn_times'] if with_event else [None]
+            for ev in events:
+                row = {
+                    'target_NM': tnm, 'term': tc, 'coef': 0.2,
+                    'se': 0.03, 'z': 6.0, 'p': 0.001,
+                    'ci_low': 0.14, 'ci_high': 0.26,
+                    'marginal_r2': 0.05, 'n_trials': 200, 'n_subjects': 3,
+                    'timing_col': tc,
+                }
+                if ev is not None:
+                    row['event'] = ev
+                rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -2295,33 +2312,44 @@ class TestPlotMovementR2Bars:
         plt.close(fig)
 
 
-class TestPlotMovementSlopes:
+class TestPlotMovementSlopeSummary:
     def test_returns_figure(self):
-        from iblnm.vis import plot_movement_slopes
-        df = _make_movement_slopes()
-        fig = plot_movement_slopes(df)
+        from iblnm.vis import plot_movement_slope_summary
+        fig = plot_movement_slope_summary(
+            _make_claim_slopes(), 'movement predicts response')
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_one_panel_per_timing_var(self):
+        from iblnm.vis import plot_movement_slope_summary
+        fig = plot_movement_slope_summary(
+            _make_claim_slopes(), 'movement predicts response')
+        assert len(fig.axes) == 2  # log_reaction_time, log_movement_time
+        plt.close(fig)
+
+    def test_formula_annotated(self):
+        from iblnm.vis import plot_movement_slope_summary
+        fig = plot_movement_slope_summary(
+            _make_claim_slopes(), 'within contrast',
+            formula='response ~ C(contrast) + timing + side + reward')
+        texts = [t.get_text() for t in fig.findobj(plt.Text)]
+        assert any('C(contrast)' in t for t in texts)
+        plt.close(fig)
+
+    def test_no_event_column(self):
+        """The behavioral movement-vs-contrast frame has no event column."""
+        from iblnm.vis import plot_movement_slope_summary
+        fig = plot_movement_slope_summary(
+            _make_claim_slopes(with_event=False), 'movement vs contrast')
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_empty_df(self):
-        from iblnm.vis import plot_movement_slopes
-        df = pd.DataFrame(columns=[
-            'target_NM', 'contrast', 'timing_col',
-            'timing_coef', 'timing_se', 'timing_p',
-        ])
-        fig = plot_movement_slopes(df)
+        from iblnm.vis import plot_movement_slope_summary
+        from iblnm.analysis import _TIDY_LMM_COLS
+        df = pd.DataFrame(columns=['target_NM', *_TIDY_LMM_COLS])
+        fig = plot_movement_slope_summary(df, 'movement vs contrast')
         assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_x_axis_is_contrast_rank(self):
-        """Contrasts (0, 25, 100) map to ranks (0, 1, 2) on the x-axis,
-        labelled with the raw contrast values."""
-        from iblnm.vis import plot_movement_slopes
-        df = _make_movement_slopes()
-        fig = plot_movement_slopes(df)
-        ax = fig.axes[0]
-        assert list(ax.get_xticks()) == [0, 1, 2]
-        assert [t.get_text() for t in ax.get_xticklabels()] == ['0', '25', '100']
         plt.close(fig)
 
 
