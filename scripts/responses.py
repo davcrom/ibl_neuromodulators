@@ -17,8 +17,11 @@ Usage:
 """
 import argparse
 
+import matplotlib
 import numpy as np
 import pandas as pd
+
+matplotlib.use('Agg')  # batch figure generation; never open interactive windows
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
@@ -37,6 +40,7 @@ from iblnm.vis import (
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
     plot_lmm_ceiling, plot_lmm_main_effects, plot_lmm_loso,
+    plot_lmm_reliability,
     plot_mean_response_traces,
     plot_movement_response, plot_movement_lmm_summary,
     plot_movement_r2_bars, plot_movement_slope_summary,
@@ -47,8 +51,6 @@ from iblnm.analysis import (
     fit_movement_vs_contrast, fit_movement_predicts_response,
     fit_movement_within_contrast, within_contrast_variation,
 )
-
-plt.ion()
 
 
 # =========================================================================
@@ -153,6 +155,8 @@ def plot_lmm_figures(group, figures_dir, data_dir,
         (group.lmm_ceiling, 'lmm_ceiling'),
         (group.lmm_main_effects, 'lmm_main_effects'),
         (group.lmm_loso, 'lmm_loso'),
+        (group.lmm_main_effects_loso, 'lmm_main_effects_loso'),
+        (group.lmm_reliability, 'lmm_reliability'),
     ]:
         if len(result) > 0:
             result.to_csv(data_dir / f'{name}_{window_label}.csv', index=False)
@@ -177,6 +181,14 @@ def plot_lmm_figures(group, figures_dir, data_dir,
          f'lmm_loso_{window_label}.svg'),
     ]:
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
+
+    # Reliability grid: out-of-sample ΔR² per task term (main effects + omnibus
+    # interactions on one axis), one row per target-NM.
+    if len(group.lmm_reliability) > 0:
+        fig = plot_lmm_reliability(group.lmm_reliability)
+        fig.savefig(figures_dir / f'lmm_reliability_{window_label}.svg',
+                    dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
     print("  LMM summary plots saved")
 
@@ -321,22 +333,23 @@ def _fit_movement_claims(df_resp, figures_dir, data_dir):
 
 
 def _movement_model_comparison(df_resp, figures_dir, data_dir):
-    """Jackknife ΔR² (dots) and full-dataset marginal R² (bars) per
-    (target_NM, movement variable)."""
+    """Jackknife ΔR² (dots) and full-dataset fixed-effects R² (bars) per
+    (target_NM, event, movement variable), one figure per event."""
     jackknife_frames = []
     bar_rows = []
-    for target_nm, df_tnm in df_resp.groupby('target_NM'):
+    for (target_nm, event), df_te in df_resp.groupby(['target_NM', 'event']):
         for var in TIMING_VARS:
-            df_valid = df_tnm.dropna(subset=[f'log_{var}'])
+            df_valid = df_te.dropna(subset=[f'log_{var}'])
             if len(df_valid) < MIN_TRIALS_MOVEMENT:
                 continue
             df_jk = jackknife_movement_lmm(df_valid, 'response', f'log_{var}')
             if not df_jk.empty:
                 df_jk['target_NM'] = target_nm
+                df_jk['event'] = event
                 jackknife_frames.append(df_jk)
             full = fit_movement_lmm_r2(df_valid, 'response', f'log_{var}')
             if full is not None:
-                bar_rows.append({'target_NM': target_nm,
+                bar_rows.append({'target_NM': target_nm, 'event': event,
                                  'timing_col': f'log_{var}', **full})
 
     if not jackknife_frames:
@@ -346,26 +359,28 @@ def _movement_model_comparison(df_resp, figures_dir, data_dir):
     df_bars = pd.DataFrame(bar_rows)
     df_bars.to_csv(data_dir / 'movement_marginal_r2.csv', index=False)
 
-    fig = plot_movement_lmm_summary(df_jk_all)
-    fig.savefig(figures_dir / 'model_comparison.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
-    fig = plot_movement_r2_bars(df_bars)
-    fig.savefig(figures_dir / 'r2_model_comparison.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
+    for event, df_jk_ev in df_jk_all.groupby('event'):
+        fig = plot_movement_lmm_summary(df_jk_ev)
+        fig.savefig(figures_dir / f'model_comparison_{event}.svg',
+                    dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
+    for event, df_bars_ev in df_bars.groupby('event'):
+        fig = plot_movement_r2_bars(df_bars_ev)
+        fig.savefig(figures_dir / f'r2_model_comparison_{event}.svg',
+                    dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
 
 
 def plot_movement_figures(group, fig_dirs, data_dir):
     """Run the movement-encoding analyses off the merged modeling frame: the
     ordered claims, the raw-data within-contrast check, and the ΔR²
-    unique-contribution comparison (stimOn only, unchanged)."""
+    unique-contribution comparison (one figure per event: baseline, stimOn,
+    firstMovement)."""
     df_resp = build_movement_df(group)
     _fit_movement_claims(df_resp, fig_dirs['movement_slopes'], data_dir)
     _movement_descriptive_figures(df_resp, fig_dirs['movement_descriptive'])
     _movement_model_comparison(
-        df_resp.query("event == 'stimOn_times'"),
-        fig_dirs['movement_model_comparison'], data_dir)
+        df_resp, fig_dirs['movement_model_comparison'], data_dir)
 
 
 if __name__ == '__main__':

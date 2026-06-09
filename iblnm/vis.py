@@ -2664,63 +2664,73 @@ def plot_lmm_loso(loso_df):
 _RELIABILITY_TERMS = ['contrast', 'side', 'reward', 'interactions']
 
 
-def plot_lmm_reliability(reliability_df, target_nm):
-    """Out-of-sample ΔR² per task term for one target-NM, one panel per event.
+def plot_lmm_reliability(reliability_df):
+    """Out-of-sample ΔR² per task term — grid of target-NM (rows) × event (cols).
 
-    Each panel shows leave-one-subject-out ΔR² for the four task terms on a
+    Each cell shows leave-one-subject-out ΔR² for the four task terms on a
     common x-axis: the three main effects (R² lost when that term is dropped
     from the additive model) and the omnibus interaction block (R² gained by
     the full model over the additive model). Small markers are the per-held-out-
     subject folds, the large marker is the across-fold mean. Positive = the term
-    helps predict a new animal. Same target-NM color throughout.
+    helps predict a new animal. Each target-NM row is drawn in its own color and
+    shares a y-axis so terms and events are comparable within an NM.
 
     Parameters
     ----------
     reliability_df : pd.DataFrame
         ``PhotometrySessionGroup.lmm_reliability`` rows: ``target_NM``,
         ``event``, ``predictor``, ``subject``, ``delta_r2``.
-    target_nm : str
-        Target-NM to plot.
 
     Returns
     -------
     plt.Figure
     """
-    df_t = reliability_df[reliability_df['target_NM'] == target_nm]
-    events = _sort_events(df_t['event'].unique()) if len(df_t) else []
-    n_panels = max(len(events), 1)
-    fig, axes = plt.subplots(1, n_panels, figsize=(3 * n_panels + 1, 4),
-                             sharey=True, layout='constrained')
-    axes = np.atleast_1d(axes)
-    color = TARGETNM_COLORS.get(target_nm, 'gray')
+    has_data = len(reliability_df) > 0
+    targets = (sorted(reliability_df['target_NM'].unique(),
+                      key=lambda x: TARGETNM2POSITION.get(x, 999))
+               if has_data else [])
+    events = _sort_events(reliability_df['event'].unique()) if has_data else []
+    n_rows, n_cols = max(len(targets), 1), max(len(events), 1)
+    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, sharex=True,
+                             sharey='row', layout='constrained',
+                             figsize=(2.6 * n_cols + 1, 2.0 * n_rows + 1))
 
-    suptitle = (f'{target_nm} — out-of-sample ΔR² (leave-one-subject-out)\n'
+    suptitle = ('Out-of-sample ΔR² (leave-one-subject-out)\n'
                 'main effects: R²(additive) − R²(dropping term);  '
                 'interactions: R²(full) − R²(additive)')
-    if len(df_t) == 0:
+    if not has_data:
         fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
         return fig
 
-    terms = [t for t in _RELIABILITY_TERMS if t in set(df_t['predictor'])]
-    for ax, event in zip(axes, events):
-        df_ev = df_t[df_t['event'] == event]
-        for x, term in enumerate(terms):
-            _scatter_loso_folds(ax, x, df_ev[df_ev['predictor'] == term], color)
-        ax.set_xticks(range(len(terms)))
-        ax.set_xticklabels(terms, rotation=30, ha='right', fontsize=TICKFONTSIZE)
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-        ax.set_title(event)
-    axes[0].set_ylabel('Out-of-sample ΔR²')
+    terms = [t for t in _RELIABILITY_TERMS if t in set(reliability_df['predictor'])]
+    for r, target_nm in enumerate(targets):
+        color = TARGETNM_COLORS.get(target_nm, 'gray')
+        df_t = reliability_df[reliability_df['target_NM'] == target_nm]
+        for c, event in enumerate(events):
+            ax = axes[r, c]
+            df_ev = df_t[df_t['event'] == event]
+            for x, term in enumerate(terms):
+                _scatter_loso_folds(ax, x, df_ev[df_ev['predictor'] == term],
+                                    color)
+            ax.axhline(0, ls='--', color='gray', lw=0.5)
+            if r == 0:
+                ax.set_title(event)
+        axes[r, 0].set_ylabel(target_nm, fontsize=TICKFONTSIZE)
+
+    for c in range(n_cols):
+        axes[-1, c].set_xticks(range(len(terms)))
+        axes[-1, c].set_xticklabels(terms, rotation=30, ha='right',
+                                    fontsize=TICKFONTSIZE)
+    fig.supylabel('Out-of-sample ΔR²')
 
     role_handles = [
-        Line2D([0], [0], marker='o', color=color, ls='none', markersize=5,
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
                alpha=0.5),
-        Line2D([0], [0], marker='o', color=color, ls='none', markersize=9,
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=9,
                markeredgecolor='k'),
     ]
-    axes[-1].legend(role_handles, ['per-subject fold', 'across-fold aggregate'],
-                    frameon=False, fontsize=TICKFONTSIZE, loc='upper left',
-                    bbox_to_anchor=(1, 1))
+    fig.legend(role_handles, ['per-subject fold', 'across-fold aggregate'],
+               frameon=False, fontsize=TICKFONTSIZE, loc='upper right')
     fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
     return fig
 

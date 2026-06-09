@@ -1176,50 +1176,62 @@ class TestPlotLMMSuiteFigures:
 
 
 class TestPlotLmmReliability:
+    """Grid of target-NM (rows) × event (cols), x = task terms."""
 
-    def _rel(self, target='VTA-DA'):
+    def _rel(self, targets=('VTA-DA', 'DR-5HT'), events=('feedback', 'stimOn')):
         rows = []
-        for event in ['feedback', 'stimOn']:
-            for pred in ['contrast', 'side', 'reward', 'interactions']:
-                for subj in ['s0', 's1', 'aggregate']:
-                    rows.append({
-                        'target_NM': target, 'event': event, 'predictor': pred,
-                        'subject': subj,
-                        'delta_r2': 0.03 if subj == 'aggregate' else 0.01})
+        for tnm in targets:
+            for event in events:
+                for pred in ['contrast', 'side', 'reward', 'interactions']:
+                    for subj in ['s0', 's1', 'aggregate']:
+                        rows.append({
+                            'target_NM': tnm, 'event': event, 'predictor': pred,
+                            'subject': subj,
+                            'delta_r2': 0.03 if subj == 'aggregate' else 0.01})
         return pd.DataFrame(rows)
 
-    def test_one_panel_per_event(self):
+    def test_grid_rows_targets_cols_events(self):
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'VTA-DA')
-        assert len(fig.axes) == 2
+        fig = plot_lmm_reliability(self._rel())
+        assert len(fig.axes) == 2 * 2  # 2 targets × 2 events
+        plt.close(fig)
+
+    def test_event_columns_chronological(self):
+        """Top-row panel titles are the events in trial chronology."""
+        from iblnm.vis import plot_lmm_reliability
+        fig = plot_lmm_reliability(self._rel())
+        assert [ax.get_title() for ax in fig.axes[:2]] == ['stimOn', 'feedback']
         plt.close(fig)
 
     def test_xticklabels_are_terms_in_order(self):
-        """x-axis lists the task terms, main effects then interactions."""
+        """Bottom-row x-axis lists the task terms, main effects then interactions."""
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'VTA-DA')
-        labels = [t.get_text() for t in fig.axes[0].get_xticklabels()]
+        fig = plot_lmm_reliability(self._rel())
+        labels = [t.get_text() for t in fig.axes[2].get_xticklabels()]
         assert labels == ['contrast', 'side', 'reward', 'interactions']
         plt.close(fig)
 
-    def test_event_panels_chronological(self):
+    def test_rows_labeled_by_target(self):
+        """Each row's leftmost panel is labelled with its target-NM, ordered."""
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'VTA-DA')
-        titles = [ax.get_title() for ax in fig.axes]
-        assert titles == ['stimOn', 'feedback']
+        fig = plot_lmm_reliability(self._rel())
+        assert [fig.axes[0].get_ylabel(), fig.axes[2].get_ylabel()] == \
+            ['VTA-DA', 'DR-5HT']
         plt.close(fig)
 
-    def test_filters_to_requested_target(self):
+    def test_row_colored_by_target(self):
         from iblnm.vis import plot_lmm_reliability
-        df = pd.concat([self._rel('VTA-DA'), self._rel('DR-5HT')],
-                       ignore_index=True)
-        fig = plot_lmm_reliability(df, 'VTA-DA')
-        assert 'VTA-DA' in fig._suptitle.get_text()
+        from iblnm.config import TARGETNM_COLORS
+        from matplotlib.colors import to_rgba
+        fig = plot_lmm_reliability(self._rel())
+        colors = {tuple(np.round(c.get_facecolor()[0], 5))
+                  for c in fig.axes[0].collections if len(c.get_offsets())}
+        assert tuple(np.round(to_rgba(TARGETNM_COLORS['VTA-DA']), 5)) in colors
         plt.close(fig)
 
     def test_aggregate_marker_larger_than_folds(self):
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'VTA-DA')
+        fig = plot_lmm_reliability(self._rel())
         sizes = [c.get_sizes()[0] for c in fig.axes[0].collections
                  if len(c.get_sizes())]
         assert max(sizes) > min(sizes)
