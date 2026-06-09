@@ -15,7 +15,7 @@ from iblphotometry.qc import qc_signals
 from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
-    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EIDS_TO_DROP,
+    ANALYSIS_QC_BLOCKERS, BASELINE_RESPONSE_WINDOW, BASELINE_WINDOW, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
     LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MOTION_ENERGY_EVENT,
@@ -2208,8 +2208,9 @@ class PhotometrySessionGroup:
         Calls :meth:`load_response_traces` if traces are not yet cached.
         For each cached (recording × event), computes the scalar magnitude
         in the early response window. The ``baseline`` pseudo-event uses
-        ``BASELINE_WINDOW`` on the raw (pre-subtraction) stimOn trace, giving
-        the per-trial pre-stimulus level. Trial-level task/movement predictors
+        ``BASELINE_RESPONSE_WINDOW`` (the pre-event mirror of the early window)
+        on the raw (pre-subtraction) stimOn trace, giving the per-trial
+        pre-stimulus level over a window matched to the early response. Trial-level task/movement predictors
         are not included here — they live in ``trial_regressors`` (populated
         by :meth:`get_trial_regressors`).
 
@@ -2231,7 +2232,7 @@ class PhotometrySessionGroup:
                 self.response_traces.items(),
                 desc="Computing response magnitudes"):
             meta = entry['meta']
-            window = (BASELINE_WINDOW if event == 'baseline'
+            window = (BASELINE_RESPONSE_WINDOW if event == 'baseline'
                       else RESPONSE_WINDOWS['early'])
             magnitude = compute_response_magnitude(
                 entry['traces'], entry['tpts'], window,

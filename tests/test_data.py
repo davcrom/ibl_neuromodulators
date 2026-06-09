@@ -2938,7 +2938,7 @@ class TestGetResponseVector:
 
 def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
               all_biased=False, all_nogo=False, fast_response=False,
-              baseline_value=0.0):
+              baseline_value=0.0, pre_event_ramp=False):
     """Write a minimal H5 file with trials and responses.
 
     Parameters
@@ -2952,6 +2952,9 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
     baseline_value : float
         Pre-event (t < 0) signal level. Defaults to 0; set non-zero to give
         the raw pre-stimulus baseline a known magnitude.
+    pre_event_ramp : bool
+        If True, set each pre-event sample to its own time value (a ramp in t),
+        so a magnitude depends on which pre-event window is used.
     """
     import h5py
 
@@ -2999,7 +3002,7 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
             for event in events:
                 data = np.zeros((n_trials, n_time))
                 data[:, post_mask] = 1.0
-                data[:, pre_mask] = baseline_value
+                data[:, pre_mask] = tpts[pre_mask] if pre_event_ramp else baseline_value
                 resp_grp.create_dataset(event, data=data)
 
 
@@ -3686,6 +3689,25 @@ class TestGetResponseMagnitudes:
         # Subtracted stimOn rows are NOT the raw baseline level.
         stim = df[df['event'] == 'stimOn_times']
         assert not np.allclose(stim['response'].values, baseline_value)
+
+    def test_baseline_event_uses_mirror_of_early_window(self, tmp_path):
+        """The 'baseline' pseudo-event magnitude is the raw pre-event mean over
+        the time-mirror of RESPONSE_WINDOWS['early'] (i.e. (-hi, -lo)), not the
+        subtraction window."""
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.config import RESPONSE_WINDOWS
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=10, pre_event_ramp=True)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+
+        df = group.get_response_magnitudes()
+
+        tpts = np.linspace(-1, 1, 61)
+        lo, hi = RESPONSE_WINDOWS['early']
+        i0, i1 = np.searchsorted(tpts, [-hi, -lo])
+        expected = tpts[i0:i1].mean()
+        baseline = df[df['event'] == 'baseline']
+        np.testing.assert_allclose(baseline['response'].values, expected)
 
     def test_baseline_rows_share_recording_columns(self, tmp_path):
         """Baseline rows carry the same recording-key columns as event rows."""
