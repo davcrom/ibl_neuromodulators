@@ -67,6 +67,7 @@ figures/             # Output plots
 
 # Local working files (gitignored)
 specs/               # Design specs and implementation plans
+tickets/             # Implementation tickets (local working notes, never committed)
 notes/               # Personal notes, code snippets, reports, brainstorm docs
 histology/           # Histology images (.tif) and fiber track CSVs
 ```
@@ -212,6 +213,8 @@ and initializes list columns (replaces NaN with `[]`). Called when loading
 - **Specs go in `specs/`.** Write design specs and implementation plans to
   `specs/` before starting work. Never put spec files in `scripts/` or other
   code directories.
+- **Tickets go in `tickets/`, never committed.** `tickets/` is gitignored
+  local working notes; never stage or commit ticket files.
 - **No backward compatibility shims.** This is an active development project,
   not a library with external consumers. When renaming, delete the old name
   everywhere. No aliases, no re-exports, no deprecation wrappers.
