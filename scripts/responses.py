@@ -530,7 +530,7 @@ if __name__ == '__main__':
     # Repeated-measures ANOVA on subject means
     # =====================================================================
     print("\nRunning repeated-measures ANOVA on subject means...")
-    anova_results = group.anova_response_magnitudes()
+    anova_results = group.response_anovaRM_fit()
     if anova_results:
         all_tables = []
         for (tnm, ev), table in anova_results.items():

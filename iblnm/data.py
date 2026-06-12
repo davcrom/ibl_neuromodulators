@@ -3482,7 +3482,7 @@ class PhotometrySessionGroup:
             })
         return rows
 
-    def anova_response_magnitudes(self, response_col='response',
+    def response_anovaRM_fit(self, response_col='response',
                                     min_subjects=2, min_trials=10):
         """Run repeated-measures ANOVA on subject-mean response magnitudes.
 
