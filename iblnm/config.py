@@ -445,6 +445,59 @@ POSE_MEASURES = {
 MOTION_ENERGY_EVENT = 'stimOn_times'
 
 
+# LMM formula templates: the single source of every model formula. Each family
+# maps a model name to a Wilkinson formula with `{response}` as the only
+# placeholder (filled with the response column at fit time). In a nested
+# comparison set, `full` is the reference model; every other key names the
+# predictor whose unique contribution is `r2(full) - r2(<key>)`, and its formula
+# is the full model with that predictor dropped. Movement families enumerate one
+# concrete model per `TIMING_VARS` entry, the formula naming the real
+# `log_<timing>` column (no timing placeholder at fit time).
+LMM_FORMULAS = {
+    # Task interactions: full (with interactions) vs additive main-effects model.
+    'task_interactions': {
+        'full': '{response} ~ contrast * side * reward',
+        'interactions': '{response} ~ contrast + side + reward',
+    },
+    # Task main effects: additive reference, drop-one for each predictor.
+    'task_main_effects': {
+        'full': '{response} ~ contrast + side + reward',
+        'contrast': '{response} ~ side + reward',
+        'side': '{response} ~ contrast + reward',
+        'reward': '{response} ~ contrast + side',
+    },
+    # Task ceiling: saturated single reporting model.
+    'task_ceiling': {
+        'ceiling': '{response} ~ C(contrast) * side * reward',
+    },
+    # Movement families: one named family per timing variable (reward removed).
+    **{
+        f'movement_additive_{t}': {
+            'full': f'{{response}} ~ contrast + log_{t}',
+            'contrast': f'{{response}} ~ log_{t}',
+            'movement': '{response} ~ contrast',
+        }
+        for t in TIMING_VARS
+    },
+    **{
+        f'movement_saturated_{t}': {
+            'full': f'{{response}} ~ contrast * reward * side * log_{t}',
+            'contrast': f'{{response}} ~ reward * side * log_{t}',
+            'movement': '{response} ~ contrast * reward * side',
+        }
+        for t in TIMING_VARS
+    },
+    # Movement claims: standalone reporting models (not a nested r2 comparison).
+    **{
+        f'movement_claims_{t}': {
+            'predicts_response': f'{{response}} ~ log_{t}',
+            'within_contrast': f'{{response}} ~ C(contrast) + log_{t} + side + reward',
+        }
+        for t in TIMING_VARS
+    },
+}
+
+
 # Plotting parameters
 FIGURE_DPI = 150
 TICKFONTSIZE = 12
