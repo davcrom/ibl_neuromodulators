@@ -161,9 +161,9 @@ class TestPlotExampleSnippet:
         lines = ax_pose.get_lines()
         # With 2 body parts we expect 2 data lines plus event lines.
         # The data lines should have different y-ranges (offset).
-        data_lines = [l for l in lines
-                      if len(l.get_ydata()) > 10]
+        data_lines = [line for line in lines
+                      if len(line.get_ydata()) > 10]
         if len(data_lines) >= 2:
-            means = [np.nanmean(l.get_ydata()) for l in data_lines[:2]]
+            means = [np.nanmean(line.get_ydata()) for line in data_lines[:2]]
             assert abs(means[0] - means[1]) > 1.0
         plt.close(fig)
