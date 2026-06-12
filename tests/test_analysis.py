@@ -2969,6 +2969,62 @@ class TestLosoCVMainEffectsLMM:
         assert len(result) == 0
 
 
+class TestCrossvalLmm:
+    FORMULAS = {
+        'full': 'response ~ contrast * side * reward',
+        'interactions': 'response ~ contrast + side + reward',
+    }
+
+    def test_required_columns(self):
+        from iblnm.analysis import crossval_lmm, _code_task_predictors
+        coded = _code_task_predictors(_make_task_lmm_df(), 'response', 'log2')
+        result = crossval_lmm(coded, self.FORMULAS, 'response')
+        assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
+                                         'delta_r2']
+
+    def test_reproduces_loso_cv_task_delta(self):
+        """On the same coded df, per-fold and aggregate delta_r2 match the legacy
+        loso_cv_task_lmm rows (full vs no-interaction reference)."""
+        from iblnm.analysis import (crossval_lmm, loso_cv_task_lmm,
+                                     _code_task_predictors)
+        df = _make_task_lmm_df()
+        legacy = loso_cv_task_lmm(df, 'response', contrast_coding='log2')
+        coded = _code_task_predictors(df, 'response', 'log2')
+        new = crossval_lmm(coded, self.FORMULAS, 'response')
+
+        legacy_fold = legacy[legacy['subject'] != 'aggregate']
+        new_fold = new[new['fold'] != 'aggregate']
+        merged = legacy_fold.merge(new_fold, left_on='subject', right_on='fold')
+        assert len(merged) == len(legacy_fold)
+        assert merged['delta_r2_x'].values == pytest.approx(
+            merged['delta_r2_y'].values)
+
+        legacy_agg = legacy[legacy['subject'] == 'aggregate']['delta_r2'].iloc[0]
+        new_agg = new[new['fold'] == 'aggregate']['delta_r2'].iloc[0]
+        assert new_agg == pytest.approx(legacy_agg)
+
+    def test_fold_below_min_test_excluded(self):
+        from iblnm.analysis import crossval_lmm, _code_task_predictors
+        df = _make_task_lmm_df()
+        coded = _code_task_predictors(df, 'response', 'log2')
+        # Shrink one subject to fewer than min_test trials.
+        small = coded[coded['subject'] == 's0'].iloc[:3]
+        coded = pd.concat([small, coded[coded['subject'] != 's0']])
+        result = crossval_lmm(coded, self.FORMULAS, 'response', min_test=5)
+        folds = result[result['fold'] != 'aggregate']['fold']
+        assert 's0' not in set(folds)
+
+    def test_too_few_subjects_returns_empty(self):
+        from iblnm.analysis import crossval_lmm, _code_task_predictors
+        coded = _code_task_predictors(_make_task_lmm_df(), 'response', 'log2')
+        coded['subject'] = 's0'
+        result = crossval_lmm(coded, self.FORMULAS, 'response', min_subjects=3)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+        assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
+                                         'delta_r2']
+
+
 class TestJackknifeMovementLMM:
     def test_one_row_per_subject(self):
         from iblnm.analysis import jackknife_movement_lmm

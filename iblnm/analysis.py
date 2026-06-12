@@ -2769,6 +2769,86 @@ def loso_cv_main_effects_lmm(df, response_col, contrast_coding='log2',
     return pd.concat([fold_rows, aggregate], ignore_index=True)
 
 
+def crossval_lmm(df, formulas, response_col, fold_col='subject',
+                 min_subjects=3, min_test=5):
+    """Out-of-sample ΔR² by leave-one-fold-out cross-validation.
+
+    Formula-agnostic resampling: leave out one ``fold_col`` value at a time, fit
+    each model in ``formulas`` on the N−1 training folds, and score the held-out
+    fold out of sample with ``_centered_r2`` (which removes the held-out fold's
+    own random intercept). The ``'full'`` key names the reference model; every
+    other key's ΔR² is the held-out R² the reference gains over that reduced
+    model. Subsumes the bespoke ``loso_cv_*`` routines; the caller codes ``df``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Trial-level data, already coded, with ``response_col`` and ``fold_col``.
+    formulas : dict[str, str]
+        Name → Wilkinson formula. Must contain a ``'full'`` reference key.
+    response_col : str
+        Column name for the response magnitude.
+    fold_col : str
+        Column whose unique values define the leave-one-out folds.
+    min_subjects : int
+        Minimum number of folds required (≥ 3 so training keeps ≥ 2 folds).
+    min_test : int
+        Minimum held-out trials for a fold to be scored.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per (``fold``, ``predictor``) for each non-``'full'`` formula,
+        with columns ``fold, predictor, n_trials, r2, delta_r2``. ``r2`` is the
+        held-out reference R²; ``delta_r2`` is ``r2_full − r2_<predictor>``. A
+        ``fold == 'aggregate'`` row per predictor holds the across-fold mean
+        ``r2``/``delta_r2`` and summed ``n_trials``. Empty frame with those
+        columns if fewer than ``min_subjects`` folds or no fold is scorable.
+    """
+    cols = ['fold', 'predictor', 'n_trials', 'r2', 'delta_r2']
+    folds = df[fold_col].unique()
+    if len(folds) < min_subjects:
+        return pd.DataFrame(columns=cols)
+
+    rows = []
+    for fold in folds:
+        df_train = df[df[fold_col] != fold]
+        df_test = df[df[fold_col] == fold]
+        if len(df_test) < min_test or df_train[fold_col].nunique() < 2:
+            continue
+
+        fits = {name: fit_lmm(formula, df_train, groups=df_train[fold_col],
+                              re_formula='1', reml=False)
+                for name, formula in formulas.items()}
+        if any(fit is None for fit in fits.values()):
+            continue
+
+        y_centered = df_test[response_col].values - df_test[response_col].mean()
+        ss_tot = np.sum(y_centered ** 2)
+        if ss_tot == 0:
+            continue
+
+        r2 = {name: _centered_r2(fit, df_test, y_centered, ss_tot)
+              for name, fit in fits.items()}
+        rows.extend(
+            {'fold': fold, 'predictor': name, 'n_trials': len(df_test),
+             'r2': r2['full'], 'delta_r2': r2['full'] - r2[name]}
+            for name in formulas if name != 'full'
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=cols)
+
+    fold_rows = pd.DataFrame(rows, columns=cols)
+    aggregate = (fold_rows.groupby('predictor', sort=False)
+                 .agg(n_trials=('n_trials', 'sum'),
+                      r2=('r2', 'mean'),
+                      delta_r2=('delta_r2', 'mean'))
+                 .reset_index())
+    aggregate.insert(0, 'fold', 'aggregate')
+    return pd.concat([fold_rows, aggregate], ignore_index=True)
+
+
 _TIDY_LMM_COLS = ['term', 'coef', 'se', 'z', 'p', 'ci_low', 'ci_high',
                   'marginal_r2', 'n_trials', 'n_subjects', 'timing_col']
 
