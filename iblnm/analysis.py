@@ -1947,37 +1947,8 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
         return None
 
     # Predictions on contrast grid (fixed effects only)
-    result = lmm_result.result
-    fe_params = result.fe_params.values
-    fe_names = list(result.fe_params.index)
-    fe_cov = result.cov_params().loc[fe_names, fe_names].values
-
-    original_contrast_levels = sorted(original_contrasts.unique())
-    pred_rows = []
-    for side_label, side_val in [('contra', 0.5), ('ipsi', -0.5)]:
-        for reward_label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
-            grid = pd.DataFrame({
-                'contrast': _transform(original_contrast_levels) - contrast_center,
-                'side': side_val,
-                'reward': reward_val,
-                'subject': df['subject'].iloc[0],  # dummy
-                response_col: 0.0,
-            })
-            from patsy import dmatrix
-            design_info = result.model.data.orig_exog.design_info
-            X_grid = np.asarray(dmatrix(design_info, grid))
-            pred = X_grid @ fe_params
-            se_pred = np.sqrt(np.maximum(np.diag(X_grid @ fe_cov @ X_grid.T), 0))
-            for i, c in enumerate(original_contrast_levels):
-                pred_rows.append({
-                    'contrast': c,
-                    'side': side_label,
-                    'reward': reward_label,
-                    'predicted': float(pred[i]),
-                    'ci_lower': float(pred[i] - 1.96 * se_pred[i]),
-                    'ci_upper': float(pred[i] + 1.96 * se_pred[i]),
-                })
-    lmm_result.predictions = pd.DataFrame(pred_rows)
+    lmm_result.predictions = compute_predictions(
+        lmm_result, original_contrasts.unique())
 
     return lmm_result
 
@@ -2022,6 +1993,65 @@ def fit_ceiling_lmm(df: pd.DataFrame, response_col: str) -> 'LMMResult | None':
     formula = f'{response_col} ~ C(contrast) * side * reward'
     return fit_lmm(formula, df, groups=df['subject'], re_formula='1',
                     reml=True)
+
+
+def compute_predictions(lmm_result, contrast_levels):
+    """Compute fixed-effects predictions on a contrast grid from an LMM fit.
+
+    For each (side, reward) cell of the deviation-coded design, predicts the
+    fixed-effects mean at every contrast level and its 95% CI from the
+    fixed-effects covariance. Mirrors the grid ``fit_response_lmm`` used to
+    build internally, lifted into a standalone downstream function.
+
+    Parameters
+    ----------
+    lmm_result : LMMResult
+        Output from ``fit_response_lmm`` (deviation-coded model).
+    contrast_levels : sequence of float
+        Original (untransformed) contrast levels from the data. Transformed and
+        centered with the model's contrast coding before prediction.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: contrast, side, reward, predicted, ci_lower, ci_upper.
+    """
+    from patsy import dmatrix
+
+    result = lmm_result.result
+    fe_names = list(result.fe_params.index)
+    fe_params = result.fe_params.values
+    fe_cov = result.cov_params().loc[fe_names, fe_names].values
+
+    _transform, _ = get_contrast_coding(lmm_result.contrast_coding)
+    cc = lmm_result.contrast_col
+    contrast_center = lmm_result.contrast_center
+    design_info = result.model.data.orig_exog.design_info
+
+    contrast_levels = sorted(contrast_levels)
+    rows = []
+    for side_label, side_val in [('contra', 0.5), ('ipsi', -0.5)]:
+        for reward_label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
+            grid = pd.DataFrame({
+                cc: _transform(contrast_levels) - contrast_center,
+                'side': side_val,
+                'reward': reward_val,
+            })
+            X_grid = np.asarray(dmatrix(design_info, grid))
+            pred = X_grid @ fe_params
+            se_pred = np.sqrt(np.maximum(np.diag(X_grid @ fe_cov @ X_grid.T), 0))
+            rows.extend(
+                {
+                    'contrast': c,
+                    'side': side_label,
+                    'reward': reward_label,
+                    'predicted': float(pred[i]),
+                    'ci_lower': float(pred[i] - 1.96 * se_pred[i]),
+                    'ci_upper': float(pred[i] + 1.96 * se_pred[i]),
+                }
+                for i, c in enumerate(contrast_levels)
+            )
+    return pd.DataFrame(rows)
 
 
 def compute_marginal_means(lmm_result, factor):

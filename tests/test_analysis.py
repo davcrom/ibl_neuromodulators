@@ -1341,6 +1341,20 @@ class TestFitCeilingLMM:
         assert len(contrast_terms) == 4
 
 
+class TestComputePredictions:
+    """compute_predictions reproduces the prediction grid from a fitted model."""
+
+    def test_reproduces_fit_response_lmm_predictions(self):
+        """Standalone compute_predictions matches fit_response_lmm's inline grid
+        row-for-row."""
+        from iblnm.analysis import fit_response_lmm, compute_predictions
+        df = _make_lmm_data()
+        result = fit_response_lmm(df, 'response')
+        levels = sorted(df['contrast'].unique())
+        predictions = compute_predictions(result, levels)
+        pd.testing.assert_frame_equal(predictions, result.predictions)
+
+
 class TestComputeMarginalMeans:
 
     def test_returns_dataframe(self):
