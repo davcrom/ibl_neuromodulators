@@ -2298,6 +2298,35 @@ class PhotometrySessionGroup:
         df = df.dropna(subset=[response_col])
         return df.query('choice != 0 and response_time > 0.05')
 
+    def _code_lmm_predictors(
+        self, df: pd.DataFrame, contrast_coding: str = 'log2'
+    ) -> pd.DataFrame:
+        """Code the trial frame for LMM fitting; do not mutate the input.
+
+        Returns a copy with ``contrast`` transformed (``contrast_coding``) and
+        mean-centered, and ``side`` / ``reward`` deviation-coded to ±0.5
+        (``side``: contra = +0.5, ipsi = −0.5; ``reward``: ``feedbackType`` 1 =
+        +0.5, −1 = −0.5). ``log_<timing>`` columns are left untouched. Coding a
+        column a given formula does not use is harmless.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Trial-level frame with columns ``contrast``, ``side``, and
+            ``feedbackType``.
+        contrast_coding : str
+            Coding passed to :func:`iblnm.util.get_contrast_coding`.
+        """
+        from iblnm.util import get_contrast_coding
+
+        transform, _ = get_contrast_coding(contrast_coding)
+        df = df.copy()
+        coded = transform(df['contrast'])
+        df['contrast'] = coded - float(np.mean(coded))
+        df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+        df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+        return df
+
     def get_mean_traces(self):
         """Compute trial-averaged traces from the trace cache.
 

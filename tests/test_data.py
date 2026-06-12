@@ -4095,6 +4095,49 @@ class TestModelingFrame:
             assert col in df.columns
 
 
+class TestCodeLmmPredictors:
+
+    def _frame(self):
+        # contrast in percent units (compute_trial_contrasts multiplies by 100);
+        # log2 coding requires nonzero values >= 1.
+        return pd.DataFrame({
+            'contrast': [0.0, 6.25, 100.0],
+            'side': ['contra', 'ipsi', 'contra'],
+            'feedbackType': [1, -1, 1],
+            'log_reaction_time': [-1.5, -0.5, -2.0],
+        })
+
+    def test_side_and_reward_deviation_coded(self):
+        group = _make_group_with_planted_trials()
+        coded = group._code_lmm_predictors(self._frame())
+        assert set(coded['side']) <= {-0.5, 0.5}
+        assert set(coded['reward']) <= {-0.5, 0.5}
+        assert coded['side'].tolist() == [0.5, -0.5, 0.5]
+        assert coded['reward'].tolist() == [0.5, -0.5, 0.5]
+
+    def test_contrast_log2_coded_and_centered(self):
+        group = _make_group_with_planted_trials()
+        coded = group._code_lmm_predictors(self._frame())
+        expected = np.array([0.0, np.log2(6.25), np.log2(100.0)])
+        expected = expected - expected.mean()
+        assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
+        np.testing.assert_allclose(coded['contrast'].values, expected)
+
+    def test_timing_column_unchanged(self):
+        group = _make_group_with_planted_trials()
+        df = self._frame()
+        coded = group._code_lmm_predictors(df)
+        np.testing.assert_array_equal(
+            coded['log_reaction_time'].values, df['log_reaction_time'].values)
+
+    def test_input_frame_not_mutated(self):
+        group = _make_group_with_planted_trials()
+        df = self._frame()
+        before = df.copy(deep=True)
+        group._code_lmm_predictors(df)
+        pd.testing.assert_frame_equal(df, before)
+
+
 # =============================================================================
 # CCA Tests
 # =============================================================================
