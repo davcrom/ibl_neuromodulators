@@ -4195,6 +4195,88 @@ class TestResponseLMMFit:
         assert 'side' in slopes.index
 
 
+class TestResponseLMMEffects:
+
+    def test_coefficients_carry_terms_and_ci(self):
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(['interactions'],
+                               group_by=['target_NM', 'event'])
+        effects = group.response_lmm_effects('interactions', 'coefficients')
+        # One identity-tagged row per fixed-effects term, with CI columns.
+        for col in ('term', 'Coef.', 'ci_lower', 'ci_upper',
+                    'target_NM', 'event'):
+            assert col in effects.columns
+        key = ('response', 'interactions',
+               effects.iloc[0]['target_NM'], effects.iloc[0]['event'])
+        fit = group.lmm_fits[key]
+        row = effects[(effects['target_NM'] == key[2])
+                      & (effects['event'] == key[3])
+                      & (effects['term'] == 'Intercept')].iloc[0]
+        coef = fit.summary_df.loc['Intercept', 'Coef.']
+        se = fit.summary_df.loc['Intercept', 'Std.Err.']
+        assert row['Coef.'] == coef
+        assert row['ci_lower'] == pytest.approx(coef - 1.96 * se)
+        assert row['ci_upper'] == pytest.approx(coef + 1.96 * se)
+
+    def test_emm_matches_direct_call(self):
+        from iblnm.analysis import compute_predictions, compute_marginal_means
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(['interactions'],
+                               group_by=['target_NM', 'event'])
+        effects = group.response_lmm_effects('interactions', 'emm')
+        assert 'factor' in effects.columns
+
+        # Reproduce one group's reward EMMs by a direct call on the cached fit.
+        df = group._modeling_frame()
+        (target_nm, event), df_group = next(
+            iter(df.groupby(['target_NM', 'event'])))
+        fit = group.lmm_fits[('response', 'interactions', target_nm, event)]
+        fit.predictions = compute_predictions(fit, df_group['contrast'].unique())
+        expected = compute_marginal_means(fit, 'reward')
+
+        got = effects[(effects['target_NM'] == target_nm)
+                      & (effects['event'] == event)
+                      & (effects['factor'] == 'reward')]
+        np.testing.assert_allclose(
+            got['mean'].values, expected['mean'].values)
+        np.testing.assert_allclose(
+            got['ci_lower'].values, expected['ci_lower'].values)
+
+    def test_predictions_match_direct_call(self):
+        from iblnm.analysis import compute_predictions
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(['interactions'],
+                               group_by=['target_NM', 'event'])
+        effects = group.response_lmm_effects('interactions', 'predictions')
+
+        df = group._modeling_frame()
+        (target_nm, event), df_group = next(
+            iter(df.groupby(['target_NM', 'event'])))
+        fit = group.lmm_fits[('response', 'interactions', target_nm, event)]
+        expected = compute_predictions(fit, df_group['contrast'].unique())
+
+        got = effects[(effects['target_NM'] == target_nm)
+                      & (effects['event'] == event)]
+        np.testing.assert_allclose(
+            got['predicted'].values, expected['predicted'].values)
+
+    def test_interactions_tagged_with_factor_pair(self):
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(['interactions'],
+                               group_by=['target_NM', 'event'])
+        effects = group.response_lmm_effects('interactions', 'interactions')
+        pairs = set(zip(effects['y_factor'], effects['x_factor']))
+        assert pairs == {('contrast', 'reward'), ('contrast', 'side'),
+                         ('reward', 'side')}
+
+    def test_unknown_kind_raises(self):
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(['interactions'],
+                               group_by=['target_NM', 'event'])
+        with pytest.raises(ValueError, match='kind must be'):
+            group.response_lmm_effects('interactions', 'bogus')
+
+
 # =============================================================================
 # CCA Tests
 # =============================================================================

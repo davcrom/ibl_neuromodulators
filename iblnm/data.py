@@ -1751,6 +1751,7 @@ class PhotometrySessionGroup:
         self.lmm_main_effects_loso = None
         self.lmm_reliability = None
         self.lmm_fits = {}
+        self._lmm_group_by = None
 
     @classmethod
     def from_catalog(cls, catalog, one, h5_dir=None):
@@ -2392,6 +2393,7 @@ class PhotometrySessionGroup:
             ``name``, ``marginal_r2``, and ``conditional_r2``.
         """
         df = self._modeling_frame(response_col)
+        self._lmm_group_by = list(group_by)
 
         rows = []
         for keys, df_group in df.groupby(group_by):
@@ -2419,6 +2421,86 @@ class PhotometrySessionGroup:
 
         return pd.DataFrame(
             rows, columns=[*group_by, 'name', 'marginal_r2', 'conditional_r2'])
+
+    def response_lmm_effects(self, name, kind, response_col='response'):
+        """Extract a tidy effect frame from the cached fits of one named model.
+
+        Reads the ``LMMResult``s cached by :meth:`response_lmm_fit` under
+        ``(response_col, name, *group_values)``, computes the requested effect
+        kind per group, and tags each row with the group identity (the
+        ``group_by`` columns from the originating fit call).
+
+        Parameters
+        ----------
+        name : str
+            Model name whose cached fits to read.
+        kind : str
+            Effect to extract: ``'emm'`` (estimated marginal means per factor),
+            ``'slopes'`` (contrast slopes per reward), ``'interactions'``
+            (two-way interaction effects), ``'predictions'`` (fixed-effects
+            prediction grid), or ``'coefficients'`` (fixed-effects table with
+            ``ci_lower`` / ``ci_upper``).
+        response_col : str
+            Response-magnitude column; selects the registry entries.
+
+        Returns
+        -------
+        pd.DataFrame
+            Long-form effect frame; columns include the ``group_by`` identity
+            columns recovered from the registry keys.
+        """
+        df = self._modeling_frame(response_col)
+
+        frames = []
+        for keys, df_group in df.groupby(self._lmm_group_by):
+            group_values = keys if isinstance(keys, tuple) else (keys,)
+            fit = self.lmm_fits.get((response_col, name, *group_values))
+            if fit is None:
+                continue
+            if kind in ('emm', 'predictions'):
+                fit.predictions = analysis.compute_predictions(
+                    fit, df_group['contrast'].unique())
+            effect = self._extract_lmm_effect(fit, kind)
+            for col, val in zip(self._lmm_group_by, group_values):
+                effect[col] = val
+            frames.append(effect)
+
+        return pd.concat(frames, ignore_index=True) if frames \
+            else pd.DataFrame()
+
+    @staticmethod
+    def _extract_lmm_effect(fit, kind):
+        """Compute one tidy effect frame from a single cached ``LMMResult``.
+
+        Dispatches on ``kind`` to the matching downstream analysis function;
+        ``'emm'`` and ``'interactions'`` stack their sub-frames with a column
+        naming the factor(s). ``'coefficients'`` returns the fixed-effects
+        table with the term as a column and Wald CIs appended.
+        """
+        if kind == 'emm':
+            return pd.concat(
+                [analysis.compute_marginal_means(fit, factor).assign(factor=factor)
+                 for factor in ('reward', 'side', 'contrast')],
+                ignore_index=True)
+        if kind == 'slopes':
+            return analysis.compute_contrast_slopes(fit)
+        if kind == 'interactions':
+            pairs = [('contrast', 'reward'), ('contrast', 'side'),
+                     ('reward', 'side')]
+            return pd.concat(
+                [analysis.compute_interaction_effects(fit, y, x)
+                 .assign(y_factor=y, x_factor=x) for y, x in pairs],
+                ignore_index=True)
+        if kind == 'predictions':
+            return fit.predictions.copy()
+        if kind == 'coefficients':
+            coef = fit.summary_df.copy()
+            coef['ci_lower'] = coef['Coef.'] - 1.96 * coef['Std.Err.']
+            coef['ci_upper'] = coef['Coef.'] + 1.96 * coef['Std.Err.']
+            return coef.rename_axis('term').reset_index()
+        raise ValueError(
+            f"kind must be 'emm', 'slopes', 'interactions', 'predictions', "
+            f"or 'coefficients', got {kind!r}")
 
     def get_mean_traces(self):
         """Compute trial-averaged traces from the trace cache.
