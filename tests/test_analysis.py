@@ -2821,7 +2821,7 @@ class TestLosoCVMovementLMM:
         from unittest.mock import patch
         from iblnm import analysis
         df = _make_movement_lmm_df()
-        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
+        with patch.object(analysis, 'fit_lmm', return_value=None) as mock_fit:
             analysis.loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
         formulas = {call.args[0] for call in mock_fit.call_args_list}
         re_formulas = {call.kwargs['re_formula'] for call in mock_fit.call_args_list}
@@ -2918,7 +2918,7 @@ class TestLosoCVTaskLMM:
         from unittest.mock import patch
         from iblnm import analysis
         df = _make_task_lmm_df()
-        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
+        with patch.object(analysis, 'fit_lmm', return_value=None) as mock_fit:
             analysis.loso_cv_task_lmm(df, 'response')
         formulas = {call.args[0] for call in mock_fit.call_args_list}
         re_formulas = {call.kwargs['re_formula'] for call in mock_fit.call_args_list}
@@ -3070,7 +3070,7 @@ class TestFitMovementPredictsResponse:
         from unittest.mock import patch
         from iblnm import analysis
         df = _make_movement_lmm_df()
-        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
+        with patch.object(analysis, 'fit_lmm', return_value=None) as mock_fit:
             analysis.fit_movement_predicts_response(
                 df, 'response', 'log_reaction_time')
         assert (mock_fit.call_args.kwargs['re_formula']
@@ -3110,7 +3110,7 @@ class TestFitMovementWithinContrast:
         from unittest.mock import patch
         from iblnm import analysis
         df = _make_movement_lmm_df()
-        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
+        with patch.object(analysis, 'fit_lmm', return_value=None) as mock_fit:
             analysis.fit_movement_within_contrast(
                 df, 'response', 'log_reaction_time')
         formula = mock_fit.call_args.args[0]
@@ -3152,10 +3152,10 @@ class TestFitLMMFailLoud:
     def test_missing_column_propagates(self):
         """A formula referencing a column that does not exist is a coding bug,
         not a numerical failure: it must propagate, not be swallowed as None."""
-        from iblnm.analysis import _fit_lmm
+        from iblnm.analysis import fit_lmm
         df = _make_movement_lmm_df()
         with pytest.raises(Exception):
-            _fit_lmm('response ~ nonexistent_col', df, groups=df['subject'])
+            fit_lmm('response ~ nonexistent_col', df, groups=df['subject'])
 
     def test_singular_fit_returns_none_and_warns(self):
         """A degenerate fit whose lazy BLUP evaluation raises ValueError returns
@@ -3171,7 +3171,7 @@ class TestFitLMMFailLoud:
         with patch.object(analysis, '_variance_explained',
                           side_effect=ValueError('singular covariance')):
             with pytest.warns(UserWarning):
-                result = analysis._fit_lmm(
+                result = analysis.fit_lmm(
                     'response ~ side + reward + log_reaction_time', coded,
                     groups=coded['subject'])
         assert result is None

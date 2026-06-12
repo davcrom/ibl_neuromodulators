@@ -1701,7 +1701,7 @@ class LMMResult:
     random_effects : dict
         Subject → pd.Series of BLUPs.
     predictions : pd.DataFrame or None
-        Model predictions on a design grid (set by callers, not by _fit_lmm).
+        Model predictions on a design grid (set by callers, not by fit_lmm).
     emm_reward : pd.DataFrame or None
         Estimated marginal means for reward factor.
     emm_side : pd.DataFrame or None
@@ -1789,12 +1789,12 @@ def _warn_dropped_fit(formula: str, groups: pd.Series, exc: Exception) -> None:
     """Warn that a singular/degenerate LMM fit was dropped, so the loss of a
     fit from a result set is never silent."""
     warnings.warn(
-        f"_fit_lmm dropped a singular/degenerate fit "
+        f"fit_lmm dropped a singular/degenerate fit "
         f"(formula={formula!r}, groups={groups.name!r}): {exc}"
     )
 
 
-def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
+def fit_lmm(formula, df, groups, re_formula='1', reml=True,
              contrast_coding='log', contrast_center=0.0):
     """Fit a linear mixed-effects model and return an LMMResult.
 
@@ -1939,7 +1939,7 @@ def fit_response_lmm(df, response_col, formula=None, re_formula='1',
     if formula is None:
         formula = f'{response_col} ~ contrast * side * reward'
 
-    lmm_result = _fit_lmm(formula, df, groups=df['subject'],
+    lmm_result = fit_lmm(formula, df, groups=df['subject'],
                            re_formula=re_formula, reml=True,
                            contrast_coding=contrast_coding,
                            contrast_center=contrast_center)
@@ -2020,7 +2020,7 @@ def fit_ceiling_lmm(df: pd.DataFrame, response_col: str) -> 'LMMResult | None':
         return None
 
     formula = f'{response_col} ~ C(contrast) * side * reward'
-    return _fit_lmm(formula, df, groups=df['subject'], re_formula='1',
+    return fit_lmm(formula, df, groups=df['subject'], re_formula='1',
                     reml=True)
 
 
@@ -2412,7 +2412,7 @@ def fit_movement_lmm_r2(df, response_col, timing_col):
         return None
 
     fits = {
-        name: _fit_lmm(formula, df, groups=df['subject'], re_formula='1',
+        name: fit_lmm(formula, df, groups=df['subject'], re_formula='1',
                        reml=False)
         for name, formula in _movement_formulas(response_col, timing_col).items()
     }
@@ -2537,7 +2537,7 @@ def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
         if len(df_test) < 5 or df_train['subject'].nunique() < 2:
             continue
 
-        fits = {name: _fit_lmm(formula, df_train, groups=df_train['subject'],
+        fits = {name: fit_lmm(formula, df_train, groups=df_train['subject'],
                                re_formula='1', reml=False)
                 for name, formula in formulas.items()}
         if any(fit is None for fit in fits.values()):
@@ -2637,7 +2637,7 @@ def loso_cv_task_lmm(df, response_col, contrast_coding='log2', min_subjects=3):
         if len(df_test) < 5 or df_train['subject'].nunique() < 2:
             continue
 
-        fits = {name: _fit_lmm(formula, df_train, groups=df_train['subject'],
+        fits = {name: fit_lmm(formula, df_train, groups=df_train['subject'],
                                re_formula='1', reml=False)
                 for name, formula in formulas.items()}
         if any(fit is None for fit in fits.values()):
@@ -2732,7 +2732,7 @@ def loso_cv_main_effects_lmm(df, response_col, contrast_coding='log2',
             continue
 
         formulas = {'additive': additive, **drop_formulas}
-        fits = {name: _fit_lmm(formula, df_train, groups=df_train['subject'],
+        fits = {name: fit_lmm(formula, df_train, groups=df_train['subject'],
                                re_formula='1', reml=False)
                 for name, formula in formulas.items()}
         if any(fit is None for fit in fits.values()):
@@ -2817,7 +2817,7 @@ def fit_movement_vs_contrast(df, timing_col, min_subjects=2):
     df = _code_movement_predictors(df.dropna(subset=[timing_col]), timing_col)
     if df['subject'].nunique() < min_subjects:
         return _empty_tidy_lmm()
-    lmm = _fit_lmm(f'{timing_col} ~ contrast', df, groups=df['subject'],
+    lmm = fit_lmm(f'{timing_col} ~ contrast', df, groups=df['subject'],
                    re_formula='1 + contrast', reml=True)
     if lmm is None:
         return _empty_tidy_lmm()
@@ -2839,7 +2839,7 @@ def fit_movement_predicts_response(df, response_col, timing_col, min_subjects=2)
     df = df.dropna(subset=[response_col, timing_col]).copy()
     if df['subject'].nunique() < min_subjects:
         return _empty_tidy_lmm()
-    lmm = _fit_lmm(f'{response_col} ~ {timing_col}', df, groups=df['subject'],
+    lmm = fit_lmm(f'{response_col} ~ {timing_col}', df, groups=df['subject'],
                    re_formula=f'1 + {timing_col}', reml=True)
     if lmm is None:
         return _empty_tidy_lmm()
@@ -2866,7 +2866,7 @@ def fit_movement_within_contrast(df, response_col, timing_col, min_subjects=2):
     df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
     df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
     formula = f'{response_col} ~ C(contrast) + {timing_col} + side + reward'
-    lmm = _fit_lmm(formula, df, groups=df['subject'],
+    lmm = fit_lmm(formula, df, groups=df['subject'],
                    re_formula=f'1 + {timing_col}', reml=True)
     if lmm is None:
         return _empty_tidy_lmm()
