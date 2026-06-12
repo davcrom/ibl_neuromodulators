@@ -4138,6 +4138,63 @@ class TestCodeLmmPredictors:
         pd.testing.assert_frame_equal(df, before)
 
 
+def _make_group_for_response_lmm():
+    """``_make_group_with_events`` with percent-unit contrasts.
+
+    ``response_lmm_fit`` codes contrast with the default ``log2`` scheme, which
+    requires percent units (nonzero values >= 1); the shared events fixture uses
+    fractional contrasts. Rescaling the sign-preserving contrast columns leaves
+    ``add_relative_contrast``'s side/relative_contrast derivation unchanged.
+    """
+    group = _make_group_with_events()
+    group.trial_regressors['contrast'] *= 100
+    group.trial_regressors['signed_contrast'] *= 100
+    return group
+
+
+class TestResponseLMMFit:
+
+    def test_caches_fit_and_returns_matching_r2(self):
+        from iblnm.analysis import LMMResult
+        group = _make_group_for_response_lmm()
+        r2 = group.response_lmm_fit(['ceiling'],
+                                    group_by=['target_NM', 'event'])
+        # One registry entry and one R² row per (target_NM, event) group.
+        assert not r2.empty
+        for _, row in r2.iterrows():
+            key = ('response', 'ceiling', row['target_NM'], row['event'])
+            fit = group.lmm_fits[key]
+            assert isinstance(fit, LMMResult)
+            assert row['marginal_r2'] == fit.variance_explained['marginal']
+
+    def test_multiple_names_one_entry_and_row_each(self):
+        group = _make_group_for_response_lmm()
+        names = ['ceiling', 'interactions']
+        r2 = group.response_lmm_fit(names, group_by=['target_NM', 'event'])
+        groups = r2[['target_NM', 'event']].drop_duplicates()
+        # One row per (group, name); one registry entry per (group, name).
+        assert len(r2) == len(groups) * len(names)
+        for _, g in groups.iterrows():
+            for name in names:
+                key = ('response', name, g['target_NM'], g['event'])
+                assert key in group.lmm_fits
+
+    def test_ambiguous_name_raises(self):
+        group = _make_group_for_response_lmm()
+        with pytest.raises(ValueError, match='Ambiguous'):
+            group.response_lmm_fit(['full'],
+                                   group_by=['target_NM', 'event'])
+
+    def test_per_name_re_formula_adds_random_slope(self):
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(['interactions'],
+                               group_by=['target_NM', 'event'],
+                               re_formula={'interactions': '1 + side'})
+        fit = next(iter(group.lmm_fits.values()))
+        slopes = next(iter(fit.random_effects.values()))
+        assert 'side' in slopes.index
+
+
 # =============================================================================
 # CCA Tests
 # =============================================================================

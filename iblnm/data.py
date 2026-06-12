@@ -23,6 +23,7 @@ from iblnm.config import (
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
+    LMM_FORMULAS,
     RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
@@ -31,6 +32,7 @@ from iblnm.analysis import (
     get_responses, compute_response_magnitude, movement_trace,
     per_third_crosscorr, resample_pose, resample_signal,
 )
+from iblnm import analysis
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.validation import (
@@ -1748,6 +1750,7 @@ class PhotometrySessionGroup:
         self.lmm_loso = None
         self.lmm_main_effects_loso = None
         self.lmm_reliability = None
+        self.lmm_fits = {}
 
     @classmethod
     def from_catalog(cls, catalog, one, h5_dir=None):
@@ -2326,6 +2329,96 @@ class PhotometrySessionGroup:
         df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
         df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
         return df
+
+    @staticmethod
+    def _resolve_lmm_formula(name: str) -> str:
+        """Look up a model formula by name across ``config.LMM_FORMULAS``.
+
+        The config groups formulas into comparison sets (``set → {name →
+        formula}``); this resolves a model name to its formula, failing loud if
+        the name is absent or shared by more than one set.
+
+        Raises
+        ------
+        KeyError
+            If no set contains ``name``.
+        ValueError
+            If ``name`` appears in more than one set (ambiguous).
+        """
+        matches = [(model_set, formula)
+                   for model_set, models in LMM_FORMULAS.items()
+                   for model_name, formula in models.items()
+                   if model_name == name]
+        if not matches:
+            raise KeyError(f"No LMM formula named {name!r}")
+        if len(matches) > 1:
+            sets = [model_set for model_set, _ in matches]
+            raise ValueError(
+                f"Ambiguous LMM formula name {name!r}: in sets {sets}")
+        return matches[0][1]
+
+    def response_lmm_fit(self, names, group_by, response_col='response',
+                         reml=True, re_formula='1', min_subjects=2):
+        """Fit named LMMs per ``group_by`` group and cache each fit.
+
+        For every group with at least ``min_subjects`` subjects, codes the
+        trials (:meth:`_code_lmm_predictors`) and fits each model in ``names``
+        via :func:`iblnm.analysis.fit_lmm`. Each fitted ``LMMResult`` is cached
+        in ``self.lmm_fits`` under ``(response_col, name, *group_values)`` for
+        later effect extraction. Scoring is intrinsic: the returned frame
+        carries each fit's in-sample R².
+
+        Parameters
+        ----------
+        names : list[str]
+            Model names resolved against ``config.LMM_FORMULAS``.
+        group_by : list[str]
+            Columns whose unique combinations each get individual fits; their
+            values tag the registry keys and the returned rows.
+        response_col : str
+            Response-magnitude column; also the formula's ``{response}``.
+        reml : bool
+            REML (True) for reporting fits or ML (False) for nested comparisons.
+        re_formula : str or dict[str, str]
+            Random-effects formula, shared across names (str) or per name
+            (dict). Defaults to a random intercept (``'1'``).
+        min_subjects : int
+            Minimum subjects per group to attempt fitting.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per fitted ``(group, name)`` with the ``group_by`` columns,
+            ``name``, ``marginal_r2``, and ``conditional_r2``.
+        """
+        df = self._modeling_frame(response_col)
+
+        rows = []
+        for keys, df_group in df.groupby(group_by):
+            if df_group['subject'].nunique() < min_subjects:
+                continue
+            group_values = keys if isinstance(keys, tuple) else (keys,)
+            df_coded = self._code_lmm_predictors(df_group)
+            for name in names:
+                formula = self._resolve_lmm_formula(name).format(
+                    response=response_col)
+                rf = re_formula[name] if isinstance(re_formula, dict) \
+                    else re_formula
+                fit = analysis.fit_lmm(formula, df_coded,
+                                       groups=df_coded['subject'],
+                                       re_formula=rf, reml=reml)
+                if fit is None:
+                    continue
+                self.lmm_fits[(response_col, name, *group_values)] = fit
+                rows.append({
+                    **dict(zip(group_by, group_values)),
+                    'name': name,
+                    'marginal_r2': fit.variance_explained['marginal'],
+                    'conditional_r2': fit.variance_explained['conditional'],
+                })
+
+        return pd.DataFrame(
+            rows, columns=[*group_by, 'name', 'marginal_r2', 'conditional_r2'])
 
     def get_mean_traces(self):
         """Compute trial-averaged traces from the trace cache.
