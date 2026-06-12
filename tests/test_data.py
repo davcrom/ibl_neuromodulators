@@ -4277,6 +4277,97 @@ class TestResponseLMMEffects:
             group.response_lmm_effects('interactions', 'bogus')
 
 
+class TestResponseLMMResampling:
+
+    def test_crossval_columns_and_matches_direct_call(self):
+        from iblnm.analysis import crossval_lmm
+        from iblnm.config import LMM_FORMULAS
+        group = _make_group_for_response_lmm()
+        result = group.response_lmm_crossval(
+            ['task_interactions'], group_by=['target_NM', 'event'])
+        assert list(result.columns) == [
+            'target_NM', 'event', 'predictor', 'fold', 'n_trials',
+            'r2', 'delta_r2']
+        assert set(result['predictor']) == {'interactions'}
+
+        # Reproduce one group's interactions delta_r2 by a direct call.
+        df = group._modeling_frame()
+        (target_nm, event), df_group = next(
+            iter(df.groupby(['target_NM', 'event'])))
+        df_coded = group._code_lmm_predictors(df_group)
+        formulas = {k: v.format(response='response')
+                    for k, v in LMM_FORMULAS['task_interactions'].items()}
+        expected = crossval_lmm(df_coded, formulas, 'response')
+
+        got = result[(result['target_NM'] == target_nm)
+                     & (result['event'] == event)
+                     & (result['predictor'] == 'interactions')]
+        np.testing.assert_allclose(
+            got['delta_r2'].values,
+            expected[expected['predictor'] == 'interactions']
+            ['delta_r2'].values)
+
+    def test_jackknife_columns_and_matches_direct_call(self):
+        from iblnm.analysis import jackknife_lmm
+        from iblnm.config import LMM_FORMULAS
+        group = _make_group_for_response_lmm()
+        result = group.response_lmm_jackknife(
+            ['task_interactions'], group_by=['target_NM', 'event'])
+        assert list(result.columns) == [
+            'target_NM', 'event', 'predictor', 'fold', 'n_trials',
+            'r2', 'delta_r2']
+
+        # Reproduce one group's interactions delta_r2 by a direct call.
+        df = group._modeling_frame()
+        (target_nm, event), df_group = next(
+            iter(df.groupby(['target_NM', 'event'])))
+        df_coded = group._code_lmm_predictors(df_group)
+        formulas = {k: v.format(response='response')
+                    for k, v in LMM_FORMULAS['task_interactions'].items()}
+        expected = jackknife_lmm(df_coded, formulas, 'response')
+
+        got = result[(result['target_NM'] == target_nm)
+                     & (result['event'] == event)
+                     & (result['predictor'] == 'interactions')]
+        np.testing.assert_allclose(
+            got['delta_r2'].values,
+            expected[expected['predictor'] == 'interactions']
+            ['delta_r2'].values)
+
+    def _movement_group(self):
+        """Events fixture with a varying ``log_reaction_time`` predictor."""
+        group = _make_group_for_response_lmm()
+        reg = group.trial_regressors
+        rng = np.random.default_rng(0)
+        reg['reaction_time'] = rng.uniform(0.1, 2.0, len(reg))
+        reg['log_reaction_time'] = np.log10(reg['reaction_time'])
+        return group
+
+    def test_movement_set_fits_when_trials_sufficient(self):
+        # Baseline: with full timing data, every target contributes rows.
+        group = self._movement_group()
+        result = group.response_lmm_crossval(
+            ['movement_additive_reaction_time'],
+            group_by=['target_NM', 'event'])
+        assert (result['target_NM'] == 'DR-5HT').sum() > 0
+        assert (result['target_NM'] == 'VTA-DA').sum() > 0
+
+    def test_movement_set_below_min_trials_contributes_no_rows(self):
+        # Null out all but a handful of one target's timing values so its
+        # per-group valid-trial count falls below MIN_TRIALS_MOVEMENT (20).
+        group = self._movement_group()
+        reg = group.trial_regressors
+        starved = reg['eid'].str.contains('DR-5HT')
+        idx = reg[starved].index
+        reg.loc[idx[5:], 'log_reaction_time'] = np.nan
+
+        result = group.response_lmm_crossval(
+            ['movement_additive_reaction_time'],
+            group_by=['target_NM', 'event'])
+        assert (result['target_NM'] == 'DR-5HT').sum() == 0
+        assert (result['target_NM'] == 'VTA-DA').sum() > 0
+
+
 # =============================================================================
 # CCA Tests
 # =============================================================================

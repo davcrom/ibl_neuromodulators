@@ -18,12 +18,12 @@ from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_RESPONSE_WINDOW, BASELINE_WINDOW, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
     LP_QC_LABELS,
-    MIN_NTRIALS, MIN_PERFORMANCE, MOTION_ENERGY_EVENT,
+    MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_MOVEMENT, MOTION_ENERGY_EVENT,
     N_UNIQUE_SAMPLES_THRESHOLD,
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
-    LMM_FORMULAS,
+    LMM_FORMULAS, TIMING_VARS,
     RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
@@ -2421,6 +2421,95 @@ class PhotometrySessionGroup:
 
         return pd.DataFrame(
             rows, columns=[*group_by, 'name', 'marginal_r2', 'conditional_r2'])
+
+    def response_lmm_crossval(self, names, group_by, response_col='response',
+                              fold_col='subject', min_subjects=3, min_test=5):
+        """Out-of-sample ΔR² by leave-one-fold-out cross-validation per group.
+        """
+        def procedure(formulas, df_coded):
+            return analysis.crossval_lmm(
+                df_coded, formulas, response_col, fold_col=fold_col,
+                min_subjects=min_subjects, min_test=min_test)
+
+        return self._response_lmm_resample(procedure, names, group_by,
+                                           response_col)
+
+    def response_lmm_jackknife(self, names, group_by, response_col='response',
+                               fold_col='subject', min_subjects=3):
+        """In-sample-influence ΔR² by leave-one-fold-out jackknife per group.
+        """
+        def procedure(formulas, df_coded):
+            return analysis.jackknife_lmm(
+                df_coded, formulas, response_col, fold_col=fold_col,
+                min_subjects=min_subjects)
+
+        return self._response_lmm_resample(procedure, names, group_by,
+                                           response_col)
+
+    def _response_lmm_resample(self, procedure, names, group_by, response_col):
+        """Run a resampling ``procedure`` per ``group_by`` group, per set.
+
+        Shared orchestration for :meth:`response_lmm_crossval` and
+        :meth:`response_lmm_jackknife`: for each model set in ``names``, look up
+        its ``{name: formula}`` dict in ``config.LMM_FORMULAS``, then for each
+        ``group_by`` group code the trials, apply the movement inclusion gate
+        (drop null ``log_<timing>`` rows and skip a group below
+        ``MIN_TRIALS_MOVEMENT`` when the set uses a timing column), call
+        ``procedure(formulas, df_coded)``, tag the long-form result with the
+        group columns, and concatenate.
+
+        Parameters
+        ----------
+        procedure : callable
+            ``(formulas, df_coded) -> pd.DataFrame`` wrapping the analysis-level
+            resampling function with its scoring arguments bound.
+        names : list[str]
+            Model-set names, each a key of ``config.LMM_FORMULAS``.
+        group_by : list[str]
+            Columns whose unique combinations each get an independent run.
+        response_col : str
+            Response-magnitude column; also the formula's ``{response}``.
+
+        Returns
+        -------
+        pd.DataFrame
+            Long-form ΔR² frame with columns ``[*group_by, 'predictor', 'fold',
+            'n_trials', 'r2', 'delta_r2']``.
+        """
+        df = self._modeling_frame(response_col)
+        cols = [*group_by, 'predictor', 'fold', 'n_trials', 'r2', 'delta_r2']
+
+        frames = []
+        for set_name in names:
+            formulas = {name: formula.format(response=response_col)
+                        for name, formula in LMM_FORMULAS[set_name].items()}
+            timing_col = self._movement_timing_col(formulas)
+            for keys, df_group in df.groupby(group_by):
+                group_values = keys if isinstance(keys, tuple) else (keys,)
+                df_coded = self._code_lmm_predictors(df_group)
+                if timing_col is not None:
+                    df_coded = df_coded.dropna(subset=[timing_col])
+                    if len(df_coded) < MIN_TRIALS_MOVEMENT:
+                        continue
+                result = procedure(formulas, df_coded)
+                for col, val in zip(group_by, group_values):
+                    result[col] = val
+                frames.append(result)
+
+        return pd.concat(frames, ignore_index=True)[cols] if frames \
+            else pd.DataFrame(columns=cols)
+
+    @staticmethod
+    def _movement_timing_col(formulas: dict) -> str | None:
+        """Return the ``log_<timing>`` column a formula set uses, or ``None``.
+
+        Detects whether any formula in ``formulas`` references a movement
+        timing predictor (``log_<var>`` for ``var in config.TIMING_VARS``); a
+        set uses at most one. ``None`` marks a non-movement (task) set.
+        """
+        used = [f'log_{var}' for var in TIMING_VARS
+                if any(f'log_{var}' in formula for formula in formulas.values())]
+        return used[0] if used else None
 
     def response_lmm_effects(self, name, kind, response_col='response'):
         """Extract a tidy effect frame from the cached fits of one named model.
