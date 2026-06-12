@@ -3025,6 +3025,61 @@ class TestCrossvalLmm:
                                          'delta_r2']
 
 
+class TestJackknifeLmm:
+    FORMULAS = {
+        'full': 'response ~ contrast * side * reward',
+        'interactions': 'response ~ contrast + side + reward',
+    }
+
+    def test_required_columns(self):
+        from iblnm.analysis import jackknife_lmm, _code_task_predictors
+        coded = _code_task_predictors(_make_task_lmm_df(), 'response', 'log2')
+        result = jackknife_lmm(coded, self.FORMULAS, 'response')
+        assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
+                                         'delta_r2']
+
+    def test_delta_matches_insample_recompute(self):
+        """A fold's delta_r2 equals r2(full) − r2(predictor model) recomputed
+        directly on that fold's N−1 training subset."""
+        from iblnm.analysis import (jackknife_lmm, fit_lmm,
+                                     _code_task_predictors)
+        coded = _code_task_predictors(_make_task_lmm_df(), 'response', 'log2')
+        result = jackknife_lmm(coded, self.FORMULAS, 'response')
+
+        fold = result[result['fold'] != 'aggregate']['fold'].iloc[0]
+        train = coded[coded['subject'] != fold]
+        r2 = {name: fit_lmm(f, train, groups=train['subject'],
+                            re_formula='1', reml=False
+                            ).variance_explained['marginal']
+              for name, f in self.FORMULAS.items()}
+
+        row = result[(result['fold'] == fold)
+                     & (result['predictor'] == 'interactions')].iloc[0]
+        assert row['r2'] == pytest.approx(r2['full'])
+        assert row['delta_r2'] == pytest.approx(r2['full'] - r2['interactions'])
+        assert row['n_trials'] == len(train)
+
+    def test_aggregate_row_per_predictor(self):
+        from iblnm.analysis import jackknife_lmm, _code_task_predictors
+        coded = _code_task_predictors(_make_task_lmm_df(), 'response', 'log2')
+        result = jackknife_lmm(coded, self.FORMULAS, 'response')
+        agg = result[result['fold'] == 'aggregate']
+        assert list(agg['predictor']) == ['interactions']
+        fold_delta = result[(result['fold'] != 'aggregate')
+                            & (result['predictor'] == 'interactions')]['delta_r2']
+        assert agg['delta_r2'].iloc[0] == pytest.approx(fold_delta.mean())
+
+    def test_too_few_subjects_returns_empty(self):
+        from iblnm.analysis import jackknife_lmm, _code_task_predictors
+        coded = _code_task_predictors(_make_task_lmm_df(), 'response', 'log2')
+        coded['subject'] = 's0'
+        result = jackknife_lmm(coded, self.FORMULAS, 'response', min_subjects=3)
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+        assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
+                                         'delta_r2']
+
+
 class TestJackknifeMovementLMM:
     def test_one_row_per_subject(self):
         from iblnm.analysis import jackknife_movement_lmm
