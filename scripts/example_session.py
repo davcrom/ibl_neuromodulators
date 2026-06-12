@@ -24,7 +24,7 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
-    TARGET_FS, WHEEL_FS, FIGURE_DPI, TARGETNM_COLORS,
+    WHEEL_FS, FIGURE_DPI, TARGETNM_COLORS,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -99,8 +99,9 @@ def load_continuous_photometry(eid, brain_region, h5_dir=SESSIONS_H5_DIR):
     """
     h5_path = Path(h5_dir) / f'{eid}.h5'
     with h5py.File(h5_path, 'r') as f:
-        times = f['times'][:]
-        signal = f[f'preprocessed/{brain_region}'][:].astype(np.float64)
+        pp_grp = f[f'photometry/{brain_region}/preprocessed']
+        times = pp_grp['times'][:]
+        signal = pp_grp['signal'][:].astype(np.float64)
     return pd.Series(signal, index=times, name=brain_region)
 
 
