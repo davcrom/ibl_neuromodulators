@@ -16,7 +16,6 @@ from iblnm.config import (
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
 )
-from iblnm.util import get_contrast_coding
 
 
 def _coef_label(term):
@@ -1943,97 +1942,6 @@ def plot_empirical_similarity(target_sim, loso_matrix=None, fig=None):
     return fig
 
 
-def plot_lmm_response(predictions, target_nm, event, fig=None,
-                      window_label=None, df_raw=None, response_col=None,
-                      contrast_coding='log'):
-    """Plot modeled response curves with 95% CI from an LMM fit.
-
-    Layout mirrors ``plot_relative_contrast``: contra (left) and ipsi (right)
-    panels, with correct/incorrect lines from the model predictions.
-
-    Parameters
-    ----------
-    predictions : pd.DataFrame
-        Output from ``fit_response_lmm().predictions`` with columns:
-        contrast, side, reward, predicted, ci_lower, ci_upper.
-    target_nm : str
-        Target neuromodulator label (for title and color).
-    event : str
-        Event name (e.g. 'stimOn_times').
-    fig : plt.Figure, optional
-    window_label : str, optional
-    df_raw : pd.DataFrame, optional
-        Raw trial data for overlay. Must have contrast, side, feedbackType,
-        and ``response_col``.
-    response_col : str, optional
-        Column in df_raw for raw data overlay.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    if fig is None:
-        fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05},
-                              layout='constrained')
-
-    ax_c, ax_i = fig.axes[0], fig.axes[1]
-
-    event_label = event.replace('_times', '')
-    _window = window_label or ''
-    color = TARGETNM_COLORS.get(target_nm, 'black')
-    fig.suptitle(f'{target_nm} — {event_label} ({_window}) [LMM]', fontsize=LABELFONTSIZE)
-
-    _transform, _ = get_contrast_coding(contrast_coding)
-
-    contrasts = sorted(predictions['contrast'].unique())
-    coded_contrasts = _transform(contrasts)
-
-    for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
-        df_side = predictions[predictions['side'] == side]
-
-        for reward, ls, label in ((1, '-', 'correct'), (0, '--', 'incorrect')):
-            df_r = df_side[df_side['reward'] == reward].sort_values('contrast')
-            if len(df_r) == 0:
-                continue
-            xvals = _transform(df_r['contrast'].values)
-            ax.plot(xvals, df_r['predicted'].values,
-                    color=color, linestyle=ls, label=label, marker='o',
-                    markersize=3)
-            ax.fill_between(xvals,
-                            df_r['ci_lower'].values, df_r['ci_upper'].values,
-                            color=color, alpha=0.15)
-
-        # Raw data overlay
-        if df_raw is not None and response_col is not None:
-            raw_side = df_raw[df_raw['side'] == side]
-            for fb, marker in ((1, 'o'), (-1, 's')):
-                raw_fb = raw_side[raw_side['feedbackType'] == fb]
-                if len(raw_fb) == 0:
-                    continue
-                means = raw_fb.groupby('contrast')[response_col].mean()
-                ax.scatter(_transform(means.index), means.values,
-                           color=color, marker=marker, alpha=0.3, s=15,
-                           zorder=0)
-
-        ax.set_xticks(coded_contrasts if len(coded_contrasts) else [])
-        ax.set_xticklabels([f'{c:g}' for c in contrasts])
-        ax.set_xlabel('Contrast')
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-    ax_c.invert_xaxis()
-    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes,
-              fontsize=TICKFONTSIZE)
-    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes,
-              fontsize=TICKFONTSIZE)
-    ax_c.set_ylabel('z-score (modeled)')
-    ax_i.tick_params(left=False)
-    ax_i.spines['left'].set_visible(False)
-    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
-                fontsize=TICKFONTSIZE)
-    ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-    return fig
-
-
 def plot_lmm_variance_explained(r2_df, ax=None):
     """Paired marginal/conditional R² bars per target-NM, for one event.
 
@@ -2269,244 +2177,88 @@ def plot_lmm_interaction(interaction_df, ylabel, title, ax=None):
     return fig
 
 
-def plot_lmm_summary(group, event, fig=None, formula=None):
-    """5-panel LMM summary for one event.
+def _interaction_panel_frame(interaction_df, coef_df, y_factor, x_factor):
+    """One interaction-panel frame for ``plot_lmm_interaction``.
+
+    Selects the ``(y_factor, x_factor)`` rows from the long-form interaction
+    frame and attaches ``p_main`` per target — the y-factor main-effect
+    p-value from the coefficient table (term name equals ``y_factor``, since
+    ``contrast_col`` is ``'contrast'``).
+    """
+    panel = interaction_df[(interaction_df['y_factor'] == y_factor)
+                           & (interaction_df['x_factor'] == x_factor)]
+    p_main = (coef_df[coef_df['term'] == y_factor][['target_NM', 'P>|z|']]
+              .rename(columns={'P>|z|': 'p_main'}))
+    return panel.merge(p_main, on='target_NM', how='left')
+
+
+def plot_lmm_summary(r2_df, coef_df, interaction_df, event, formula=None,
+                     fig=None):
+    """5-panel LMM summary for one event, composed from the modular plotters.
+
+    Thin orchestrator: builds the gridspec and delegates each panel to an
+    ax-injectable plotter, sourcing data from the precomputed effect frames.
+    Each input frame may span several events; all are filtered to ``event``
+    before plotting.
 
     Panels:
-    1. R² (fixed effects and fixed+random) as paired dots per target-NM.
-    2. Contrast × reward interaction plot.
-    3. Contrast × side interaction plot.
-    4. Reward × side interaction plot.
-    5. Coefficient heatmap (targets × terms, color = coefficient, stars = p).
-
-    Interaction panels: each target-NM gets its own x-position with the two
-    levels of the x-factor offset left/right. Dot fill encodes the y-factor
-    main effect significance; connecting line style encodes the interaction
-    significance (solid = p < 0.05, dashed = not).
+    1. Variance explained (R² bars), top-left.
+    2. Coefficient heatmap, top-right.
+    3-5. Contrast × reward, contrast × side, reward × side interactions
+       (bottom row).
 
     Parameters
     ----------
-    group : PhotometrySessionGroup
-        Must have ``lmm_results`` populated (via ``fit_lmm``).
+    r2_df : pd.DataFrame
+        ``response_lmm_fit`` output for one model: ``target_NM``, ``event``,
+        ``marginal_r2``, ``conditional_r2``.
+    coef_df : pd.DataFrame
+        ``response_lmm_effects(name, 'coefficients')``: ``term``,
+        ``target_NM``, ``event``, ``Coef.``, ``P>|z|``.
+    interaction_df : pd.DataFrame
+        ``response_lmm_effects(name, 'interactions')``: ``target_NM``,
+        ``event``, ``y_factor``, ``x_factor``, ``x_level``, ``effect``,
+        ``ci_lower``, ``ci_upper``, ``p_interaction``.
     event : str
-        Event label to plot (e.g. 'stimOn').
-    fig : plt.Figure, optional
-    formula : str or None
+        Event to plot; selects rows from each frame.
+    formula : str, optional
         Base-model formula; annotated under the title when given.
+    fig : plt.Figure, optional
 
     Returns
     -------
     plt.Figure
     """
-    lmm_results = group.lmm_results
-
     if fig is None:
         fig = plt.figure(figsize=(14, 8), layout='constrained')
-        gs = fig.add_gridspec(2, 6)
-        axes = [
-            fig.add_subplot(gs[0, :2]),   # R²
-            fig.add_subplot(gs[0, 2:]),   # coefficient heatmap
-            fig.add_subplot(gs[1, :2]),   # contrast × reward
-            fig.add_subplot(gs[1, 2:4]),  # contrast × side
-            fig.add_subplot(gs[1, 4:]),   # reward × side
-        ]
-    else:
-        axes = fig.axes[:5]
+    gs = fig.add_gridspec(2, 6)
+    ax_r2 = fig.add_subplot(gs[0, :2])
+    ax_hm = fig.add_subplot(gs[0, 2:])
+    ax_cr = fig.add_subplot(gs[1, :2])
+    ax_cs = fig.add_subplot(gs[1, 2:4])
+    ax_rs = fig.add_subplot(gs[1, 4:])
 
-    ax_r2 = axes[0]
+    r2_event = r2_df[r2_df['event'] == event]
+    coef_event = coef_df[coef_df['event'] == event]
+    interaction_event = interaction_df[interaction_df['event'] == event]
 
-    targets = sorted(
-        set(tnm for (tnm, ev) in lmm_results if ev == event),
-        key=lambda x: TARGETNM2POSITION.get(x, 999),
-    )
+    plot_lmm_variance_explained(r2_event, ax=ax_r2)
+    plot_lmm_coefficient_heatmap(coef_event, ax=ax_hm)
 
-    # --- Panel 1: R² side-by-side bars ---
-    bar_w = 0.35
-    for i, tnm in enumerate(targets):
-        key = (tnm, event)
-        if key not in lmm_results:
-            continue
-        ve = lmm_results[key].variance_explained
-        color = TARGETNM_COLORS.get(tnm, f'C{i}')
-        ax_r2.bar(i - bar_w / 2, ve['marginal'], width=bar_w,
-                  color=color, alpha=0.5, label='Fixed' if i == 0 else '')
-        ax_r2.bar(i + bar_w / 2, ve['conditional'], width=bar_w,
-                  color=color, alpha=1.0, label='Fixed + random' if i == 0 else '')
-
-    ax_r2.set_xticks(range(len(targets)))
-    ax_r2.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
-    ax_r2.set_ylabel('R²')
-    ax_r2.set_ylim(0, 0.35)
-    ax_r2.set_title('Variance explained')
-    ax_r2.legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
-
-    # --- Panels 2–4: Interaction plots ---
-    _interaction_specs = [
-        # (ax_idx, attr, y_label, title, x_labels, y_main_coef)
-        # 'contrast' is resolved to lmm.contrast_col inside the loop
-        (2, 'interaction_contrast_reward', 'Contrast slope',
-         'Contrast × reward',
-         {'incorrect': 'incorrect', 'correct': 'correct'},
-         'contrast'),
-        (3, 'interaction_contrast_side', 'Contrast slope',
-         'Contrast × side',
-         {'contra': 'contra', 'ipsi': 'ipsi'},
-         'contrast'),
-        (4, 'interaction_reward_side', 'Reward effect',
-         'Reward × side',
-         {'contra': 'contra', 'ipsi': 'ipsi'},
-         'reward'),
+    panels = [
+        (ax_cr, 'contrast', 'reward', 'Contrast slope', 'Contrast × reward'),
+        (ax_cs, 'contrast', 'side', 'Contrast slope', 'Contrast × side'),
+        (ax_rs, 'reward', 'side', 'Reward effect', 'Reward × side'),
     ]
+    for ax, y_factor, x_factor, ylabel, title in panels:
+        panel_df = _interaction_panel_frame(
+            interaction_event, coef_event, y_factor, x_factor)
+        plot_lmm_interaction(panel_df, ylabel, title, ax=ax)
 
-    for ax_idx, attr, ylabel, title, x_labels, y_coef in \
-            _interaction_specs:
-        ax = axes[ax_idx]
-        for i, tnm in enumerate(targets):
-            key = (tnm, event)
-            if key not in lmm_results:
-                continue
-            lmm = lmm_results[key]
-            idf = getattr(lmm, attr, None)
-            if idf is None:
-                continue
-            color = TARGETNM_COLORS.get(tnm, f'C{i}')
-
-            # Resolve 'contrast' sentinel to actual column name
-            coef_name = lmm.contrast_col if y_coef == 'contrast' else y_coef
-            # Dot fill: y-factor main effect significance
-            y_sig = (coef_name in lmm.summary_df.index
-                     and lmm.summary_df.loc[coef_name, 'P>|z|'] < 0.05)
-            fs = 'full' if y_sig else 'none'
-
-            # Line style: interaction significance (from interaction DataFrame)
-            int_sig = idf['p_interaction'].iloc[0] < 0.05
-            ls = '-' if int_sig else '--'
-
-            x_levels = idf['x_level'].values
-            effects = idf['effect'].values
-            ci_lo = idf['ci_lower'].values
-            ci_hi = idf['ci_upper'].values
-
-            # Position: each target at its own x, two levels offset
-            x_center = i
-            dx = 0.15
-            x_pos = [x_center - dx, x_center + dx]
-
-            for j in range(len(x_levels)):
-                ax.errorbar(
-                    x_pos[j], effects[j],
-                    yerr=[[effects[j] - ci_lo[j]], [ci_hi[j] - effects[j]]],
-                    fmt='o', capsize=4, color=color, markersize=6,
-                    zorder=3, fillstyle=fs,
-                )
-            ax.plot(x_pos, effects, color=color, ls=ls, lw=1.5, zorder=2)
-
-        # X-axis: label each target position with target name,
-        # and add level labels as a secondary indication
-        ax.set_xticks(range(len(targets)))
-        ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-        # Add level labels inside the plot, at the bottom
-        if targets:
-            level_names = list(x_labels.values())
-            dx = 0.15
-            for j, name in enumerate(level_names):
-                x_pos = -dx if j == 0 else dx
-                ax.annotate(
-                    name, xy=(x_pos, 0.02), xycoords=('data', 'axes fraction'),
-                    fontsize=TICKFONTSIZE, ha='center', va='bottom', color='k',
-                    rotation=90,
-                )
-
-    # Legend on interaction panels
-    target_handles = [
-        Line2D([0], [0], marker='o', color=TARGETNM_COLORS.get(t, f'C{i}'),
-               ls='none', markersize=5)
-        for i, t in enumerate(targets)
-    ]
-    encoding_handles = [
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
-               fillstyle='full'),
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
-               fillstyle='none'),
-        Line2D([0], [0], color='gray', ls='-', lw=1.2),
-        Line2D([0], [0], color='gray', ls='--', lw=1.2),
-    ]
-    encoding_labels = ['main effect p<0.05', 'main effect n.s.',
-                       'interaction p<0.05', 'interaction n.s.']
-    axes[4].legend(
-        target_handles + encoding_handles,
-        targets + encoding_labels,
-        frameon=False, fontsize=LABELFONTSIZE, loc='upper left',
-        bbox_to_anchor=(1, 1),
-    )
-
-    # --- Panel 2 (top right): Coefficient heatmap ---
-    ax_hm = axes[1]
-    # Detect contrast column from the first available result
-    _first_lmm = next(v for (tnm, ev), v in lmm_results.items()
-                       if ev == event)
-    _cc = _first_lmm.contrast_col
-    _term_order = [
-        _cc, 'side', 'reward',
-        f'{_cc}:side', f'{_cc}:reward',
-        'side:reward', f'{_cc}:side:reward',
-    ]
-
-    # Collect coefficients for this event
-    present_terms = []
-    for term in _term_order:
-        for tnm in targets:
-            key = (tnm, event)
-            if key in lmm_results and term in lmm_results[key].summary_df.index:
-                present_terms.append(term)
-                break
-
-    if present_terms:
-        coef_matrix = np.full((len(targets), len(present_terms)), np.nan)
-        pval_matrix = np.ones((len(targets), len(present_terms)))
-        for i, tnm in enumerate(targets):
-            key = (tnm, event)
-            if key not in lmm_results:
-                continue
-            sdf = lmm_results[key].summary_df
-            for j, term in enumerate(present_terms):
-                if term in sdf.index:
-                    coef_matrix[i, j] = sdf.loc[term, 'Coef.']
-                    pval_matrix[i, j] = sdf.loc[term, 'P>|z|']
-
-        vmax = np.nanmax(np.abs(coef_matrix))
-
-        im = ax_hm.imshow(coef_matrix, aspect='auto', cmap='RdBu_r',
-                           vmin=-vmax, vmax=vmax)
-        for i in range(len(targets)):
-            for j in range(len(present_terms)):
-                stars = _pval_to_stars(pval_matrix[i, j])
-                if stars:
-                    ax_hm.text(
-                        j, i, stars, ha='center', va='center',
-                        fontsize=TICKFONTSIZE, fontweight='bold',
-                        color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
-                        else 'w')
-
-        col_labels = [_coef_label(t) for t in present_terms]
-        ax_hm.set_xticks(range(len(col_labels)))
-        ax_hm.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=TICKFONTSIZE)
-        ax_hm.set_yticks(range(len(targets)))
-        ax_hm.set_yticklabels(targets, fontsize=TICKFONTSIZE)
-        ax_hm.set_title('Coefficients')
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
-        divider = make_axes_locatable(ax_hm)
-        cax = divider.append_axes('right', size='5%', pad=0.08)
-        fig.colorbar(im, cax=cax, label='β')
-
-    title = f'LMM summary — {event}'
+    suptitle = f'LMM summary — {event}'
     if formula is not None:
-        title += f'\n{formula}'
-    fig.suptitle(title, fontsize=LABELFONTSIZE)
+        suptitle += f'\n{formula}'
+    fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
     return fig
 
 

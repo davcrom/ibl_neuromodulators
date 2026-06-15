@@ -715,66 +715,10 @@ class TestPlotEmpiricalSimilarity:
 # =============================================================================
 
 
-def _make_lmm_predictions():
-    """Synthetic LMM predictions DataFrame for testing."""
-    contrasts = [0.0, 0.0625, 0.125, 0.25, 1.0]
-    rows = []
-    for side in ['contra', 'ipsi']:
-        for reward in [0, 1]:
-            for c in contrasts:
-                rows.append({
-                    'contrast': c,
-                    'side': side,
-                    'reward': reward,
-                    'predicted': np.log(c + 0.01) * 0.5 + 0.3 * (reward == 1),
-                    'ci_lower': np.log(c + 0.01) * 0.5 - 0.2,
-                    'ci_upper': np.log(c + 0.01) * 0.5 + 0.2,
-                })
-    return pd.DataFrame(rows)
-
-
-class TestPlotLMMResponse:
-
-    def test_returns_figure(self):
-        from iblnm.vis import plot_lmm_response
-        predictions = _make_lmm_predictions()
-        fig = plot_lmm_response(predictions, 'VTA-DA', 'stimOn_times')
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_has_two_panels(self):
-        from iblnm.vis import plot_lmm_response
-        predictions = _make_lmm_predictions()
-        fig = plot_lmm_response(predictions, 'VTA-DA', 'stimOn_times')
-        assert len(fig.axes) == 2
-        plt.close(fig)
-
-    def test_correct_incorrect_lines(self):
-        """Each panel should have 2 lines (correct + incorrect)."""
-        from iblnm.vis import plot_lmm_response
-        predictions = _make_lmm_predictions()
-        fig = plot_lmm_response(predictions, 'VTA-DA', 'stimOn_times')
-        for ax in fig.axes:
-            lines = ax.get_lines()
-            assert len(lines) >= 2
-        plt.close(fig)
-
-    def test_with_raw_data_overlay(self):
-        """When raw data is provided, it should be overlaid."""
-        from iblnm.vis import plot_lmm_response
-        rng = np.random.default_rng(0)
-        n = 100
-        raw = pd.DataFrame({
-            'contrast': rng.choice([0.0, 0.0625, 0.125, 0.25, 1.0], n),
-            'side': rng.choice(['contra', 'ipsi'], n),
-            'feedbackType': rng.choice([1, -1], n),
-            'response': rng.normal(0, 1, n),
-        })
-        predictions = _make_lmm_predictions()
-        fig = plot_lmm_response(predictions, 'VTA-DA', 'stimOn_times',
-                                df_raw=raw, response_col='response')
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+def test_plot_lmm_response_removed():
+    """plot_lmm_response (prediction-curve plotter) is deleted, unused."""
+    import iblnm.vis as vis
+    assert not hasattr(vis, 'plot_lmm_response')
 
 
 class TestPlotLMMVarianceExplained:
@@ -933,157 +877,125 @@ class TestPlotLMMInteraction:
 # =============================================================================
 
 class TestPlotLMMSummary:
+    """Orchestrator fed the precomputed effect frames, for one event."""
 
     @staticmethod
-    def _make_mock_group():
-        """Mock group with lmm_results for the 4-panel summary."""
-        from types import SimpleNamespace
-        from iblnm.analysis import LMMResult
+    def _r2_df():
+        """``response_lmm_fit`` R² frame: two targets, two events."""
+        return pd.DataFrame({
+            'target_NM': ['VTA-DA', 'DR-5HT', 'VTA-DA', 'DR-5HT'],
+            'event': ['stimOn', 'stimOn', 'feedback', 'feedback'],
+            'name': 'task_full',
+            'marginal_r2': [0.15, 0.08, 0.10, 0.05],
+            'conditional_r2': [0.35, 0.22, 0.30, 0.18],
+        })
 
-        def _make_summary(pvals):
-            """Minimal summary_df with p-values for significance markers."""
-            terms = [
-                'Intercept', 'reward', 'side',
-                'contrast',
-                'side:reward', 'contrast:side',
-                'contrast:reward', 'contrast:side:reward',
-            ]
-            return pd.DataFrame({
-                'Coef.': [1.0, 0.3, 0.2, 0.5, -0.1, 0.05, 0.15, 0.02],
-                'P>|z|': pvals,
-            }, index=terms)
+    @staticmethod
+    def _coef_df():
+        """``response_lmm_effects(..., 'coefficients')``: terms × targets.
 
-        def _make_interaction_df(x_levels, effects, p_interaction=0.5):
-            return pd.DataFrame({
-                'x_level': x_levels,
-                'effect': effects,
-                'ci_lower': [e - 0.2 for e in effects],
-                'ci_upper': [e + 0.2 for e in effects],
-                'p_interaction': p_interaction,
-            })
+        VTA-DA contrast main effect significant; DR-5HT not. Both contrast×side
+        interactions non-significant.
+        """
+        terms = ['Intercept', 'contrast', 'side', 'reward',
+                 'contrast:reward', 'contrast:side', 'side:reward']
+        vta_p = [1e-10, 1e-10, 0.2, 0.001, 0.03, 0.3, 0.001]
+        dr_p = [1e-10, 0.06, 0.8, 0.15, 0.9, 0.7, 0.5]
+        rows = []
+        for tnm, pvals in (('VTA-DA', vta_p), ('DR-5HT', dr_p)):
+            for term, p in zip(terms, pvals):
+                rows.append({'term': term, 'target_NM': tnm, 'event': 'stimOn',
+                             'Coef.': 0.3, 'P>|z|': p})
+        return pd.DataFrame(rows)
 
-        def _make_result(ve_m, ve_c, pvals):
-            r = LMMResult(
-                model=None, result=None,
-                summary_df=_make_summary(pvals),
-                variance_explained={'marginal': ve_m, 'conditional': ve_c},
-                random_effects={},
-            )
-            # pvals[6] = contrast:reward, pvals[5] = contrast:side,
-            # pvals[4] = side:reward
-            r.interaction_contrast_reward = _make_interaction_df(
-                ['incorrect', 'correct'], [0.3, 0.5], p_interaction=pvals[6])
-            r.interaction_contrast_side = _make_interaction_df(
-                ['contra', 'ipsi'], [0.4, 0.2], p_interaction=pvals[5])
-            r.interaction_reward_side = _make_interaction_df(
-                ['contra', 'ipsi'], [0.6, 0.3], p_interaction=pvals[4])
-            return r
+    @staticmethod
+    def _interaction_df():
+        """``response_lmm_effects(..., 'interactions')``: three pairs × targets.
 
-        group = SimpleNamespace()
-        # VTA-DA: contrast sig, reward sig, contrast:reward sig,
-        #   contrast:side not sig, reward:side sig
-        vta_pvals = [0.001, 0.001, 0.03, 1e-10, 0.001, 0.3, 0.001, 0.2]
-        # DR-5HT: nothing significant except intercept
-        dr_pvals = [0.001, 0.15, 0.8, 0.06, 0.5, 0.7, 0.9, 0.4]
-        group.lmm_results = {
-            ('VTA-DA', 'stimOn'): _make_result(0.15, 0.35, vta_pvals),
-            ('DR-5HT', 'stimOn'): _make_result(0.08, 0.22, dr_pvals),
-        }
-        group.lmm_coefficients = None  # triggers local vmax fallback
-        return group
+        contrast×reward and reward×side significant for VTA-DA; contrast×side
+        non-significant for both.
+        """
+        pairs = [
+            ('contrast', 'reward', ['incorrect', 'correct'],
+             {'VTA-DA': 0.03, 'DR-5HT': 0.9}),
+            ('contrast', 'side', ['contra', 'ipsi'],
+             {'VTA-DA': 0.3, 'DR-5HT': 0.7}),
+            ('reward', 'side', ['contra', 'ipsi'],
+             {'VTA-DA': 0.001, 'DR-5HT': 0.5}),
+        ]
+        rows = []
+        for y_factor, x_factor, x_levels, p_int in pairs:
+            for tnm in ('VTA-DA', 'DR-5HT'):
+                for i, x_level in enumerate(x_levels):
+                    eff = 0.3 + 0.1 * i
+                    rows.append({
+                        'target_NM': tnm, 'event': 'stimOn',
+                        'y_factor': y_factor, 'x_factor': x_factor,
+                        'x_level': x_level, 'effect': eff,
+                        'ci_lower': eff - 0.2, 'ci_upper': eff + 0.2,
+                        'p_interaction': p_int[tnm],
+                    })
+        return pd.DataFrame(rows)
+
+    def _summary(self, **kwargs):
+        from iblnm.vis import plot_lmm_summary
+        return plot_lmm_summary(self._r2_df(), self._coef_df(),
+                                self._interaction_df(), 'stimOn', **kwargs)
 
     def test_returns_figure(self):
-        from iblnm.vis import plot_lmm_summary
-        group = self._make_mock_group()
-        fig = plot_lmm_summary(group, 'stimOn')
+        fig = self._summary()
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_has_five_panels(self):
-        from iblnm.vis import plot_lmm_summary
-        group = self._make_mock_group()
-        fig = plot_lmm_summary(group, 'stimOn')
+        fig = self._summary()
         # 5 content panels + 1 colorbar = 6 axes
         assert len(fig.axes) >= 5
         plt.close(fig)
 
-    def test_r2_panel_has_bars(self):
-        """R² panel should use side-by-side bars (two patches per target)."""
-        from iblnm.vis import plot_lmm_summary
-        group = self._make_mock_group()
-        fig = plot_lmm_summary(group, 'stimOn')
+    def test_r2_panel_bars_match_input(self):
+        """R² panel: two bars per target, heights from the R² frame."""
+        fig = self._summary()
         ax_r2 = fig.axes[0]
-        # 2 targets × 2 bars each = 4 patches
-        patches = [p for p in ax_r2.patches if p.get_width() > 0]
-        assert len(patches) == 4, f"Expected 4 bars, got {len(patches)}"
-        plt.close(fig)
-
-    def test_interaction_panels_have_errorbars(self):
-        """Bottom row (axes[2:5]) should have errorbars."""
-        from iblnm.vis import plot_lmm_summary
-        group = self._make_mock_group()
-        fig = plot_lmm_summary(group, 'stimOn')
-        for ax in fig.axes[2:5]:
-            assert len(ax.containers) > 0 or len(ax.collections) > 0
-        plt.close(fig)
-
-    def test_nonsig_main_effect_markers_are_open(self):
-        """Dot fill encodes the y-factor main effect significance."""
-        from iblnm.vis import plot_lmm_summary
-        group = self._make_mock_group()
-        fig = plot_lmm_summary(group, 'stimOn')
-        # axes[2] = contrast×reward — y-factor is contrast
-        # VTA-DA has contrast p=1e-10 (sig, filled)
-        # DR-5HT has contrast p=0.06 (not sig, open)
-        ax = fig.axes[2]
-        fillstyles = set()
-        for container in ax.containers:
-            fillstyles.add(container[0].get_fillstyle())
-        assert 'none' in fillstyles, "Expected open markers for non-sig main effect"
-        assert 'full' in fillstyles, "Expected filled markers for sig main effect"
-        plt.close(fig)
-
-    def test_nonsig_interaction_line_is_dashed(self):
-        """Line style encodes the interaction significance."""
-        from iblnm.vis import plot_lmm_summary
-        group = self._make_mock_group()
-        fig = plot_lmm_summary(group, 'stimOn')
-        # axes[3] = contrast×side — interaction is contrast:side
-        # VTA-DA p=0.3 (not sig → dashed), DR-5HT p=0.7 (not sig → dashed)
-        ax = fig.axes[3]
-        linestyles = set()
-        for line in ax.lines:
-            ls = line.get_linestyle()
-            if ls != 'None' and ls != '':
-                linestyles.add(ls)
-        assert '--' in linestyles or (0, (5, 5)) in linestyles, \
-            "Expected dashed lines for non-sig interactions"
+        heights = sorted(round(p.get_height(), 3) for p in ax_r2.patches
+                         if p.get_width() > 0)
+        # stimOn rows only: VTA (0.15, 0.35), DR (0.08, 0.22)
+        assert heights == sorted([0.15, 0.35, 0.08, 0.22])
         plt.close(fig)
 
     def test_heatmap_panel_present(self):
-        """Heatmap should be in the top row (second panel, axes[1])."""
-        from iblnm.vis import plot_lmm_summary
-        group = self._make_mock_group()
-        fig = plot_lmm_summary(group, 'stimOn')
-        ax_hm = fig.axes[1]
-        assert len(ax_hm.images) > 0, "Expected heatmap image in top row (axes[1])"
+        """Coefficient heatmap is the top-right panel (axes[1])."""
+        fig = self._summary()
+        assert len(fig.axes[1].images) > 0
         plt.close(fig)
 
-    def test_interaction_panels_in_bottom_row(self):
-        """Three interaction plots should be in the bottom row (axes[2:5])."""
-        from iblnm.vis import plot_lmm_summary
-        group = self._make_mock_group()
-        fig = plot_lmm_summary(group, 'stimOn')
+    def test_interaction_panels_have_errorbars(self):
+        """Bottom row (axes[2:5]) has errorbar containers."""
+        fig = self._summary()
         for ax in fig.axes[2:5]:
-            assert len(ax.containers) > 0 or len(ax.collections) > 0
+            assert len(ax.containers) > 0
+        plt.close(fig)
+
+    def test_main_effect_significance_sets_marker_fill(self):
+        """Contrast×reward panel (axes[2]): VTA contrast sig (filled),
+        DR not (open) — p_main merged from the coefficient frame."""
+        fig = self._summary()
+        fills = {c[0].get_fillstyle() for c in fig.axes[2].containers}
+        assert fills == {'full', 'none'}
+        plt.close(fig)
+
+    def test_nonsig_interaction_line_is_dashed(self):
+        """Contrast×side panel (axes[3]): both interactions n.s. → dashed."""
+        fig = self._summary()
+        styles = {line.get_linestyle() for line in fig.axes[3].lines
+                  if len(line.get_xdata()) == 2}
+        assert styles == {'--'}
         plt.close(fig)
 
     def test_summary_annotates_formula(self):
-        """A formula passed in is rendered in the figure title (#7)."""
-        from iblnm.vis import plot_lmm_summary
-        group = self._make_mock_group()
+        """A formula passed in is rendered in the figure title."""
         formula = 'response ~ contrast * side * reward'
-        fig = plot_lmm_summary(group, 'stimOn', formula=formula)
+        fig = self._summary(formula=formula)
         assert formula in fig._suptitle.get_text()
         plt.close(fig)
 
