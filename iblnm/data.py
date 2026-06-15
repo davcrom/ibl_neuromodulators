@@ -19,13 +19,17 @@ from iblnm.config import (
     EVENT_COMPLETENESS_THRESHOLD,
     LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, N_UNIQUE_SAMPLES_THRESHOLD,
+    POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
     RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     TARGET_FS, TRIAL_COLUMNS, WHEEL_FS,
 )
-from iblnm.analysis import get_responses, compute_response_magnitude
+from iblnm.analysis import (
+    get_responses, compute_response_magnitude, movement_trace,
+    per_third_crosscorr,
+)
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.validation import (
@@ -1406,7 +1410,25 @@ class PhotometrySession(PhotometrySessionLoader):
         ``config.POSE_MEASURES`` and stores them on ``self.pose_traces`` as a
         DataArray with dims ``(bodypart, trial, time)``.
         """
-        pass
+        traces = {}
+        for label, (event, keypoints, reduction) in POSE_MEASURES.items():
+            signal = pd.Series(
+                movement_trace(self.pose, keypoints, reduction),
+                index=self.pose_times,
+            )
+            traces[label], tpts = get_responses(
+                signal, self.trials[event].values,
+                t0=RESPONSE_WINDOW[0], t1=RESPONSE_WINDOW[1],
+            )
+        self.pose_traces = xr.DataArray(
+            np.stack([traces[label] for label in POSE_MEASURES]),
+            dims=['bodypart', 'trial', 'time'],
+            coords={
+                'bodypart': list(POSE_MEASURES),
+                'trial': self.trials.index.to_numpy(),
+                'time': tpts,
+            },
+        )
 
     def extract_paw_wheel_xcorr(self):
         """Compute the per-third paw–wheel cross-correlation timing diagnostic.

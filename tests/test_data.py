@@ -1548,6 +1548,47 @@ class TestPoseMethods:
         with pytest.raises(MissingLP):
             ps.load_pose()
 
+    def _make_pose_session(self, mock_session_series, fs=30, dur=60.0,
+                           tongue_like=(0.2, 0.9)):
+        """PhotometrySession with injected synthetic pose + camera times + trials."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        t = np.arange(0, dur, 1 / fs)
+        n = t.size
+        ramp = np.arange(n, dtype=float)
+        ones = np.ones(n)
+        ps.pose = pd.DataFrame({
+            'paw_l_x': ramp * 3.0, 'paw_l_y': ramp * 4.0, 'paw_l_likelihood': ones,
+            'paw_r_x': ramp * 6.0, 'paw_r_y': ramp * 8.0, 'paw_r_likelihood': ones,
+            'nose_tip_x': ramp, 'nose_tip_y': ramp, 'nose_tip_likelihood': ones,
+            'tongue_end_l_x': ramp, 'tongue_end_l_y': ramp,
+            'tongue_end_l_likelihood': np.full(n, tongue_like[0]),
+            'tongue_end_r_x': ramp, 'tongue_end_r_y': ramp,
+            'tongue_end_r_likelihood': np.full(n, tongue_like[1]),
+        })
+        ps.pose_times = t
+        ps.trials = pd.DataFrame({
+            'firstMovement_times': [10.0, 20.0, 30.0],
+            'feedback_times': [12.0, 22.0, 32.0],
+        })
+        return ps
+
+    def test_extract_movement_traces_shapes_and_labels(self, mock_session_series):
+        """Four bodypart traces with (n_trials, n_time) matrices keyed by label."""
+        from iblnm.config import POSE_MEASURES
+        ps = self._make_pose_session(mock_session_series, fs=30)
+        ps.extract_movement_traces()
+        assert set(ps.pose_traces.coords['bodypart'].values) == set(POSE_MEASURES)
+        assert ps.pose_traces.sizes == {'bodypart': 4, 'trial': 3, 'time': 60}
+
+    def test_extract_movement_traces_tongue_likelihood_is_max(self, mock_session_series):
+        """tongue_likelihood trace equals the per-frame max of the two tips."""
+        ps = self._make_pose_session(mock_session_series, tongue_like=(0.2, 0.9))
+        ps.extract_movement_traces()
+        tongue = ps.pose_traces.sel(bodypart='tongue_likelihood').values
+        np.testing.assert_allclose(tongue, 0.9)
+
 
 # =============================================================================
 # Task Performance Method Tests
