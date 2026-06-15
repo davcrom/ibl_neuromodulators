@@ -263,6 +263,39 @@ class TestComputeResponseMagnitude:
         np.testing.assert_allclose(result, 4.0)
 
 
+class TestKeypointSpeed:
+    def test_constant_velocity(self):
+        """Constant-velocity keypoint yields constant speed after the first frame."""
+        from iblnm.analysis import keypoint_speed
+        x = np.arange(10, dtype=float) * 3.0
+        y = np.arange(10, dtype=float) * 4.0
+        likelihood = np.ones(10)
+        speed = keypoint_speed(x, y, likelihood, threshold=0.9)
+        assert speed.shape == x.shape
+        assert np.isnan(speed[0])
+        np.testing.assert_allclose(speed[1:], 5.0)
+
+    def test_low_likelihood_frames_nan(self):
+        """Frames with likelihood below threshold are set to NaN."""
+        from iblnm.analysis import keypoint_speed
+        x = np.arange(10, dtype=float) * 3.0
+        y = np.arange(10, dtype=float) * 4.0
+        likelihood = np.ones(10)
+        likelihood[[3, 7]] = 0.5
+        speed = keypoint_speed(x, y, likelihood, threshold=0.9)
+        assert np.isnan(speed[[3, 7]]).all()
+        np.testing.assert_allclose(speed[[1, 2, 4, 5, 6, 8, 9]], 5.0)
+
+    def test_zero_likelihood_all_nan(self):
+        """A keypoint tracked with zero likelihood is NaN at every frame."""
+        from iblnm.analysis import keypoint_speed
+        x = np.arange(10, dtype=float) * 3.0
+        y = np.arange(10, dtype=float) * 4.0
+        likelihood = np.zeros(10)
+        speed = keypoint_speed(x, y, likelihood, threshold=0.9)
+        assert np.isnan(speed).all()
+
+
 class TestResampleSignal:
     def test_uniform_output(self):
         """Output timestamps should be exactly uniform at target_fs."""

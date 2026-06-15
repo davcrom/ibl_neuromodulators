@@ -4,7 +4,12 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from iblnm.config import TARGET_FS
+from iblnm.config import (
+    TARGET_FS,
+    LIKELIHOOD_THRESHOLD,
+    MOVEMENT_RESPONSE_WINDOW,
+    BASELINE_WINDOW,
+)
 from iblnm.util import get_contrast_coding
 
 
@@ -130,6 +135,29 @@ def compute_response_magnitude(response, tpts, window):
     i0 = np.searchsorted(tpts, window[0])
     i1 = np.searchsorted(tpts, window[1])
     return np.nanmean(response[..., i0:i1], axis=-1)
+
+
+def keypoint_speed(x, y, likelihood, threshold=LIKELIHOOD_THRESHOLD):
+    """Frame-to-frame keypoint speed, gated by tracking likelihood.
+
+    Parameters
+    ----------
+    x, y : 1D array
+        Keypoint pixel coordinates per frame.
+    likelihood : 1D array
+        Per-frame tracking confidence, same length as x and y.
+    threshold : float
+        Frames with likelihood below this are set to NaN.
+
+    Returns
+    -------
+    speed : 1D array
+        Directionless frame-to-frame displacement magnitude, same length as the
+        input. The first frame is NaN (no preceding frame to difference).
+    """
+    speed = np.concatenate(([np.nan], np.hypot(np.diff(x), np.diff(y))))
+    speed[likelihood < threshold] = np.nan
+    return speed
 
 
 def normalize_responses(responses, tpts, bwin=(-0.1, 0), divide=True):
