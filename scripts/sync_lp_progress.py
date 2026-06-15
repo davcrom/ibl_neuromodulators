@@ -12,7 +12,17 @@ import sys
 
 import pandas as pd
 
-from iblnm.config import VIDEO_FPATH, LP_SESSIONS_FPATH
+from iblnm.config import VIDEO_FPATH, LP_SESSIONS_FPATH, POSE_FPATH
+
+
+def merge_pose(df_video: pd.DataFrame, df_pose: pd.DataFrame) -> pd.DataFrame:
+    """Left-join the pose roll-up onto the video table, keyed by ``eid``.
+
+    Adds every non-``eid`` column from ``df_pose``; video eids with no pose
+    row get NaN in those columns. Returns one row per ``df_video`` eid.
+    """
+    pose_cols = [c for c in df_pose.columns if c != 'eid']
+    return df_video.merge(df_pose[['eid'] + pose_cols], on='eid', how='left')
 
 
 if __name__ == "__main__":
@@ -39,6 +49,15 @@ if __name__ == "__main__":
     else:
         print(f"  Adding {len(lp_only_cols)} LP columns: {lp_only_cols}")
         df_out = df_video.merge(df_lp[['eid'] + lp_only_cols], on='eid', how='left')
+
+    # Merge the pose roll-up, if it exists
+    if POSE_FPATH.exists():
+        print(f"Loading pose roll-up from {POSE_FPATH}")
+        df_pose = pd.read_parquet(POSE_FPATH)
+        print(f"  {len(df_pose)} sessions, columns: {[c for c in df_pose.columns if c != 'eid']}")
+        df_out = merge_pose(df_out, df_pose)
+    else:
+        print(f"No pose roll-up at {POSE_FPATH}, skipping pose merge.")
 
     # Save as CSV (video.pqt is left untouched)
     output_fpath = VIDEO_FPATH.with_suffix('.csv')
