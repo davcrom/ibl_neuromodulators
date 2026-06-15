@@ -1451,6 +1451,83 @@ class TestSaveLoadH5:
         reloaded = session.photometry['GCaMP_preprocessed']['VTA'].values
         np.testing.assert_allclose(reloaded, original, rtol=1e-10)
 
+    def _make_video_session(self, mock_session_series, qc_lp='NOT_SET',
+                            qc_movement='NOT_SET'):
+        """PhotometrySession carrying synthetic pose traces + cross-correlation."""
+        import xarray as xr
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        n_trial, n_time = 4, 20
+        bodyparts = ['paw', 'nose', 'tongue_speed', 'tongue_likelihood']
+        rng = np.random.default_rng(0)
+        ps.pose_traces = xr.DataArray(
+            rng.standard_normal((len(bodyparts), n_trial, n_time)),
+            dims=['bodypart', 'trial', 'time'],
+            coords={
+                'bodypart': bodyparts,
+                'trial': np.arange(n_trial),
+                'time': np.linspace(-1, 1, n_time),
+            },
+        )
+        n_lags = 11
+        ps.pose_xcorr = {
+            'functions': rng.standard_normal((3, n_lags)),
+            'lags': np.linspace(-5, 5, n_lags),
+            'peak_lags': np.array([0.1, 0.2, 0.4]),
+            'drift': 0.3,
+        }
+        ps.qc_lp = qc_lp
+        ps.qc_movement = qc_movement
+        return ps
+
+    def test_save_load_video_roundtrip(self, mock_session_series, tmp_path):
+        """video group round-trips traces, cross-correlation, and QC labels."""
+        from iblnm.data import PhotometrySession
+        ps = self._make_video_session(mock_session_series, qc_lp='FAIL',
+                                      qc_movement='WARNING')
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['video'])
+
+        ps2 = PhotometrySession(mock_session_series, one=MagicMock(),
+                                load_data=False)
+        ps2.load_h5(fpath, groups=['video'])
+
+        assert (set(ps2.pose_traces.coords['bodypart'].values)
+                == set(ps.pose_traces.coords['bodypart'].values))
+        for bodypart in ps.pose_traces.coords['bodypart'].values:
+            np.testing.assert_allclose(
+                ps2.pose_traces.sel(bodypart=bodypart).values,
+                ps.pose_traces.sel(bodypart=bodypart).values,
+            )
+        np.testing.assert_allclose(ps2.pose_xcorr['functions'],
+                                   ps.pose_xcorr['functions'])
+        np.testing.assert_allclose(ps2.pose_xcorr['lags'], ps.pose_xcorr['lags'])
+        np.testing.assert_allclose(ps2.pose_xcorr['peak_lags'],
+                                   ps.pose_xcorr['peak_lags'])
+        assert ps2.pose_xcorr['drift'] == ps.pose_xcorr['drift']
+        assert ps2.qc_lp == 'FAIL'
+        assert ps2.qc_movement == 'WARNING'
+
+    def test_save_video_preserves_manual_qc(self, mock_session_series, tmp_path):
+        """Re-saving automatic data with no QC on the object keeps prior labels."""
+        from iblnm.data import PhotometrySession
+        ps = self._make_video_session(mock_session_series, qc_lp='FAIL',
+                                      qc_movement='CRITICAL')
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['video'])
+
+        # Fresh session with only automatic data, QC fields left at default.
+        ps_auto = self._make_video_session(mock_session_series)
+        assert ps_auto.qc_lp == 'NOT_SET'
+        ps_auto.save_h5(fpath, groups=['video'])
+
+        ps2 = PhotometrySession(mock_session_series, one=MagicMock(),
+                                load_data=False)
+        ps2.load_h5(fpath, groups=['video'])
+        assert ps2.qc_lp == 'FAIL'
+        assert ps2.qc_movement == 'CRITICAL'
+
 
 # =============================================================================
 # Task Performance Method Tests

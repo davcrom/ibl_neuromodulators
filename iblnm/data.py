@@ -17,6 +17,7 @@ from one.alf.exceptions import ALFObjectNotFound
 from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
+    LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, N_UNIQUE_SAMPLES_THRESHOLD,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
@@ -362,12 +363,110 @@ def _load_photometry(session, h5_file, band):
         session.qc = pd.concat(qc_frames, ignore_index=True)
 
 
+# ----- Video / LightningPose sub-handlers (pure: parent_group + payload) -----
+
+LP_QC_NOT_SET = 'NOT_SET'
+_POSE_TRACES_RESERVED_KEYS = {'times', 'trials'}
+
+
+def _save_pose_traces(parent_group, traces):
+    """Write traces/ subgroup from a DataArray(bodypart, trial, time)."""
+    traces_group = _replace_group(parent_group, 'traces')
+    traces_group.attrs['response_window'] = RESPONSE_WINDOW
+    traces_group.create_dataset('times', data=traces.coords['time'].values)
+    traces_group.create_dataset('trials', data=traces.coords['trial'].values)
+    for bodypart in traces.coords['bodypart'].values:
+        traces_group.create_dataset(
+            bodypart,
+            data=traces.sel(bodypart=bodypart).values.astype(np.float64),
+            compression='gzip', compression_opts=4,
+        )
+
+
+def _load_pose_traces(parent_group):
+    """Read traces/ subgroup into a DataArray(bodypart, trial, time), or None."""
+    if 'traces' not in parent_group:
+        return None
+    traces_group = parent_group['traces']
+    bodyparts = [k for k in traces_group.keys()
+                 if k not in _POSE_TRACES_RESERVED_KEYS]
+    return xr.DataArray(
+        np.stack([traces_group[bp][:].astype(np.float64) for bp in bodyparts]),
+        dims=['bodypart', 'trial', 'time'],
+        coords={
+            'bodypart': bodyparts,
+            'trial': traces_group['trials'][:],
+            'time':  traces_group['times'][:],
+        },
+    )
+
+
+def _save_pose_xcorr(parent_group, xcorr):
+    """Write crosscorr/ subgroup from a dict (functions, lags, peak_lags, drift)."""
+    grp = _replace_group(parent_group, 'crosscorr')
+    grp.create_dataset('functions', data=np.asarray(xcorr['functions'], dtype=np.float64))
+    grp.create_dataset('lags', data=np.asarray(xcorr['lags'], dtype=np.float64))
+    grp.create_dataset('peak_lags', data=np.asarray(xcorr['peak_lags'], dtype=np.float64))
+    grp.attrs['drift'] = xcorr['drift']
+
+
+def _load_pose_xcorr(parent_group):
+    """Read crosscorr/ subgroup into a dict, or None."""
+    if 'crosscorr' not in parent_group:
+        return None
+    grp = parent_group['crosscorr']
+    return {
+        'functions': grp['functions'][:].astype(np.float64),
+        'lags':      grp['lags'][:].astype(np.float64),
+        'peak_lags': grp['peak_lags'][:].astype(np.float64),
+        'drift':     grp.attrs['drift'],
+    }
+
+
+def _read_video_qc(h5_file):
+    """Return existing manual QC label attrs from the video group, if present."""
+    if 'video' not in h5_file:
+        return {}
+    attrs = h5_file['video'].attrs
+    return {label: attrs[label] for label in LP_QC_LABELS if label in attrs}
+
+
+def _save_video(session, h5_file, band):
+    # Read manual labels before _replace_group wipes them, so re-saving
+    # automatic data (extraction --overwrite) never clobbers a manual verdict.
+    preserved_qc = _read_video_qc(h5_file)
+    grp = _replace_group(h5_file, 'video')
+    if session.pose_traces is not None:
+        _save_pose_traces(grp, session.pose_traces)
+    if session.pose_xcorr is not None:
+        _save_pose_xcorr(grp, session.pose_xcorr)
+    for label in LP_QC_LABELS:
+        value = getattr(session, label)
+        if value in (None, LP_QC_NOT_SET):
+            value = preserved_qc.get(label, LP_QC_NOT_SET)
+        grp.attrs[label] = value
+
+
+def _load_video(session, h5_file, band):
+    if 'video' not in h5_file:
+        return
+    grp = h5_file['video']
+    session.pose_traces = _load_pose_traces(grp)
+    session.pose_xcorr = _load_pose_xcorr(grp)
+    for label in LP_QC_LABELS:
+        if label in grp.attrs:
+            value = grp.attrs[label]
+            setattr(session, label,
+                    value.decode() if isinstance(value, bytes) else value)
+
+
 _SAVE_HANDLERS = {
     'metadata':   _save_metadata,
     'errors':     _save_errors,
     'photometry': _save_photometry,
     'trials':     _save_trials,
     'wheel':      _save_wheel,
+    'video':      _save_video,
 }
 
 _LOAD_HANDLERS = {
@@ -376,6 +475,7 @@ _LOAD_HANDLERS = {
     'photometry': _load_photometry,
     'trials':     _load_trials,
     'wheel':      _load_wheel,
+    'video':      _load_video,
 }
 
 
@@ -435,6 +535,10 @@ class PhotometrySession(PhotometrySessionLoader):
             self.photometry = {}
         self.responses = {}
         self.qc = pd.DataFrame()
+        self.pose_traces = None
+        self.pose_xcorr = None
+        self.qc_lp = LP_QC_NOT_SET
+        self.qc_movement = LP_QC_NOT_SET
         if load_data:
             self.load_trials()
             self.load_photometry()
@@ -936,7 +1040,7 @@ class PhotometrySession(PhotometrySessionLoader):
             Output path. Defaults to SESSIONS_H5_DIR / {eid}.h5.
         groups : sequence of str, optional
             Which data groups to write. Any subset of:
-            'metadata', 'errors', 'photometry', 'trials', 'wheel'.
+            'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video'.
             None auto-detects all available data groups.
         mode : str
             HDF5 file open mode ('a' creates/appends, 'w' truncates).
@@ -959,10 +1063,13 @@ class PhotometrySession(PhotometrySessionLoader):
             or bool(getattr(self, 'responses', None))
             or (getattr(self, 'qc', None) is not None and len(self.qc) > 0)
         )
+        has_video = (self.pose_traces is not None
+                     or self.pose_xcorr is not None)
         return [name for name, available in (
             ('photometry', has_photometry),
             ('trials',     getattr(self, 'trials', None) is not None),
             ('wheel',      getattr(self, 'wheel_velocity', None) is not None),
+            ('video',      has_video),
         ) if available]
 
     def load_h5(self, fpath, groups=None, band='GCaMP_preprocessed'):
@@ -974,7 +1081,7 @@ class PhotometrySession(PhotometrySessionLoader):
             Path to the HDF5 file.
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
-            'metadata', 'errors', 'photometry', 'trials', 'wheel'.
+            'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video'.
             None loads all groups present in the file.
         band : str
             Preprocessed band name used as the key in `self.photometry`
