@@ -228,3 +228,26 @@ def test_session_panels_xcorr_and_performance(cohort_model):
     assert panels.xcorr['functions'].shape == (3, N_LAGS)
     assert panels.xcorr['lags'].shape == (N_LAGS,)
     assert panels.fraction_correct == pytest.approx(0.77)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# build_cohort (launcher glue)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_build_cohort_enriches_with_session_metadata():
+    import scripts.lp_viewer as launcher
+
+    df_pose = pd.DataFrame({'eid': ['a', 'b'], 'paw': [0.1, 0.2]})
+    df_sessions = pd.DataFrame({
+        'eid': ['a', 'b', 'c'],
+        'subject': ['m1', 'm2', 'm3'],
+        'start_time': ['t1', 't2', 't3'],
+        'number': [1, 1, 1],
+        'session_type': ['biased', 'ephys', 'training'],
+    })
+    out = launcher.build_cohort(df_pose, df_sessions)
+    # one row per pose eid, no duplication, only pose sessions kept
+    assert out['eid'].tolist() == ['a', 'b']
+    assert out['paw'].tolist() == [0.1, 0.2]
+    assert out['session_type'].tolist() == ['biased', 'ephys']
+    assert 'subject' in out.columns

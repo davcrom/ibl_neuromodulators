@@ -16,6 +16,8 @@ dependencies = [
     "statsmodels",
     "cca-zoo>=3.0",
     "tqdm",
+    "PyQt5",
+    "opencv-python",
 ]
 
 [project.optional-dependencies]
