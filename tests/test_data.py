@@ -1530,6 +1530,26 @@ class TestSaveLoadH5:
 
 
 # =============================================================================
+# Pose (LightningPose) Method Tests
+# =============================================================================
+
+class TestPoseMethods:
+    """PhotometrySession LP pose loading and extraction."""
+
+    def test_load_pose_missing_raises_missing_lp(self, mock_session_series):
+        """load_pose raises MissingLP when the camera object is absent."""
+        from one.alf.exceptions import ALFObjectNotFound
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import MissingLP
+
+        one = MagicMock()
+        one.load_object.side_effect = ALFObjectNotFound('leftCamera')
+        ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        with pytest.raises(MissingLP):
+            ps.load_pose()
+
+
+# =============================================================================
 # Task Performance Method Tests
 # =============================================================================
 

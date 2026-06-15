@@ -82,6 +82,9 @@ class MissingResponses(Exception):
 class MissingRawData(Exception):
     """Raw dataset not found on Alyx."""
 
+class MissingLP(Exception):
+    """LightningPose output not found for this session's left camera."""
+
 class InsufficientTrials(Exception):
     """Session has too few trials for analysis."""
 

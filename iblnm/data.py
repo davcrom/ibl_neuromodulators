@@ -29,9 +29,10 @@ from iblnm.analysis import get_responses, compute_response_magnitude
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.validation import (
-    MissingExtractedData, MissingRawData, InsufficientTrials, BlockStructureBug,
-    MissingBlockInfo, IncompleteEventTimes, TrialsNotInPhotometryTime,
-    FewUniqueSamples, QCValidationError, AmbiguousRegionMapping,
+    MissingExtractedData, MissingRawData, MissingLP, InsufficientTrials,
+    BlockStructureBug, MissingBlockInfo, IncompleteEventTimes,
+    TrialsNotInPhotometryTime, FewUniqueSamples, QCValidationError,
+    AmbiguousRegionMapping,
 )
 
 
@@ -535,6 +536,8 @@ class PhotometrySession(PhotometrySessionLoader):
             self.photometry = {}
         self.responses = {}
         self.qc = pd.DataFrame()
+        self.pose = None
+        self.pose_times = None
         self.pose_traces = None
         self.pose_xcorr = None
         self.qc_lp = LP_QC_NOT_SET
@@ -1379,6 +1382,39 @@ class PhotometrySession(PhotometrySessionLoader):
         self._wheel_t0_event = t0_event
         self._wheel_t1_event = t1_event
         return self.wheel_velocity
+
+    def load_pose(self):
+        """Load LightningPose keypoint tracking from the left camera.
+
+        Stores the pose DataFrame (columns ``{part}_x``, ``{part}_y``,
+        ``{part}_likelihood``) in ``self.pose`` and the frame times (session
+        clock, seconds) in ``self.pose_times``. Raises ``MissingLP`` when the
+        left-camera pose object is not available, so batch extraction can log
+        and skip.
+        """
+        try:
+            camera = self.one.load_object(self.eid, 'leftCamera', collection='alf')
+        except ALFObjectNotFound:
+            raise MissingLP("leftCamera.lightningPose")
+        self.pose = camera['lightningPose']
+        self.pose_times = np.asarray(camera['times'])
+
+    def extract_movement_traces(self):
+        """Extract per-trial peri-event movement traces for each bodypart.
+
+        Builds one event-locked (trial × time) matrix per entry in
+        ``config.POSE_MEASURES`` and stores them on ``self.pose_traces`` as a
+        DataArray with dims ``(bodypart, trial, time)``.
+        """
+        pass
+
+    def extract_paw_wheel_xcorr(self):
+        """Compute the per-third paw–wheel cross-correlation timing diagnostic.
+
+        Stores ``functions``, ``lags``, ``peak_lags``, and ``drift`` on
+        ``self.pose_xcorr``.
+        """
+        pass
 
     # =========================================================================
     # Response Vector
