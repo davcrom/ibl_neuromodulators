@@ -296,6 +296,60 @@ class TestKeypointSpeed:
         assert np.isnan(speed).all()
 
 
+def _pose_df(**columns):
+    """Build a pose DataFrame from per-keypoint coordinate/likelihood arrays."""
+    return pd.DataFrame(columns)
+
+
+class TestMovementTrace:
+    def test_single_keypoint_speed(self):
+        """reduction='speed' returns the single keypoint's gated speed."""
+        from iblnm.analysis import movement_trace, keypoint_speed
+        x = np.arange(10, dtype=float) * 3.0
+        y = np.arange(10, dtype=float) * 4.0
+        pose = _pose_df(nose_tip_x=x, nose_tip_y=y, nose_tip_likelihood=np.ones(10))
+        trace = movement_trace(pose, ['nose_tip'], 'speed', threshold=0.9)
+        np.testing.assert_array_equal(
+            np.isnan(trace), np.isnan(keypoint_speed(x, y, np.ones(10), 0.9)))
+        np.testing.assert_allclose(trace[1:], 5.0)
+
+    def test_sum_speed_is_nan_aware(self):
+        """sum_speed adds keypoint speeds, ignoring NaN unless all are NaN."""
+        from iblnm.analysis import movement_trace
+        n = 6
+        like_l = np.ones(n)
+        like_r = np.ones(n)
+        like_r[2] = 0.5   # paw_r untracked at frame 2
+        like_l[4] = 0.5   # both untracked at frame 4
+        like_r[4] = 0.5
+        pose = _pose_df(
+            paw_l_x=np.arange(n) * 3.0, paw_l_y=np.arange(n) * 4.0,
+            paw_l_likelihood=like_l,
+            paw_r_x=np.arange(n) * 6.0, paw_r_y=np.arange(n) * 8.0,
+            paw_r_likelihood=like_r,
+        )
+        trace = movement_trace(pose, ['paw_l', 'paw_r'], 'sum_speed', threshold=0.9)
+        assert np.isnan(trace[0])           # first frame: no displacement
+        np.testing.assert_allclose(trace[[1, 3, 5]], 15.0)  # 5 + 10
+        np.testing.assert_allclose(trace[2], 5.0)           # only paw_l valid
+        assert np.isnan(trace[4])           # both untracked
+
+    def test_max_likelihood_is_ungated(self):
+        """max_likelihood is the per-frame max of likelihoods, ignoring threshold."""
+        from iblnm.analysis import movement_trace
+        like_l = np.array([0.1, 0.8, 0.2])
+        like_r = np.array([0.7, 0.3, 0.2])
+        pose = _pose_df(
+            tongue_end_l_x=np.zeros(3), tongue_end_l_y=np.zeros(3),
+            tongue_end_l_likelihood=like_l,
+            tongue_end_r_x=np.zeros(3), tongue_end_r_y=np.zeros(3),
+            tongue_end_r_likelihood=like_r,
+        )
+        trace = movement_trace(pose, ['tongue_end_l', 'tongue_end_r'],
+                               'max_likelihood', threshold=0.9)
+        np.testing.assert_allclose(trace, [0.7, 0.8, 0.2])
+
+
 class TestEventLockedScalar:
     def _step_trace(self, n_trials, baseline_val, response_val):
         tpts = np.linspace(-1, 1, 81)

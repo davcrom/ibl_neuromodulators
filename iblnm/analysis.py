@@ -201,6 +201,43 @@ def event_locked_scalar(trace, tpts, response_window=MOVEMENT_RESPONSE_WINDOW,
     return response - baseline
 
 
+def movement_trace(pose, keypoints, reduction, threshold=LIKELIHOOD_THRESHOLD):
+    """Per-frame movement trace for one bodypart from LightningPose columns.
+
+    Parameters
+    ----------
+    pose : pd.DataFrame
+        LightningPose output with columns ``{part}_x``, ``{part}_y``,
+        ``{part}_likelihood`` for each keypoint.
+    keypoints : list of str
+        Keypoint name(s) to reduce into one trace.
+    reduction : {'speed', 'sum_speed', 'max_likelihood'}
+        - ``speed``/``sum_speed``: NaN-aware sum of per-keypoint
+          likelihood-gated speeds (a frame is NaN only where every keypoint is
+          NaN).
+        - ``max_likelihood``: per-frame max of the keypoints' tracking
+          likelihoods, ungated.
+    threshold : float
+        Likelihood gate for the speed reductions (ignored for ``max_likelihood``).
+
+    Returns
+    -------
+    1D array
+        Per-frame trace, length matching ``pose``.
+    """
+    if reduction == 'max_likelihood':
+        likelihoods = np.column_stack([pose[f'{k}_likelihood'].values
+                                       for k in keypoints])
+        return np.nanmax(likelihoods, axis=1)
+    speeds = np.column_stack([
+        keypoint_speed(pose[f'{k}_x'].values, pose[f'{k}_y'].values,
+                       pose[f'{k}_likelihood'].values, threshold)
+        for k in keypoints])
+    trace = np.nansum(speeds, axis=1)
+    trace[np.isnan(speeds).all(axis=1)] = np.nan
+    return trace
+
+
 def normalized_crosscorr(a, b, fs, lag_window=CROSSCORR_LAG_WINDOW):
     """Normalized cross-correlation of two equal-rate signals over a lag window.
 
