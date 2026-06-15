@@ -815,62 +815,50 @@ class TestPlotLMMVarianceExplained:
 class TestPlotMarginalMeans:
 
     @staticmethod
-    def _make_emm_dict():
-        """EMM results keyed by (target_NM, event)."""
-        return {
-            ('VTA-DA', 'stimOn'): {
-                'reward': pd.DataFrame({
-                    'level': [0, 1],
-                    'mean': [0.5, 0.8],
-                    'ci_lower': [0.3, 0.6],
-                    'ci_upper': [0.7, 1.0],
-                }),
-                'side': pd.DataFrame({
-                    'level': ['contra', 'ipsi'],
-                    'mean': [0.7, 0.6],
-                    'ci_lower': [0.5, 0.4],
-                    'ci_upper': [0.9, 0.8],
-                }),
-            },
-            ('DR-5HT', 'stimOn'): {
-                'reward': pd.DataFrame({
-                    'level': [0, 1],
-                    'mean': [0.2, 0.4],
-                    'ci_lower': [0.0, 0.2],
-                    'ci_upper': [0.4, 0.6],
-                }),
-                'side': pd.DataFrame({
-                    'level': ['contra', 'ipsi'],
-                    'mean': [0.3, 0.3],
-                    'ci_lower': [0.1, 0.1],
-                    'ci_upper': [0.5, 0.5],
-                }),
-            },
-        }
+    def _reward_emm_df():
+        """Long-form EMMs for the reward factor, two target-NMs."""
+        return pd.DataFrame({
+            'target_NM': ['VTA-DA', 'VTA-DA', 'DR-5HT', 'DR-5HT'],
+            'factor': 'reward',
+            'level': ['incorrect', 'correct', 'incorrect', 'correct'],
+            'mean': [0.5, 0.8, 0.2, 0.4],
+            'ci_lower': [0.3, 0.6, 0.0, 0.2],
+            'ci_upper': [0.7, 1.0, 0.4, 0.6],
+        })
 
-    def test_returns_figure(self):
+    def test_returns_figure_when_ax_none(self):
         from iblnm.vis import plot_marginal_means
-        emm_dict = self._make_emm_dict()
-        fig = plot_marginal_means(emm_dict, 'stimOn')
+        fig = plot_marginal_means(self._reward_emm_df())
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_has_two_axes(self):
-        """Should have one axis for reward, one for side."""
+    def test_draws_on_passed_ax_without_new_figure(self):
         from iblnm.vis import plot_marginal_means
-        emm_dict = self._make_emm_dict()
-        fig = plot_marginal_means(emm_dict, 'stimOn')
-        assert len(fig.axes) == 2
+        fig, ax = plt.subplots()
+        existing = set(plt.get_fignums())
+        plot_marginal_means(self._reward_emm_df(), ax=ax)
+        assert len(ax.containers) >= 2  # one errorbar series per target
+        assert set(plt.get_fignums()) == existing
         plt.close(fig)
 
-    def test_lines_per_target(self):
-        """Each axis should have a point/errorbar per target."""
+    def test_marker_y_positions_match_means(self):
         from iblnm.vis import plot_marginal_means
-        emm_dict = self._make_emm_dict()
-        fig = plot_marginal_means(emm_dict, 'stimOn')
-        # Each axis should have lines/containers for 2 targets
-        for ax in fig.axes:
-            assert len(ax.containers) >= 2 or len(ax.lines) >= 2
+        fig, ax = plt.subplots()
+        plot_marginal_means(self._reward_emm_df(), ax=ax)
+        ys = sorted(
+            round(y, 3)
+            for c in ax.containers
+            for y in c[0].get_ydata()
+        )
+        assert ys == sorted([0.5, 0.8, 0.2, 0.4])
+        plt.close(fig)
+
+    def test_xticklabels_are_factor_levels(self):
+        from iblnm.vis import plot_marginal_means
+        fig, ax = plt.subplots()
+        plot_marginal_means(self._reward_emm_df(), ax=ax)
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        assert labels == ['incorrect', 'correct']
         plt.close(fig)
 
 

@@ -2076,71 +2076,49 @@ def plot_lmm_variance_explained(r2_df, ax=None):
     return fig
 
 
-def plot_marginal_means(emm_dict, event, fig=None):
-    """Plot estimated marginal means for reward and side, per target-NM.
+def plot_marginal_means(emm_df, ax=None):
+    """Estimated marginal means for one factor, per target-NM (one event).
+
+    Single-panel, ax-injectable. Each target-NM is an errorbar series across
+    the factor's levels (mean ± 95% CI), slightly offset to avoid overlap.
 
     Parameters
     ----------
-    emm_dict : dict
-        Keys are (target_NM, event_label) tuples. Values are dicts with
-        'reward' and 'side' keys mapping to DataFrames from
-        ``compute_marginal_means`` (columns: level, mean, ci_lower, ci_upper).
-    event : str
-        Event label to filter from emm_dict (e.g. 'stimOn').
-    fig : plt.Figure, optional
+    emm_df : pd.DataFrame
+        EMMs for a single factor and event, columns ``target_NM``, ``factor``,
+        ``level``, ``mean``, ``ci_lower``, ``ci_upper``.
+    ax : plt.Axes, optional
+        Axis to draw into; a new figure is created when None.
 
     Returns
     -------
     plt.Figure
     """
-    # Filter to the requested event
-    targets = []
-    for (tnm, ev), emms in emm_dict.items():
-        if ev == event:
-            targets.append((tnm, emms))
-    targets.sort(key=lambda x: x[0])
-
-    if fig is None:
-        fig, axes = plt.subplots(1, 2, figsize=(8, 4), layout='constrained')
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(4, 4), layout='constrained')
     else:
-        axes = fig.axes[:2]
+        fig = ax.figure
 
-    for ax, factor, level_labels in zip(
-        axes,
-        ['reward', 'side'],
-        [{'0': 'incorrect', '1': 'correct', 0: 'incorrect', 1: 'correct'},
-         {'contra': 'contra', 'ipsi': 'ipsi'}],
-    ):
-        for i, (tnm, emms) in enumerate(targets):
-            emm = emms[factor]
-            color = TARGETNM_COLORS.get(tnm, f'C{i}')
-            levels = emm['level'].values
-            means = emm['mean'].values
-            ci_lo = emm['ci_lower'].values
-            ci_hi = emm['ci_upper'].values
-            yerr = np.array([means - ci_lo, ci_hi - means])
+    targets = sorted(emm_df['target_NM'].unique(),
+                     key=lambda t: TARGETNM2POSITION.get(t, 999))
+    for i, tnm in enumerate(targets):
+        emm = emm_df[emm_df['target_NM'] == tnm]
+        color = TARGETNM_COLORS.get(tnm, f'C{i}')
+        means = emm['mean'].values
+        yerr = np.array([means - emm['ci_lower'].values,
+                         emm['ci_upper'].values - means])
+        x = np.arange(len(means)) + i * 0.05 - 0.025 * len(targets)
+        ax.errorbar(x, means, yerr=yerr, fmt='o', capsize=4, color=color,
+                    label=tnm, markersize=5)
 
-            x = np.arange(len(levels))
-            ax.errorbar(x + i * 0.05 - 0.025 * len(targets),
-                        means, yerr=yerr,
-                        fmt='o', capsize=4, color=color, label=tnm,
-                        markersize=5)
-
-        # X-axis labels
-        if len(targets) > 0:
-            sample_emm = targets[0][1][factor]
-            levels = sample_emm['level'].values
-            x = np.arange(len(levels))
-            ax.set_xticks(x)
-            ax.set_xticklabels([level_labels.get(lvl, str(lvl)) for lvl in levels])
-
-        ax.set_ylabel('z-score (EMM)')
-        ax.set_title(f'Effect of {factor}')
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-    axes[-1].legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
-                    fontsize=TICKFONTSIZE)
-    fig.suptitle(f'Estimated marginal means — {event}', fontsize=LABELFONTSIZE)
+    levels = emm_df[emm_df['target_NM'] == targets[0]]['level'].values
+    ax.set_xticks(range(len(levels)))
+    ax.set_xticklabels([str(lvl) for lvl in levels])
+    ax.set_ylabel('z-score (EMM)')
+    ax.set_title(f"Effect of {emm_df['factor'].iloc[0]}")
+    ax.axhline(0, ls='--', color='gray', lw=0.5)
+    ax.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
+              fontsize=TICKFONTSIZE)
     return fig
 
 
