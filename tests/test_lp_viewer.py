@@ -3,8 +3,11 @@ import h5py
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
+from iblnm.data import _save_pose_traces, _save_pose_xcorr
 from iblnm.lp_viewer import (
+    LPViewerModel,
     apply_label,
     filter_sessions_table,
     frames_in_trial,
@@ -159,3 +162,69 @@ def test_persist_labels_leaves_traces_untouched(video_h5):
 
 def _decode(value):
     return value.decode() if isinstance(value, bytes) else value
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LPViewerModel
+# ─────────────────────────────────────────────────────────────────────────────
+
+BODYPARTS = ['paw', 'nose', 'tongue_speed', 'tongue_likelihood']
+N_TRIALS, N_TIME, N_LAGS = 5, 20, 51
+
+
+@pytest.fixture
+def cohort_model(tmp_path):
+    """An LPViewerModel over a 2-session cohort with one session on disk."""
+    rng = np.random.default_rng(0)
+    tpts = np.linspace(-1.0, 1.0, N_TIME)
+    traces = xr.DataArray(
+        rng.random((len(BODYPARTS), N_TRIALS, N_TIME)),
+        dims=['bodypart', 'trial', 'time'],
+        coords={'bodypart': BODYPARTS, 'trial': np.arange(N_TRIALS), 'time': tpts},
+    )
+    xcorr = {
+        'functions': rng.random((3, N_LAGS)),
+        'lags': np.linspace(-5.0, 5.0, N_LAGS),
+        'peak_lags': np.array([0.1, 0.2, 0.3]),
+        'drift': 0.2,
+    }
+    h5_dir = tmp_path / 'sessions'
+    h5_dir.mkdir()
+    with h5py.File(h5_dir / 'eid1.h5', 'w') as f:
+        grp = f.create_group('video')
+        _save_pose_traces(grp, traces)
+        _save_pose_xcorr(grp, xcorr)
+
+    df_cohort = pd.DataFrame({
+        'eid': ['eid1', 'eid2'],
+        'paw': [0.3, 0.8],
+        'session_type': ['biased', 'ephys'],
+    })
+    df_performance = pd.DataFrame({'eid': ['eid1'], 'fraction_correct': [0.77]})
+    return LPViewerModel(df_cohort, h5_dir, df_performance), traces
+
+
+def test_model_filter_couples_range_and_type(cohort_model):
+    model, _ = cohort_model
+    assert model.filter('paw', (0.0, 0.5), ('biased', 'ephys')) == ['eid1']
+    assert model.filter('paw', (0.0, 1.0), ('ephys',)) == ['eid2']
+
+
+def test_session_panels_trace_shapes(cohort_model):
+    model, traces = cohort_model
+    panels = model.session_panels('eid1')
+    assert set(panels.traces) == set(BODYPARTS)
+    assert panels.times.shape == (N_TIME,)
+    for trace in panels.traces.values():
+        assert trace.shape == (N_TIME,)
+    # paw panel is the trial-mean of the stored paw trace
+    expected = traces.sel(bodypart='paw').mean('trial').values
+    np.testing.assert_allclose(panels.traces['paw'], expected)
+
+
+def test_session_panels_xcorr_and_performance(cohort_model):
+    model, _ = cohort_model
+    panels = model.session_panels('eid1')
+    assert panels.xcorr['functions'].shape == (3, N_LAGS)
+    assert panels.xcorr['lags'].shape == (N_LAGS,)
+    assert panels.fraction_correct == pytest.approx(0.77)
