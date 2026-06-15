@@ -296,6 +296,48 @@ class TestKeypointSpeed:
         assert np.isnan(speed).all()
 
 
+class TestEventLockedScalar:
+    def _step_trace(self, n_trials, baseline_val, response_val):
+        tpts = np.linspace(-1, 1, 81)
+        trace = np.zeros((n_trials, len(tpts)))
+        trace[:, (tpts >= -0.2) & (tpts < 0)] = baseline_val
+        trace[:, (tpts >= 0.1) & (tpts < 0.35)] = response_val
+        return trace, tpts
+
+    def test_known_step(self):
+        """Scalar equals the post-event level minus the baseline level."""
+        from iblnm.analysis import event_locked_scalar
+        trace, tpts = self._step_trace(n_trials=5, baseline_val=2.0, response_val=7.0)
+        scalar = event_locked_scalar(
+            trace, tpts, response_window=(0.1, 0.35),
+            baseline_window=(-0.2, 0), min_valid=1)
+        np.testing.assert_allclose(scalar, 5.0)
+
+    def test_all_nan_window_is_nan(self):
+        """A trial whose response window is all NaN yields a NaN scalar."""
+        from iblnm.analysis import event_locked_scalar
+        trace, tpts = self._step_trace(n_trials=1, baseline_val=2.0, response_val=7.0)
+        trace[:, (tpts >= 0.1) & (tpts < 0.35)] = np.nan
+        scalar = event_locked_scalar(
+            trace, tpts, response_window=(0.1, 0.35),
+            baseline_window=(-0.2, 0), min_valid=1)
+        assert np.isnan(scalar)
+
+    def test_too_few_valid_samples_is_nan(self):
+        """A window with fewer than min_valid finite samples yields NaN."""
+        from iblnm.analysis import event_locked_scalar
+        trace, tpts = self._step_trace(n_trials=1, baseline_val=2.0, response_val=7.0)
+        response_mask = (tpts >= 0.1) & (tpts < 0.35)
+        trace[:, response_mask] = np.nan
+        # Leave only two finite samples in the response window.
+        finite_idx = np.flatnonzero(response_mask)[:2]
+        trace[:, finite_idx] = 7.0
+        scalar = event_locked_scalar(
+            trace, tpts, response_window=(0.1, 0.35),
+            baseline_window=(-0.2, 0), min_valid=5)
+        assert np.isnan(scalar)
+
+
 class TestResampleSignal:
     def test_uniform_output(self):
         """Output timestamps should be exactly uniform at target_fs."""

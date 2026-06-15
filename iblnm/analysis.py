@@ -160,6 +160,44 @@ def keypoint_speed(x, y, likelihood, threshold=LIKELIHOOD_THRESHOLD):
     return speed
 
 
+def _guarded_window_mean(trace, tpts, window, min_valid):
+    """NaN-aware mean over a time window, or NaN if too few valid samples."""
+    i0 = np.searchsorted(tpts, window[0])
+    i1 = np.searchsorted(tpts, window[1])
+    block = trace[..., i0:i1]
+    if np.isfinite(block).sum() < min_valid:
+        return np.nan
+    return np.nanmean(block)
+
+
+def event_locked_scalar(trace, tpts, response_window=MOVEMENT_RESPONSE_WINDOW,
+                        baseline_window=BASELINE_WINDOW, min_valid=1):
+    """Trial-averaged post-minus-pre scalar from an event-locked trace matrix.
+
+    Parameters
+    ----------
+    trace : 2D array, shape (n_trials, n_samples)
+        Event-locked trace as returned by ``get_responses``.
+    tpts : 1D array, shape (n_samples,)
+        Time axis matching the last dimension of ``trace``.
+    response_window, baseline_window : tuple of float
+        (start, end) seconds for the post-event and pre-event windows.
+    min_valid : int
+        Minimum non-NaN samples a window must contain across all trials; a
+        window with fewer is NaN, which propagates to the scalar.
+
+    Returns
+    -------
+    float
+        Mean over ``response_window`` minus mean over ``baseline_window``,
+        pooled over trials and time, NaN-aware. NaN if either window has fewer
+        than ``min_valid`` valid samples.
+    """
+    response = _guarded_window_mean(trace, tpts, response_window, min_valid)
+    baseline = _guarded_window_mean(trace, tpts, baseline_window, min_valid)
+    return response - baseline
+
+
 def normalize_responses(responses, tpts, bwin=(-0.1, 0), divide=True):
     i0, i1 = tpts.searchsorted(bwin)
     bvals = responses[:, i0:i1].mean(axis=1, keepdims=True)
