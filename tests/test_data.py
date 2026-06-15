@@ -1589,6 +1589,47 @@ class TestPoseMethods:
         tongue = ps.pose_traces.sel(bodypart='tongue_likelihood').values
         np.testing.assert_allclose(tongue, 0.9)
 
+    def test_extract_paw_wheel_xcorr_recovers_drift(self, mock_session_series,
+                                                    monkeypatch):
+        """An imposed late-third paw/wheel shift surfaces in pose_xcorr['drift']."""
+        import iblnm.data as data_mod
+        from iblnm.data import PhotometrySession
+        fs, dur, shift = 100, 60.0, 8  # shift in samples
+        t = np.arange(0, dur, 1 / fs)
+        rng = np.random.default_rng(0)
+        freqs = rng.uniform(1.0, 10.0, 40)
+        phases = rng.uniform(0, 2 * np.pi, 40)
+        base = lambda tt: np.sin(2 * np.pi * freqs[:, None] * tt[None, :]
+                                 + phases[:, None]).sum(0)
+        # Wheel speed used by the method is |velocity|, so build both signals
+        # from the same non-negative pattern for a lag-0 match in aligned thirds.
+        wheel_velocity = base(t)
+        # Late third: paw pattern leads the wheel by `shift` samples.
+        paw_eval = np.where(t >= (2 / 3) * dur, t + shift / fs, t)
+        paw_speed = np.abs(base(paw_eval))
+        # Integrate paw speed to x positions so keypoint_speed recovers it.
+        paw_x = np.concatenate([[0.0], np.cumsum(paw_speed[1:])])
+
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        n = t.size
+        ps.pose = pd.DataFrame({
+            'paw_l_x': paw_x, 'paw_l_y': np.zeros(n), 'paw_l_likelihood': np.ones(n),
+            'paw_r_x': np.zeros(n), 'paw_r_y': np.zeros(n),
+            'paw_r_likelihood': np.zeros(n),  # untracked → does not contribute
+        })
+        ps.pose_times = t
+        ps.wheel = pd.DataFrame({'times': t, 'position': np.cumsum(wheel_velocity) / fs,
+                                 'velocity': wheel_velocity})
+        ps.wheel_fs = fs
+
+        # Dense onsets so every third clears the coverage guard.
+        monkeypatch.setattr(data_mod, 'movements',
+                            lambda *a, **k: (np.arange(0, dur, 0.5), None, None, None))
+        ps.extract_paw_wheel_xcorr()
+        np.testing.assert_allclose(ps.pose_xcorr['peak_lags'][0], 0.0, atol=1 / fs)
+        np.testing.assert_allclose(ps.pose_xcorr['drift'], shift / fs, atol=1 / fs)
+
 
 # =============================================================================
 # Task Performance Method Tests

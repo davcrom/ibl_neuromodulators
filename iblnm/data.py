@@ -8,6 +8,7 @@ import pandas as pd
 import xarray as xr
 
 from brainbox.io.one import PhotometrySessionLoader
+from brainbox.behavior.wheel import movements
 from iblphotometry.fpio import from_neurophotometrics_df_to_photometry_df
 from iblphotometry import metrics
 from iblphotometry.qc import qc_signals
@@ -1436,7 +1437,17 @@ class PhotometrySession(PhotometrySessionLoader):
         Stores ``functions``, ``lags``, ``peak_lags``, and ``drift`` on
         ``self.pose_xcorr``.
         """
-        pass
+        paw_speed = movement_trace(self.pose, ['paw_l', 'paw_r'], 'sum_speed')
+        finite = np.isfinite(paw_speed)  # drop untracked frames (NaN speed)
+        onsets = movements(self.wheel['times'].values,
+                           self.wheel['position'].values, freq=self.wheel_fs)[0]
+        functions, lags, peak_lags, drift = per_third_crosscorr(
+            paw_speed[finite], self.pose_times[finite],
+            np.abs(self.wheel['velocity'].values), self.wheel['times'].values,
+            onsets,
+        )
+        self.pose_xcorr = {'functions': functions, 'lags': lags,
+                           'peak_lags': peak_lags, 'drift': drift}
 
     # =========================================================================
     # Response Vector
