@@ -862,6 +862,72 @@ class TestPlotMarginalMeans:
         plt.close(fig)
 
 
+class TestPlotLMMInteraction:
+
+    @staticmethod
+    def _interaction_df(p_main_vta=0.01, p_int_vta=0.01):
+        """Contrast×reward interaction frame, two target-NMs.
+
+        VTA-DA: significant by default. DR-5HT: never significant.
+        """
+        return pd.DataFrame({
+            'target_NM': ['VTA-DA', 'VTA-DA', 'DR-5HT', 'DR-5HT'],
+            'x_level': ['incorrect', 'correct', 'incorrect', 'correct'],
+            'effect': [0.3, 0.5, 0.1, 0.2],
+            'ci_lower': [0.1, 0.3, -0.1, 0.0],
+            'ci_upper': [0.5, 0.7, 0.3, 0.4],
+            'p_interaction': [p_int_vta, p_int_vta, 0.6, 0.6],
+            'p_main': [p_main_vta, p_main_vta, 0.6, 0.6],
+        })
+
+    def test_returns_figure_when_ax_none(self):
+        from iblnm.vis import plot_lmm_interaction
+        fig = plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R')
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_draws_on_passed_ax_without_new_figure(self):
+        from iblnm.vis import plot_lmm_interaction
+        fig, ax = plt.subplots()
+        existing = set(plt.get_fignums())
+        plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R', ax=ax)
+        assert len(ax.containers) >= 2  # one errorbar series per level per target
+        assert len(ax.lines) >= 2  # connecting line per target
+        assert set(plt.get_fignums()) == existing
+        plt.close(fig)
+
+    def test_marker_y_positions_match_effects(self):
+        from iblnm.vis import plot_lmm_interaction
+        fig, ax = plt.subplots()
+        plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R', ax=ax)
+        ys = sorted(
+            round(y, 3)
+            for c in ax.containers
+            for y in c[0].get_ydata()
+        )
+        assert ys == sorted([0.3, 0.5, 0.1, 0.2])
+        plt.close(fig)
+
+    def test_main_effect_significance_sets_marker_fill(self):
+        """VTA-DA main effect significant → filled; DR-5HT n.s. → open."""
+        from iblnm.vis import plot_lmm_interaction
+        fig, ax = plt.subplots()
+        plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R', ax=ax)
+        fills = {c[0].get_fillstyle() for c in ax.containers}
+        assert fills == {'full', 'none'}
+        plt.close(fig)
+
+    def test_interaction_significance_sets_line_style(self):
+        """Significant interaction → solid line; n.s. → dashed."""
+        from iblnm.vis import plot_lmm_interaction
+        fig, ax = plt.subplots()
+        plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R', ax=ax)
+        styles = {line.get_linestyle() for line in ax.lines
+                  if len(line.get_xdata()) == 2}
+        assert '-' in styles and '--' in styles
+        plt.close(fig)
+
+
 # =============================================================================
 # Consolidated LMM Summary Plot Tests
 # =============================================================================

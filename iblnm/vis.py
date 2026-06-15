@@ -2204,6 +2204,71 @@ def plot_lmm_coefficient_heatmap(coef_df, ax=None):
     return fig
 
 
+def plot_lmm_interaction(interaction_df, ylabel, title, ax=None):
+    """One interaction panel: a y-factor effect at each x-factor level, per target.
+
+    Single-panel, ax-injectable. Each target-NM occupies one x-position; the
+    two x-factor levels are offset left/right with errorbars (effect ± 95% CI)
+    joined by a line. Marker fill encodes the y-factor main-effect significance
+    (filled when p < 0.05); line style encodes the interaction significance
+    (solid p < 0.05, dashed otherwise).
+
+    Parameters
+    ----------
+    interaction_df : pd.DataFrame
+        One event, columns ``target_NM``, ``x_level``, ``effect``,
+        ``ci_lower``, ``ci_upper``, ``p_interaction`` (interaction-term p),
+        ``p_main`` (y-factor main-effect p).
+    ylabel, title : str
+        Axis y-label and panel title.
+    ax : plt.Axes, optional
+        Axis to draw into; a new figure is created when None.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(4, 4), layout='constrained')
+    else:
+        fig = ax.figure
+
+    targets = sorted(interaction_df['target_NM'].unique(),
+                     key=lambda t: TARGETNM2POSITION.get(t, 999))
+    dx = 0.15
+    for i, tnm in enumerate(targets):
+        idf = interaction_df[interaction_df['target_NM'] == tnm]
+        color = TARGETNM_COLORS.get(tnm, f'C{i}')
+        fs = 'full' if idf['p_main'].iloc[0] < 0.05 else 'none'
+        ls = '-' if idf['p_interaction'].iloc[0] < 0.05 else '--'
+        effects = idf['effect'].values
+        ci_lo = idf['ci_lower'].values
+        ci_hi = idf['ci_upper'].values
+        x_pos = [i - dx, i + dx]
+        for j in range(len(effects)):
+            ax.errorbar(
+                x_pos[j], effects[j],
+                yerr=[[effects[j] - ci_lo[j]], [ci_hi[j] - effects[j]]],
+                fmt='o', capsize=4, color=color, markersize=6,
+                zorder=3, fillstyle=fs)
+        ax.plot(x_pos, effects, color=color, ls=ls, lw=1.5, zorder=2)
+
+    ax.set_xticks(range(len(targets)))
+    ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.axhline(0, ls='--', color='gray', lw=0.5)
+
+    level_names = interaction_df[
+        interaction_df['target_NM'] == targets[0]]['x_level'].values
+    for j, name in enumerate(level_names):
+        ax.annotate(str(name), xy=(-dx if j == 0 else dx, 0.02),
+                    xycoords=('data', 'axes fraction'),
+                    fontsize=TICKFONTSIZE, ha='center', va='bottom',
+                    color='k', rotation=90)
+    return fig
+
+
 def plot_lmm_summary(group, event, fig=None, formula=None):
     """5-panel LMM summary for one event.
 
