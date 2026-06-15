@@ -1700,13 +1700,13 @@ def _target_legend_handles(targets: Iterable[str]) -> list[Line2D]:
                    color=TARGETNM_COLORS.get(t, 'gray')) for t in targets]
 
 
-def _scatter_loso_folds(ax, x, df_group, color):
-    """Plot one LOSO group at x-position ``x``: per-subject fold ΔR² as small
-    faint markers and the across-fold aggregate as a large black-edged marker."""
-    folds = df_group[df_group['subject'] != 'aggregate']
+def _scatter_folds(ax, x, df_group, color):
+    """Plot one group at x-position ``x``: per-fold ΔR² as small faint markers
+    and the across-fold aggregate as a large black-edged marker."""
+    folds = df_group[df_group['fold'] != 'aggregate']
     ax.scatter(np.full(len(folds), x), folds['delta_r2'], color=color, s=20,
                alpha=0.5, zorder=2)
-    agg = df_group[df_group['subject'] == 'aggregate']
+    agg = df_group[df_group['fold'] == 'aggregate']
     if len(agg):
         ax.scatter(x, agg['delta_r2'].iloc[0], color=color, s=90,
                    edgecolor='k', zorder=3)
@@ -2598,88 +2598,39 @@ def plot_lmm_main_effects(main_effects_df):
     return fig
 
 
-def plot_lmm_loso(loso_df):
-    """LOSO-CV generalizability: ΔR² (full − no-interaction) out of sample.
-
-    One panel per event. Per target-NM, the small markers are the per-held-out-
-    subject ΔR² (positive = interactions help generalize to a new animal) and
-    the large marker is the across-fold aggregate. At 6–11 subjects the CV
-    estimate is noisy and qualitative.
-
-    Parameters
-    ----------
-    loso_df : pd.DataFrame
-        ``fit_lmm`` LOSO rows: ``target_NM``, ``event``, ``subject``,
-        ``delta_r2`` (with a per-group ``subject == 'aggregate'`` row).
-
-    Returns
-    -------
-    plt.Figure
-    """
-    events = _sort_events(loso_df['event'].unique()) if len(loso_df) else []
-    n_panels = max(len(events), 1)
-    fig, axes = plt.subplots(1, n_panels, figsize=(3 * n_panels + 1, 4),
-                             sharey=True, layout='constrained')
-    axes = np.atleast_1d(axes)
-    if len(loso_df) == 0:
-        fig.suptitle('LOSO-CV generalizability (full − no-interaction ΔR²)',
-                     fontsize=LABELFONTSIZE)
-        return fig
-
-    for ax, event in zip(axes, events):
-        df_ev = loso_df[loso_df['event'] == event]
-        targets = sorted(df_ev['target_NM'].unique(),
-                         key=lambda x: TARGETNM2POSITION.get(x, 999))
-        for i, tnm in enumerate(targets):
-            color = TARGETNM_COLORS.get(tnm, f'C{i}')
-            _scatter_loso_folds(ax, i, df_ev[df_ev['target_NM'] == tnm], color)
-        ax.set_xticks(range(len(targets)))
-        ax.set_xticklabels(targets, rotation=45, ha='right',
-                           fontsize=TICKFONTSIZE)
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-        ax.set_title(event)
-    axes[0].set_ylabel('Out-of-sample ΔR² (full − reduced)')
-
-    targets_all = sorted(loso_df['target_NM'].unique(),
-                         key=lambda x: TARGETNM2POSITION.get(x, 999))
-    target_handles = _target_legend_handles(targets_all)
-    role_handles = [
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
-               alpha=0.5),
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=9,
-               markeredgecolor='k'),
-    ]
-    axes[-1].legend(
-        target_handles + role_handles,
-        targets_all + ['per-subject fold', 'across-fold aggregate'],
-        frameon=False, fontsize=TICKFONTSIZE, loc='upper left',
-        bbox_to_anchor=(1, 1))
-    fig.suptitle('LOSO-CV generalizability (full − no-interaction ΔR²)',
-                 fontsize=LABELFONTSIZE)
-    return fig
-
-
-# Order of task terms on the reliability x-axis: main effects, then the
-# omnibus interaction block.
+# Order of recognized task terms on the reliability x-axis: main effects, then
+# the omnibus interaction block. Unrecognized predictors (e.g. movement timing
+# variables) are appended in encounter order.
 _RELIABILITY_TERMS = ['contrast', 'side', 'reward', 'interactions']
 
 
-def plot_lmm_reliability(reliability_df):
-    """Out-of-sample ΔR² per task term — grid of target-NM (rows) × event (cols).
+def _reliability_predictor_order(predictors: Iterable[str]) -> list[str]:
+    """Order predictors: known task terms first (``_RELIABILITY_TERMS``), then
+    any others in encounter order."""
+    present = list(dict.fromkeys(predictors))
+    known = [t for t in _RELIABILITY_TERMS if t in present]
+    others = [p for p in present if p not in _RELIABILITY_TERMS]
+    return known + others
 
-    Each cell shows leave-one-subject-out ΔR² for the four task terms on a
-    common x-axis: the three main effects (R² lost when that term is dropped
-    from the additive model) and the omnibus interaction block (R² gained by
-    the full model over the additive model). Small markers are the per-held-out-
-    subject folds, the large marker is the across-fold mean. Positive = the term
-    helps predict a new animal. Each target-NM row is drawn in its own color and
-    shares a y-axis so terms and events are comparable within an NM.
+
+def plot_lmm_reliability(reliability_df, title):
+    """Out-of-sample ΔR² per predictor — grid of target-NM (rows) × event (cols).
+
+    Each cell shows the per-fold ΔR² for every predictor on a common x-axis.
+    Small faint markers are the per-fold values (e.g. leave-one-subject-out),
+    the large marker is the across-fold aggregate. Positive = the predictor
+    helps predict held-out data. Each target-NM row is drawn in its own color
+    and shares a y-axis so predictors and events are comparable within an NM.
+    Predictor order keeps the recognized task terms (``_RELIABILITY_TERMS``)
+    first and appends any others (e.g. ``log_<var>``) in encounter order.
 
     Parameters
     ----------
     reliability_df : pd.DataFrame
-        ``PhotometrySessionGroup.lmm_reliability`` rows: ``target_NM``,
-        ``event``, ``predictor``, ``subject``, ``delta_r2``.
+        Long-form ΔR² rows: ``target_NM``, ``event``, ``predictor``, ``fold``,
+        ``delta_r2`` (with a per-group ``fold == 'aggregate'`` row).
+    title : str
+        Figure suptitle.
 
     Returns
     -------
@@ -2695,14 +2646,11 @@ def plot_lmm_reliability(reliability_df):
                              sharey='row', layout='constrained',
                              figsize=(2.6 * n_cols + 1, 2.0 * n_rows + 1))
 
-    suptitle = ('Out-of-sample ΔR² (leave-one-subject-out)\n'
-                'main effects: R²(additive) − R²(dropping term);  '
-                'interactions: R²(full) − R²(additive)')
     if not has_data:
-        fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
+        fig.suptitle(title, fontsize=LABELFONTSIZE)
         return fig
 
-    terms = [t for t in _RELIABILITY_TERMS if t in set(reliability_df['predictor'])]
+    terms = _reliability_predictor_order(reliability_df['predictor'])
     for r, target_nm in enumerate(targets):
         color = TARGETNM_COLORS.get(target_nm, 'gray')
         df_t = reliability_df[reliability_df['target_NM'] == target_nm]
@@ -2710,8 +2658,7 @@ def plot_lmm_reliability(reliability_df):
             ax = axes[r, c]
             df_ev = df_t[df_t['event'] == event]
             for x, term in enumerate(terms):
-                _scatter_loso_folds(ax, x, df_ev[df_ev['predictor'] == term],
-                                    color)
+                _scatter_folds(ax, x, df_ev[df_ev['predictor'] == term], color)
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
                 ax.set_title(event)
@@ -2729,9 +2676,9 @@ def plot_lmm_reliability(reliability_df):
         Line2D([0], [0], marker='o', color='gray', ls='none', markersize=9,
                markeredgecolor='k'),
     ]
-    fig.legend(role_handles, ['per-subject fold', 'across-fold aggregate'],
+    fig.legend(role_handles, ['per-fold', 'across-fold aggregate'],
                frameon=False, fontsize=TICKFONTSIZE, loc='upper right')
-    fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
+    fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
 

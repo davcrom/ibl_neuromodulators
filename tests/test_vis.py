@@ -1074,16 +1074,6 @@ class TestPlotLMMSuiteFigures:
              'Coef.': 0.05, 'ci_lower': -0.1, 'ci_upper': 0.2, 'P>|z|': 0.4},
         ])
 
-    def _loso(self):
-        return pd.DataFrame([
-            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'subject': 's0',
-             'delta_r2': 0.02},
-            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'subject': 's1',
-             'delta_r2': -0.01},
-            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'subject': 'aggregate',
-             'delta_r2': 0.005},
-        ])
-
     def test_ceiling_paired_bars_per_target(self):
         """Two bars (marginal, conditional) per target_NM."""
         from iblnm.vis import plot_lmm_ceiling
@@ -1141,72 +1131,84 @@ class TestPlotLMMSuiteFigures:
         assert labels == ['stimOn', 'feedback']
         plt.close(fig)
 
-    def test_loso_aggregate_marker_distinct_from_folds(self):
-        """The aggregate marker is drawn larger than the per-fold markers."""
-        from iblnm.vis import plot_lmm_loso
-        fig = plot_lmm_loso(self._loso())
-        sizes = [c.get_sizes()[0] for c in fig.axes[0].collections
-                 if len(c.get_sizes())]
-        assert max(sizes) > min(sizes)
-        plt.close(fig)
-
-    def test_loso_has_legend(self):
-        """Legend names target-NMs and distinguishes per-subject vs aggregate."""
-        from iblnm.vis import plot_lmm_loso
-        fig = plot_lmm_loso(self._loso())
-        legend = fig.axes[-1].get_legend()
-        assert legend is not None
-        labels = [t.get_text() for t in legend.get_texts()]
-        assert 'VTA-DA' in labels
-        assert any('subject' in label for label in labels)
-        assert any('aggregate' in label for label in labels)
-        plt.close(fig)
-
     def test_suite_plots_handle_empty_frames(self):
         """Each suite plot returns a labelled figure on an empty frame."""
-        from iblnm.vis import (plot_lmm_ceiling, plot_lmm_main_effects,
-                               plot_lmm_loso)
+        from iblnm.vis import plot_lmm_ceiling, plot_lmm_main_effects
         for fn, df in [(plot_lmm_ceiling, self._ceiling()),
-                       (plot_lmm_main_effects, self._main_effects()),
-                       (plot_lmm_loso, self._loso())]:
+                       (plot_lmm_main_effects, self._main_effects())]:
             fig = fn(df.iloc[0:0])
             assert isinstance(fig, plt.Figure)
             assert fig._suptitle is not None
             plt.close(fig)
 
+    def test_plot_lmm_loso_removed(self):
+        """plot_lmm_loso is deleted (subsumed by the interactions predictor)."""
+        import iblnm.vis as vis
+        assert not hasattr(vis, 'plot_lmm_loso')
+
+
+class TestScatterFolds:
+    """Fold-agnostic scatter: per-fold faint markers + large aggregate marker."""
+
+    def _group(self):
+        return pd.DataFrame([
+            {'fold': 's0', 'delta_r2': 0.02},
+            {'fold': 's1', 'delta_r2': -0.01},
+            {'fold': 'aggregate', 'delta_r2': 0.005},
+        ])
+
+    def test_splits_folds_from_aggregate_by_size(self):
+        """Per-fold markers are small, the aggregate marker large."""
+        from iblnm.vis import _scatter_folds
+        fig, ax = plt.subplots()
+        _scatter_folds(ax, 0, self._group(), 'C0')
+        sizes = [c.get_sizes()[0] for c in ax.collections if len(c.get_sizes())]
+        assert max(sizes) > min(sizes)
+        plt.close(fig)
+
+    def test_reads_fold_column(self):
+        """A frame keyed on `subject` (no `fold`) raises."""
+        from iblnm.vis import _scatter_folds
+        fig, ax = plt.subplots()
+        df = pd.DataFrame([{'subject': 's0', 'delta_r2': 0.02}])
+        with pytest.raises(KeyError):
+            _scatter_folds(ax, 0, df, 'C0')
+        plt.close(fig)
+
 
 class TestPlotLmmReliability:
-    """Grid of target-NM (rows) × event (cols), x = task terms."""
+    """Grid of target-NM (rows) × event (cols), x = predictor terms."""
 
-    def _rel(self, targets=('VTA-DA', 'DR-5HT'), events=('feedback', 'stimOn')):
+    def _rel(self, targets=('VTA-DA', 'DR-5HT'), events=('feedback', 'stimOn'),
+             predictors=('contrast', 'side', 'reward', 'interactions')):
         rows = []
         for tnm in targets:
             for event in events:
-                for pred in ['contrast', 'side', 'reward', 'interactions']:
-                    for subj in ['s0', 's1', 'aggregate']:
+                for pred in predictors:
+                    for fold in ['s0', 's1', 'aggregate']:
                         rows.append({
                             'target_NM': tnm, 'event': event, 'predictor': pred,
-                            'subject': subj,
-                            'delta_r2': 0.03 if subj == 'aggregate' else 0.01})
+                            'fold': fold,
+                            'delta_r2': 0.03 if fold == 'aggregate' else 0.01})
         return pd.DataFrame(rows)
 
     def test_grid_rows_targets_cols_events(self):
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel())
+        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
         assert len(fig.axes) == 2 * 2  # 2 targets × 2 events
         plt.close(fig)
 
     def test_event_columns_chronological(self):
         """Top-row panel titles are the events in trial chronology."""
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel())
+        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
         assert [ax.get_title() for ax in fig.axes[:2]] == ['stimOn', 'feedback']
         plt.close(fig)
 
     def test_xticklabels_are_terms_in_order(self):
         """Bottom-row x-axis lists the task terms, main effects then interactions."""
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel())
+        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
         labels = [t.get_text() for t in fig.axes[2].get_xticklabels()]
         assert labels == ['contrast', 'side', 'reward', 'interactions']
         plt.close(fig)
@@ -1214,7 +1216,7 @@ class TestPlotLmmReliability:
     def test_rows_labeled_by_target(self):
         """Each row's leftmost panel is labelled with its target-NM, ordered."""
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel())
+        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
         assert [fig.axes[0].get_ylabel(), fig.axes[2].get_ylabel()] == \
             ['VTA-DA', 'DR-5HT']
         plt.close(fig)
@@ -1223,7 +1225,7 @@ class TestPlotLmmReliability:
         from iblnm.vis import plot_lmm_reliability
         from iblnm.config import TARGETNM_COLORS
         from matplotlib.colors import to_rgba
-        fig = plot_lmm_reliability(self._rel())
+        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
         colors = {tuple(np.round(c.get_facecolor()[0], 5))
                   for c in fig.axes[0].collections if len(c.get_offsets())}
         assert tuple(np.round(to_rgba(TARGETNM_COLORS['VTA-DA']), 5)) in colors
@@ -1231,10 +1233,32 @@ class TestPlotLmmReliability:
 
     def test_aggregate_marker_larger_than_folds(self):
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel())
+        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
         sizes = [c.get_sizes()[0] for c in fig.axes[0].collections
                  if len(c.get_sizes())]
         assert max(sizes) > min(sizes)
+        plt.close(fig)
+
+    def test_title_is_suptitle(self):
+        from iblnm.vis import plot_lmm_reliability
+        fig = plot_lmm_reliability(self._rel(), 'My ΔR² title')
+        assert fig._suptitle.get_text() == 'My ΔR² title'
+        plt.close(fig)
+
+    def test_empty_frame_returns_titled_figure(self):
+        from iblnm.vis import plot_lmm_reliability
+        fig = plot_lmm_reliability(self._rel().iloc[0:0], 'Empty title')
+        assert isinstance(fig, plt.Figure)
+        assert fig._suptitle.get_text() == 'Empty title'
+        plt.close(fig)
+
+    def test_movement_predictors_mapped_to_x(self):
+        """A movement-shaped frame renders and maps its predictors to the x-axis."""
+        from iblnm.vis import plot_lmm_reliability
+        df = self._rel(predictors=('contrast', 'log_reaction_time'))
+        fig = plot_lmm_reliability(df, 'Movement reliability')
+        labels = [t.get_text() for t in fig.axes[2].get_xticklabels()]
+        assert labels == ['contrast', 'log_reaction_time']
         plt.close(fig)
 
 
