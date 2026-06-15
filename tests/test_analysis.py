@@ -370,6 +370,59 @@ class TestNormalizedCrosscorr:
         assert lags.max() == 5.0
 
 
+def _band_limited_signal(times, seed=0, n_components=40):
+    """Smooth, broadband, aperiodic signal evaluable at arbitrary times."""
+    rng = np.random.default_rng(seed)
+    freqs = rng.uniform(1.0, 10.0, n_components)
+    phases = rng.uniform(0, 2 * np.pi, n_components)
+    return np.sin(2 * np.pi * freqs[:, None] * times[None, :]
+                  + phases[:, None]).sum(0)
+
+
+def _synthetic_paw_wheel(shift_s, dur=60.0, late_start=40.0,
+                         fs_paw=60, fs_wheel=100):
+    """Paw (camera rate) and wheel (wheel rate) traces from a shared function.
+
+    Early/mid thirds: paw and wheel are the same function (aligned). Late third:
+    paw is evaluated at ``t + shift_s`` so the paw pattern leads the wheel by
+    ``shift_s`` seconds.
+    """
+    paw_times = np.arange(0, dur, 1 / fs_paw)
+    wheel_times = np.arange(0, dur, 1 / fs_wheel)
+    wheel_speed = _band_limited_signal(wheel_times)
+    paw_eval = np.where(paw_times >= late_start, paw_times + shift_s, paw_times)
+    paw_speed = _band_limited_signal(paw_eval)
+    return paw_speed, paw_times, wheel_speed, wheel_times
+
+
+class TestPerThirdCrosscorr:
+    def test_drift_recovers_imposed_shift(self):
+        """Late-third paw shifted vs early → drift equals the imposed shift."""
+        from iblnm.analysis import per_third_crosscorr
+        shift_s = 0.1
+        paw_speed, paw_times, wheel_speed, wheel_times = _synthetic_paw_wheel(shift_s)
+        onsets = np.arange(0, 60, 1.5)  # ~13 onsets per third, all ≥ 10
+        functions, lags, peak_lags, drift = per_third_crosscorr(
+            paw_speed, paw_times, wheel_speed, wheel_times, onsets,
+            fs=100, lag_window=5, min_onsets=10)
+        assert functions.shape == (3, lags.size)
+        np.testing.assert_allclose(peak_lags[0], 0.0, atol=1 / 100)
+        np.testing.assert_allclose(drift, shift_s, atol=1 / 100)
+
+    def test_low_onset_third_is_nan(self):
+        """A third with fewer than min_onsets onsets → that lag NaN, drift NaN."""
+        from iblnm.analysis import per_third_crosscorr
+        paw_speed, paw_times, wheel_speed, wheel_times = _synthetic_paw_wheel(0.1)
+        # Plenty of onsets in early/mid thirds, only 5 in the late third.
+        onsets = np.concatenate([np.arange(0, 40, 1.0), np.arange(40, 60, 4.0)])
+        functions, lags, peak_lags, drift = per_third_crosscorr(
+            paw_speed, paw_times, wheel_speed, wheel_times, onsets,
+            fs=100, lag_window=5, min_onsets=10)
+        assert np.isnan(peak_lags[2])
+        assert np.isnan(functions[2]).all()
+        assert np.isnan(drift)
+
+
 class TestResampleSignal:
     def test_uniform_output(self):
         """Output timestamps should be exactly uniform at target_fs."""
