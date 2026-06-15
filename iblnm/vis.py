@@ -2155,81 +2155,75 @@ def _pval_to_stars(p):
     return ''
 
 
-def plot_lmm_coefficient_heatmap(df_coefs):
-    """Heatmap of LMM coefficients per event: targets × terms.
+def plot_lmm_coefficient_heatmap(coef_df, ax=None):
+    """Heatmap of LMM coefficients for one event: targets × terms.
 
-    Drops the Intercept term (uninterpretable for firstMovement and feedback
-    due to prior-event contamination of the baseline). Colorbar scale is
-    shared across all events for comparability.
+    Single-panel, ax-injectable. Drops the Intercept term (uninterpretable for
+    firstMovement and feedback due to prior-event contamination of the
+    baseline). Cell colour is the coefficient (diverging ``RdBu_r``, symmetric
+    about zero); asterisks mark significance.
 
     Parameters
     ----------
-    df_coefs : pd.DataFrame
-        LMM coefficients with columns: term, target_NM, event, Coef., P>|z|.
+    coef_df : pd.DataFrame
+        Coefficients for a single event, columns ``term``, ``target_NM``,
+        ``Coef.``, ``P>|z|``.
+    ax : plt.Axes, optional
+        Axis to draw into; a new figure is created when None.
 
     Returns
     -------
-    dict[str, plt.Figure]
-        One figure per event, keyed by event name.
+    plt.Figure
     """
-    df_coefs = df_coefs[df_coefs['term'] != 'Intercept']
+    coef_df = coef_df[coef_df['term'] != 'Intercept']
 
     term_order = [
         'side', 'reward', 'contrast',
         'side:reward', 'contrast:side',
         'contrast:reward', 'contrast:side:reward',
     ]
-
-    events = sorted(df_coefs['event'].unique())
-    targets = sorted(df_coefs['target_NM'].unique(),
+    targets = sorted(coef_df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
+    present_terms = [t for t in term_order if t in coef_df['term'].values]
+    present_terms += sorted(set(coef_df['term']) - set(term_order))
 
-    # Global vmax across all events for shared colorbar scale
-    vmax = df_coefs['Coef.'].abs().max()
-
-    figs = {}
-    for event in events:
-        df_ev = df_coefs[df_coefs['event'] == event]
-        present_terms = [t for t in term_order if t in df_ev['term'].values]
-        present_terms += sorted(set(df_ev['term']) - set(term_order))
-
-        coef_matrix = np.full((len(targets), len(present_terms)), np.nan)
-        pval_matrix = np.ones((len(targets), len(present_terms)))
-        for i, tnm in enumerate(targets):
-            for j, term in enumerate(present_terms):
-                row = df_ev[(df_ev['target_NM'] == tnm)
-                            & (df_ev['term'] == term)]
-                if len(row) == 1:
-                    coef_matrix[i, j] = row['Coef.'].iloc[0]
-                    pval_matrix[i, j] = row['P>|z|'].iloc[0]
-
-        col_labels = [_coef_label(t) for t in present_terms]
-
+    if ax is None:
         fig, ax = plt.subplots(
             figsize=(0.9 * len(present_terms) + 1.5, 0.6 * len(targets) + 1))
-        im = ax.imshow(coef_matrix, aspect='auto', cmap='RdBu_r',
-                        vmin=-vmax, vmax=vmax)
+    else:
+        fig = ax.figure
 
-        # Asterisk annotations
-        for i in range(len(targets)):
-            for j in range(len(present_terms)):
-                stars = _pval_to_stars(pval_matrix[i, j])
-                if stars:
-                    ax.text(j, i, stars, ha='center', va='center',
-                            fontsize=TICKFONTSIZE, fontweight='bold',
-                            color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
-                            else 'w')
+    coef_matrix = np.full((len(targets), len(present_terms)), np.nan)
+    pval_matrix = np.ones((len(targets), len(present_terms)))
+    for i, tnm in enumerate(targets):
+        for j, term in enumerate(present_terms):
+            row = coef_df[(coef_df['target_NM'] == tnm)
+                          & (coef_df['term'] == term)]
+            if len(row) == 1:
+                coef_matrix[i, j] = row['Coef.'].iloc[0]
+                pval_matrix[i, j] = row['P>|z|'].iloc[0]
 
-        ax.set_xticks(range(len(col_labels)))
-        ax.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=TICKFONTSIZE)
-        ax.set_yticks(range(len(targets)))
-        ax.set_yticklabels(targets, fontsize=TICKFONTSIZE)
-        ax.set_title(event, fontsize=LABELFONTSIZE)
-        fig.colorbar(im, ax=ax, label='Coefficient', shrink=0.8)
-        fig.tight_layout()
-        figs[event] = fig
+    vmax = np.nanmax(np.abs(coef_matrix))
+    im = ax.imshow(coef_matrix, aspect='auto', cmap='RdBu_r',
+                   vmin=-vmax, vmax=vmax)
 
-    return figs
+    for i in range(len(targets)):
+        for j in range(len(present_terms)):
+            stars = _pval_to_stars(pval_matrix[i, j])
+            if stars:
+                ax.text(j, i, stars, ha='center', va='center',
+                        fontsize=TICKFONTSIZE, fontweight='bold',
+                        color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
+                        else 'w')
+
+    col_labels = [_coef_label(t) for t in present_terms]
+    ax.set_xticks(range(len(col_labels)))
+    ax.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=TICKFONTSIZE)
+    ax.set_yticks(range(len(targets)))
+    ax.set_yticklabels(targets, fontsize=TICKFONTSIZE)
+    ax.set_title('Coefficients')
+    fig.colorbar(im, ax=ax, label='Coefficient', shrink=0.8)
+    return fig
 
 
 def plot_lmm_summary(group, event, fig=None, formula=None):

@@ -1408,84 +1408,66 @@ class TestPlotResponseDecodingSummary:
 # =============================================================================
 
 
-def _make_lmm_coefficients():
-    """Synthetic LMM coefficients DataFrame matching the real schema."""
-    targets = ['VTA-DA', 'SNc-DA', 'DR-5HT']
-    events = ['stimOn', 'feedback', 'firstMovement']
-    terms = ['Intercept', 'side', 'reward',
-             'contrast', 'contrast:reward']
-    rng = np.random.default_rng(42)
-    rows = []
-    for tnm in targets:
-        for ev in events:
-            for term in terms:
-                rows.append({
-                    'term': term,
-                    'target_NM': tnm,
-                    'event': ev,
-                    'Coef.': rng.normal(0, 0.5),
-                    'Std.Err.': rng.uniform(0.01, 0.1),
-                    'z': rng.normal(0, 3),
-                    'P>|z|': rng.choice([1e-10, 0.0005, 0.02, 0.3]),
-                })
-    return pd.DataFrame(rows)
+def _make_event_coefficients():
+    """Deterministic single-event coefficient frame (two targets, three terms).
+
+    Includes an Intercept row that the plotter must drop.
+    """
+    return pd.DataFrame({
+        'term': ['Intercept', 'side', 'contrast',
+                 'Intercept', 'side', 'contrast'],
+        'target_NM': ['VTA-DA', 'VTA-DA', 'VTA-DA',
+                      'DR-5HT', 'DR-5HT', 'DR-5HT'],
+        'Coef.': [1.0, 0.2, 0.5, 0.9, 0.1, 0.3],
+        'P>|z|': [1e-10, 0.01, 0.001, 1e-10, 0.5, 0.04],
+    })
 
 
 class TestPlotLMMCoefficientHeatmap:
 
-    def test_returns_three_figures(self):
+    def test_returns_figure_when_ax_none(self):
         from iblnm.vis import plot_lmm_coefficient_heatmap
-        df = _make_lmm_coefficients()
-        figs = plot_lmm_coefficient_heatmap(df)
-        assert len(figs) == 3  # one per event
-
-    def test_each_figure_has_heatmap(self):
-        from iblnm.vis import plot_lmm_coefficient_heatmap
-        df = _make_lmm_coefficients()
-        figs = plot_lmm_coefficient_heatmap(df)
-        for fig in figs.values():
-            # Should have at least one axes with an image (heatmap)
-            assert any(len(ax.images) > 0 for ax in fig.axes)
-            plt.close(fig)
-
-    def test_rows_are_targets_cols_are_terms(self):
-        from iblnm.vis import plot_lmm_coefficient_heatmap
-        df = _make_lmm_coefficients()
-        figs = plot_lmm_coefficient_heatmap(df)
-        fig = list(figs.values())[0]
-        ax = [a for a in fig.axes if len(a.images) > 0][0]
-        ylabels = [t.get_text() for t in ax.get_yticklabels()]
-        xlabels = [t.get_text() for t in ax.get_xticklabels()]
-        from iblnm.config import TARGETNM2POSITION
-        targets = sorted(df['target_NM'].unique(),
-                         key=lambda x: TARGETNM2POSITION.get(x, 999))
-        # Intercept is dropped; remaining terms from fixture
-        terms_no_intercept = ['side', 'reward',
-                              'contrast', 'contrast:reward']
-        assert ylabels == targets
-        assert len(xlabels) == len(terms_no_intercept)
+        fig = plot_lmm_coefficient_heatmap(_make_event_coefficients())
+        assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_shared_colorbar_scale(self):
+    def test_draws_on_passed_ax_without_new_figure(self):
         from iblnm.vis import plot_lmm_coefficient_heatmap
-        df = _make_lmm_coefficients()
-        figs = plot_lmm_coefficient_heatmap(df)
-        clims = []
-        for fig in figs.values():
-            ax = [a for a in fig.axes if len(a.images) > 0][0]
-            clims.append(ax.images[0].get_clim())
-            plt.close(fig)
-        # All events should share the same colorbar limits
-        assert all(c == clims[0] for c in clims)
+        fig, ax = plt.subplots()
+        existing = set(plt.get_fignums())
+        plot_lmm_coefficient_heatmap(_make_event_coefficients(), ax=ax)
+        assert len(ax.images) == 1
+        assert set(plt.get_fignums()) == existing
+        plt.close(fig)
+
+    def test_intercept_dropped_rows_targets_cols_terms(self):
+        from iblnm.vis import plot_lmm_coefficient_heatmap
+        from iblnm.config import TARGETNM2POSITION
+        df = _make_event_coefficients()
+        fig, ax = plt.subplots()
+        plot_lmm_coefficient_heatmap(df, ax=ax)
+        ylabels = [t.get_text() for t in ax.get_yticklabels()]
+        xlabels = [t.get_text() for t in ax.get_xticklabels()]
+        targets = sorted(df['target_NM'].unique(),
+                         key=lambda x: TARGETNM2POSITION.get(x, 999))
+        assert ylabels == targets
+        assert len(xlabels) == 2  # side, contrast — Intercept dropped
+        plt.close(fig)
+
+    def test_cell_values_match_input(self):
+        from iblnm.vis import plot_lmm_coefficient_heatmap
+        fig, ax = plt.subplots()
+        plot_lmm_coefficient_heatmap(_make_event_coefficients(), ax=ax)
+        array = np.asarray(ax.images[0].get_array())
+        present = np.round(array[~np.isnan(array)], 3)
+        assert sorted(present) == [0.1, 0.2, 0.3, 0.5]
+        plt.close(fig)
 
     def test_asterisks_for_significant(self):
         from iblnm.vis import plot_lmm_coefficient_heatmap
-        df = _make_lmm_coefficients()
-        figs = plot_lmm_coefficient_heatmap(df)
-        fig = list(figs.values())[0]
-        ax = [a for a in fig.axes if len(a.images) > 0][0]
+        fig, ax = plt.subplots()
+        plot_lmm_coefficient_heatmap(_make_event_coefficients(), ax=ax)
         texts = [t.get_text() for t in ax.texts]
-        # At least some cells should have asterisks
         assert any('*' in t for t in texts)
         plt.close(fig)
 
