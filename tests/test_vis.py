@@ -779,31 +779,36 @@ class TestPlotLMMResponse:
 
 class TestPlotLMMVarianceExplained:
 
-    def test_returns_figure(self):
+    @staticmethod
+    def _r2_df():
+        return pd.DataFrame({
+            'target_NM': ['VTA-DA', 'DR-5HT'],
+            'marginal_r2': [0.15, 0.08],
+            'conditional_r2': [0.35, 0.22],
+        })
+
+    def test_returns_figure_when_ax_none(self):
         from iblnm.vis import plot_lmm_variance_explained
-        ve_dict = {
-            ('VTA-DA', 'stimOn'): {'marginal': 0.15, 'conditional': 0.35},
-            ('DR-5HT', 'feedback'): {'marginal': 0.08, 'conditional': 0.22},
-        }
-        fig = plot_lmm_variance_explained(ve_dict)
+        fig = plot_lmm_variance_explained(self._r2_df())
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
-    def test_has_bars(self):
+    def test_draws_on_passed_ax_without_new_figure(self):
         from iblnm.vis import plot_lmm_variance_explained
-        ve_dict = {
-            ('VTA-DA', 'stimOn'): {'marginal': 0.15, 'conditional': 0.35},
-        }
-        fig = plot_lmm_variance_explained(ve_dict)
-        ax = fig.axes[0]
-        # Should have bar containers
-        assert len(ax.containers) >= 2  # marginal + conditional
+        fig, ax = plt.subplots()
+        n_before = len(ax.patches)
+        existing = set(plt.get_fignums())
+        plot_lmm_variance_explained(self._r2_df(), ax=ax)
+        assert len(ax.patches) > n_before
+        assert set(plt.get_fignums()) == existing
         plt.close(fig)
 
-    def test_empty_dict(self):
+    def test_bar_heights_match_input(self):
         from iblnm.vis import plot_lmm_variance_explained
-        fig = plot_lmm_variance_explained({})
-        assert isinstance(fig, plt.Figure)
+        fig, ax = plt.subplots()
+        plot_lmm_variance_explained(self._r2_df(), ax=ax)
+        heights = sorted(round(p.get_height(), 3) for p in ax.patches)
+        assert heights == sorted([0.15, 0.08, 0.35, 0.22])
         plt.close(fig)
 
 

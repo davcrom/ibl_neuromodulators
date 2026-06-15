@@ -2034,46 +2034,45 @@ def plot_lmm_response(predictions, target_nm, event, fig=None,
     return fig
 
 
-def plot_lmm_variance_explained(ve_dict, fig=None):
-    """Grouped bar chart of marginal and conditional R² per (target, event).
+def plot_lmm_variance_explained(r2_df, ax=None):
+    """Paired marginal/conditional R² bars per target-NM, for one event.
+
+    Single-panel, ax-injectable. Each target-NM gets two bars in its colour
+    (``TARGETNM_COLORS``): marginal R² (alpha 0.5) and conditional R² (opaque).
 
     Parameters
     ----------
-    ve_dict : dict
-        Keys are (target_nm, event) tuples, values are dicts with
-        'marginal' and 'conditional' R² values.
-    fig : plt.Figure, optional
+    r2_df : pd.DataFrame
+        Columns ``target_NM``, ``marginal_r2``, ``conditional_r2`` (one event).
+    ax : plt.Axes, optional
+        Axis to draw into; a new figure is created when None.
 
     Returns
     -------
     plt.Figure
     """
-    if fig is None:
-        fig, ax = plt.subplots(1, 1, figsize=(max(4, len(ve_dict) * 1.5), 4),
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(max(4, len(r2_df)), 4),
                                layout='constrained')
     else:
-        ax = fig.axes[0]
+        fig = ax.figure
 
-    if not ve_dict:
-        ax.set_title('Variance explained (R²)')
-        return fig
+    targets = sorted(r2_df['target_NM'],
+                     key=lambda t: TARGETNM2POSITION.get(t, 999))
+    bar_w = 0.35
+    for i, tnm in enumerate(targets):
+        row = r2_df[r2_df['target_NM'] == tnm].iloc[0]
+        color = TARGETNM_COLORS.get(tnm, f'C{i}')
+        ax.bar(i - bar_w / 2, row['marginal_r2'], width=bar_w, color=color,
+               alpha=0.5, label='Fixed' if i == 0 else '')
+        ax.bar(i + bar_w / 2, row['conditional_r2'], width=bar_w, color=color,
+               alpha=1.0, label='Fixed + random' if i == 0 else '')
 
-    labels = [f'{t}\n{e}' for t, e in ve_dict.keys()]
-    marginal = [v['marginal'] for v in ve_dict.values()]
-    conditional = [v['conditional'] for v in ve_dict.values()]
-
-    x = np.arange(len(labels))
-    width = 0.35
-    ax.bar(x - width / 2, marginal, width, label='Marginal R²', color='steelblue')
-    ax.bar(x + width / 2, conditional, width, label='Conditional R²', color='coral')
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=TICKFONTSIZE)
+    ax.set_xticks(range(len(targets)))
+    ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
     ax.set_ylabel('R²')
-    ax.set_ylim(0, 1)
-    ax.legend(frameon=False)
-    ax.set_title('Variance explained by LMM')
-
+    ax.set_title('Variance explained')
+    ax.legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
     return fig
 
 
