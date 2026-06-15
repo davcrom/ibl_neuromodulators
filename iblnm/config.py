@@ -33,6 +33,8 @@ ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
 VIDEO_LOG_FPATH = PROJECT_ROOT / 'metadata/video_log.pqt'
 VIDEO_FPATH = PROJECT_ROOT / 'metadata/video.pqt'
 LP_SESSIONS_FPATH = PROJECT_ROOT / 'metadata/LightningPoseSessions.csv'
+POSE_FPATH = PROJECT_ROOT / 'metadata/pose.pqt'
+POSE_LOG_FPATH = PROJECT_ROOT / 'metadata/pose_log.pqt'
 
 # Video QC parameters
 LENGTH_MISMATCH_THRESHOLD = 120  # seconds
@@ -403,6 +405,22 @@ RESPONSE_WINDOWS = {
 TIMING_VARS = ['reaction_time', 'movement_time', 'peak_velocity']
 MIN_SUBJECTS_MOVEMENT = 2
 MIN_TRIALS_MOVEMENT = 20
+
+# Pose QC (LightningPose output verification)
+LIKELIHOOD_THRESHOLD = 0.9          # gate keypoint speed where confidence < this
+MOVEMENT_RESPONSE_WINDOW = (0.1, 0.35)  # post-event scalar window (reuse BASELINE_WINDOW for pre)
+CROSSCORR_LAG_WINDOW = 5.0          # paw/wheel cross-correlation lag half-width (s)
+CROSSCORR_FS = WHEEL_FS             # common resample rate for paw/wheel cross-correlation (Hz)
+MIN_ONSETS_PER_THIRD = 10           # movements() onsets below which a session-third's lag is NaN
+LP_QC_LABELS = ('qc_lp', 'qc_movement')  # manual QC fields; IBL vocab, default 'NOT_SET'
+
+# Bodypart trace label -> (event column, keypoints, reduction). Read by tickets 02, 05.
+POSE_MEASURES = {
+    'paw': ('firstMovement_times', ['paw_l', 'paw_r'], 'sum_speed'),
+    'nose': ('feedback_times', ['nose_tip'], 'speed'),
+    'tongue_speed': ('feedback_times', ['tongue_end_l', 'tongue_end_r'], 'sum_speed'),
+    'tongue_likelihood': ('feedback_times', ['tongue_end_l', 'tongue_end_r'], 'max_likelihood'),
+}
 
 
 # Plotting parameters
