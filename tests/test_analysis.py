@@ -338,6 +338,38 @@ class TestEventLockedScalar:
         assert np.isnan(scalar)
 
 
+class TestNormalizedCrosscorr:
+    def test_identical_signals_peak_at_zero(self):
+        """Identical signals → peak lag 0, normalized peak ≈ 1."""
+        from iblnm.analysis import normalized_crosscorr
+        rng = np.random.default_rng(0)
+        a = rng.standard_normal(2000)
+        cc, lags, peak_lag = normalized_crosscorr(a, a, fs=100, lag_window=5)
+        assert peak_lag == 0.0
+        np.testing.assert_allclose(cc.max(), 1.0, atol=1e-10)
+
+    def test_known_shift(self):
+        """b a shifted copy of a → peak lag equals the shift in seconds."""
+        from iblnm.analysis import normalized_crosscorr
+        rng = np.random.default_rng(1)
+        a = rng.standard_normal(2000)
+        fs = 100
+        shift = 7  # samples
+        b = np.roll(a, shift)
+        cc, lags, peak_lag = normalized_crosscorr(a, b, fs=fs, lag_window=5)
+        np.testing.assert_allclose(peak_lag, shift / fs, atol=1 / fs)
+
+    def test_lag_axis_within_window(self):
+        """Lag axis is symmetric and bounded by ±lag_window."""
+        from iblnm.analysis import normalized_crosscorr
+        rng = np.random.default_rng(2)
+        a = rng.standard_normal(2000)
+        cc, lags, peak_lag = normalized_crosscorr(a, a, fs=100, lag_window=5)
+        assert cc.shape == lags.shape
+        assert lags.min() == -5.0
+        assert lags.max() == 5.0
+
+
 class TestResampleSignal:
     def test_uniform_output(self):
         """Output timestamps should be exactly uniform at target_fs."""

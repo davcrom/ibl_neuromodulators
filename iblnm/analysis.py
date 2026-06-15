@@ -9,6 +9,9 @@ from iblnm.config import (
     LIKELIHOOD_THRESHOLD,
     MOVEMENT_RESPONSE_WINDOW,
     BASELINE_WINDOW,
+    CROSSCORR_FS,
+    CROSSCORR_LAG_WINDOW,
+    MIN_ONSETS_PER_THIRD,
 )
 from iblnm.util import get_contrast_coding
 
@@ -196,6 +199,45 @@ def event_locked_scalar(trace, tpts, response_window=MOVEMENT_RESPONSE_WINDOW,
     response = _guarded_window_mean(trace, tpts, response_window, min_valid)
     baseline = _guarded_window_mean(trace, tpts, baseline_window, min_valid)
     return response - baseline
+
+
+def normalized_crosscorr(a, b, fs, lag_window=CROSSCORR_LAG_WINDOW):
+    """Normalized cross-correlation of two equal-rate signals over a lag window.
+
+    Both signals are z-scored before correlating and the result is divided by
+    the sample count, so the peak is unit-scaled (≈ 1 for identical signals)
+    and comparable across sessions.
+
+    Parameters
+    ----------
+    a, b : 1D array
+        Signals sampled on a common rate ``fs``, same length.
+    fs : float
+        Common sampling rate (Hz).
+    lag_window : float
+        Half-width of the returned lag range (seconds).
+
+    Returns
+    -------
+    cc : 1D array
+        Normalized cross-correlation over lags in ``[-lag_window, +lag_window]``.
+    lags : 1D array
+        Lag axis (seconds), same shape as ``cc``.
+    peak_lag : float
+        Lag of the maximum. A positive lag means ``a`` leads ``b`` (``a``'s
+        features occur earlier in time than the matching features of ``b``).
+    """
+    from scipy.signal import correlate, correlation_lags
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    n = len(a)
+    a_z = (a - a.mean()) / a.std()
+    b_z = (b - b.mean()) / b.std()
+    cc = correlate(b_z, a_z, mode='full') / n
+    lags = correlation_lags(len(b), n, mode='full') / fs
+    keep = np.abs(lags) <= lag_window
+    cc, lags = cc[keep], lags[keep]
+    return cc, lags, lags[np.argmax(cc)]
 
 
 def normalize_responses(responses, tpts, bwin=(-0.1, 0), divide=True):
