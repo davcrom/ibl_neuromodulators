@@ -200,6 +200,44 @@ def persist_labels(h5_path: str | Path, qc_lp: str, qc_movement: str) -> None:
             attrs[label] = value
 
 
+def update_pose_qc(
+    pose_path: str | Path, eid: str, qc_lp: str, qc_movement: str
+) -> None:
+    """Mirror the two manual QC labels for `eid` into the pose roll-up parquet.
+
+    Read-modify-write of `pose_path`: updates only the `qc_lp`/`qc_movement`
+    cells for `eid`, leaving every other row and column untouched, so the
+    derived roll-up stays in sync with the per-session H5 without re-running
+    `scripts/pose.py --rollup`.
+    """
+    df = pd.read_parquet(pose_path)
+    mask = df['eid'] == eid
+    for label, value in zip(LP_QC_LABELS, (qc_lp, qc_movement)):
+        df.loc[mask, label] = value
+    df.to_parquet(pose_path)
+
+
+def save_label(
+    h5_path: str | Path, pose_path: str | Path, eid: str,
+    qc_lp: str, qc_movement: str,
+) -> str:
+    """Persist both manual QC labels for `eid` and return a status line.
+
+    Writes the values to the per-session `video` H5 attrs (the canonical
+    store) and mirrors them into the pose roll-up parquet. Catches write
+    failures (missing file/`video` group, unwritable path) so a bad session
+    surfaces in the GUI status bar instead of crashing the viewer. Returns a
+    confirmation naming the H5 file on success, or an error description.
+    """
+    try:
+        persist_labels(h5_path, qc_lp, qc_movement)
+        update_pose_qc(pose_path, eid, qc_lp, qc_movement)
+    except (OSError, KeyError) as error:
+        return f'Save failed for {eid}: {error}'
+    return (f'Saved qc_lp={qc_lp}, qc_movement={qc_movement} '
+            f'→ {Path(h5_path).name} + pose.pqt')
+
+
 @dataclass
 class SessionPanels:
     """Trial-averaged panel data for one session, read from its ``video`` H5 group.
@@ -228,10 +266,12 @@ class LPViewerModel:
         df_cohort: pd.DataFrame,
         h5_dir: str | Path,
         df_performance: pd.DataFrame | None = None,
+        pose_path: str | Path | None = None,
     ):
         self.df_cohort = df_cohort
         self.h5_dir = Path(h5_dir)
         self.df_performance = df_performance
+        self.pose_path = pose_path
 
     def filter(
         self,
@@ -349,7 +389,6 @@ class LPViewer(QtWidgets.QMainWindow):
         self.frame_source: FrameSource | None = None
         self.trial_frames = np.array([], dtype=int)
         self.frame_pos = 0
-        self.touched_eids: set[str] = set()
         self.setWindowTitle('LPViewer — LightningPose output QC')
 
         central = QtWidgets.QWidget()
@@ -357,6 +396,7 @@ class LPViewer(QtWidgets.QMainWindow):
         layout.addWidget(self._build_controls(), stretch=1)
         layout.addWidget(self._build_display(), stretch=2)
         self.setCentralWidget(central)
+        self.statusBar().showMessage('Ready')
         self._refresh_dropdown()
 
     # -- construction ---------------------------------------------------------
@@ -571,11 +611,23 @@ class LPViewer(QtWidgets.QMainWindow):
             combo.blockSignals(False)
 
     def _on_label(self, field: str, value: str) -> None:
+        """Apply a QC verdict and persist it immediately to H5 + pose.pqt.
+
+        Saving on every set (rather than only on close) keeps a manual verdict
+        from being lost if the viewer exits abnormally; the outcome is echoed
+        to the status bar.
+        """
         if value == LP_QC_NOT_SET or not getattr(self, 'current_eid', None):
             return
+        eid = self.current_eid
         self.model.df_cohort = apply_label(
-            self.model.df_cohort, self.current_eid, field, value)
-        self.touched_eids.add(self.current_eid)
+            self.model.df_cohort, eid, field, value)
+        row = self.model.df_cohort.loc[
+            self.model.df_cohort['eid'] == eid].iloc[0]
+        status = save_label(self.model.h5_dir / f'{eid}.h5',
+                            self.model.pose_path, eid,
+                            row['qc_lp'], row['qc_movement'])
+        self.statusBar().showMessage(status)
 
     # -- frame viewer ---------------------------------------------------------
 
@@ -688,12 +740,7 @@ class LPViewer(QtWidgets.QMainWindow):
     # -- persistence ----------------------------------------------------------
 
     def closeEvent(self, event) -> None:
-        """Write the two manual QC labels for every touched session back to H5."""
-        for eid in self.touched_eids:
-            row = self.model.df_cohort.loc[
-                self.model.df_cohort['eid'] == eid].iloc[0]
-            persist_labels(self.model.h5_dir / f'{eid}.h5',
-                           row['qc_lp'], row['qc_movement'])
+        """Release the video handle. Labels are already persisted on each set."""
         if self.frame_source is not None:
             self.frame_source.close()
         super().closeEvent(event)

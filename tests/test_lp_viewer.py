@@ -19,7 +19,9 @@ from iblnm.lp_viewer import (
     keypoint_colors,
     likelihood_to_alpha,
     persist_labels,
+    save_label,
     trial_frame_window,
+    update_pose_qc,
 )
 
 
@@ -308,6 +310,54 @@ def test_persist_labels_leaves_traces_untouched(video_h5):
 
 def _decode(value):
     return value.decode() if isinstance(value, bytes) else value
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# update_pose_qc / save_label
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def pose_pqt(tmp_path):
+    """A 2-session pose roll-up parquet with both QC labels at NOT_SET."""
+    fpath = tmp_path / 'pose.pqt'
+    pd.DataFrame({
+        'eid': ['eid0', 'eid1'],
+        'qc_lp': ['NOT_SET', 'NOT_SET'],
+        'qc_movement': ['NOT_SET', 'NOT_SET'],
+    }).to_parquet(fpath)
+    return fpath
+
+
+def test_update_pose_qc_sets_only_target_eid(pose_pqt):
+    update_pose_qc(pose_pqt, 'eid1', 'FAIL', 'PASS')
+    df = pd.read_parquet(pose_pqt)
+    target = df.loc[df['eid'] == 'eid1'].iloc[0]
+    assert target['qc_lp'] == 'FAIL'
+    assert target['qc_movement'] == 'PASS'
+    other = df.loc[df['eid'] == 'eid0'].iloc[0]
+    assert other['qc_lp'] == 'NOT_SET'
+    assert other['qc_movement'] == 'NOT_SET'
+
+
+def test_save_label_writes_both_stores(video_h5, pose_pqt):
+    h5_path, _ = video_h5
+    msg = save_label(h5_path, pose_pqt, 'eid1', 'FAIL', 'PASS')
+    with h5py.File(h5_path, 'r') as f:
+        assert _decode(f['video'].attrs['qc_lp']) == 'FAIL'
+        assert _decode(f['video'].attrs['qc_movement']) == 'PASS'
+    row = pd.read_parquet(pose_pqt).set_index('eid').loc['eid1']
+    assert row['qc_lp'] == 'FAIL'
+    assert row['qc_movement'] == 'PASS'
+    assert h5_path.name in msg
+
+
+def test_save_label_reports_failure_without_raising(tmp_path, pose_pqt):
+    # 'a'-mode opens/creates the file but it has no 'video' group -> KeyError.
+    missing = tmp_path / 'absent.h5'
+    msg = save_label(missing, pose_pqt, 'eid1', 'FAIL', 'PASS')
+    assert 'eid1' in msg
+    unchanged = pd.read_parquet(pose_pqt).set_index('eid').loc['eid1']
+    assert unchanged['qc_lp'] == 'NOT_SET'
 
 
 # ─────────────────────────────────────────────────────────────────────────────

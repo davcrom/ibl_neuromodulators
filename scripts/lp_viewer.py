@@ -48,7 +48,8 @@ if __name__ == '__main__':
     df_performance = pd.read_parquet(
         PERFORMANCE_FPATH, columns=['eid', 'fraction_correct'])
 
-    model = LPViewerModel(df_cohort, SESSIONS_H5_DIR, df_performance)
+    model = LPViewerModel(
+        df_cohort, SESSIONS_H5_DIR, df_performance, pose_path=POSE_FPATH)
     one = _get_default_connection()
 
     app = QtWidgets.QApplication(sys.argv)
