@@ -374,9 +374,13 @@ LP_QC_NOT_SET = 'NOT_SET'
 _POSE_TRACES_RESERVED_KEYS = {'times', 'trials'}
 
 
-def _save_pose_traces(parent_group, traces):
-    """Write traces/ subgroup from a DataArray(bodypart, trial, time)."""
-    traces_group = _replace_group(parent_group, 'traces')
+def _save_pose_traces(parent_group, traces, name='traces'):
+    """Write a `name`/ subgroup from a DataArray(bodypart, trial, time).
+
+    `name` selects the subgroup: ``traces`` for the event-locked response
+    traces, ``baseline_traces`` for the stimOn-locked baseline traces.
+    """
+    traces_group = _replace_group(parent_group, name)
     traces_group.attrs['response_window'] = RESPONSE_WINDOW
     traces_group.create_dataset('times', data=traces.coords['time'].values)
     traces_group.create_dataset('trials', data=traces.coords['trial'].values)
@@ -388,11 +392,11 @@ def _save_pose_traces(parent_group, traces):
         )
 
 
-def _load_pose_traces(parent_group):
-    """Read traces/ subgroup into a DataArray(bodypart, trial, time), or None."""
-    if 'traces' not in parent_group:
+def _load_pose_traces(parent_group, name='traces'):
+    """Read a `name`/ subgroup into a DataArray(bodypart, trial, time), or None."""
+    if name not in parent_group:
         return None
-    traces_group = parent_group['traces']
+    traces_group = parent_group[name]
     bodyparts = [k for k in traces_group.keys()
                  if k not in _POSE_TRACES_RESERVED_KEYS]
     return xr.DataArray(
@@ -443,6 +447,8 @@ def _save_video(session, h5_file, band):
     grp = _replace_group(h5_file, 'video')
     if session.pose_traces is not None:
         _save_pose_traces(grp, session.pose_traces)
+    if session.pose_baseline_traces is not None:
+        _save_pose_traces(grp, session.pose_baseline_traces, name='baseline_traces')
     if session.pose_xcorr is not None:
         _save_pose_xcorr(grp, session.pose_xcorr)
     for label in LP_QC_LABELS:
@@ -457,6 +463,7 @@ def _load_video(session, h5_file, band):
         return
     grp = h5_file['video']
     session.pose_traces = _load_pose_traces(grp)
+    session.pose_baseline_traces = _load_pose_traces(grp, name='baseline_traces')
     session.pose_xcorr = _load_pose_xcorr(grp)
     for label in LP_QC_LABELS:
         if label in grp.attrs:
@@ -543,6 +550,7 @@ class PhotometrySession(PhotometrySessionLoader):
         self.pose = None
         self.pose_times = None
         self.pose_traces = None
+        self.pose_baseline_traces = None
         self.pose_xcorr = None
         self.qc_lp = LP_QC_NOT_SET
         self.qc_movement = LP_QC_NOT_SET
@@ -1417,7 +1425,9 @@ class PhotometrySession(PhotometrySessionLoader):
         # Resample raw pose to a common rate first, so speeds (px per time step)
         # and trace lengths are comparable across sessions of differing camera fps.
         pose, pose_times = resample_pose(self.pose, self.pose_times, POSE_FS)
+        stimon = self.trials['stimOn_times'].values
         traces = {}
+        baselines = {}
         for label, (event, keypoints, reduction) in POSE_MEASURES.items():
             signal = pd.Series(
                 movement_trace(pose, keypoints, reduction),
@@ -1427,14 +1437,23 @@ class PhotometrySession(PhotometrySessionLoader):
                 signal, self.trials[event].values,
                 t0=RESPONSE_WINDOW[0], t1=RESPONSE_WINDOW[1],
             )
+            # Stimulus-onset-locked trace for a common pre-stimOn baseline, over
+            # the same window so its time axis matches the response trace.
+            baselines[label], _ = get_responses(
+                signal, stimon, t0=RESPONSE_WINDOW[0], t1=RESPONSE_WINDOW[1],
+            )
+        coords = {
+            'bodypart': list(POSE_MEASURES),
+            'trial': self.trials.index.to_numpy(),
+            'time': tpts,
+        }
         self.pose_traces = xr.DataArray(
             np.stack([traces[label] for label in POSE_MEASURES]),
-            dims=['bodypart', 'trial', 'time'],
-            coords={
-                'bodypart': list(POSE_MEASURES),
-                'trial': self.trials.index.to_numpy(),
-                'time': tpts,
-            },
+            dims=['bodypart', 'trial', 'time'], coords=coords,
+        )
+        self.pose_baseline_traces = xr.DataArray(
+            np.stack([baselines[label] for label in POSE_MEASURES]),
+            dims=['bodypart', 'trial', 'time'], coords=coords,
         )
 
     def extract_paw_wheel_xcorr(self):

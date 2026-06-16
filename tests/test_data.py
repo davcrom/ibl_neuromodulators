@@ -1461,14 +1461,18 @@ class TestSaveLoadH5:
         n_trial, n_time = 4, 20
         bodyparts = ['paw', 'nose', 'tongue_speed', 'tongue_likelihood']
         rng = np.random.default_rng(0)
+        coords = {
+            'bodypart': bodyparts,
+            'trial': np.arange(n_trial),
+            'time': np.linspace(-1, 1, n_time),
+        }
         ps.pose_traces = xr.DataArray(
             rng.standard_normal((len(bodyparts), n_trial, n_time)),
-            dims=['bodypart', 'trial', 'time'],
-            coords={
-                'bodypart': bodyparts,
-                'trial': np.arange(n_trial),
-                'time': np.linspace(-1, 1, n_time),
-            },
+            dims=['bodypart', 'trial', 'time'], coords=coords,
+        )
+        ps.pose_baseline_traces = xr.DataArray(
+            rng.standard_normal((len(bodyparts), n_trial, n_time)),
+            dims=['bodypart', 'trial', 'time'], coords=coords,
         )
         n_lags = 11
         ps.pose_xcorr = {
@@ -1499,6 +1503,10 @@ class TestSaveLoadH5:
             np.testing.assert_allclose(
                 ps2.pose_traces.sel(bodypart=bodypart).values,
                 ps.pose_traces.sel(bodypart=bodypart).values,
+            )
+            np.testing.assert_allclose(
+                ps2.pose_baseline_traces.sel(bodypart=bodypart).values,
+                ps.pose_baseline_traces.sel(bodypart=bodypart).values,
             )
         np.testing.assert_allclose(ps2.pose_xcorr['functions'],
                                    ps.pose_xcorr['functions'])
@@ -1568,14 +1576,20 @@ class TestPoseMethods:
             ps.load_pose()
 
     def _make_pose_session(self, mock_session_series, fs=30, dur=60.0,
-                           tongue_like=(0.2, 0.9)):
-        """PhotometrySession with injected synthetic pose + camera times + trials."""
+                           tongue_like=(0.2, 0.9), accelerate=False):
+        """PhotometrySession with injected synthetic pose + camera times + trials.
+
+        With ``accelerate``, keypoint positions grow quadratically so speed rises
+        over time and the event a window is locked to changes its value.
+        """
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
                                load_data=False)
         t = np.arange(0, dur, 1 / fs)
         n = t.size
         ramp = np.arange(n, dtype=float)
+        if accelerate:
+            ramp = ramp ** 2
         ones = np.ones(n)
         ps.pose = pd.DataFrame({
             'paw_l_x': ramp * 3.0, 'paw_l_y': ramp * 4.0, 'paw_l_likelihood': ones,
@@ -1601,6 +1615,21 @@ class TestPoseMethods:
         ps.extract_movement_traces()
         assert set(ps.pose_traces.coords['bodypart'].values) == set(POSE_MEASURES)
         assert ps.pose_traces.sizes == {'bodypart': 4, 'trial': 3, 'time': 60}
+
+    def test_extract_movement_traces_baseline_locked_to_stimon(self, mock_session_series):
+        """pose_baseline_traces is stimOn-locked: the nose measure (itself
+        stimOn-locked) has identical response and baseline traces, while the
+        firstMovement-locked paw measure does not."""
+        ps = self._make_pose_session(mock_session_series, fs=30, accelerate=True)
+        ps.extract_movement_traces()
+        assert ps.pose_baseline_traces.sizes == ps.pose_traces.sizes
+        np.testing.assert_allclose(
+            ps.pose_baseline_traces.sel(bodypart='nose').values,
+            ps.pose_traces.sel(bodypart='nose').values)
+        assert not np.allclose(
+            ps.pose_baseline_traces.sel(bodypart='paw').values,
+            ps.pose_traces.sel(bodypart='paw').values,
+            equal_nan=True)
 
     def test_extract_movement_traces_tongue_likelihood_is_max(self, mock_session_series):
         """tongue_likelihood trace equals the per-frame max of the two tips."""
