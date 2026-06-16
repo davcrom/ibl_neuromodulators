@@ -498,6 +498,25 @@ class TestResampleSignal:
         assert resampled.index[-1] <= t[-1]
 
 
+class TestResamplePose:
+    def test_irregular_input_to_uniform_grid(self):
+        """Pose columns resample onto a uniform 1/fs grid, columns preserved."""
+        from iblnm.analysis import resample_pose
+        times = np.sort(np.cumsum(np.random.uniform(0.008, 0.012, 200)))
+        pose = pd.DataFrame({
+            'paw_l_x': np.linspace(0, 10, 200),
+            'paw_l_y': np.zeros(200),
+            'paw_l_likelihood': np.linspace(0.2, 1.0, 200),
+        })
+        rs, new_t = resample_pose(pose, times, fs=100)
+        np.testing.assert_allclose(np.diff(new_t), 1 / 100, atol=1e-10)
+        assert list(rs.columns) == list(pose.columns)
+        assert len(rs) == len(new_t)
+        # monotone x interpolates within range; likelihood stays in [0, 1]
+        assert rs['paw_l_x'].is_monotonic_increasing
+        assert rs['paw_l_likelihood'].between(0, 1).all()
+
+
 # =============================================================================
 # Response Vector Analysis Tests
 # =============================================================================

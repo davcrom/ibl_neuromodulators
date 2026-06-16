@@ -242,6 +242,7 @@ SESSION_TYPES_TO_EXCLUDE = ('advanced', 'neuromodulator', 'misc')
 # Resampling
 TARGET_FS = 30    # Hz, target sampling rate for photometry signals
 WHEEL_FS = 100    # Hz, interpolation rate for wheel velocity
+POSE_FS = 30      # Hz, common resample rate for pose movement traces (majority camera rate)
 
 # Trial columns to store in HDF5 (beyond computed signed_contrast, contrast)
 TRIAL_COLUMNS = [

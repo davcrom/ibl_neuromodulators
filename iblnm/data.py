@@ -24,11 +24,11 @@ from iblnm.config import (
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
     RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
-    TARGET_FS, TRIAL_COLUMNS, WHEEL_FS,
+    TARGET_FS, TRIAL_COLUMNS, WHEEL_FS, POSE_FS,
 )
 from iblnm.analysis import (
     get_responses, compute_response_magnitude, movement_trace,
-    per_third_crosscorr,
+    per_third_crosscorr, resample_pose,
 )
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
@@ -1414,11 +1414,14 @@ class PhotometrySession(PhotometrySessionLoader):
         ``config.POSE_MEASURES`` and stores them on ``self.pose_traces`` as a
         DataArray with dims ``(bodypart, trial, time)``.
         """
+        # Resample raw pose to a common rate first, so speeds (px per time step)
+        # and trace lengths are comparable across sessions of differing camera fps.
+        pose, pose_times = resample_pose(self.pose, self.pose_times, POSE_FS)
         traces = {}
         for label, (event, keypoints, reduction) in POSE_MEASURES.items():
             signal = pd.Series(
-                movement_trace(self.pose, keypoints, reduction),
-                index=self.pose_times,
+                movement_trace(pose, keypoints, reduction),
+                index=pose_times,
             )
             traces[label], tpts = get_responses(
                 signal, self.trials[event].values,

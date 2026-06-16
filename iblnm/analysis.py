@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 from iblnm.config import (
     TARGET_FS,
+    POSE_FS,
     LIKELIHOOD_THRESHOLD,
     MOVEMENT_RESPONSE_WINDOW,
     BASELINE_WINDOW,
@@ -115,6 +116,22 @@ def resample_signal(signal, target_fs=TARGET_FS):
     t_uniform = np.arange(times[0], times[-1], 1 / target_fs)
     interp = PchipInterpolator(times, signal.values)
     return pd.Series(interp(t_uniform), index=t_uniform)
+
+
+def resample_pose(pose: pd.DataFrame, times: np.ndarray,
+                  fs: float = POSE_FS) -> tuple[pd.DataFrame, np.ndarray]:
+    """Resample LightningPose columns onto a common uniform 1/fs grid.
+
+    Each ``{part}_x``/``_y``/``_likelihood`` column is finite (LP always emits a
+    position and a likelihood), so PCHIP interpolation is clean — resample the
+    raw columns here, before any likelihood gating, so speeds computed downstream
+    share a session-independent time step. Returns the resampled DataFrame and
+    its uniform time axis.
+    """
+    resampled = {col: resample_signal(pd.Series(pose[col].values, index=times), fs)
+                 for col in pose.columns}
+    df = pd.DataFrame(resampled)
+    return df, df.index.values
 
 
 def compute_response_magnitude(response, tpts, window):

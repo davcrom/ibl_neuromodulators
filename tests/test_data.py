@@ -1608,6 +1608,15 @@ class TestPoseMethods:
         tongue = ps.pose_traces.sel(bodypart='tongue_likelihood').values
         np.testing.assert_allclose(tongue, 0.9)
 
+    def test_extract_movement_traces_common_timebase_across_fps(self, mock_session_series):
+        """Different camera fps → identical trace time length (resampled to POSE_FS)."""
+        ps30 = self._make_pose_session(mock_session_series, fs=30)
+        ps99 = self._make_pose_session(mock_session_series, fs=99)
+        ps30.extract_movement_traces()
+        ps99.extract_movement_traces()
+        assert (ps30.pose_traces.sizes['time']
+                == ps99.pose_traces.sizes['time'] == 60)
+
     @staticmethod
     def _xcorr_session(mock_session_series, wheel_times=None):
         """Build a session with an imposed late-third paw/wheel shift.
