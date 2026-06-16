@@ -435,7 +435,7 @@ class LPViewer(QtWidgets.QMainWindow):
         ax_paw.plot(panels.times, panels.traces['paw'])
         ax_paw.set_title('Paw @ firstMovement')
         ax_nose.plot(panels.times, panels.traces['nose'])
-        ax_nose.set_title('Nose @ feedback')
+        ax_nose.set_title('Nose @ stimOn')
         ax_tongue.plot(panels.times, panels.traces['tongue_speed'], color='C0')
         ax_tongue.set_ylabel('tongue speed', color='C0')
         ax_like = ax_tongue.twinx()
