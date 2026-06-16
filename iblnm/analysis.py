@@ -11,7 +11,6 @@ from iblnm.config import (
     BASELINE_WINDOW,
     CROSSCORR_FS,
     CROSSCORR_LAG_WINDOW,
-    MIN_ONSETS_PER_THIRD,
 )
 from iblnm.util import get_contrast_coding
 
@@ -277,17 +276,16 @@ def normalized_crosscorr(a, b, fs, lag_window=CROSSCORR_LAG_WINDOW):
     return cc, lags, lags[np.argmax(cc)]
 
 
-def per_third_crosscorr(paw_speed, paw_times, wheel_speed, wheel_times, onsets,
-                        fs=CROSSCORR_FS, lag_window=CROSSCORR_LAG_WINDOW,
-                        min_onsets=MIN_ONSETS_PER_THIRD):
+def per_third_crosscorr(paw_speed, paw_times, wheel_speed, wheel_times,
+                        fs=CROSSCORR_FS, lag_window=CROSSCORR_LAG_WINDOW):
     """Per-session-third paw–wheel cross-correlation and timing drift.
 
     Resamples both traces onto a shared grid at ``fs``, splits the session
     timeline into thirds (early/mid/late by time), and computes the normalized
     cross-correlation of paw vs wheel speed over ±``lag_window`` seconds within
-    each third. Still periods self-gate (wheel speed ~0 contributes ~0), so no
-    masking is needed. A third covering fewer than ``min_onsets`` wheel-movement
-    onsets is left as NaN.
+    each third. The cross-correlation is continuous: still periods self-gate
+    (wheel speed ~0 contributes ~0), so a third with little movement simply
+    yields a flat curve — itself a diagnostic — rather than being masked out.
 
     Parameters
     ----------
@@ -295,26 +293,21 @@ def per_third_crosscorr(paw_speed, paw_times, wheel_speed, wheel_times, onsets,
         Paw-sum speed and its frame times (camera clock).
     wheel_speed, wheel_times : 1D array
         Wheel speed and its sample times (session clock).
-    onsets : 1D array
-        Wheel-movement onset times (e.g. from ``brainbox.behavior.wheel.movements``);
-        used only as a per-third coverage guard.
     fs : float
         Common resample rate (Hz).
     lag_window : float
         Half-width of the lag range (seconds).
-    min_onsets : int
-        A third with fewer onsets than this is NaN.
 
     Returns
     -------
     functions : 2D array, shape (3, n_lags)
-        Normalized cross-correlation per third; NaN row for an under-covered third.
+        Normalized cross-correlation per third.
     lags : 1D array, shape (n_lags,)
         Lag axis (seconds). Positive lag means paw leads wheel.
     peak_lags : 1D array, shape (3,)
-        Peak lag per third (seconds); NaN for an under-covered third.
+        Peak lag per third (seconds).
     drift : float
-        ``peak_lags[-1] - peak_lags[0]`` (late minus early); NaN if any third is NaN.
+        ``peak_lags[-1] - peak_lags[0]`` (late minus early).
     """
     grid = np.arange(max(paw_times[0], wheel_times[0]),
                      min(paw_times[-1], wheel_times[-1]), 1 / fs)
@@ -328,13 +321,11 @@ def per_third_crosscorr(paw_speed, paw_times, wheel_speed, wheel_times, onsets,
     peak_lags = np.full(3, np.nan)
 
     for third, (lo, hi) in enumerate(zip(edges[:-1], edges[1:])):
-        if np.sum((onsets >= lo) & (onsets < hi)) < min_onsets:
-            continue
         in_third = (grid >= lo) & (grid < hi)
         functions[third], _, peak_lags[third] = normalized_crosscorr(
             paw[in_third], wheel[in_third], fs, lag_window)
 
-    drift = peak_lags[-1] - peak_lags[0] if np.isfinite(peak_lags).all() else np.nan
+    drift = peak_lags[-1] - peak_lags[0]
     return functions, lags, peak_lags, drift
 
 

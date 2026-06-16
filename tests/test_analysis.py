@@ -455,26 +455,21 @@ class TestPerThirdCrosscorr:
         from iblnm.analysis import per_third_crosscorr
         shift_s = 0.1
         paw_speed, paw_times, wheel_speed, wheel_times = _synthetic_paw_wheel(shift_s)
-        onsets = np.arange(0, 60, 1.5)  # ~13 onsets per third, all ≥ 10
         functions, lags, peak_lags, drift = per_third_crosscorr(
-            paw_speed, paw_times, wheel_speed, wheel_times, onsets,
-            fs=100, lag_window=5, min_onsets=10)
+            paw_speed, paw_times, wheel_speed, wheel_times,
+            fs=100, lag_window=5)
         assert functions.shape == (3, lags.size)
         np.testing.assert_allclose(peak_lags[0], 0.0, atol=1 / 100)
         np.testing.assert_allclose(drift, shift_s, atol=1 / 100)
 
-    def test_low_onset_third_is_nan(self):
-        """A third with fewer than min_onsets onsets → that lag NaN, drift NaN."""
+    def test_all_thirds_computed_without_guard(self):
+        """Every third yields a finite cross-correlation — no coverage guard."""
         from iblnm.analysis import per_third_crosscorr
         paw_speed, paw_times, wheel_speed, wheel_times = _synthetic_paw_wheel(0.1)
-        # Plenty of onsets in early/mid thirds, only 5 in the late third.
-        onsets = np.concatenate([np.arange(0, 40, 1.0), np.arange(40, 60, 4.0)])
         functions, lags, peak_lags, drift = per_third_crosscorr(
-            paw_speed, paw_times, wheel_speed, wheel_times, onsets,
-            fs=100, lag_window=5, min_onsets=10)
-        assert np.isnan(peak_lags[2])
-        assert np.isnan(functions[2]).all()
-        assert np.isnan(drift)
+            paw_speed, paw_times, wheel_speed, wheel_times, fs=100, lag_window=5)
+        assert np.isfinite(peak_lags).all()
+        assert np.isfinite(functions).all()
 
 
 class TestResampleSignal:

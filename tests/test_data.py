@@ -1589,10 +1589,13 @@ class TestPoseMethods:
         tongue = ps.pose_traces.sel(bodypart='tongue_likelihood').values
         np.testing.assert_allclose(tongue, 0.9)
 
-    def test_extract_paw_wheel_xcorr_recovers_drift(self, mock_session_series,
-                                                    monkeypatch):
-        """An imposed late-third paw/wheel shift surfaces in pose_xcorr['drift']."""
-        import iblnm.data as data_mod
+    @staticmethod
+    def _xcorr_session(mock_session_series, wheel_times=None):
+        """Build a session with an imposed late-third paw/wheel shift.
+
+        ``wheel_times`` overrides the wheel sample times (default: the uniform
+        grid); used to exercise non-uniform / float32 timestamps.
+        """
         from iblnm.data import PhotometrySession
         fs, dur, shift = 100, 60.0, 8  # shift in samples
         t = np.arange(0, dur, 1 / fs)
@@ -1619,16 +1622,30 @@ class TestPoseMethods:
             'paw_r_likelihood': np.zeros(n),  # untracked → does not contribute
         })
         ps.pose_times = t
-        ps.wheel = pd.DataFrame({'times': t, 'position': np.cumsum(wheel_velocity) / fs,
-                                 'velocity': wheel_velocity})
+        ps.wheel = pd.DataFrame({
+            'times': t if wheel_times is None else wheel_times,
+            'position': np.cumsum(wheel_velocity) / fs, 'velocity': wheel_velocity})
         ps.wheel_fs = fs
+        return ps, shift, fs
 
-        # Dense onsets so every third clears the coverage guard.
-        monkeypatch.setattr(data_mod, 'movements',
-                            lambda *a, **k: (np.arange(0, dur, 0.5), None, None, None))
+    def test_extract_paw_wheel_xcorr_recovers_drift(self, mock_session_series):
+        """An imposed late-third paw/wheel shift surfaces in pose_xcorr['drift']."""
+        ps, shift, fs = self._xcorr_session(mock_session_series)
         ps.extract_paw_wheel_xcorr()
         np.testing.assert_allclose(ps.pose_xcorr['peak_lags'][0], 0.0, atol=1 / fs)
         np.testing.assert_allclose(ps.pose_xcorr['drift'], shift / fs, atol=1 / fs)
+
+    def test_extract_paw_wheel_xcorr_float32_wheel_times(self, mock_session_series):
+        """float32 (non-uniform) wheel times do not raise — regression for the
+        movements() even-sampling crash; drift stays finite."""
+        ps, shift, fs = self._xcorr_session(mock_session_series)
+        # float32 storage makes consecutive dt non-uniform well above the 1e-10
+        # tolerance that brainbox.movements() asserted on (the crash class).
+        ps.wheel['times'] = ps.wheel['times'].values.astype(np.float32)
+        assert not np.all(np.abs(np.diff(ps.wheel['times'].values)
+                                 - (1 / fs)) < 1e-10)  # genuinely non-uniform
+        ps.extract_paw_wheel_xcorr()
+        assert np.isfinite(ps.pose_xcorr['drift'])
 
 
 # =============================================================================

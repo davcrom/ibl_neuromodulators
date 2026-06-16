@@ -411,7 +411,6 @@ LIKELIHOOD_THRESHOLD = 0.9          # gate keypoint speed where confidence < thi
 MOVEMENT_RESPONSE_WINDOW = (0.1, 0.35)  # post-event scalar window (reuse BASELINE_WINDOW for pre)
 CROSSCORR_LAG_WINDOW = 5.0          # paw/wheel cross-correlation lag half-width (s)
 CROSSCORR_FS = WHEEL_FS             # common resample rate for paw/wheel cross-correlation (Hz)
-MIN_ONSETS_PER_THIRD = 10           # movements() onsets below which a session-third's lag is NaN
 LP_QC_LABELS = ('qc_lp', 'qc_movement')  # manual QC fields; IBL vocab, default 'NOT_SET'
 
 # Bodypart trace label -> (event column, keypoints, reduction). Read by tickets 02, 05.

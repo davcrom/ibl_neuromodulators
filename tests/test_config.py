@@ -7,7 +7,6 @@ def test_pose_qc_scalar_constants():
     assert config.MOVEMENT_RESPONSE_WINDOW == (0.1, 0.35)
     assert config.CROSSCORR_LAG_WINDOW == 5.0
     assert config.CROSSCORR_FS == config.WHEEL_FS
-    assert config.MIN_ONSETS_PER_THIRD == 10
 
 
 def test_pose_qc_path_constants():
