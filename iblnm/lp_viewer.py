@@ -24,6 +24,7 @@ from iblnm.config import (
     DATASET_CATEGORIES,
     LP_QC_LABELS,
     POSE_MEASURES,
+    SESSIONTYPE2COLOR,
 )
 from iblnm.data import (
     LP_QC_NOT_SET,
@@ -372,13 +373,14 @@ class LPViewer(QtWidgets.QMainWindow):
         for session_type in sorted(self.model.df_cohort['session_type'].dropna().unique()):
             check = QtWidgets.QCheckBox(session_type)
             check.setChecked(True)
-            check.stateChanged.connect(lambda _: self._refresh_dropdown())
+            check.stateChanged.connect(lambda _: self._on_types_changed())
             self.type_checks.append(check)
             type_row.addWidget(check)
         box.addLayout(type_row)
 
         self.hist_fig = Figure(figsize=(4, 6))
         self.hist_canvas = FigureCanvasQTAgg(self.hist_fig)
+        self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
         self._draw_histograms()
         box.addWidget(self.hist_canvas)
 
@@ -444,22 +446,40 @@ class LPViewer(QtWidgets.QMainWindow):
         return panel
 
     def _draw_histograms(self) -> None:
-        """One brushable histogram per cohort measure; each SpanSelector stores
-        that measure's range and refreshes the dropdown. Double-clicking an
-        axes clears its range."""
+        """Per cohort measure, overlay one density histogram per checked session
+        type (colored via SESSIONTYPE2COLOR, alpha < 1). Each axes carries a
+        brushable SpanSelector; stored brush ranges are re-applied as visible
+        spans. Rebuilds the figure from scratch so it tracks the checkbox state.
+        Double-clicking an axes clears its range."""
+        self.hist_fig.clear()
         self.span_selectors = {}
         self.hist_axes = {}
+        types = self._selected_types()
         for i, measure in enumerate(HISTOGRAM_MEASURES):
             ax = self.hist_fig.add_subplot(len(HISTOGRAM_MEASURES), 1, i + 1)
-            ax.hist(self.model.df_cohort[measure].dropna(), bins=30)
+            edges, per_type = histogram_by_type(self.model.df_cohort, measure, types)
+            for session_type, density in per_type.items():
+                ax.stairs(density, edges, fill=True, alpha=0.5,
+                          color=SESSIONTYPE2COLOR.get(session_type),
+                          label=session_type)
             ax.set_title(HISTOGRAM_TITLES[measure], fontsize=8)
+            if i == 0 and types:
+                ax.legend(fontsize=6)
             selector = SpanSelector(
                 ax, lambda lo, hi, m=measure: self._on_brush(m, lo, hi),
                 'horizontal', useblit=True, interactive=True)
+            if measure in self.brush_ranges:
+                selector.extents = self.brush_ranges[measure]
             self.span_selectors[measure] = selector
             self.hist_axes[ax] = measure
-        self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
         self.hist_fig.tight_layout()
+        self.hist_canvas.draw_idle()
+
+    def _on_types_changed(self) -> None:
+        """Checkbox toggle: redraw the per-type histograms and refilter the
+        dropdown."""
+        self._draw_histograms()
+        self._refresh_dropdown()
 
     # -- filtering ------------------------------------------------------------
 
