@@ -102,6 +102,16 @@ def format_session_title(
             f'performance: {performance}')
 
 
+def trial_frame_window(
+    stimOn_time: float, feedback_time: float
+) -> tuple[float, float]:
+    """Return the frame-extraction window for a trial: 0.1 s before stimulus
+    onset to 0.5 s after feedback, so the pre-stimulus baseline and the
+    post-feedback consummatory response are both visible.
+    """
+    return (stimOn_time - 0.1, feedback_time + 0.5)
+
+
 def apply_label(
     df_pose: pd.DataFrame, eid: str, field: str, value: str
 ) -> pd.DataFrame:
@@ -516,9 +526,10 @@ class LPViewer(QtWidgets.QMainWindow):
         if self.frame_source is None:
             return
         trial = self.trials.iloc[trial_idx]
-        self.trial_frames = frames_in_trial(
-            self.frame_source.camera_times,
+        low, high = trial_frame_window(
             trial['stimOn_times'], trial['feedback_times'])
+        self.trial_frames = frames_in_trial(
+            self.frame_source.camera_times, low, high)
         self.frame_pos = 0
         self._draw_frame()
 
@@ -528,6 +539,11 @@ class LPViewer(QtWidgets.QMainWindow):
         self.frame_pos = int(np.clip(
             self.frame_pos + delta, 0, len(self.trial_frames) - 1))
         self._draw_frame()
+
+    def _step_trial(self, delta: int) -> None:
+        """Move the trial slider by `delta`; its valueChanged drives the frame
+        view, so slider and frames stay in sync."""
+        self.trial_slider.setValue(self.trial_slider.value() + delta)
 
     def _draw_frame(self) -> None:
         """Render the current frame with each keypoint overlaid at an alpha set
@@ -553,6 +569,10 @@ class LPViewer(QtWidgets.QMainWindow):
             self._step_frame(-1)
         elif event.key() == QtCore.Qt.Key_Right:
             self._step_frame(1)
+        elif event.key() == QtCore.Qt.Key_Up:
+            self._step_trial(-1)
+        elif event.key() == QtCore.Qt.Key_Down:
+            self._step_trial(1)
         else:
             super().keyPressEvent(event)
 

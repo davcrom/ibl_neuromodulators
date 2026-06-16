@@ -16,6 +16,7 @@ from iblnm.lp_viewer import (
     frames_in_trial,
     likelihood_to_alpha,
     persist_labels,
+    trial_frame_window,
 )
 
 
@@ -140,6 +141,26 @@ def test_frames_in_trial_empty_window():
     camera_times = np.array([0.0, 0.5, 1.0])
     idx = frames_in_trial(camera_times, 0.6, 0.9)
     assert idx.tolist() == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# trial_frame_window
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_trial_frame_window_pads_bounds():
+    assert trial_frame_window(1.0, 3.0) == pytest.approx((0.9, 3.5))
+
+
+def test_trial_frame_window_widens_frame_set():
+    # frames at every 0.1 s; trial [1.0, 3.0] padded to [0.9, 3.5] picks up
+    # the frame 0.1 s before stimOn and frames out to 0.5 s after feedback.
+    camera_times = np.round(np.arange(0.0, 4.0, 0.1), 1)
+    lo, hi = trial_frame_window(1.0, 3.0)
+    padded = frames_in_trial(camera_times, lo, hi)
+    tight = frames_in_trial(camera_times, 1.0, 3.0)
+    assert set(tight) < set(padded)
+    assert camera_times[padded].min() == pytest.approx(0.9)
+    assert camera_times[padded].max() == pytest.approx(3.5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
