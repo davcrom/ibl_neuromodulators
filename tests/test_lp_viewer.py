@@ -7,6 +7,8 @@ import xarray as xr
 
 from iblnm.data import _save_pose_traces, _save_pose_xcorr
 from iblnm.lp_viewer import (
+    HISTOGRAM_MEASURES,
+    HISTOGRAM_TITLES,
     LPViewerModel,
     apply_label,
     filter_sessions_table,
@@ -55,6 +57,20 @@ def test_filter_sessions_table_empty_ranges(pose_table):
     eids = filter_sessions_table(
         pose_table, {}, ('biased', 'ephys', 'training'))
     assert eids == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HISTOGRAM_TITLES
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_histogram_titles_cover_measures():
+    assert set(HISTOGRAM_TITLES) == set(HISTOGRAM_MEASURES)
+    assert HISTOGRAM_TITLES == {
+        'paw': 'paw speed @ firstMovement',
+        'nose': 'nose speed @ stimOn',
+        'tongue_speed': 'tongue speed @ feedback',
+        'tongue_likelihood': 'tongue likelihood @ feedback',
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

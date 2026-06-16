@@ -231,6 +231,12 @@ class FrameSource:
 # ─────────────────────────────────────────────────────────────────────────────
 
 HISTOGRAM_MEASURES = list(POSE_MEASURES)  # paw, nose, tongue_speed, tongue_likelihood
+HISTOGRAM_TITLES = {
+    'paw': 'paw speed @ firstMovement',
+    'nose': 'nose speed @ stimOn',
+    'tongue_speed': 'tongue speed @ feedback',
+    'tongue_likelihood': 'tongue likelihood @ feedback',
+}
 
 
 class LPViewer(QtWidgets.QMainWindow):
@@ -342,10 +348,10 @@ class LPViewer(QtWidgets.QMainWindow):
         for i, measure in enumerate(HISTOGRAM_MEASURES):
             ax = self.hist_fig.add_subplot(len(HISTOGRAM_MEASURES), 1, i + 1)
             ax.hist(self.model.df_cohort[measure].dropna(), bins=30)
-            ax.set_ylabel(measure, fontsize=8)
+            ax.set_title(HISTOGRAM_TITLES[measure], fontsize=8)
             selector = SpanSelector(
                 ax, lambda lo, hi, m=measure: self._on_brush(m, lo, hi),
-                'horizontal', useblit=True)
+                'horizontal', useblit=True, interactive=True)
             self.span_selectors.append(selector)
         self.hist_fig.tight_layout()
 
