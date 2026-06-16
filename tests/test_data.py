@@ -1588,6 +1588,7 @@ class TestPoseMethods:
         })
         ps.pose_times = t
         ps.trials = pd.DataFrame({
+            'stimOn_times': [9.0, 19.0, 29.0],
             'firstMovement_times': [10.0, 20.0, 30.0],
             'feedback_times': [12.0, 22.0, 32.0],
         })
