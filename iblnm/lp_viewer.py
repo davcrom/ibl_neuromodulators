@@ -253,7 +253,7 @@ class LPViewer(QtWidgets.QMainWindow):
         super().__init__()
         self.model = model
         self.one = one
-        self.active_brush: tuple[str, tuple[float, float]] | None = None
+        self.brush_ranges: dict[str, tuple[float, float]] = {}
         self.frame_source: FrameSource | None = None
         self.trial_frames = np.array([], dtype=int)
         self.frame_pos = 0
@@ -342,9 +342,11 @@ class LPViewer(QtWidgets.QMainWindow):
         return panel
 
     def _draw_histograms(self) -> None:
-        """One brushable histogram per cohort measure; each SpanSelector sets
-        the active brush range for that measure and refreshes the dropdown."""
-        self.span_selectors = []
+        """One brushable histogram per cohort measure; each SpanSelector stores
+        that measure's range and refreshes the dropdown. Double-clicking an
+        axes clears its range."""
+        self.span_selectors = {}
+        self.hist_axes = {}
         for i, measure in enumerate(HISTOGRAM_MEASURES):
             ax = self.hist_fig.add_subplot(len(HISTOGRAM_MEASURES), 1, i + 1)
             ax.hist(self.model.df_cohort[measure].dropna(), bins=30)
@@ -352,7 +354,9 @@ class LPViewer(QtWidgets.QMainWindow):
             selector = SpanSelector(
                 ax, lambda lo, hi, m=measure: self._on_brush(m, lo, hi),
                 'horizontal', useblit=True, interactive=True)
-            self.span_selectors.append(selector)
+            self.span_selectors[measure] = selector
+            self.hist_axes[ax] = measure
+        self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
         self.hist_fig.tight_layout()
 
     # -- filtering ------------------------------------------------------------
@@ -365,22 +369,28 @@ class LPViewer(QtWidgets.QMainWindow):
         )
 
     def _on_brush(self, measure: str, low: float, high: float) -> None:
-        self.active_brush = (measure, (low, high))
+        self.brush_ranges[measure] = (low, high)
         self._refresh_dropdown()
 
+    def _on_hist_click(self, event) -> None:
+        """Double-clicking a histogram clears that measure's range."""
+        if not event.dblclick or event.inaxes not in self.hist_axes:
+            return
+        measure = self.hist_axes[event.inaxes]
+        if self.brush_ranges.pop(measure, None) is not None:
+            self.span_selectors[measure].clear()
+            self.hist_canvas.draw_idle()
+            self._refresh_dropdown()
+
     def _refresh_dropdown(self) -> None:
-        """Repopulate the session dropdown from the active brush + type filter."""
-        if self.active_brush is None:
-            eids = []
-        else:
-            measure, value_range = self.active_brush
-            eids = self.model.filter(measure, value_range, self._selected_types())
+        """Repopulate the session dropdown from the brushed ranges + type
+        filter. Does not auto-load a session — loading happens only when the
+        user picks an entry."""
+        eids = self.model.filter(self.brush_ranges, self._selected_types())
         self.session_combo.blockSignals(True)
         self.session_combo.clear()
         self.session_combo.addItems(eids)
         self.session_combo.blockSignals(False)
-        if eids:
-            self._on_session_selected(eids[0])
 
     # -- session display ------------------------------------------------------
 
