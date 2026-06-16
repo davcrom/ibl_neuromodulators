@@ -12,6 +12,7 @@ from iblnm.lp_viewer import (
     LPViewerModel,
     apply_label,
     filter_sessions_table,
+    format_event_timings,
     format_session_title,
     frames_in_trial,
     keypoint_colors,
@@ -98,6 +99,22 @@ def test_format_session_title_no_performance():
         title = format_session_title(
             'a1b2c3d4e5f6', 'SWC_065', '2023-05-12', 'biased', fraction)
         assert title.endswith('performance: —')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# format_event_timings
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_format_event_timings_signed_deltas():
+    labels = format_event_timings(1.0, stimOn=0.7, firstMovement=1.2, feedback=1.5)
+    assert labels == [
+        'stimOn: +0.30 s', 'firstMovement: -0.20 s', 'feedback: -0.50 s']
+
+
+def test_format_event_timings_nan_first_movement():
+    labels = format_event_timings(
+        1.0, stimOn=0.7, firstMovement=float('nan'), feedback=1.5)
+    assert labels[1] == 'firstMovement: —'
 
 
 # ─────────────────────────────────────────────────────────────────────────────

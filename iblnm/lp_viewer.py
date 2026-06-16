@@ -103,6 +103,26 @@ def format_session_title(
             f'performance: {performance}')
 
 
+def format_event_timings(
+    frame_time: float,
+    stimOn: float,
+    firstMovement: float,
+    feedback: float,
+) -> list[str]:
+    """Label the current frame's signed time relative to each trial event.
+
+    Each label reads ``{event}: {frame_time - event_time:+.2f} s`` — negative
+    before the event, positive after — or ``{event}: —`` when the event time is
+    NaN (e.g. `firstMovement` on no-movement trials).
+    """
+    events = {'stimOn': stimOn, 'firstMovement': firstMovement,
+              'feedback': feedback}
+    return [
+        f'{name}: —' if np.isnan(time) else f'{name}: {frame_time - time:+.2f} s'
+        for name, time in events.items()
+    ]
+
+
 def keypoint_colors(keypoints: list[str]) -> dict[str, tuple]:
     """Map each keypoint to a distinct `tab10` color, keyed by name.
 
@@ -371,7 +391,14 @@ class LPViewer(QtWidgets.QMainWindow):
         self.frame_canvas = FigureCanvasQTAgg(self.frame_fig)
         self.frame_ax = self.frame_fig.add_subplot(111)
         self.frame_ax.set_axis_off()
-        box.addWidget(self.frame_canvas)
+        frame_row = QtWidgets.QHBoxLayout()
+        frame_row.addWidget(self.frame_canvas)
+        event_col = QtWidgets.QVBoxLayout()
+        self.event_labels = [QtWidgets.QLabel('—') for _ in range(3)]
+        for label in self.event_labels:
+            event_col.addWidget(label)
+        frame_row.addLayout(event_col)
+        box.addLayout(frame_row)
 
         controls = QtWidgets.QHBoxLayout()
         self.trial_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -541,6 +568,7 @@ class LPViewer(QtWidgets.QMainWindow):
         first frame."""
         if self.frame_source is None:
             return
+        self.current_trial_idx = trial_idx
         trial = self.trials.iloc[trial_idx]
         low, high = trial_frame_window(
             trial['stimOn_times'], trial['feedback_times'])
@@ -577,8 +605,21 @@ class LPViewer(QtWidgets.QMainWindow):
         for name, (x, y, likelihood) in keypoints.items():
             self.frame_ax.scatter(x, y, s=30, color=self.keypoint_colors[name],
                                   alpha=float(likelihood_to_alpha(likelihood)))
-        self.frame_ax.set_title(f'frame {frame_idx}')
+        self.frame_ax.set_title(
+            f'trial {self.current_trial_idx} · frame {frame_idx}')
+        self._update_event_labels(frame_idx)
         self.frame_canvas.draw_idle()
+
+    def _update_event_labels(self, frame_idx: int) -> None:
+        """Set the three event-timing labels for the current frame relative to
+        the current trial's stimOn, firstMovement, and feedback times."""
+        trial = self.trials.iloc[self.current_trial_idx]
+        frame_time = self.frame_source.camera_times[frame_idx]
+        timings = format_event_timings(
+            frame_time, trial['stimOn_times'], trial['firstMovement_times'],
+            trial['feedback_times'])
+        for label, text in zip(self.event_labels, timings):
+            label.setText(text)
 
     def keyPressEvent(self, event) -> None:
         if event.key() == QtCore.Qt.Key_Left:
