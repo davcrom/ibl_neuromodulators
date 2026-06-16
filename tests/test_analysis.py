@@ -392,6 +392,36 @@ class TestEventLockedScalar:
         assert np.isnan(scalar)
 
 
+class TestMovementDelta:
+    def _step_trace(self, n_trials, level, lo, hi):
+        """Trace flat at `level` inside [lo, hi), zero elsewhere, on a shared axis."""
+        tpts = np.linspace(-1, 1, 81)
+        trace = np.zeros((n_trials, len(tpts)))
+        trace[:, (tpts >= lo) & (tpts < hi)] = level
+        return trace, tpts
+
+    def test_response_and_baseline_from_separate_traces(self):
+        """Scalar = mean(response_trace over response_window) minus
+        mean(baseline_trace over baseline_window)."""
+        from iblnm.analysis import movement_delta
+        response_trace, tpts = self._step_trace(5, level=7.0, lo=0.1, hi=0.35)
+        baseline_trace, _ = self._step_trace(5, level=2.0, lo=-0.2, hi=0.0)
+        scalar = movement_delta(
+            response_trace, baseline_trace, tpts,
+            response_window=(0.1, 0.35), baseline_window=(-0.2, 0), min_valid=1)
+        np.testing.assert_allclose(scalar, 5.0)
+
+    def test_all_nan_window_is_nan(self):
+        from iblnm.analysis import movement_delta
+        response_trace, tpts = self._step_trace(1, level=7.0, lo=0.1, hi=0.35)
+        baseline_trace, _ = self._step_trace(1, level=2.0, lo=-0.2, hi=0.0)
+        response_trace[:, (tpts >= 0.1) & (tpts < 0.35)] = np.nan
+        scalar = movement_delta(
+            response_trace, baseline_trace, tpts,
+            response_window=(0.1, 0.35), baseline_window=(-0.2, 0), min_valid=1)
+        assert np.isnan(scalar)
+
+
 class TestNormalizedCrosscorr:
     def test_identical_signals_peak_at_zero(self):
         """Identical signals → peak lag 0, normalized peak ≈ 1."""

@@ -189,6 +189,23 @@ def _guarded_window_mean(trace, tpts, window, min_valid):
     return np.nanmean(block)
 
 
+def movement_delta(response_trace, baseline_trace, tpts,
+                   response_window=MOVEMENT_RESPONSE_WINDOW,
+                   baseline_window=BASELINE_WINDOW, min_valid=1):
+    """Post-minus-pre movement scalar from two separately event-locked traces.
+
+    Unlike :func:`event_locked_scalar`, the response and baseline are drawn from
+    different trace matrices that share a time axis: ``response_trace`` is locked
+    to the measure's own event, ``baseline_trace`` to stimulus onset. Returns
+    ``mean(response_trace over response_window) - mean(baseline_trace over
+    baseline_window)``, NaN-aware; NaN if either window has fewer than
+    ``min_valid`` valid samples.
+    """
+    response = _guarded_window_mean(response_trace, tpts, response_window, min_valid)
+    baseline = _guarded_window_mean(baseline_trace, tpts, baseline_window, min_valid)
+    return response - baseline
+
+
 def event_locked_scalar(trace, tpts, response_window=MOVEMENT_RESPONSE_WINDOW,
                         baseline_window=BASELINE_WINDOW, min_valid=1):
     """Trial-averaged post-minus-pre scalar from an event-locked trace matrix.
