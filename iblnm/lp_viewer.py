@@ -403,6 +403,9 @@ class LPViewer(QtWidgets.QMainWindow):
         controls = QtWidgets.QHBoxLayout()
         self.trial_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.trial_slider.setEnabled(False)
+        # Don't let the slider grab focus, or it consumes the arrow keys before
+        # they reach keyPressEvent (Left/Right step frames, Up/Down step trials).
+        self.trial_slider.setFocusPolicy(QtCore.Qt.NoFocus)
         self.trial_slider.valueChanged.connect(self._on_trial_changed)
         prev_button = QtWidgets.QPushButton('◀ Prev frame')
         next_button = QtWidgets.QPushButton('Next frame ▶')
