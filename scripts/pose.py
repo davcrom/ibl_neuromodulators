@@ -131,6 +131,8 @@ if __name__ == '__main__':
     parser.add_argument('--collect', action='store_true',
                         help='Skip extraction; roll up existing video H5 groups '
                              f'into {POSE_FPATH} and exit')
+    parser.add_argument('--eids', nargs='+', default=None,
+                        help='Restrict processing to these session eids (testing)')
     args = parser.parse_args()
 
     if args.collect:
@@ -142,7 +144,10 @@ if __name__ == '__main__':
     one = _get_default_connection()
 
     print(f"Loading sessions from {SESSIONS_FPATH}")
-    group = PhotometrySessionGroup.from_catalog(pd.read_parquet(SESSIONS_FPATH), one=one)
+    catalog = pd.read_parquet(SESSIONS_FPATH)
+    if args.eids:
+        catalog = catalog[catalog['eid'].isin(args.eids)]
+    group = PhotometrySessionGroup.from_catalog(catalog, one=one)
     group.filter_sessions(
         session_types=False, qc_blockers=set(),
         targetnms=False, min_performance=False,
