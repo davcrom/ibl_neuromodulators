@@ -12,6 +12,7 @@ from iblnm.lp_viewer import (
     LPViewerModel,
     apply_label,
     filter_sessions_table,
+    format_session_title,
     frames_in_trial,
     likelihood_to_alpha,
     persist_labels,
@@ -71,6 +72,30 @@ def test_histogram_titles_cover_measures():
         'tongue_speed': 'tongue speed @ feedback',
         'tongue_likelihood': 'tongue likelihood @ feedback',
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# format_session_title
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_format_session_title_typical():
+    title = format_session_title(
+        'a1b2c3d4e5f6', 'SWC_065', '2023-05-12T09:30:00', 'biased', 0.84)
+    assert title == 'a1b2c3d4 · SWC_065 · 2023-05-12 · biased · performance: 84%'
+
+
+def test_format_session_title_accepts_timestamp():
+    title = format_session_title(
+        'a1b2c3d4e5f6', 'SWC_065', pd.Timestamp('2023-05-12 09:30'),
+        'biased', 0.84)
+    assert '2023-05-12' in title
+
+
+def test_format_session_title_no_performance():
+    for fraction in (None, float('nan')):
+        title = format_session_title(
+            'a1b2c3d4e5f6', 'SWC_065', '2023-05-12', 'biased', fraction)
+        assert title.endswith('performance: —')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

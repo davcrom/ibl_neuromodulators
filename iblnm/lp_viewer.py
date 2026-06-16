@@ -80,6 +80,28 @@ def frames_in_trial(
         (camera_times >= trial_start) & (camera_times <= trial_end))
 
 
+def format_session_title(
+    eid: str,
+    subject: str,
+    start_time: object,
+    session_type: str,
+    fraction_correct: float | None,
+) -> str:
+    """Build the one-line session title shown above the display panels.
+
+    Format: ``{eid[:8]} · {subject} · {YYYY-MM-DD} · {session_type} ·
+    performance: {pct}``, where ``pct`` is the whole-percent
+    ``fraction_correct`` or ``—`` when it is missing. ``start_time`` may be an
+    ISO string or a datetime/Timestamp.
+    """
+    date = pd.to_datetime(start_time).strftime('%Y-%m-%d')
+    performance = (
+        '—' if fraction_correct is None or pd.isna(fraction_correct)
+        else f'{round(fraction_correct * 100)}%')
+    return (f'{eid[:8]} · {subject} · {date} · {session_type} · '
+            f'performance: {performance}')
+
+
 def apply_label(
     df_pose: pd.DataFrame, eid: str, field: str, value: str
 ) -> pd.DataFrame:
@@ -276,14 +298,15 @@ class LPViewer(QtWidgets.QMainWindow):
         box = QtWidgets.QVBoxLayout(panel)
 
         box.addWidget(QtWidgets.QLabel('Session types'))
-        self.type_list = QtWidgets.QListWidget()
+        type_row = QtWidgets.QHBoxLayout()
+        self.type_checks = []
         for session_type in sorted(self.model.df_cohort['session_type'].dropna().unique()):
-            item = QtWidgets.QListWidgetItem(session_type)
-            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
-            item.setCheckState(QtCore.Qt.Checked)
-            self.type_list.addItem(item)
-        self.type_list.itemChanged.connect(lambda _: self._refresh_dropdown())
-        box.addWidget(self.type_list)
+            check = QtWidgets.QCheckBox(session_type)
+            check.setChecked(True)
+            check.stateChanged.connect(lambda _: self._refresh_dropdown())
+            self.type_checks.append(check)
+            type_row.addWidget(check)
+        box.addLayout(type_row)
 
         self.hist_fig = Figure(figsize=(4, 6))
         self.hist_canvas = FigureCanvasQTAgg(self.hist_fig)
@@ -294,9 +317,6 @@ class LPViewer(QtWidgets.QMainWindow):
         self.session_combo = QtWidgets.QComboBox()
         self.session_combo.currentTextChanged.connect(self._on_session_selected)
         box.addWidget(self.session_combo)
-
-        self.performance_label = QtWidgets.QLabel('fraction_correct: —')
-        box.addWidget(self.performance_label)
 
         self.label_combos = {}
         for field in LP_QC_LABELS:
@@ -314,6 +334,9 @@ class LPViewer(QtWidgets.QMainWindow):
         """The event-locked + cross-correlation panels and the frame viewer."""
         panel = QtWidgets.QWidget()
         box = QtWidgets.QVBoxLayout(panel)
+
+        self.title_label = QtWidgets.QLabel('—')
+        box.addWidget(self.title_label)
 
         self.panel_fig = Figure(figsize=(8, 5))
         self.panel_canvas = FigureCanvasQTAgg(self.panel_fig)
@@ -363,10 +386,7 @@ class LPViewer(QtWidgets.QMainWindow):
 
     def _selected_types(self) -> tuple[str, ...]:
         return tuple(
-            self.type_list.item(i).text()
-            for i in range(self.type_list.count())
-            if self.type_list.item(i).checkState() == QtCore.Qt.Checked
-        )
+            check.text() for check in self.type_checks if check.isChecked())
 
     def _on_brush(self, measure: str, low: float, high: float) -> None:
         self.brush_ranges[measure] = (low, high)
@@ -400,10 +420,10 @@ class LPViewer(QtWidgets.QMainWindow):
         self.current_eid = eid
         panels = self.model.session_panels(eid)
         self._draw_panels(panels)
-        fraction = panels.fraction_correct
-        self.performance_label.setText(
-            f'fraction_correct: {fraction:.3f}' if fraction is not None
-            else 'fraction_correct: —')
+        row = self.model.df_cohort.loc[self.model.df_cohort['eid'] == eid].iloc[0]
+        self.title_label.setText(format_session_title(
+            eid, row['subject'], row['start_time'], row['session_type'],
+            panels.fraction_correct))
         self._sync_label_combos(eid)
         self._load_frame_source(eid)
 
