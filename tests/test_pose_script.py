@@ -108,6 +108,13 @@ class TestProcessPoseSkip:
         fake_ps.save_h5.assert_not_called()
 
 
+class TestReadEids:
+    def test_reads_nonempty_stripped_lines(self, tmp_path):
+        f = tmp_path / 'eids.csv'
+        f.write_text('aaa\nbbb\n\n  ccc  \n')
+        assert pose.read_eids(f) == ['aaa', 'bbb', 'ccc']
+
+
 class TestCollectPose:
     def test_rollup_two_sessions(self, tmp_path, mock_session_series):
         steps_a = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,

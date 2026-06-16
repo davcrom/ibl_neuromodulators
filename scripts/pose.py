@@ -121,6 +121,12 @@ def collect_pose(h5_dir) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def read_eids(path) -> list[str]:
+    """Read one eid per line from a text/CSV file, ignoring blank lines."""
+    return [line.strip() for line in Path(path).read_text().splitlines()
+            if line.strip()]
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='LightningPose pose extraction pipeline')
     parser.add_argument('--reprocess', action='store_true',
@@ -133,6 +139,9 @@ if __name__ == '__main__':
                              f'into {POSE_FPATH} and exit')
     parser.add_argument('--eids', nargs='+', default=None,
                         help='Restrict processing to these session eids (testing)')
+    parser.add_argument('--eids-file', default=None,
+                        help='Restrict processing to eids listed one-per-line in '
+                             'this file (avoids shell expansion under IPython)')
     args = parser.parse_args()
 
     if args.collect:
@@ -145,8 +154,12 @@ if __name__ == '__main__':
 
     print(f"Loading sessions from {SESSIONS_FPATH}")
     catalog = pd.read_parquet(SESSIONS_FPATH)
-    if args.eids:
-        catalog = catalog[catalog['eid'].isin(args.eids)]
+    eids = read_eids(args.eids_file) if args.eids_file else args.eids
+    if eids:
+        catalog = catalog[catalog['eid'].isin(eids)]
+        if catalog.empty:
+            raise SystemExit(f"None of the {len(eids)} requested eids are in "
+                             f"{SESSIONS_FPATH}")
     group = PhotometrySessionGroup.from_catalog(catalog, one=one)
     group.filter_sessions(
         session_types=False, qc_blockers=set(),
