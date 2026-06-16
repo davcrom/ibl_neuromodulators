@@ -386,6 +386,10 @@ class LPViewer(QtWidgets.QMainWindow):
 
         box.addWidget(QtWidgets.QLabel('Sessions in range'))
         self.session_combo = QtWidgets.QComboBox()
+        # NoFocus so the combo never grabs the keyboard; otherwise it consumes
+        # Up/Down (to change its item) before they reach keyPressEvent, which
+        # is where Up/Down drive trial navigation. Mouse selection still works.
+        self.session_combo.setFocusPolicy(QtCore.Qt.NoFocus)
         self.session_combo.currentTextChanged.connect(self._on_session_selected)
         box.addWidget(self.session_combo)
 
@@ -393,6 +397,7 @@ class LPViewer(QtWidgets.QMainWindow):
         for field in LP_QC_LABELS:
             box.addWidget(QtWidgets.QLabel(field))
             combo = QtWidgets.QComboBox()
+            combo.setFocusPolicy(QtCore.Qt.NoFocus)
             combo.addItems([LP_QC_NOT_SET, *IBL_QC_VALUES])
             combo.currentTextChanged.connect(
                 lambda value, f=field: self._on_label(f, value))
