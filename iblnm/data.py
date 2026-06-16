@@ -1393,15 +1393,19 @@ class PhotometrySession(PhotometrySessionLoader):
         Stores the pose DataFrame (columns ``{part}_x``, ``{part}_y``,
         ``{part}_likelihood``) in ``self.pose`` and the frame times (session
         clock, seconds) in ``self.pose_times``. Raises ``MissingLP`` when the
-        left-camera pose object is not available, so batch extraction can log
-        and skip.
+        pose dataset is not available, so batch extraction can log and skip.
+
+        Loads only the two datasets used (``lightningPose`` and ``times``) via
+        ``load_dataset`` rather than the whole ``leftCamera`` object, which would
+        also fetch ``features`` and ``ROIMotionEnergy`` that we never use.
         """
         try:
-            camera = self.one.load_object(self.eid, 'leftCamera', collection='alf')
+            self.pose = self.one.load_dataset(
+                self.eid, '_ibl_leftCamera.lightningPose.pqt', collection='alf')
+            self.pose_times = np.asarray(self.one.load_dataset(
+                self.eid, '_ibl_leftCamera.times.npy', collection='alf'))
         except ALFObjectNotFound:
             raise MissingLP("leftCamera.lightningPose")
-        self.pose = camera['lightningPose']
-        self.pose_times = np.asarray(camera['times'])
 
     def extract_movement_traces(self):
         """Extract per-trial peri-event movement traces for each bodypart.

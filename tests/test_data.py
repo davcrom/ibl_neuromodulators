@@ -1536,14 +1536,33 @@ class TestSaveLoadH5:
 class TestPoseMethods:
     """PhotometrySession LP pose loading and extraction."""
 
+    def test_load_pose_loads_only_pose_and_times(self, mock_session_series):
+        """load_pose pulls only lightningPose + times via load_dataset, never the
+        whole leftCamera object (which would also fetch features/ROIMotionEnergy)."""
+        from iblnm.data import PhotometrySession
+        pose_df = pd.DataFrame({'paw_l_x': [0.0, 1.0], 'paw_l_y': [0.0, 0.0],
+                                'paw_l_likelihood': [1.0, 1.0]})
+        times = np.array([0.0, 0.1])
+
+        def fake_load_dataset(eid, name, **kw):
+            return pose_df if 'lightningPose' in name else times
+
+        one = MagicMock()
+        one.load_dataset.side_effect = fake_load_dataset
+        ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        ps.load_pose()
+        one.load_object.assert_not_called()
+        pd.testing.assert_frame_equal(ps.pose, pose_df)
+        np.testing.assert_array_equal(ps.pose_times, times)
+
     def test_load_pose_missing_raises_missing_lp(self, mock_session_series):
-        """load_pose raises MissingLP when the camera object is absent."""
+        """load_pose raises MissingLP when the pose dataset is absent."""
         from one.alf.exceptions import ALFObjectNotFound
         from iblnm.data import PhotometrySession
         from iblnm.validation import MissingLP
 
         one = MagicMock()
-        one.load_object.side_effect = ALFObjectNotFound('leftCamera')
+        one.load_dataset.side_effect = ALFObjectNotFound('leftCamera.lightningPose')
         ps = PhotometrySession(mock_session_series, one=one, load_data=False)
         with pytest.raises(MissingLP):
             ps.load_pose()
