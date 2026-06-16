@@ -14,6 +14,7 @@ from iblnm.lp_viewer import (
     filter_sessions_table,
     format_session_title,
     frames_in_trial,
+    keypoint_colors,
     likelihood_to_alpha,
     persist_labels,
     trial_frame_window,
@@ -97,6 +98,24 @@ def test_format_session_title_no_performance():
         title = format_session_title(
             'a1b2c3d4e5f6', 'SWC_065', '2023-05-12', 'biased', fraction)
         assert title.endswith('performance: —')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# keypoint_colors
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_keypoint_colors_one_distinct_per_keypoint():
+    keypoints = ['nose_tip', 'paw_l', 'paw_r', 'tongue_end_l', 'tongue_end_r']
+    colors = keypoint_colors(keypoints)
+    assert set(colors) == set(keypoints)
+    assert len(set(colors.values())) == len(keypoints)
+
+
+def test_keypoint_colors_stable_by_name():
+    first = keypoint_colors(['paw_l', 'paw_r', 'nose_tip'])
+    second = keypoint_colors(['paw_l', 'paw_r', 'nose_tip'])
+    assert first['paw_l'] == second['paw_l']
+    assert first['nose_tip'] == second['nose_tip']
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -14,6 +14,7 @@ import cv2
 import h5py
 import numpy as np
 import pandas as pd
+from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
@@ -100,6 +101,20 @@ def format_session_title(
         else f'{round(fraction_correct * 100)}%')
     return (f'{eid[:8]} · {subject} · {date} · {session_type} · '
             f'performance: {performance}')
+
+
+def keypoint_colors(keypoints: list[str]) -> dict[str, tuple]:
+    """Map each keypoint to a distinct `tab10` color, keyed by name.
+
+    Colors are assigned over the sorted keypoint names so the same keypoint
+    always gets the same color across frames and sessions. `tab10` holds 10
+    distinct colors; with more keypoints the cycle repeats.
+    """
+    palette = colormaps['tab10'].colors
+    return {
+        keypoint: palette[i % len(palette)]
+        for i, keypoint in enumerate(sorted(keypoints))
+    }
 
 
 def trial_frame_window(
@@ -512,6 +527,7 @@ class LPViewer(QtWidgets.QMainWindow):
             return
         self.frame_source = FrameSource(
             video_path, session.pose, session.pose_times)
+        self.keypoint_colors = keypoint_colors(self.frame_source.keypoints)
         self.trials = session.trials
         self.trial_slider.blockSignals(True)
         self.trial_slider.setRange(0, len(self.trials) - 1)
@@ -558,8 +574,8 @@ class LPViewer(QtWidgets.QMainWindow):
             self.frame_canvas.draw_idle()
             return
         self.frame_ax.imshow(image)
-        for x, y, likelihood in keypoints.values():
-            self.frame_ax.scatter(x, y, s=30, color='r',
+        for name, (x, y, likelihood) in keypoints.items():
+            self.frame_ax.scatter(x, y, s=30, color=self.keypoint_colors[name],
                                   alpha=float(likelihood_to_alpha(likelihood)))
         self.frame_ax.set_title(f'frame {frame_idx}')
         self.frame_canvas.draw_idle()
