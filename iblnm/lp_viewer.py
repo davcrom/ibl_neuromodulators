@@ -37,18 +37,23 @@ IBL_QC_VALUES = ('CRITICAL', 'FAIL', 'WARNING', 'PASS')
 
 def filter_sessions_table(
     df_pose: pd.DataFrame,
-    measure: str,
-    value_range: tuple[float, float],
+    ranges: dict[str, tuple[float, float]],
     session_types: tuple[str, ...],
 ) -> list[str]:
-    """Return eids whose `measure` falls in `value_range` and whose
+    """Return eids that fall within every brushed range and whose
     `session_type` is in `session_types`.
 
-    Drives the histogram-brush → session-dropdown coupling. The range is
-    inclusive on both ends; `session_type` is matched against the selected set.
+    Drives the histogram-brush → session-dropdown coupling. `ranges` maps each
+    brushed measure to an inclusive `(low, high)` interval; an eid must satisfy
+    all of them (intersection). An empty `ranges` means no histogram is brushed
+    yet and yields no sessions.
     """
-    low, high = value_range
-    in_range = df_pose[measure].between(low, high)
+    if not ranges:
+        return []
+    in_range = np.logical_and.reduce([
+        df_pose[measure].between(low, high)
+        for measure, (low, high) in ranges.items()
+    ])
     in_types = df_pose['session_type'].isin(session_types)
     return df_pose.loc[in_range & in_types, 'eid'].tolist()
 
@@ -138,14 +143,13 @@ class LPViewerModel:
 
     def filter(
         self,
-        measure: str,
-        value_range: tuple[float, float],
+        ranges: dict[str, tuple[float, float]],
         session_types: tuple[str, ...],
     ) -> list[str]:
-        """Return eids whose `measure` is in `value_range` and `session_type`
-        is in `session_types` (the brushed-histogram → dropdown coupling)."""
-        return filter_sessions_table(
-            self.df_cohort, measure, value_range, session_types)
+        """Return eids that fall within every brushed range in `ranges` and
+        whose `session_type` is in `session_types` (the brushed-histogram →
+        dropdown coupling)."""
+        return filter_sessions_table(self.df_cohort, ranges, session_types)
 
     def session_panels(self, eid: str) -> SessionPanels:
         """Load the `video` H5 group for `eid` and assemble its panel data:

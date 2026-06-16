@@ -21,6 +21,7 @@ def pose_table():
     return pd.DataFrame({
         'eid': ['a', 'b', 'c', 'd'],
         'paw_speed': [0.1, 0.5, 0.9, 0.5],
+        'nose_speed': [0.5, 0.5, 0.5, 0.9],
         'session_type': ['biased', 'biased', 'ephys', 'training'],
     })
 
@@ -29,21 +30,30 @@ def pose_table():
 # filter_sessions_table
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_filter_sessions_table_range_and_type(pose_table):
+def test_filter_sessions_table_single_range_and_type(pose_table):
     eids = filter_sessions_table(
-        pose_table, 'paw_speed', (0.4, 0.6), ('biased', 'training'))
+        pose_table, {'paw_speed': (0.4, 0.6)}, ('biased', 'training'))
     assert eids == ['b', 'd']
+
+
+def test_filter_sessions_table_intersects_ranges(pose_table):
+    # paw in [0.4, 0.6] -> b, d; nose in [0.0, 0.6] -> a, b, c; both -> b
+    eids = filter_sessions_table(
+        pose_table,
+        {'paw_speed': (0.4, 0.6), 'nose_speed': (0.0, 0.6)},
+        ('biased', 'training'))
+    assert eids == ['b']
 
 
 def test_filter_sessions_table_type_excludes(pose_table):
     eids = filter_sessions_table(
-        pose_table, 'paw_speed', (0.0, 1.0), ('ephys',))
+        pose_table, {'paw_speed': (0.0, 1.0)}, ('ephys',))
     assert eids == ['c']
 
 
-def test_filter_sessions_table_empty_range(pose_table):
+def test_filter_sessions_table_empty_ranges(pose_table):
     eids = filter_sessions_table(
-        pose_table, 'paw_speed', (2.0, 3.0), ('biased', 'ephys', 'training'))
+        pose_table, {}, ('biased', 'ephys', 'training'))
     assert eids == []
 
 
@@ -206,8 +216,8 @@ def cohort_model(tmp_path):
 
 def test_model_filter_couples_range_and_type(cohort_model):
     model, _ = cohort_model
-    assert model.filter('paw', (0.0, 0.5), ('biased', 'ephys')) == ['eid1']
-    assert model.filter('paw', (0.0, 1.0), ('ephys',)) == ['eid2']
+    assert model.filter({'paw': (0.0, 0.5)}, ('biased', 'ephys')) == ['eid1']
+    assert model.filter({'paw': (0.0, 1.0)}, ('ephys',)) == ['eid2']
 
 
 def test_session_panels_trace_shapes(cohort_model):
