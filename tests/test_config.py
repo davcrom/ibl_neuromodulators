@@ -23,7 +23,7 @@ def test_pose_measures_structure():
     assert config.POSE_MEASURES['paw'] == (
         'firstMovement_times', ['paw_l', 'paw_r'], 'sum_speed')
     assert config.POSE_MEASURES['nose'] == (
-        'feedback_times', ['nose_tip'], 'speed')
+        'stimOn_times', ['nose_tip'], 'speed')
     assert config.POSE_MEASURES['tongue_speed'] == (
         'feedback_times', ['tongue_end_l', 'tongue_end_r'], 'sum_speed')
     assert config.POSE_MEASURES['tongue_likelihood'] == (

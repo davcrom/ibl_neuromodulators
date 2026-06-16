@@ -417,7 +417,7 @@ LP_QC_LABELS = ('qc_lp', 'qc_movement')  # manual QC fields; IBL vocab, default 
 # Bodypart trace label -> (event column, keypoints, reduction). Read by tickets 02, 05.
 POSE_MEASURES = {
     'paw': ('firstMovement_times', ['paw_l', 'paw_r'], 'sum_speed'),
-    'nose': ('feedback_times', ['nose_tip'], 'speed'),
+    'nose': ('stimOn_times', ['nose_tip'], 'speed'),
     'tongue_speed': ('feedback_times', ['tongue_end_l', 'tongue_end_r'], 'sum_speed'),
     'tongue_likelihood': ('feedback_times', ['tongue_end_l', 'tongue_end_r'], 'max_likelihood'),
 }
