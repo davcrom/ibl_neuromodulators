@@ -15,6 +15,7 @@ from iblnm.lp_viewer import (
     format_event_timings,
     format_session_title,
     frames_in_trial,
+    histogram_by_type,
     keypoint_colors,
     likelihood_to_alpha,
     persist_labels,
@@ -99,6 +100,43 @@ def test_format_session_title_no_performance():
         title = format_session_title(
             'a1b2c3d4e5f6', 'SWC_065', '2023-05-12', 'biased', fraction)
         assert title.endswith('performance: —')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# histogram_by_type
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def split_table():
+    return pd.DataFrame({
+        'paw_speed': [0.0, 1.0, 2.0, 3.0, 4.0, np.nan],
+        'session_type': ['biased', 'biased', 'ephys', 'ephys', 'training', 'biased'],
+    })
+
+
+def test_histogram_by_type_shared_edges_span_full_range(split_table):
+    edges, _ = histogram_by_type(split_table, 'paw_speed', ('biased', 'ephys'), bins=4)
+    # Edges fixed to the full measure range [0, 4] regardless of types shown.
+    assert edges[0] == pytest.approx(0.0)
+    assert edges[-1] == pytest.approx(4.0)
+    assert len(edges) == 5  # bins + 1
+
+
+def test_histogram_by_type_only_requested_types_and_density(split_table):
+    edges, per_type = histogram_by_type(
+        split_table, 'paw_speed', ('biased', 'ephys'), bins=4)
+    assert set(per_type) == {'biased', 'ephys'}
+    widths = np.diff(edges)
+    for counts in per_type.values():
+        # Density integrates to 1 over the shared edges.
+        assert np.sum(counts * widths) == pytest.approx(1.0)
+
+
+def test_histogram_by_type_drops_nan(split_table):
+    # The NaN-valued 'biased' row must not contribute; biased has 2 finite values.
+    edges, per_type = histogram_by_type(split_table, 'paw_speed', ('biased',), bins=4)
+    widths = np.diff(edges)
+    assert np.sum(per_type['biased'] * widths) == pytest.approx(1.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

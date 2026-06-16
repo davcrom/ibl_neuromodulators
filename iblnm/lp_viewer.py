@@ -123,6 +123,30 @@ def format_event_timings(
     ]
 
 
+def histogram_by_type(
+    df: pd.DataFrame,
+    measure: str,
+    session_types: tuple[str, ...],
+    bins: int = 30,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Split a cohort measure into per-session-type density histograms.
+
+    Bin edges are fixed to the full `df[measure]` range across all sessions, so
+    they don't shift as session types are toggled on and off. For each type in
+    `session_types`, returns its density-normalized counts over those shared
+    edges. NaN measure values are dropped. Returns `(bin_edges, {session_type:
+    density_counts})`.
+    """
+    bin_edges = np.histogram_bin_edges(df[measure].dropna(), bins=bins)
+    per_type = {
+        session_type: np.histogram(
+            df.loc[df['session_type'] == session_type, measure].dropna(),
+            bins=bin_edges, density=True)[0]
+        for session_type in session_types
+    }
+    return bin_edges, per_type
+
+
 def keypoint_colors(keypoints: list[str]) -> dict[str, tuple]:
     """Map each keypoint to a distinct `tab10` color, keyed by name.
 
