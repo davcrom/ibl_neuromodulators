@@ -20,7 +20,7 @@ from pathlib import Path
 import h5py
 import pandas as pd
 
-from iblnm.analysis import event_locked_scalar
+from iblnm.analysis import movement_delta
 from iblnm.config import (
     BASELINE_WINDOW,
     MOVEMENT_RESPONSE_WINDOW,
@@ -73,11 +73,11 @@ def collect_pose(h5_dir) -> pd.DataFrame:
     """Roll up the per-session ``video`` H5 groups into a flat pose table.
 
     For each H5 holding a ``video`` group, recompute the four scalar measures
-    from the stored event-locked traces (post-minus-pre over
-    ``MOVEMENT_RESPONSE_WINDOW`` vs. ``BASELINE_WINDOW``) and read the
-    cross-correlation drift, the three per-third peak lags, and the two manual
-    QC labels. Recomputing the scalars here keeps the post-pre window adjustable
-    without re-extracting traces.
+    as post-minus-pre deltas: the response mean over ``MOVEMENT_RESPONSE_WINDOW``
+    on the event-locked trace minus the baseline mean over ``BASELINE_WINDOW``
+    on the stimOn-locked baseline trace. Also read the cross-correlation drift,
+    the three per-third peak lags, and the two manual QC labels. Recomputing the
+    scalars here keeps both windows adjustable without re-extracting traces.
 
     Parameters
     ----------
@@ -99,14 +99,16 @@ def collect_pose(h5_dir) -> pd.DataFrame:
             traces = _load_pose_traces(f['video'])
             if traces is None:
                 continue
+            baseline_traces = _load_pose_traces(f['video'], name='baseline_traces')
             xcorr = _load_pose_xcorr(f['video'])
             qc = _read_video_qc(f)
 
         tpts = traces.coords['time'].values
         row = {'eid': fpath.stem}
         for bodypart in traces.coords['bodypart'].values:
-            row[bodypart] = event_locked_scalar(
-                traces.sel(bodypart=bodypart).values, tpts,
+            row[bodypart] = movement_delta(
+                traces.sel(bodypart=bodypart).values,
+                baseline_traces.sel(bodypart=bodypart).values, tpts,
                 MOVEMENT_RESPONSE_WINDOW, BASELINE_WINDOW,
             )
         early, mid, late = xcorr['peak_lags']

@@ -22,33 +22,35 @@ def mock_session_series():
 
 
 def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
-                        series):
-    """Write an H5 with metadata + video groups carrying known step traces.
+                        series, baselines=None):
+    """Write an H5 with metadata + video groups carrying known traces.
 
-    ``steps`` maps bodypart -> post-pre step value; NaN yields an all-NaN
-    in-window trace (expected to collect to a NaN scalar).
+    ``steps`` maps bodypart -> the response-trace level (flat across time); NaN
+    yields an all-NaN response trace (expected to collect to a NaN scalar).
+    ``baselines`` maps bodypart -> the stimOn-locked baseline-trace level (flat;
+    default 0). The collected scalar is ``step - baseline``.
     """
+    baselines = baselines or {}
     time = np.linspace(-0.5, 0.5, 101)
     bodyparts = list(steps)
     n_trial = 3
-    data = np.empty((len(bodyparts), n_trial, time.size))
-    for i, bodypart in enumerate(bodyparts):
-        step = steps[bodypart]
-        if np.isnan(step):
-            data[i] = np.nan
-        else:
-            trace = np.where(time >= 0.05, step, 0.0)
-            data[i] = np.tile(trace, (n_trial, 1))
+
+    def _flat(level):
+        if np.isnan(level):
+            return np.full((n_trial, time.size), np.nan)
+        return np.full((n_trial, time.size), level)
+
+    response = np.stack([_flat(steps[bp]) for bp in bodyparts])
+    baseline = np.stack([_flat(baselines.get(bp, 0.0)) for bp in bodyparts])
 
     series = series.copy()
     series['eid'] = eid
     ps = PhotometrySession(series, one=MagicMock(), load_data=False)
+    coords = {'bodypart': bodyparts, 'trial': np.arange(n_trial), 'time': time}
     ps.pose_traces = xr.DataArray(
-        data,
-        dims=['bodypart', 'trial', 'time'],
-        coords={'bodypart': bodyparts, 'trial': np.arange(n_trial),
-                'time': time},
-    )
+        response, dims=['bodypart', 'trial', 'time'], coords=coords)
+    ps.pose_baseline_traces = xr.DataArray(
+        baseline, dims=['bodypart', 'trial', 'time'], coords=coords)
     ps.pose_xcorr = {
         'functions': np.zeros((3, 11)),
         'lags': np.linspace(-5, 5, 11),
@@ -119,11 +121,13 @@ class TestCollectPose:
     def test_rollup_two_sessions(self, tmp_path, mock_session_series):
         steps_a = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                    'tongue_likelihood': 0.5}
+        baselines_a = {'paw': 0.4, 'nose': 0.5, 'tongue_speed': 1.0,
+                       'tongue_likelihood': 0.2}
         steps_b = {'paw': -1.0, 'nose': 0.0, 'tongue_speed': np.nan,
                    'tongue_likelihood': 0.8}
         _write_pose_session(tmp_path, 'eid-a', steps_a, drift=0.3,
                             peak_lags=[0.1, 0.2, 0.4], qc_lp='FAIL',
-                            series=mock_session_series)
+                            series=mock_session_series, baselines=baselines_a)
         _write_pose_session(tmp_path, 'eid-b', steps_b, drift=np.nan,
                             peak_lags=[0.0, np.nan, 0.5], qc_lp='PASS',
                             series=mock_session_series)
@@ -132,8 +136,10 @@ class TestCollectPose:
 
         assert set(df['eid']) == {'eid-a', 'eid-b'}
         row_a = df.set_index('eid').loc['eid-a']
+        # scalar is the response level minus the stimOn-locked baseline level
         for bodypart, step in steps_a.items():
-            np.testing.assert_allclose(row_a[bodypart], step)
+            np.testing.assert_allclose(
+                row_a[bodypart], step - baselines_a[bodypart])
         assert row_a['drift'] == 0.3
         assert row_a['qc_lp'] == 'FAIL'
         np.testing.assert_allclose(
