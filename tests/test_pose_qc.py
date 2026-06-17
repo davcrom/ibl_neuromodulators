@@ -36,6 +36,25 @@ def test_max_abs_lag_takes_max_magnitude_across_thirds():
     np.testing.assert_array_equal(result.values, [0.65, 4.9])
 
 
+def test_point_colors_session_type_maps_palette():
+    from iblnm.config import SESSIONTYPE2COLOR
+    df = pd.DataFrame({'session_type': ['training', 'ephys', 'biased']})
+    colors, mappable = pose_qc.point_colors(df, 'session_type')
+    assert mappable is None
+    assert list(colors) == [SESSIONTYPE2COLOR[t] for t in df['session_type']]
+
+
+def test_point_colors_date_orders_by_acquisition():
+    df = pd.DataFrame({'start_time': ['2021-11-06T10:00:00',
+                                      '2024-01-01T10:00:00',
+                                      '2026-02-05T10:00:00']})
+    colors, mappable = pose_qc.point_colors(df, 'date')
+    assert mappable is not None
+    # earliest session is darker (lower) than latest on the colormap
+    assert tuple(colors[0]) < tuple(colors[-1])
+    assert tuple(colors[0]) == mappable.cmap(0.0)
+
+
 def test_add_derived_metrics_builds_timing_columns():
     df = pd.DataFrame({
         'mean_rt': [np.e, np.e ** 2],
