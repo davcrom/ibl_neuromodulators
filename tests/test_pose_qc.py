@@ -6,11 +6,14 @@ from scipy.stats import spearmanr
 import scripts.pose_qc as pose_qc
 
 
-def test_order_qc_categories_severity_present_only_nan_last():
-    cats = pose_qc.order_qc_categories(['PASS', 'FAIL', 'PASS', np.nan, 'WARNING'])
-    assert cats[:3] == ['FAIL', 'WARNING', 'PASS']
-    assert len(cats) == 4
-    assert isinstance(cats[3], float) and np.isnan(cats[3])
+def test_max_peak_value_takes_max_across_thirds():
+    df = pd.DataFrame({
+        'peak_val_early': [0.2, 0.9],
+        'peak_val_mid': [0.7, 0.1],
+        'peak_val_late': [0.4, 0.5],
+    })
+    result = pose_qc.max_peak_value(df)
+    np.testing.assert_array_equal(result.values, [0.7, 0.9])
 
 
 def test_spearman_finite_ignores_nan_rows():

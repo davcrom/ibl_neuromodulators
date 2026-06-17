@@ -33,7 +33,7 @@ def test_video_qc_cols():
 
 
 def test_qc_value_order():
-    assert config.QC_VALUE_ORDER == ['FAIL', 'CRITICAL', 'WARNING', 'PASS', 'NOT_SET']
+    assert config.QC_VALUE_ORDER == ['NOT_SET', 'CRITICAL', 'FAIL', 'WARNING', 'PASS']
 
 
 def test_pose_measures_structure():

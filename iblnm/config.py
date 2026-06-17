@@ -53,7 +53,7 @@ VIDEO_QC_COLS = [
 ]
 
 # IBL QC outcome categories ordered most to least severe (for category ordering).
-QC_VALUE_ORDER = ['FAIL', 'CRITICAL', 'WARNING', 'PASS', 'NOT_SET']
+QC_VALUE_ORDER = ['NOT_SET', 'CRITICAL', 'FAIL', 'WARNING', 'PASS']
 
 # Schema for sessions DataFrame: column -> (type, default)
 # Used by enforce_schema() to fill missing columns and coerce NaN in list columns
