@@ -125,6 +125,8 @@ def build_violin_grid(df: pd.DataFrame):
     measures = list(POSE_MEASURES)
     fig, axes = plt.subplots(len(measures), len(VIDEO_QC_COLS), sharey='row',
                              figsize=(2 * len(VIDEO_QC_COLS), 2 * len(measures)))
+    for j, qc_col in enumerate(VIDEO_QC_COLS):
+        axes[0, j].set_title(qc_col.replace('qc_videoLeft_', ''), fontsize=8)
     for i, measure in enumerate(measures):
         axes[i, 0].set_ylabel(measure, fontsize=8)
         for j, qc_col in enumerate(VIDEO_QC_COLS):
