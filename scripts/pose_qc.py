@@ -1,11 +1,14 @@
-"""Pose movement vs. video-QC diagnostic grid.
+"""Pose movement diagnostic grids.
 
-Reads the self-contained ``metadata/pose.pqt`` and writes a 4x10 grid SVG: per
-movement measure (rows), violins split by each video-QC field (columns 1-8) and
-Spearman scatters against ``fraction_correct`` and ``mean_rt`` (columns 9-10).
+Reads the self-contained ``metadata/pose.pqt`` and writes two SVGs, both with one
+row per movement measure:
+- ``pose_qc_grid.svg``: violins of each measure split by each video-QC field.
+- ``pose_corr_grid.svg``: Spearman scatters of each measure against
+  ``fraction_correct``, ``mean_rt``, the max paw-wheel xcorr ``abs_lag``, and
+  ``drift``.
 
 Input:  metadata/pose.pqt
-Output: figures/pose_qc/pose_qc_grid.svg
+Output: figures/pose_qc/pose_qc_grid.svg, figures/pose_qc/pose_corr_grid.svg
 """
 import numpy as np
 import pandas as pd
@@ -22,7 +25,25 @@ from iblnm.config import (
 )
 from iblnm.vis import violinplot
 
-PERFORMANCE_COLS = ['fraction_correct', 'mean_rt']
+PEAK_LAG_COLS = ['peak_lag_early', 'peak_lag_mid', 'peak_lag_late']
+CORR_COLS = ['fraction_correct', 'mean_rt', 'abs_lag', 'drift']
+
+
+def max_abs_lag(df: pd.DataFrame) -> pd.Series:
+    """Largest paw-wheel peak-lag magnitude across the three session thirds.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Pose table carrying the signed per-third lag columns ``PEAK_LAG_COLS``
+        (seconds).
+
+    Returns
+    -------
+    pd.Series
+        ``max(|early|, |mid|, |late|)`` per row, in seconds.
+    """
+    return df[PEAK_LAG_COLS].abs().max(axis=1)
 
 
 def order_qc_categories(values) -> list:
@@ -94,38 +115,58 @@ def _scatter_cell(ax, df: pd.DataFrame, measure: str, metric: str) -> None:
     ax.set_xlabel(metric, fontsize=6)
 
 
-def build_grid(df: pd.DataFrame):
-    """Build the 4x10 movement-vs-QC diagnostic grid.
+def build_violin_grid(df: pd.DataFrame):
+    """Build the movement-vs-video-QC violin grid (rows x ``VIDEO_QC_COLS``).
 
-    Rows are the ``POSE_MEASURES`` keys; columns 1-8 are ``VIDEO_QC_COLS``
-    violins and columns 9-10 are ``fraction_correct`` / ``mean_rt`` scatters.
+    Rows are the ``POSE_MEASURES`` keys; each column is one ``VIDEO_QC_COLS``
+    field, with the measure split into violins by that field's QC categories.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
     measures = list(POSE_MEASURES)
-    columns = VIDEO_QC_COLS + PERFORMANCE_COLS
-    fig, axes = plt.subplots(len(measures), len(columns), sharey='row',
-                             figsize=(2 * len(columns), 2 * len(measures)))
+    fig, axes = plt.subplots(len(measures), len(VIDEO_QC_COLS), sharey='row',
+                             figsize=(2 * len(VIDEO_QC_COLS), 2 * len(measures)))
     for i, measure in enumerate(measures):
         axes[i, 0].set_ylabel(measure, fontsize=8)
         for j, qc_col in enumerate(VIDEO_QC_COLS):
             _violin_cell(axes[i, j], df, measure, qc_col)
-        for k, metric in enumerate(PERFORMANCE_COLS):
-            _scatter_cell(axes[i, len(VIDEO_QC_COLS) + k], df, measure, metric)
+    fig.tight_layout()
+    return fig
+
+
+def build_corr_grid(df: pd.DataFrame):
+    """Build the movement-vs-metric Spearman scatter grid (rows x ``CORR_COLS``).
+
+    Rows are the ``POSE_MEASURES`` keys; columns are ``fraction_correct``,
+    ``mean_rt``, the derived max paw-wheel ``abs_lag``, and ``drift``.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    df = df.assign(abs_lag=max_abs_lag(df))
+    measures = list(POSE_MEASURES)
+    fig, axes = plt.subplots(len(measures), len(CORR_COLS), sharey='row',
+                             figsize=(2 * len(CORR_COLS), 2 * len(measures)))
+    for i, measure in enumerate(measures):
+        axes[i, 0].set_ylabel(measure, fontsize=8)
+        for j, metric in enumerate(CORR_COLS):
+            _scatter_cell(axes[i, j], df, measure, metric)
     fig.tight_layout()
     return fig
 
 
 def main() -> None:
     df = pd.read_parquet(POSE_FPATH)
-    fig = build_grid(df)
     figures_dir = PROJECT_ROOT / 'figures/pose_qc'
     figures_dir.mkdir(parents=True, exist_ok=True)
-    fpath = figures_dir / 'pose_qc_grid.svg'
-    fig.savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
-    print(f"Saved {fpath}")
+    for name, builder in [('pose_qc_grid', build_violin_grid),
+                          ('pose_corr_grid', build_corr_grid)]:
+        fpath = figures_dir / f'{name}.svg'
+        builder(df).savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
+        print(f"Saved {fpath}")
 
 
 if __name__ == '__main__':
