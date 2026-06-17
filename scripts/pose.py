@@ -18,6 +18,7 @@ import argparse
 from pathlib import Path
 
 import h5py
+import numpy as np
 import pandas as pd
 
 from iblnm.analysis import movement_delta
@@ -102,6 +103,7 @@ def collect_pose(h5_dir) -> pd.DataFrame:
             baseline_traces = _load_pose_traces(f['video'], name='baseline_traces')
             xcorr = _load_pose_xcorr(f['video'])
             qc = _read_video_qc(f)
+            mean_rt = _read_mean_rt(f)
 
         tpts = traces.coords['time'].values
         row = {'eid': fpath.stem}
@@ -119,8 +121,23 @@ def collect_pose(h5_dir) -> pd.DataFrame:
         for label in ('qc_lp', 'qc_movement'):
             value = qc.get(label, LP_QC_NOT_SET)
             row[label] = value.decode() if isinstance(value, bytes) else value
+        row['mean_rt'] = mean_rt
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _read_mean_rt(f: h5py.File) -> float:
+    """Mean reaction time from the H5 ``trials`` group, NaN when unavailable.
+
+    Reaction time is ``feedback_times - stimOn_times`` per trial, averaged with
+    ``nanmean``. Returns NaN if the ``trials`` group or either dataset is absent.
+    """
+    if 'trials' not in f:
+        return np.nan
+    trials = f['trials']
+    if 'stimOn_times' not in trials or 'feedback_times' not in trials:
+        return np.nan
+    return np.nanmean(trials['feedback_times'][:] - trials['stimOn_times'][:])
 
 
 def read_eids(path) -> list[str]:

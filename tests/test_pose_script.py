@@ -22,13 +22,15 @@ def mock_session_series():
 
 
 def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
-                        series, baselines=None):
+                        series, baselines=None, trials=None):
     """Write an H5 with metadata + video groups carrying known traces.
 
     ``steps`` maps bodypart -> the response-trace level (flat across time); NaN
     yields an all-NaN response trace (expected to collect to a NaN scalar).
     ``baselines`` maps bodypart -> the stimOn-locked baseline-trace level (flat;
     default 0). The collected scalar is ``step - baseline``.
+    ``trials``, when given, maps ``stimOn_times`` / ``feedback_times`` to 1D
+    arrays written as flat datasets under a ``trials`` group.
     """
     baselines = baselines or {}
     time = np.linspace(-0.5, 0.5, 101)
@@ -59,6 +61,12 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
     }
     ps.qc_lp = qc_lp
     ps.save_h5(h5_dir / f'{eid}.h5', groups=['metadata', 'video'])
+
+    if trials is not None:
+        with h5py.File(h5_dir / f'{eid}.h5', 'a') as f:
+            grp = f.create_group('trials')
+            for key, values in trials.items():
+                grp.create_dataset(key, data=np.asarray(values))
 
 
 @pytest.fixture
@@ -145,6 +153,32 @@ class TestCollectPose:
         np.testing.assert_allclose(
             [row_a['peak_lag_early'], row_a['peak_lag_mid'],
              row_a['peak_lag_late']], [0.1, 0.2, 0.4])
+
+    def test_mean_rt_from_trials_group(self, tmp_path, mock_session_series):
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5}
+        trials = {'stimOn_times': [0.0, 0.0, 0.0],
+                  'feedback_times': [0.5, 1.0, np.nan]}
+        _write_pose_session(tmp_path, 'eid-rt', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=mock_session_series, trials=trials)
+
+        df = pose.collect_pose(tmp_path).set_index('eid')
+
+        np.testing.assert_allclose(df.loc['eid-rt', 'mean_rt'], 0.75)
+
+    def test_mean_rt_nan_without_trials_group(self, tmp_path,
+                                              mock_session_series):
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5}
+        _write_pose_session(tmp_path, 'eid-nort', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=mock_session_series)
+
+        df = pose.collect_pose(tmp_path).set_index('eid')
+
+        assert np.isnan(df.loc['eid-nort', 'mean_rt'])
+        assert np.isfinite(df.loc['eid-nort', 'paw'])
 
     def test_all_nan_trace_yields_nan_scalar(self, tmp_path,
                                              mock_session_series):
