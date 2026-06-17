@@ -18,13 +18,16 @@ from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter
 from matplotlib.widgets import SpanSelector
 
 from iblnm.config import (
     DATASET_CATEGORIES,
     LP_QC_LABELS,
     POSE_MEASURES,
+    QC_VALUE_ORDER,
     SESSIONTYPE2COLOR,
+    VIDEO_QC_COLS,
 )
 from iblnm.data import (
     LP_QC_NOT_SET,
@@ -445,6 +448,8 @@ class LPViewer(QtWidgets.QMainWindow):
         self.model = model
         self.one = one
         self.brush_ranges: dict[str, tuple[float, float]] = {}
+        self.fc_range: tuple[float, float] | None = None
+        self.start_time_range: tuple[float, float] | None = None
         self.frame_source: FrameSource | None = None
         self.trial_frames = np.array([], dtype=int)
         self.frame_pos = 0
@@ -461,27 +466,13 @@ class LPViewer(QtWidgets.QMainWindow):
     # -- construction ---------------------------------------------------------
 
     def _build_controls(self) -> QtWidgets.QWidget:
-        """Session-type multiselect, the four brushable histograms, the session
-        dropdown, the fraction-correct readout, and the two QC selectors."""
+        """Static population-filter panel above the reactive metric-distribution
+        panel, then the session dropdown and the two QC selectors."""
         panel = QtWidgets.QWidget()
         box = QtWidgets.QVBoxLayout(panel)
 
-        box.addWidget(QtWidgets.QLabel('Session types'))
-        type_row = QtWidgets.QHBoxLayout()
-        self.type_checks = []
-        for session_type in sorted(self.model.df_cohort['session_type'].dropna().unique()):
-            check = QtWidgets.QCheckBox(session_type)
-            check.setChecked(True)
-            check.stateChanged.connect(lambda _: self._on_types_changed())
-            self.type_checks.append(check)
-            type_row.addWidget(check)
-        box.addLayout(type_row)
-
-        self.hist_fig = Figure(figsize=(4, 6))
-        self.hist_canvas = FigureCanvasQTAgg(self.hist_fig)
-        self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
-        self._draw_histograms()
-        box.addWidget(self.hist_canvas)
+        box.addWidget(self._build_population_panel())
+        box.addWidget(self._build_metric_panel())
 
         box.addWidget(QtWidgets.QLabel('Sessions in range'))
         self.session_combo = QtWidgets.QComboBox()
@@ -489,6 +480,10 @@ class LPViewer(QtWidgets.QMainWindow):
         # Up/Down (to change its item) before they reach keyPressEvent, which
         # is where Up/Down drive trial navigation. Mouse selection still works.
         self.session_combo.setFocusPolicy(QtCore.Qt.NoFocus)
+        # Force a bounded scrollable popup (combobox-popup: 0) so a long session
+        # list scrolls instead of clipping or spilling off-screen.
+        self.session_combo.setStyleSheet('QComboBox { combobox-popup: 0; }')
+        self.session_combo.setMaxVisibleItems(20)
         self.session_combo.currentTextChanged.connect(self._on_session_selected)
         box.addWidget(self.session_combo)
 
@@ -503,6 +498,109 @@ class LPViewer(QtWidgets.QMainWindow):
             self.label_combos[field] = combo
             box.addWidget(combo)
 
+        return panel
+
+    def _build_population_panel(self) -> QtWidgets.QWidget:
+        """Static population filters: session-type checkboxes, the video-QC grid,
+        and the full-cohort fraction_correct / start_time histograms. Toggling
+        any control reshapes the reactive metric panel and refilters the
+        dropdown; these distributions themselves never reshape."""
+        panel = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(panel)
+
+        box.addWidget(QtWidgets.QLabel('Session types'))
+        type_row = QtWidgets.QHBoxLayout()
+        self.type_checks = []
+        for session_type in sorted(self.model.df_cohort['session_type'].dropna().unique()):
+            check = QtWidgets.QCheckBox(session_type)
+            check.setChecked(True)
+            check.stateChanged.connect(lambda _: self._on_population_changed())
+            self.type_checks.append(check)
+            type_row.addWidget(check)
+        box.addLayout(type_row)
+
+        box.addWidget(QtWidgets.QLabel('Video QC'))
+        box.addLayout(self._build_qc_grid())
+
+        self.population_fig = Figure(figsize=(4, 3))
+        self.population_canvas = FigureCanvasQTAgg(self.population_fig)
+        self.population_canvas.mpl_connect(
+            'button_press_event', self._on_population_hist_click)
+        self._draw_population_histograms()
+        box.addWidget(self.population_canvas)
+
+        return panel
+
+    def _build_qc_grid(self) -> QtWidgets.QGridLayout:
+        """Field × verdict grid of independent toggle cells; none checked by
+        default. Rows are `VIDEO_QC_COLS` (the `qc_videoLeft_` prefix stripped
+        for the label), columns the five `QC_VALUE_ORDER` verdicts. Populates
+        `self.qc_grid[field][verdict]` with the cell checkboxes that
+        `_qc_selections` reads."""
+        grid = QtWidgets.QGridLayout()
+        for col, verdict in enumerate(QC_VALUE_ORDER, start=1):
+            grid.addWidget(QtWidgets.QLabel(verdict), 0, col)
+        self.qc_grid = {}
+        for row, field in enumerate(VIDEO_QC_COLS, start=1):
+            grid.addWidget(
+                QtWidgets.QLabel(field.removeprefix('qc_videoLeft_')), row, 0)
+            self.qc_grid[field] = {}
+            for col, verdict in enumerate(QC_VALUE_ORDER, start=1):
+                cell = QtWidgets.QCheckBox()
+                cell.stateChanged.connect(lambda _: self._on_population_changed())
+                self.qc_grid[field][verdict] = cell
+                grid.addWidget(cell, row, col)
+        return grid
+
+    def _draw_population_histograms(self) -> None:
+        """Draw the full-cohort fraction_correct and start_time distributions,
+        each with a brushable SpanSelector. `start_time` is plotted on the
+        numeric epoch-nanosecond axis (`start_time_to_numeric`) with date-string
+        tick labels, so a brush's extents are directly the predicate's numeric
+        `start_time_range`. Stored ranges are re-applied as visible spans."""
+        self.population_fig.clear()
+        self.population_selectors = {}
+        ax_fc, ax_time = self.population_fig.subplots(2, 1)
+
+        ax_fc.hist(self.model.df_cohort['fraction_correct'].dropna(), bins=30)
+        ax_fc.set_title('fraction_correct', fontsize=8)
+        self._add_population_selector('fraction_correct', ax_fc, self.fc_range)
+
+        numeric = start_time_to_numeric(self.model.df_cohort['start_time'])
+        ax_time.hist(numeric[~np.isnan(numeric)], bins=30)
+        ax_time.set_title('start_time', fontsize=8)
+        ax_time.xaxis.set_major_formatter(FuncFormatter(
+            lambda ns, _: pd.Timestamp(int(ns)).strftime('%Y-%m-%d')))
+        ax_time.tick_params(axis='x', labelrotation=45, labelsize=6)
+        self._add_population_selector(
+            'start_time', ax_time, self.start_time_range)
+
+        self.population_fig.tight_layout()
+        self.population_canvas.draw_idle()
+
+    def _add_population_selector(
+        self, measure: str, ax, current_range: tuple[float, float] | None,
+    ) -> None:
+        """Attach a horizontal SpanSelector for `measure` to `ax`, restoring
+        `current_range` as a visible span when one is set."""
+        selector = SpanSelector(
+            ax, lambda lo, hi, m=measure: self._on_population_brush(m, lo, hi),
+            'horizontal', useblit=True, interactive=True)
+        if current_range is not None:
+            selector.extents = current_range
+        self.population_selectors[measure] = selector
+
+    def _build_metric_panel(self) -> QtWidgets.QWidget:
+        """Reactive panel: the four movement-metric histograms, reshaped to the
+        current population and brushable to refine the dropdown."""
+        panel = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(panel)
+        box.addWidget(QtWidgets.QLabel('Metric distributions'))
+        self.hist_fig = Figure(figsize=(4, 6))
+        self.hist_canvas = FigureCanvasQTAgg(self.hist_fig)
+        self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
+        self._draw_histograms()
+        box.addWidget(self.hist_canvas)
         return panel
 
     def _build_display(self) -> QtWidgets.QWidget:
@@ -562,7 +660,8 @@ class LPViewer(QtWidgets.QMainWindow):
         self.span_selectors = {}
         self.hist_axes = {}
         types = self._selected_types()
-        mask = self.model.population_mask(types, {}, None, None)
+        mask = self.model.population_mask(
+            types, self._qc_selections(), self.fc_range, self.start_time_range)
         population = self.model.df_cohort.loc[mask]
         for i, measure in enumerate(HISTOGRAM_MEASURES):
             ax = self.hist_fig.add_subplot(len(HISTOGRAM_MEASURES), 1, i + 1)
@@ -586,17 +685,49 @@ class LPViewer(QtWidgets.QMainWindow):
         self.hist_fig.tight_layout()
         self.hist_canvas.draw_idle()
 
-    def _on_types_changed(self) -> None:
-        """Checkbox toggle: redraw the per-type histograms and refilter the
-        dropdown."""
+    def _on_population_changed(self) -> None:
+        """Any population-filter toggle (session type or video-QC cell): reshape
+        the reactive metric panel and refilter the dropdown."""
         self._draw_histograms()
         self._refresh_dropdown()
+
+    def _on_population_brush(self, measure: str, low: float, high: float) -> None:
+        """Store a fraction_correct / start_time brush range, then reshape the
+        metric panel and refilter the dropdown."""
+        if measure == 'fraction_correct':
+            self.fc_range = (low, high)
+        else:
+            self.start_time_range = (low, high)
+        self._on_population_changed()
+
+    def _on_population_hist_click(self, event) -> None:
+        """Double-clicking a population histogram clears its stored range."""
+        if not event.dblclick:
+            return
+        for measure, selector in self.population_selectors.items():
+            if event.inaxes is selector.ax:
+                if measure == 'fraction_correct':
+                    self.fc_range = None
+                else:
+                    self.start_time_range = None
+                selector.clear()
+                self.population_canvas.draw_idle()
+                self._on_population_changed()
+                return
 
     # -- filtering ------------------------------------------------------------
 
     def _selected_types(self) -> tuple[str, ...]:
         return tuple(
             check.text() for check in self.type_checks if check.isChecked())
+
+    def _qc_selections(self) -> dict[str, set[str]]:
+        """Per-field set of checked verdicts from the video-QC grid; a field with
+        no checked cell maps to an empty set (unconstrained downstream)."""
+        return {
+            field: {verdict for verdict, cell in cells.items() if cell.isChecked()}
+            for field, cells in self.qc_grid.items()
+        }
 
     def _on_brush(self, measure: str, low: float, high: float) -> None:
         self.brush_ranges[measure] = (low, high)
@@ -613,11 +744,13 @@ class LPViewer(QtWidgets.QMainWindow):
             self._refresh_dropdown()
 
     def _refresh_dropdown(self) -> None:
-        """Repopulate the session dropdown from the brushed ranges + type
-        filter. Does not auto-load a session — loading happens only when the
+        """Repopulate the session dropdown from the population predicate (types,
+        video-QC grid, fraction_correct, start_time) AND the movement-metric
+        brushes. Does not auto-load a session — loading happens only when the
         user picks an entry."""
         eids = self.model.dropdown_eids(
-            self.brush_ranges, self._selected_types(), {}, None, None)
+            self.brush_ranges, self._selected_types(), self._qc_selections(),
+            self.fc_range, self.start_time_range)
         self.session_combo.blockSignals(True)
         self.session_combo.clear()
         self.session_combo.addItems(eids)
