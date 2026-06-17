@@ -23,7 +23,7 @@ def mock_session_series():
 
 
 def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
-                        series, baselines=None, trials=None):
+                        series, baselines=None, trials=None, functions=None):
     """Write an H5 with metadata + video groups carrying known traces.
 
     ``steps`` maps bodypart -> the response-trace level (flat across time); NaN
@@ -32,6 +32,7 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
     default 0). The collected scalar is ``step - baseline``.
     ``trials``, when given, maps ``stimOn_times`` / ``feedback_times`` to 1D
     arrays written as flat datasets under a ``trials`` group.
+    ``functions``, when given, is the (3, n_lags) xcorr array; defaults to zeros.
     """
     baselines = baselines or {}
     time = np.linspace(-0.5, 0.5, 101)
@@ -55,7 +56,7 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
     ps.pose_baseline_traces = xr.DataArray(
         baseline, dims=['bodypart', 'trial', 'time'], coords=coords)
     ps.pose_xcorr = {
-        'functions': np.zeros((3, 11)),
+        'functions': np.zeros((3, 11)) if functions is None else np.asarray(functions),
         'lags': np.linspace(-5, 5, 11),
         'peak_lags': np.asarray(peak_lags),
         'drift': drift,
@@ -187,6 +188,23 @@ class TestCollectPose:
         np.testing.assert_allclose(
             [row_a['peak_lag_early'], row_a['peak_lag_mid'],
              row_a['peak_lag_late']], [0.1, 0.2, 0.4])
+
+    def test_peak_values_from_xcorr_functions(self, tmp_path,
+                                              mock_session_series, empty_qc_perf):
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5}
+        # peak of each third's function = its max: 0.2, 0.7, 0.4
+        functions = np.array([
+            [0.1, 0.2, -0.3], [0.7, 0.1, 0.0], [0.4, -0.5, 0.2]])
+        _write_pose_session(tmp_path, 'eid-pk', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=mock_session_series, functions=functions)
+
+        df = pose.collect_pose(tmp_path, **empty_qc_perf).set_index('eid')
+
+        np.testing.assert_allclose(
+            [df.loc['eid-pk', 'peak_val_early'], df.loc['eid-pk', 'peak_val_mid'],
+             df.loc['eid-pk', 'peak_val_late']], [0.2, 0.7, 0.4])
 
     def test_mean_rt_from_trials_group(self, tmp_path, mock_session_series,
                                        empty_qc_perf):

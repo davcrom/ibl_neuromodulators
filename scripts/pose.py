@@ -106,9 +106,9 @@ def collect_pose(
     -------
     pd.DataFrame
         One row per eid with a ``video`` group: ``eid``, one column per
-        bodypart scalar, ``drift``, ``peak_lag_early/mid/late``, ``qc_lp``,
-        ``qc_movement``, ``mean_rt``, the 8 ``VIDEO_QC_COLS``, and
-        ``fraction_correct``.
+        bodypart scalar, ``drift``, ``peak_lag_early/mid/late``,
+        ``peak_val_early/mid/late``, ``qc_lp``, ``qc_movement``, ``mean_rt``,
+        the 8 ``VIDEO_QC_COLS``, and ``fraction_correct``.
 
     Raises
     ------
@@ -142,6 +142,11 @@ def collect_pose(
         row['peak_lag_early'] = early
         row['peak_lag_mid'] = mid
         row['peak_lag_late'] = late
+        # Peak value of each third's cross-correlation function (alignment strength)
+        pk_early, pk_mid, pk_late = np.nanmax(xcorr['functions'], axis=1)
+        row['peak_val_early'] = pk_early
+        row['peak_val_mid'] = pk_mid
+        row['peak_val_late'] = pk_late
         for label in ('qc_lp', 'qc_movement'):
             value = qc.get(label, LP_QC_NOT_SET)
             row[label] = value.decode() if isinstance(value, bytes) else value
