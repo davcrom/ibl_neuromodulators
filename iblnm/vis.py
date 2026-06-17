@@ -2820,109 +2820,41 @@ _DV_LABELS = {
 }
 
 
-def plot_movement_lmm_summary(summary_df):
-    """Dot-and-whisker plot of per-subject jackknife delta-R².
-
-    Two rows of panels: top shows the marginal R² lost when contrast is removed
-    from the full model, bottom shows the R² lost when the movement variable is
-    removed. One column per movement variable. Each dot is one left-out subject;
-    horizontal bar shows mean ± SEM, so the spread flags whether one animal
-    drives the effect.
-
-    Parameters
-    ----------
-    summary_df : pd.DataFrame
-        One row per (target_NM, timing_variable, subject). Required columns:
-        target_NM, timing_col, subject, delta_r2_contrast, delta_r2_timing.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    from scipy.stats import sem as scipy_sem
-
-    timing_vars = sorted(summary_df['timing_col'].unique()) if len(summary_df) > 0 else []
-    n_panels = max(len(timing_vars), 1)
-
-    fig, axes = plt.subplots(2, n_panels, figsize=(4 * n_panels + 1, 7),
-                             sharey='row', layout='constrained')
-    if n_panels == 1:
-        axes = axes.reshape(2, 1)
-
-    _title = ('Jackknife ΔR² (leave-one-subject-out)\n'
-              'response ~ contrast + timing + reward')
-    if len(summary_df) == 0:
-        fig.suptitle(_title, fontsize=LABELFONTSIZE)
-        return fig
-
-    targets = sorted(summary_df['target_NM'].unique(),
-                     key=lambda x: TARGETNM2POSITION.get(x, 999))
-
-    for j, tvar in enumerate(timing_vars):
-        df_tv = summary_df[summary_df['timing_col'] == tvar]
-        timing_label = tvar.replace('log_', '')
-
-        for row_idx, (delta_col, label) in enumerate([
-            ('delta_r2_contrast', r'$\Delta R^2$ lost removing contrast'),
-            ('delta_r2_timing', r'$\Delta R^2$ lost removing movement'),
-        ]):
-            ax = axes[row_idx, j]
-
-            for i, tnm in enumerate(targets):
-                df_tnm = df_tv[df_tv['target_NM'] == tnm]
-                if len(df_tnm) == 0:
-                    continue
-                color = TARGETNM_COLORS.get(tnm, f'C{i}')
-                vals = df_tnm[delta_col].values
-
-                # Individual subject dots (jittered)
-                jitter = np.random.default_rng(i).uniform(-0.15, 0.15, len(vals))
-                ax.scatter(i + jitter, vals, color=color, alpha=0.5,
-                           s=25, zorder=3)
-
-                # Mean ± SEM bar
-                m = np.mean(vals)
-                se = scipy_sem(vals) if len(vals) > 1 else 0
-                ax.errorbar(i, m, yerr=se, fmt='_', color='black',
-                            markersize=12, markeredgewidth=2, capsize=4,
-                            zorder=4)
-
-            ax.set_xticks(range(len(targets)))
-            ax.set_xticklabels(targets, fontsize=TICKFONTSIZE,
-                               rotation=30, ha='right')
-            ax.axhline(0, ls='--', color='gray', lw=0.5)
-            if j == 0:
-                ax.set_ylabel(label)
-            if row_idx == 0:
-                ax.set_title(timing_label)
-
-    fig.suptitle(_title, fontsize=LABELFONTSIZE)
-    return fig
+# Saturated movement models, in bar order: which model each name denotes, its
+# display label, and its colour. The config key names the *dropped* predictor,
+# so 'movement' (timing dropped) is the contrast-family model and 'contrast'
+# (contrast dropped) is the movement-family model.
+_SATURATED_MODEL_BARS = [
+    ('movement', 'contrast-family', '#888888'),
+    ('contrast', 'movement-family', '#1f77b4'),
+    ('full', 'full', '#d62728'),
+]
 
 
 def plot_movement_r2_bars(summary_df):
-    """Fixed-effects R² of the three additive models, per target-NM.
+    """In-sample marginal R² of the three saturated models, per target-NM.
 
-    Full-dataset fit, no cross-validation. One panel per movement variable;
-    each target-NM gets three bars — contrast model (contrast + reward),
-    movement model (movement + reward), and full model. Heights read two ways:
-    contrast vs. movement = which predictor explains more; full vs. either =
-    added value.
+    Reads the saturated in-sample R² frame from ``response_lmm_fit``: for each
+    timing variable, three nested models — the saturated ``full``
+    (``contrast * reward * side * log_<timing>``), ``contrast`` (contrast
+    dropped, the movement-family model), and ``movement`` (timing dropped, the
+    contrast-family model). One panel per timing variable; each target-NM gets
+    three bars. Heights read two ways: contrast-family vs. movement-family =
+    which predictor explains more; full vs. either = added value.
 
     Parameters
     ----------
     summary_df : pd.DataFrame
-        One row per (target_NM, timing_col). Required columns: target_NM,
-        timing_col, r2_drop_movement, r2_drop_contrast, r2_full.
+        Long-form, one row per (target_NM, timing var, model). Required columns:
+        ``target_NM``, ``timing_var``, ``name`` (``full``/``contrast``/
+        ``movement``), ``marginal_r2``. Any ``event`` column is ignored; the
+        script passes one event's rows per figure.
 
     Returns
     -------
     plt.Figure
     """
-    models = [('r2_drop_movement', 'contrast', '#888888'),
-              ('r2_drop_contrast', 'movement', '#1f77b4'),
-              ('r2_full', 'full', '#d62728')]
-    timing_vars = sorted(summary_df['timing_col'].unique()) if len(summary_df) > 0 else []
+    timing_vars = sorted(summary_df['timing_var'].unique()) if len(summary_df) else []
     n_panels = max(len(timing_vars), 1)
 
     fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels + 1, 4),
@@ -2930,32 +2862,33 @@ def plot_movement_r2_bars(summary_df):
     if n_panels == 1:
         axes = [axes]
 
-    _title = ('Fixed-effects R² (full-data fit)\n'
-              'full: response ~ contrast + timing + reward')
+    _title = ('In-sample marginal R² (saturated, full-data fit)\n'
+              'full: response ~ contrast * reward * side * log_<timing>')
     if len(summary_df) == 0:
         fig.suptitle(_title, fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(summary_df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
-    bar_w = 0.8 / len(models)
+    bar_w = 0.8 / len(_SATURATED_MODEL_BARS)
 
     for ax, tvar in zip(axes, timing_vars):
-        df_tv = summary_df[summary_df['timing_col'] == tvar]
+        df_tv = summary_df[summary_df['timing_var'] == tvar]
         for i, tnm in enumerate(targets):
-            row = df_tv[df_tv['target_NM'] == tnm]
-            if len(row) == 0:
-                continue
-            for k, (col, label, color) in enumerate(models):
-                offset = (k - (len(models) - 1) / 2) * bar_w
-                ax.bar(i + offset, row[col].iloc[0], width=bar_w, color=color,
+            df_tnm = df_tv[df_tv['target_NM'] == tnm].set_index('name')
+            for k, (name, label, color) in enumerate(_SATURATED_MODEL_BARS):
+                if name not in df_tnm.index:
+                    continue
+                offset = (k - (len(_SATURATED_MODEL_BARS) - 1) / 2) * bar_w
+                ax.bar(i + offset, df_tnm.loc[name, 'marginal_r2'],
+                       width=bar_w, color=color,
                        label=label if i == 0 else '')
         ax.set_xticks(range(len(targets)))
         ax.set_xticklabels(targets, rotation=30, ha='right', fontsize=TICKFONTSIZE)
         ax.axhline(0, ls='--', color='gray', lw=0.5)
         ax.set_title(tvar.replace('log_', ''))
 
-    axes[0].set_ylabel('Fixed-effects R²')
+    axes[0].set_ylabel('Marginal R²')
     axes[-1].legend(frameon=False, fontsize=TICKFONTSIZE,
                     loc='upper left', bbox_to_anchor=(1, 1))
     fig.suptitle(_title, fontsize=LABELFONTSIZE)

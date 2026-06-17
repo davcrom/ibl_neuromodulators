@@ -2406,23 +2406,8 @@ class TestPlotMovementResponse:
 
 
 # =========================================================================
-# plot_movement_lmm_summary / plot_movement_slope_summary
+# plot_movement_r2_bars / plot_movement_slope_summary
 # =========================================================================
-
-def _make_movement_lmm_summary():
-    """Per-subject LOSO-CV delta-R² results for two targets, two timing vars."""
-    rows = []
-    for tnm in ['VTA-DA', 'DR-5HT']:
-        for tvar in ['log_reaction_time', 'log_movement_time']:
-            for subj in ['s1', 's2', 's3', 's4']:
-                rows.append({
-                    'target_NM': tnm, 'timing_col': tvar, 'subject': subj,
-                    'n_trials': 200,
-                    'r2_contrast': 0.03, 'r2_timing': 0.02, 'r2_full': 0.05,
-                    'delta_r2_contrast': 0.03, 'delta_r2_timing': 0.02,
-                })
-    return pd.DataFrame(rows)
-
 
 def _make_claim_slopes(with_event=True):
     """Tidy movement-claim result frame (one row per fit)."""
@@ -2444,43 +2429,19 @@ def _make_claim_slopes(with_event=True):
     return pd.DataFrame(rows)
 
 
-class TestPlotMovementLMMSummary:
-    def test_returns_figure(self):
-        from iblnm.vis import plot_movement_lmm_summary
-        df = _make_movement_lmm_summary()
-        fig = plot_movement_lmm_summary(df)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
+def _make_movement_r2_bars(timing_vars=('reaction_time', 'movement_time')):
+    """Long-form saturated marginal R²: one row per (target_NM, timing var, model).
 
-    def test_empty_df(self):
-        from iblnm.vis import plot_movement_lmm_summary
-        df = pd.DataFrame(columns=[
-            'target_NM', 'timing_col', 'full_r2',
-            'delta_r2_contrast', 'delta_r2_timing',
-            'lrt_contrast_p', 'lrt_timing_p', 'bf_contrast', 'bf_timing',
-        ])
-        fig = plot_movement_lmm_summary(df)
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_formula_in_title(self):
-        """The fitted model formula appears in the figure title."""
-        from iblnm.vis import plot_movement_lmm_summary
-        fig = plot_movement_lmm_summary(_make_movement_lmm_summary())
-        assert 'response ~ contrast + timing + reward' in fig._suptitle.get_text()
-        plt.close(fig)
-
-
-def _make_movement_r2_bars():
-    """Full-dataset marginal R²: one row per (target_NM, timing var)."""
+    Three saturated model names per target-NM: 'full', 'contrast' (contrast
+    dropped -> movement-family), 'movement' (timing dropped -> contrast-family).
+    """
     rows = []
     for tnm in ['VTA-DA', 'DR-5HT']:
-        for tvar in ['log_reaction_time', 'log_movement_time']:
-            rows.append({
-                'target_NM': tnm, 'timing_col': tvar,
-                'r2_full': 0.06, 'r2_drop_contrast': 0.04,
-                'r2_drop_movement': 0.03,
-            })
+        for tvar in timing_vars:
+            for name, r2 in [('full', 0.06), ('contrast', 0.04),
+                             ('movement', 0.03)]:
+                rows.append({'target_NM': tnm, 'timing_var': tvar,
+                             'name': name, 'marginal_r2': r2})
     return pd.DataFrame(rows)
 
 
@@ -2493,31 +2454,30 @@ class TestPlotMovementR2Bars:
         plt.close(fig)
 
     def test_bar_heights_are_model_r2(self):
-        """Each target-NM cluster shows the three models' R²:
-        r2_drop_movement (contrast), r2_drop_contrast (movement), r2_full."""
+        """One timing var, two target-NMs, three saturated models: the panel
+        shows three bars per target-NM whose heights are the input marginal_r2."""
         from iblnm.vis import plot_movement_r2_bars
-        df = _make_movement_r2_bars()
+        df = _make_movement_r2_bars(timing_vars=('reaction_time',))
         fig = plot_movement_r2_bars(df)
-        heights = {round(p.get_height(), 4) for p in fig.axes[0].patches
-                   if p.get_height() > 0}
-        assert heights == {0.03, 0.04, 0.06}
+        bars = [p.get_height() for p in fig.axes[0].patches
+                if p.get_height() > 0]
+        assert len(bars) == 6  # 2 target-NMs x 3 models
+        assert {round(h, 4) for h in bars} == {0.03, 0.04, 0.06}
         plt.close(fig)
 
     def test_empty_df(self):
         from iblnm.vis import plot_movement_r2_bars
-        df = pd.DataFrame(columns=[
-            'target_NM', 'timing_col',
-            'r2_full', 'r2_drop_contrast', 'r2_drop_movement',
-        ])
+        df = pd.DataFrame(
+            columns=['target_NM', 'timing_var', 'name', 'marginal_r2'])
         fig = plot_movement_r2_bars(df)
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_formula_in_title(self):
-        """The full model formula appears in the figure title."""
+        """The saturated full model formula appears in the figure title."""
         from iblnm.vis import plot_movement_r2_bars
         fig = plot_movement_r2_bars(_make_movement_r2_bars())
-        assert 'response ~ contrast + timing + reward' in fig._suptitle.get_text()
+        assert 'response ~ contrast * reward * side' in fig._suptitle.get_text()
         plt.close(fig)
 
 
