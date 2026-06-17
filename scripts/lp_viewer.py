@@ -5,9 +5,9 @@ Opens the LightningPose output QC viewer for the pose roll-up cohort. Parallels
 scripts/session_viewer.py but is Qt-driven (a QApplication event loop, not
 plt.show()).
 
-Builds the cohort table from the pose roll-up (metadata/pose.pqt) enriched with
-session metadata (metadata/sessions.pqt) and fraction_correct
-(data/performance.pqt), then hands it to LPViewer.
+Builds the cohort table from the pose roll-up (metadata/pose.pqt, which already
+carries fraction_correct) enriched with session metadata (metadata/sessions.pqt),
+then hands it to LPViewer.
 
 Usage:
     python scripts/lp_viewer.py
@@ -18,7 +18,6 @@ import pandas as pd
 from matplotlib.backends.qt_compat import QtWidgets
 
 from iblnm.config import (
-    PERFORMANCE_FPATH,
     POSE_FPATH,
     SESSIONS_FPATH,
     SESSIONS_H5_DIR,
@@ -45,11 +44,8 @@ def build_cohort(df_pose: pd.DataFrame, df_sessions: pd.DataFrame) -> pd.DataFra
 if __name__ == '__main__':
     df_cohort = build_cohort(
         pd.read_parquet(POSE_FPATH), pd.read_parquet(SESSIONS_FPATH))
-    df_performance = pd.read_parquet(
-        PERFORMANCE_FPATH, columns=['eid', 'fraction_correct'])
 
-    model = LPViewerModel(
-        df_cohort, SESSIONS_H5_DIR, df_performance, pose_path=POSE_FPATH)
+    model = LPViewerModel(df_cohort, SESSIONS_H5_DIR, pose_path=POSE_FPATH)
     one = _get_default_connection()
 
     app = QtWidgets.QApplication(sys.argv)

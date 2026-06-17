@@ -304,8 +304,8 @@ class LPViewerModel:
     """Cohort + per-session data model behind the LPViewer, free of any Qt.
 
     Wraps the pose roll-up table (one row per session, scalar measures +
-    ``session_type``), the session H5 directory, and an optional performance
-    table. Drives the histogram-brush → dropdown filtering and assembles the
+    ``session_type`` + ``fraction_correct``) and the session H5 directory.
+    Drives the histogram-brush → dropdown filtering and assembles the
     trial-averaged panel data for a selected session.
     """
 
@@ -313,12 +313,10 @@ class LPViewerModel:
         self,
         df_cohort: pd.DataFrame,
         h5_dir: str | Path,
-        df_performance: pd.DataFrame | None = None,
         pose_path: str | Path | None = None,
     ):
         self.df_cohort = df_cohort
         self.h5_dir = Path(h5_dir)
-        self.df_performance = df_performance
         self.pose_path = pose_path
 
     def population_mask(
@@ -360,20 +358,15 @@ class LPViewerModel:
             str(bodypart): traces.sel(bodypart=bodypart).mean('trial').values
             for bodypart in traces.coords['bodypart'].values
         }
+        match = self.df_cohort.loc[
+            self.df_cohort['eid'] == eid, 'fraction_correct']
+        fraction_correct = match.item() if len(match) else None
         return SessionPanels(
             times=traces.coords['time'].values,
             traces=trial_means,
             xcorr=xcorr,
-            fraction_correct=self._fraction_correct(eid),
+            fraction_correct=None if pd.isna(fraction_correct) else fraction_correct,
         )
-
-    def _fraction_correct(self, eid: str) -> float | None:
-        """Look up `fraction_correct` for `eid` in the performance table."""
-        if self.df_performance is None:
-            return None
-        match = self.df_performance.loc[
-            self.df_performance['eid'] == eid, 'fraction_correct']
-        return match.item() if len(match) else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

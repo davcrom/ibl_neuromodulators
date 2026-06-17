@@ -500,18 +500,19 @@ def cohort_model(tmp_path):
     }
     h5_dir = tmp_path / 'sessions'
     h5_dir.mkdir()
-    with h5py.File(h5_dir / 'eid1.h5', 'w') as f:
-        grp = f.create_group('video')
-        _save_pose_traces(grp, traces)
-        _save_pose_xcorr(grp, xcorr)
+    for eid in ('eid1', 'eid2'):
+        with h5py.File(h5_dir / f'{eid}.h5', 'w') as f:
+            grp = f.create_group('video')
+            _save_pose_traces(grp, traces)
+            _save_pose_xcorr(grp, xcorr)
 
     df_cohort = pd.DataFrame({
         'eid': ['eid1', 'eid2'],
         'paw': [0.3, 0.8],
         'session_type': ['biased', 'ephys'],
+        'fraction_correct': [0.77, np.nan],
     })
-    df_performance = pd.DataFrame({'eid': ['eid1'], 'fraction_correct': [0.77]})
-    return LPViewerModel(df_cohort, h5_dir, df_performance), traces
+    return LPViewerModel(df_cohort, h5_dir), traces
 
 
 def test_model_dropdown_eids_couples_population_and_metric(cohort_model):
@@ -545,7 +546,14 @@ def test_session_panels_xcorr_and_performance(cohort_model):
     panels = model.session_panels('eid1')
     assert panels.xcorr['functions'].shape == (3, N_LAGS)
     assert panels.xcorr['lags'].shape == (N_LAGS,)
+    # fraction_correct sourced from the cohort row
     assert panels.fraction_correct == pytest.approx(0.77)
+
+
+def test_session_panels_fraction_correct_none_when_nan(cohort_model):
+    model, _ = cohort_model
+    # eid2's cohort fraction_correct is NaN
+    assert model.session_panels('eid2').fraction_correct is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
