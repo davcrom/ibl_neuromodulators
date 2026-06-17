@@ -8,6 +8,7 @@ import pytest
 import xarray as xr
 
 import scripts.pose as pose
+from iblnm.config import VIDEO_QC_COLS
 from iblnm.data import PhotometrySession
 
 
@@ -69,6 +70,38 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
                 grp.create_dataset(key, data=np.asarray(values))
 
 
+def _write_qc_perf(tmp_path, qc_eids, perf):
+    """Write temp ``sessions_qc.pqt`` and ``performance.pqt``, return their paths.
+
+    ``qc_eids`` maps eid -> a fill value assigned to every ``VIDEO_QC_COLS``
+    column for that eid. ``perf`` maps eid -> ``fraction_correct`` float.
+    """
+    qc_fpath = tmp_path / 'sessions_qc.pqt'
+    perf_fpath = tmp_path / 'performance.pqt'
+    pd.DataFrame(
+        [{'eid': eid, **{col: fill for col in VIDEO_QC_COLS}}
+         for eid, fill in qc_eids.items()],
+        columns=['eid'] + VIDEO_QC_COLS,
+    ).to_parquet(qc_fpath)
+    pd.DataFrame(
+        [{'eid': eid, 'fraction_correct': value}
+         for eid, value in perf.items()],
+        columns=['eid', 'fraction_correct'],
+    ).to_parquet(perf_fpath)
+    return qc_fpath, perf_fpath
+
+
+@pytest.fixture
+def empty_qc_perf(tmp_path):
+    """Kwargs pointing ``collect_pose`` at empty QC/performance sources.
+
+    Lets trace-focused tests satisfy the required-file check without exercising
+    the joins; every joined column comes back NaN.
+    """
+    qc_fpath, perf_fpath = _write_qc_perf(tmp_path, qc_eids={}, perf={})
+    return {'sessions_qc_fpath': qc_fpath, 'performance_fpath': perf_fpath}
+
+
 @pytest.fixture
 def fake_ps():
     """A PhotometrySession mock whose extract methods are tracked."""
@@ -126,7 +159,8 @@ class TestReadEids:
 
 
 class TestCollectPose:
-    def test_rollup_two_sessions(self, tmp_path, mock_session_series):
+    def test_rollup_two_sessions(self, tmp_path, mock_session_series,
+                                 empty_qc_perf):
         steps_a = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                    'tongue_likelihood': 0.5}
         baselines_a = {'paw': 0.4, 'nose': 0.5, 'tongue_speed': 1.0,
@@ -140,7 +174,7 @@ class TestCollectPose:
                             peak_lags=[0.0, np.nan, 0.5], qc_lp='PASS',
                             series=mock_session_series)
 
-        df = pose.collect_pose(tmp_path)
+        df = pose.collect_pose(tmp_path, **empty_qc_perf)
 
         assert set(df['eid']) == {'eid-a', 'eid-b'}
         row_a = df.set_index('eid').loc['eid-a']
@@ -154,7 +188,8 @@ class TestCollectPose:
             [row_a['peak_lag_early'], row_a['peak_lag_mid'],
              row_a['peak_lag_late']], [0.1, 0.2, 0.4])
 
-    def test_mean_rt_from_trials_group(self, tmp_path, mock_session_series):
+    def test_mean_rt_from_trials_group(self, tmp_path, mock_session_series,
+                                       empty_qc_perf):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5}
         trials = {'stimOn_times': [0.0, 0.0, 0.0],
@@ -163,32 +198,67 @@ class TestCollectPose:
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
                             series=mock_session_series, trials=trials)
 
-        df = pose.collect_pose(tmp_path).set_index('eid')
+        df = pose.collect_pose(tmp_path, **empty_qc_perf).set_index('eid')
 
         np.testing.assert_allclose(df.loc['eid-rt', 'mean_rt'], 0.75)
 
     def test_mean_rt_nan_without_trials_group(self, tmp_path,
-                                              mock_session_series):
+                                              mock_session_series,
+                                              empty_qc_perf):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5}
         _write_pose_session(tmp_path, 'eid-nort', steps, drift=0.1,
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
                             series=mock_session_series)
 
-        df = pose.collect_pose(tmp_path).set_index('eid')
+        df = pose.collect_pose(tmp_path, **empty_qc_perf).set_index('eid')
 
         assert np.isnan(df.loc['eid-nort', 'mean_rt'])
         assert np.isfinite(df.loc['eid-nort', 'paw'])
 
+    def test_qc_and_performance_joins(self, tmp_path, mock_session_series):
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5}
+        for eid in ('eid-a', 'eid-b'):
+            _write_pose_session(tmp_path, eid, steps, drift=0.1,
+                                peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                                series=mock_session_series)
+        qc_fpath, perf_fpath = _write_qc_perf(
+            tmp_path, qc_eids={'eid-a': 'WARNING'}, perf={'eid-a': 0.82})
+
+        df = pose.collect_pose(
+            tmp_path, sessions_qc_fpath=qc_fpath,
+            performance_fpath=perf_fpath).set_index('eid')
+
+        for col in VIDEO_QC_COLS:
+            assert df.loc['eid-a', col] == 'WARNING'
+            assert pd.isna(df.loc['eid-b', col])
+        assert df.loc['eid-a', 'fraction_correct'] == 0.82
+        assert pd.isna(df.loc['eid-b', 'fraction_correct'])
+
+    def test_missing_sessions_qc_raises(self, tmp_path, mock_session_series):
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5}
+        _write_pose_session(tmp_path, 'eid-a', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=mock_session_series)
+        _, perf_fpath = _write_qc_perf(tmp_path, qc_eids={}, perf={})
+        missing = tmp_path / 'does_not_exist.pqt'
+
+        with pytest.raises(FileNotFoundError, match='does_not_exist.pqt'):
+            pose.collect_pose(tmp_path, sessions_qc_fpath=missing,
+                              performance_fpath=perf_fpath)
+
     def test_all_nan_trace_yields_nan_scalar(self, tmp_path,
-                                             mock_session_series):
+                                             mock_session_series,
+                                             empty_qc_perf):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': np.nan,
                  'tongue_likelihood': 0.5}
         _write_pose_session(tmp_path, 'eid-c', steps, drift=0.1,
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='NOT_SET',
                             series=mock_session_series)
 
-        df = pose.collect_pose(tmp_path).set_index('eid')
+        df = pose.collect_pose(tmp_path, **empty_qc_perf).set_index('eid')
 
         assert np.isnan(df.loc['eid-c', 'tongue_speed'])
         assert np.isfinite(df.loc['eid-c', 'paw'])

@@ -25,9 +25,12 @@ from iblnm.analysis import movement_delta
 from iblnm.config import (
     BASELINE_WINDOW,
     MOVEMENT_RESPONSE_WINDOW,
+    PERFORMANCE_FPATH,
     POSE_FPATH,
     SESSIONS_FPATH,
     SESSIONS_H5_DIR,
+    SESSIONS_QC_FPATH,
+    VIDEO_QC_COLS,
 )
 from iblnm.data import (
     LP_QC_NOT_SET,
@@ -70,7 +73,11 @@ def process_pose(ps, reprocess=False):
     return 'processed'
 
 
-def collect_pose(h5_dir) -> pd.DataFrame:
+def collect_pose(
+    h5_dir,
+    sessions_qc_fpath=SESSIONS_QC_FPATH,
+    performance_fpath=PERFORMANCE_FPATH,
+) -> pd.DataFrame:
     """Roll up the per-session ``video`` H5 groups into a flat pose table.
 
     For each H5 holding a ``video`` group, recompute the four scalar measures
@@ -80,17 +87,34 @@ def collect_pose(h5_dir) -> pd.DataFrame:
     the three per-third peak lags, and the two manual QC labels. Recomputing the
     scalars here keeps both windows adjustable without re-extracting traces.
 
+    After assembling the per-eid rows, left-join the 8 ``VIDEO_QC_COLS`` from
+    ``sessions_qc.pqt`` and ``fraction_correct`` from ``performance.pqt`` by
+    ``eid``; eids absent from a source get NaN in the joined columns.
+
     Parameters
     ----------
     h5_dir : Path or str
         Directory containing ``{eid}.h5`` files.
+    sessions_qc_fpath : Path or str
+        Extended-QC table (``sessions_qc.pqt``) holding the ``VIDEO_QC_COLS``
+        string columns. Must exist, else a ``FileNotFoundError`` is raised.
+    performance_fpath : Path or str
+        Per-eid performance table (``performance.pqt``) holding
+        ``fraction_correct``.
 
     Returns
     -------
     pd.DataFrame
         One row per eid with a ``video`` group: ``eid``, one column per
         bodypart scalar, ``drift``, ``peak_lag_early/mid/late``, ``qc_lp``,
-        ``qc_movement``.
+        ``qc_movement``, ``mean_rt``, the 8 ``VIDEO_QC_COLS``, and
+        ``fraction_correct``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``sessions_qc_fpath`` does not exist. Regenerate it with
+        ``query_database.py --extended-qc``.
     """
     rows = []
     for fpath in sorted(Path(h5_dir).glob('*.h5')):
@@ -123,7 +147,16 @@ def collect_pose(h5_dir) -> pd.DataFrame:
             row[label] = value.decode() if isinstance(value, bytes) else value
         row['mean_rt'] = mean_rt
         rows.append(row)
-    return pd.DataFrame(rows)
+    df_pose = pd.DataFrame(rows)
+
+    if not Path(sessions_qc_fpath).exists():
+        raise FileNotFoundError(
+            f"{sessions_qc_fpath} not found; regenerate it with "
+            "query_database.py --extended-qc before collecting pose.")
+    df_qc = pd.read_parquet(sessions_qc_fpath)[['eid'] + VIDEO_QC_COLS]
+    df_perf = pd.read_parquet(performance_fpath)[['eid', 'fraction_correct']]
+    return df_pose.merge(df_qc, on='eid', how='left').merge(
+        df_perf, on='eid', how='left')
 
 
 def _read_mean_rt(f: h5py.File) -> float:
