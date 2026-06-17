@@ -34,3 +34,21 @@ def test_max_abs_lag_takes_max_magnitude_across_thirds():
     })
     result = pose_qc.max_abs_lag(df)
     np.testing.assert_array_equal(result.values, [0.65, 4.9])
+
+
+def test_add_derived_metrics_builds_timing_columns():
+    df = pd.DataFrame({
+        'mean_rt': [np.e, np.e ** 2],
+        'drift': [-3.0, 2.0],
+        'peak_lag_early': [-0.65, 0.1],
+        'peak_lag_mid': [0.2, -4.9],
+        'peak_lag_late': [0.3, 4.8],
+        'peak_val_early': [0.2, 0.9],
+        'peak_val_mid': [0.7, 0.1],
+        'peak_val_late': [0.4, 0.5],
+    })
+    result = pose_qc.add_derived_metrics(df)
+    np.testing.assert_array_equal(result['log_rt'].values, [1.0, 2.0])
+    np.testing.assert_array_equal(result['abs_lag'].values, [0.65, 4.9])
+    np.testing.assert_array_equal(result['peak_value'].values, [0.7, 0.9])
+    np.testing.assert_array_equal(result['abs_drift'].values, [3.0, 2.0])

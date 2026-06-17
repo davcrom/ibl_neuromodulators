@@ -1,14 +1,19 @@
 """Pose movement diagnostic grids.
 
-Reads the self-contained ``metadata/pose.pqt`` and writes two SVGs, both with one
-row per movement measure:
-- ``pose_qc_grid.svg``: violins of each measure split by each video-QC field.
-- ``pose_corr_grid.svg``: Spearman scatters of each measure against
+Reads the self-contained ``metadata/pose.pqt`` and writes three SVGs:
+- ``pose_qc_grid.svg``: violins of each movement measure (rows) split by each
+  video-QC field (columns).
+- ``pose_timing_grid.svg``: violins of the three derived timing metrics
+  (``peak_value``, ``abs_lag``, ``abs_drift``; rows) split by each video-QC
+  field (columns).
+- ``pose_corr_grid.svg``: Spearman scatters of each movement measure against
   ``fraction_correct``, log reaction time, the max paw-wheel xcorr ``abs_lag``,
   the max xcorr ``peak_value``, and absolute ``drift``.
 
 Input:  metadata/pose.pqt
-Output: figures/pose_qc/pose_qc_grid.svg, figures/pose_qc/pose_corr_grid.svg
+Output: figures/pose_qc/pose_qc_grid.svg,
+        figures/pose_qc/pose_timing_grid.svg,
+        figures/pose_qc/pose_corr_grid.svg
 """
 import numpy as np
 import pandas as pd
@@ -30,6 +35,31 @@ from iblnm.vis import violinplot
 PEAK_LAG_COLS = ['peak_lag_early', 'peak_lag_mid', 'peak_lag_late']
 PEAK_VAL_COLS = ['peak_val_early', 'peak_val_mid', 'peak_val_late']
 CORR_COLS = ['fraction_correct', 'log_rt', 'abs_lag', 'peak_value', 'abs_drift']
+TIMING_MEASURES = ['peak_value', 'abs_lag', 'abs_drift']
+
+
+def add_derived_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """Append the per-session timing metrics consumed by the grid builders.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Pose table carrying ``mean_rt`` (seconds), ``drift``, and the per-third
+        ``PEAK_LAG_COLS`` and ``PEAK_VAL_COLS`` columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``df`` with ``log_rt`` (log reaction time), ``abs_lag`` (max
+        |paw-wheel lag| across thirds, seconds), ``peak_value`` (max paw-wheel
+        xcorr peak across thirds), and ``abs_drift`` (|drift|) added.
+    """
+    return df.assign(
+        log_rt=np.log(df['mean_rt']),
+        abs_lag=max_abs_lag(df),
+        peak_value=max_peak_value(df),
+        abs_drift=df['drift'].abs(),
+    )
 
 
 def max_abs_lag(df: pd.DataFrame) -> pd.Series:
@@ -112,17 +142,26 @@ def _scatter_cell(ax, df: pd.DataFrame, measure: str, metric: str) -> None:
     ax.set_xlabel(metric, fontsize=6)
 
 
-def build_violin_grid(df: pd.DataFrame):
-    """Build the movement-vs-video-QC violin grid (rows x ``VIDEO_QC_COLS``).
+def build_violin_grid(df: pd.DataFrame, measures: list[str]):
+    """Build a measure-vs-video-QC violin grid (``measures`` x ``VIDEO_QC_COLS``).
 
-    Rows are the ``POSE_MEASURES`` keys; each column is one ``VIDEO_QC_COLS``
-    field, with the measure split into violins by that field's QC categories.
+    Each row is one column of ``df`` named in ``measures``; each grid column is
+    one ``VIDEO_QC_COLS`` field, with the measure split into violins by that
+    field's QC categories.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Pose table holding every ``measures`` column and every ``VIDEO_QC_COLS``
+        field.
+    measures : list[str]
+        Column names to plot as rows (e.g. ``list(POSE_MEASURES)`` or
+        ``TIMING_MEASURES``).
 
     Returns
     -------
     matplotlib.figure.Figure
     """
-    measures = list(POSE_MEASURES)
     fig, axes = plt.subplots(len(measures), len(VIDEO_QC_COLS), sharey='row',
                              figsize=(2 * len(VIDEO_QC_COLS), 2 * len(measures)))
     for j, qc_col in enumerate(VIDEO_QC_COLS):
@@ -140,18 +179,12 @@ def build_corr_grid(df: pd.DataFrame):
 
     Rows are the ``POSE_MEASURES`` keys; columns are ``fraction_correct``, log
     reaction time, the max paw-wheel ``abs_lag``, the max xcorr ``peak_value``,
-    and the absolute ``drift`` — all derived here from the pose table.
+    and the absolute ``drift`` — expected on ``df`` via ``add_derived_metrics``.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
-    df = df.assign(
-        log_rt=np.log(df['mean_rt']),
-        abs_lag=max_abs_lag(df),
-        peak_value=max_peak_value(df),
-        abs_drift=df['drift'].abs(),
-    )
     measures = list(POSE_MEASURES)
     fig, axes = plt.subplots(len(measures), len(CORR_COLS), sharey='row',
                              figsize=(2 * len(CORR_COLS), 2 * len(measures)))
@@ -164,13 +197,17 @@ def build_corr_grid(df: pd.DataFrame):
 
 
 def main() -> None:
-    df = pd.read_parquet(POSE_FPATH)
+    df = add_derived_metrics(pd.read_parquet(POSE_FPATH))
     figures_dir = PROJECT_ROOT / 'figures/pose_qc'
     figures_dir.mkdir(parents=True, exist_ok=True)
-    for name, builder in [('pose_qc_grid', build_violin_grid),
-                          ('pose_corr_grid', build_corr_grid)]:
+    builders = [
+        ('pose_qc_grid', lambda: build_violin_grid(df, list(POSE_MEASURES))),
+        ('pose_timing_grid', lambda: build_violin_grid(df, TIMING_MEASURES)),
+        ('pose_corr_grid', lambda: build_corr_grid(df)),
+    ]
+    for name, builder in builders:
         fpath = figures_dir / f'{name}.svg'
-        builder(df).savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
+        builder().savefig(fpath, dpi=FIGURE_DPI, bbox_inches='tight')
         print(f"Saved {fpath}")
 
 
