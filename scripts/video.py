@@ -24,7 +24,7 @@ from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_QC_FPATH,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE,
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
-    VIDEO_LOG_FPATH, VIDEO_FPATH,
+    VIDEO_LOG_FPATH, VIDEO_FPATH, VIDEO_QC_COLS,
 )
 from iblnm.io import _get_default_connection
 from iblnm.util import (
@@ -38,19 +38,9 @@ from iblnm.validation import (
     validate_video_pin_state_qc,
 )
 
-VIDEO_QC_QUALITY_COLS = [
-    'qc_videoLeft_focus',
-    'qc_videoLeft_position',
-    'qc_videoLeft_brightness',
-    'qc_videoLeft_resolution',
-    'qc_videoLeft_wheel_alignment',
-]
-
-VIDEO_QC_PROBLEM_COLS = [
-    'qc_videoLeft_timestamps',
-    'qc_videoLeft_dropped_frames',
-    'qc_videoLeft_pin_state',
-]
+# First 5 video-QC fields are quality metrics (scored); last 3 are problem flags.
+VIDEO_QC_QUALITY_COLS = VIDEO_QC_COLS[:5]
+VIDEO_QC_PROBLEM_COLS = VIDEO_QC_COLS[5:]
 
 QCVAL2NUM = {
     np.nan: np.nan,

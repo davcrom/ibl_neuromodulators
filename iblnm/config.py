@@ -39,6 +39,22 @@ POSE_LOG_FPATH = PROJECT_ROOT / 'metadata/pose_log.pqt'
 # Video QC parameters
 LENGTH_MISMATCH_THRESHOLD = 120  # seconds
 
+# Video QC column names (leftCamera extended-QC fields), in source order.
+# First 5 are quality metrics (scored), last 3 are problem flags.
+VIDEO_QC_COLS = [
+    'qc_videoLeft_focus',
+    'qc_videoLeft_position',
+    'qc_videoLeft_brightness',
+    'qc_videoLeft_resolution',
+    'qc_videoLeft_wheel_alignment',
+    'qc_videoLeft_timestamps',
+    'qc_videoLeft_dropped_frames',
+    'qc_videoLeft_pin_state',
+]
+
+# IBL QC outcome categories ordered most to least severe (for category ordering).
+QC_VALUE_ORDER = ['FAIL', 'CRITICAL', 'WARNING', 'PASS', 'NOT_SET']
+
 # Schema for sessions DataFrame: column -> (type, default)
 # Used by enforce_schema() to fill missing columns and coerce NaN in list columns
 SESSION_SCHEMA = {
