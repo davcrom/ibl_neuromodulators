@@ -219,6 +219,42 @@ def test_histogram_by_type_drops_nan(split_table):
     assert np.sum(per_type['biased'] * widths) == pytest.approx(1.0)
 
 
+def test_histogram_by_type_edges_pinned_to_edge_source(split_table):
+    # A subset spanning a narrower range still gets the full-cohort edges, so
+    # bins do not shift as the population shrinks.
+    subset = split_table[split_table['paw_speed'].between(1.0, 2.0)]
+    edges, _ = histogram_by_type(
+        subset, 'paw_speed', ('biased', 'ephys'), bins=4,
+        edge_source=split_table)
+    full_edges, _ = histogram_by_type(
+        split_table, 'paw_speed', ('biased', 'ephys'), bins=4)
+    np.testing.assert_allclose(edges, full_edges)
+
+
+def test_histogram_by_type_counts_from_subset_not_edge_source(split_table):
+    # A type present in edge_source but filtered out of df gets all-zero counts:
+    # density counts come from the subset, not the full cohort.
+    subset = split_table[split_table['session_type'] == 'biased']
+    _, per_type = histogram_by_type(
+        subset, 'paw_speed', ('biased', 'ephys'), bins=4,
+        edge_source=split_table)
+    assert np.all(per_type['ephys'] == 0.0)
+    assert np.any(per_type['biased'] > 0.0)
+
+
+def test_histogram_by_type_edge_source_none_matches_single_frame(split_table):
+    # With edge_source=None, edges and counts both come from df (prior behavior).
+    edges_none, per_type_none = histogram_by_type(
+        split_table, 'paw_speed', ('biased', 'ephys'), bins=4)
+    edges_self, per_type_self = histogram_by_type(
+        split_table, 'paw_speed', ('biased', 'ephys'), bins=4,
+        edge_source=split_table)
+    np.testing.assert_allclose(edges_none, edges_self)
+    for session_type in per_type_none:
+        np.testing.assert_allclose(
+            per_type_none[session_type], per_type_self[session_type])
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # format_event_timings
 # ─────────────────────────────────────────────────────────────────────────────

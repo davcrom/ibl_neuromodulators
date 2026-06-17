@@ -171,22 +171,28 @@ def histogram_by_type(
     measure: str,
     session_types: tuple[str, ...],
     bins: int = 30,
+    edge_source: pd.DataFrame | None = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Split a cohort measure into per-session-type density histograms.
 
-    Bin edges are fixed to the full `df[measure]` range across all sessions, so
-    they don't shift as session types are toggled on and off. For each type in
-    `session_types`, returns its density-normalized counts over those shared
-    edges. NaN measure values are dropped. Returns `(bin_edges, {session_type:
-    density_counts})`.
+    Bin edges are fixed to the `edge_source[measure]` range (the full cohort)
+    while per-type density counts are taken from `df` (the population-filtered
+    subset), so the histograms reshape to the current population without the
+    bins shifting as it changes. When `edge_source is None`, edges come from
+    `df` itself — identical to taking counts and edges from one frame. For each
+    type in `session_types`, returns its density-normalized counts over the
+    shared edges; a type with no rows in `df` (e.g. filtered out of the
+    population) yields all-zero counts. NaN measure values are dropped. Returns
+    `(bin_edges, {session_type: density_counts})`.
     """
-    bin_edges = np.histogram_bin_edges(df[measure].dropna(), bins=bins)
-    per_type = {
-        session_type: np.histogram(
-            df.loc[df['session_type'] == session_type, measure].dropna(),
-            bins=bin_edges, density=True)[0]
-        for session_type in session_types
-    }
+    edge_frame = edge_source if edge_source is not None else df
+    bin_edges = np.histogram_bin_edges(edge_frame[measure].dropna(), bins=bins)
+    per_type = {}
+    for session_type in session_types:
+        values = df.loc[df['session_type'] == session_type, measure].dropna()
+        per_type[session_type] = (
+            np.histogram(values, bins=bin_edges, density=True)[0]
+            if len(values) else np.zeros(len(bin_edges) - 1))
     return bin_edges, per_type
 
 
@@ -552,17 +558,24 @@ class LPViewer(QtWidgets.QMainWindow):
 
     def _draw_histograms(self) -> None:
         """Per cohort measure, overlay one density histogram per checked session
-        type (colored via SESSIONTYPE2COLOR, alpha < 1). Each axes carries a
-        brushable SpanSelector; stored brush ranges are re-applied as visible
-        spans. Rebuilds the figure from scratch so it tracks the checkbox state.
-        Double-clicking an axes clears its range."""
+        type (colored via SESSIONTYPE2COLOR, alpha < 1). Counts come from the
+        population-filtered subset while bin edges stay pinned to the full
+        cohort, so the panels reshape to the current population without bins
+        shifting. Each axes carries a brushable SpanSelector; stored brush
+        ranges are re-applied as visible spans. Rebuilds the figure from scratch
+        so it tracks the checkbox state. Double-clicking an axes clears its
+        range."""
         self.hist_fig.clear()
         self.span_selectors = {}
         self.hist_axes = {}
         types = self._selected_types()
+        mask = self.model.population_mask(types, {}, None, None)
+        population = self.model.df_cohort.loc[mask]
         for i, measure in enumerate(HISTOGRAM_MEASURES):
             ax = self.hist_fig.add_subplot(len(HISTOGRAM_MEASURES), 1, i + 1)
-            edges, per_type = histogram_by_type(self.model.df_cohort, measure, types)
+            edges, per_type = histogram_by_type(
+                population, measure, types,
+                edge_source=self.model.df_cohort)
             for session_type, density in per_type.items():
                 ax.stairs(density, edges, fill=True, alpha=0.5,
                           color=SESSIONTYPE2COLOR.get(session_type),
