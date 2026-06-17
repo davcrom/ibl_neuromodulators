@@ -37,27 +37,69 @@ from iblnm.data import (
 IBL_QC_VALUES = ('CRITICAL', 'FAIL', 'WARNING', 'PASS')
 
 
-def filter_sessions_table(
-    df_pose: pd.DataFrame,
-    ranges: dict[str, tuple[float, float]],
-    session_types: tuple[str, ...],
-) -> list[str]:
-    """Return eids that fall within every brushed range and whose
-    `session_type` is in `session_types`.
+def start_time_to_numeric(values) -> np.ndarray:
+    """Convert ISO-8601 `start_time` strings to float nanoseconds since epoch.
 
-    Drives the histogram-brush → session-dropdown coupling. `ranges` maps each
-    brushed measure to an inclusive `(low, high)` interval; an eid must satisfy
-    all of them (intersection). An empty `ranges` means no histogram is brushed
-    yet and yields no sessions.
+    Returns a float array (so `NaT`/missing entries become `NaN`, which integer
+    epoch encodings cannot represent) suitable for binning and brushing on a
+    numeric datetime axis. `values` is any array-like of ISO-8601 strings.
     """
-    if not ranges:
-        return []
-    in_range = np.logical_and.reduce([
-        df_pose[measure].between(low, high)
-        for measure, (low, high) in ranges.items()
-    ])
-    in_types = df_pose['session_type'].isin(session_types)
-    return df_pose.loc[in_range & in_types, 'eid'].tolist()
+    times = pd.DatetimeIndex(pd.to_datetime(values, format='ISO8601'))
+    numeric = times.asi8.astype(float)
+    numeric[times.isna()] = np.nan
+    return numeric
+
+
+def select_population(
+    df: pd.DataFrame,
+    session_types: tuple[str, ...],
+    qc_selections: dict[str, set[str]],
+    fc_range: tuple[float, float] | None,
+    start_time_range: tuple[float, float] | None,
+) -> np.ndarray:
+    """Boolean mask over `df` for the population-filter conjunction.
+
+    Combines (AND) every active constraint: `session_type` membership in
+    `session_types`; for each `qc_selections` field with a non-empty verdict set,
+    `df[field]` membership in that set (so verdicts within a field are OR, fields
+    across are AND); `fraction_correct` in `fc_range` (inclusive) when given; and
+    the numeric `start_time` (see `start_time_to_numeric`) in `start_time_range`
+    (inclusive) when given. A field mapped to an empty set, or a `None` range, is
+    dropped from the conjunction. With no active constraints the mask is all-True.
+    """
+    constraints = [df['session_type'].isin(session_types).to_numpy()]
+    constraints += [
+        df[field].isin(verdicts).to_numpy()
+        for field, verdicts in qc_selections.items() if verdicts
+    ]
+    if fc_range is not None:
+        constraints.append(df['fraction_correct'].between(*fc_range).to_numpy())
+    if start_time_range is not None:
+        numeric = start_time_to_numeric(df['start_time'])
+        low, high = start_time_range
+        constraints.append((numeric >= low) & (numeric <= high))
+    return np.logical_and.reduce(constraints)
+
+
+def filter_dropdown(
+    df: pd.DataFrame,
+    population_mask: np.ndarray,
+    metric_ranges: dict[str, tuple[float, float]],
+) -> list[str]:
+    """Eids in the population that also fall within every metric brush range.
+
+    `population_mask` is the boolean mask from `select_population`. Each entry of
+    `metric_ranges` adds an inclusive `between` constraint on that measure (the
+    selection-only movement brushes). An empty `metric_ranges` yields the whole
+    population, not an empty set.
+    """
+    mask = population_mask
+    if metric_ranges:
+        mask = mask & np.logical_and.reduce([
+            df[measure].between(low, high).to_numpy()
+            for measure, (low, high) in metric_ranges.items()
+        ])
+    return df.loc[mask, 'eid'].tolist()
 
 
 def likelihood_to_alpha(
@@ -273,15 +315,33 @@ class LPViewerModel:
         self.df_performance = df_performance
         self.pose_path = pose_path
 
-    def filter(
+    def population_mask(
         self,
-        ranges: dict[str, tuple[float, float]],
         session_types: tuple[str, ...],
+        qc_selections: dict[str, set[str]],
+        fc_range: tuple[float, float] | None,
+        start_time_range: tuple[float, float] | None,
+    ) -> np.ndarray:
+        """Boolean mask over `df_cohort` for the population-filter selections
+        (session types, video-QC grid, `fraction_correct`, `start_time`)."""
+        return select_population(
+            self.df_cohort, session_types, qc_selections, fc_range,
+            start_time_range)
+
+    def dropdown_eids(
+        self,
+        metric_ranges: dict[str, tuple[float, float]],
+        session_types: tuple[str, ...],
+        qc_selections: dict[str, set[str]],
+        fc_range: tuple[float, float] | None,
+        start_time_range: tuple[float, float] | None,
     ) -> list[str]:
-        """Return eids that fall within every brushed range in `ranges` and
-        whose `session_type` is in `session_types` (the brushed-histogram →
-        dropdown coupling)."""
-        return filter_sessions_table(self.df_cohort, ranges, session_types)
+        """Session-dropdown eids: the population mask AND the movement-metric
+        brushes in `metric_ranges` (the population predicate refined by the
+        selection-only histogram brushes)."""
+        mask = self.population_mask(
+            session_types, qc_selections, fc_range, start_time_range)
+        return filter_dropdown(self.df_cohort, mask, metric_ranges)
 
     def session_panels(self, eid: str) -> SessionPanels:
         """Load the `video` H5 group for `eid` and assemble its panel data:
@@ -550,7 +610,8 @@ class LPViewer(QtWidgets.QMainWindow):
         """Repopulate the session dropdown from the brushed ranges + type
         filter. Does not auto-load a session — loading happens only when the
         user picks an entry."""
-        eids = self.model.filter(self.brush_ranges, self._selected_types())
+        eids = self.model.dropdown_eids(
+            self.brush_ranges, self._selected_types(), {}, None, None)
         self.session_combo.blockSignals(True)
         self.session_combo.clear()
         self.session_combo.addItems(eids)

@@ -11,7 +11,7 @@ from iblnm.lp_viewer import (
     HISTOGRAM_TITLES,
     LPViewerModel,
     apply_label,
-    filter_sessions_table,
+    filter_dropdown,
     format_event_timings,
     format_session_title,
     frames_in_trial,
@@ -20,50 +20,128 @@ from iblnm.lp_viewer import (
     likelihood_to_alpha,
     persist_labels,
     save_label,
+    select_population,
+    start_time_to_numeric,
     trial_frame_window,
     update_pose_qc,
 )
 
 
 @pytest.fixture
-def pose_table():
+def population_table():
     return pd.DataFrame({
         'eid': ['a', 'b', 'c', 'd'],
-        'paw_speed': [0.1, 0.5, 0.9, 0.5],
-        'nose_speed': [0.5, 0.5, 0.5, 0.9],
+        'paw': [0.1, 0.5, 0.9, 0.5],
+        'nose': [0.5, 0.5, 0.5, 0.9],
         'session_type': ['biased', 'biased', 'ephys', 'training'],
+        'fraction_correct': [0.6, 0.8, 0.75, 0.95],
+        'start_time': ['2025-12-01T00:00:00.000000',
+                       '2025-12-02T00:00:00.000000',
+                       '2025-12-03T00:00:00.000000',
+                       '2025-12-04T00:00:00.000000'],
+        'qc_videoLeft_focus': ['PASS', 'PASS', 'WARNING', 'FAIL'],
+        'qc_videoLeft_brightness': ['PASS', 'WARNING', 'PASS', 'PASS'],
     })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# filter_sessions_table
+# start_time_to_numeric
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_filter_sessions_table_single_range_and_type(pose_table):
-    eids = filter_sessions_table(
-        pose_table, {'paw_speed': (0.4, 0.6)}, ('biased', 'training'))
-    assert eids == ['b', 'd']
+def test_start_time_to_numeric_round_trips_iso_string():
+    iso = '2025-12-02T16:46:04.524000'
+    numeric = start_time_to_numeric([iso])
+    assert numeric[0] == float(pd.Timestamp(iso).value)
 
 
-def test_filter_sessions_table_intersects_ranges(pose_table):
-    # paw in [0.4, 0.6] -> b, d; nose in [0.0, 0.6] -> a, b, c; both -> b
-    eids = filter_sessions_table(
-        pose_table,
-        {'paw_speed': (0.4, 0.6), 'nose_speed': (0.0, 0.6)},
-        ('biased', 'training'))
-    assert eids == ['b']
+def test_start_time_to_numeric_nat_becomes_nan():
+    numeric = start_time_to_numeric(['2025-12-02T00:00:00.000000', None])
+    assert np.isnan(numeric[1])
 
 
-def test_filter_sessions_table_type_excludes(pose_table):
-    eids = filter_sessions_table(
-        pose_table, {'paw_speed': (0.0, 1.0)}, ('ephys',))
-    assert eids == ['c']
+def _eids(df, mask):
+    return df.loc[mask, 'eid'].tolist()
 
 
-def test_filter_sessions_table_empty_ranges(pose_table):
-    eids = filter_sessions_table(
-        pose_table, {}, ('biased', 'ephys', 'training'))
-    assert eids == []
+# ─────────────────────────────────────────────────────────────────────────────
+# select_population
+# ─────────────────────────────────────────────────────────────────────────────
+
+ALL_TYPES = ('biased', 'ephys', 'training')
+
+
+def test_select_population_qc_field_single_verdict(population_table):
+    mask = select_population(
+        population_table, ALL_TYPES,
+        {'qc_videoLeft_focus': {'PASS'}}, None, None)
+    assert _eids(population_table, mask) == ['a', 'b']
+
+
+def test_select_population_qc_field_or_within_field(population_table):
+    # brightness in {PASS, WARNING} keeps every row (all four are one of these)
+    mask = select_population(
+        population_table, ALL_TYPES,
+        {'qc_videoLeft_brightness': {'PASS', 'WARNING'}}, None, None)
+    assert _eids(population_table, mask) == ['a', 'b', 'c', 'd']
+
+
+def test_select_population_qc_fields_and_across(population_table):
+    # focus==PASS -> a, b; brightness==PASS -> a, c, d; AND -> a
+    mask = select_population(
+        population_table, ALL_TYPES,
+        {'qc_videoLeft_focus': {'PASS'}, 'qc_videoLeft_brightness': {'PASS'}},
+        None, None)
+    assert _eids(population_table, mask) == ['a']
+
+
+def test_select_population_empty_set_field_unconstrained(population_table):
+    mask = select_population(
+        population_table, ALL_TYPES, {'qc_videoLeft_focus': set()}, None, None)
+    assert _eids(population_table, mask) == ['a', 'b', 'c', 'd']
+
+
+def test_select_population_fc_range_inclusive(population_table):
+    mask = select_population(
+        population_table, ALL_TYPES, {}, (0.7, 0.9), None)
+    assert _eids(population_table, mask) == ['b', 'c']
+
+
+def test_select_population_fc_range_none_unconstrained(population_table):
+    mask = select_population(population_table, ALL_TYPES, {}, None, None)
+    assert _eids(population_table, mask) == ['a', 'b', 'c', 'd']
+
+
+def test_select_population_start_time_range(population_table):
+    lo = float(pd.Timestamp('2025-12-02T00:00:00').value)
+    hi = float(pd.Timestamp('2025-12-03T00:00:00').value)
+    mask = select_population(population_table, ALL_TYPES, {}, None, (lo, hi))
+    assert _eids(population_table, mask) == ['b', 'c']
+
+
+def test_select_population_session_type_restricts(population_table):
+    mask = select_population(population_table, ('ephys',), {}, None, None)
+    assert _eids(population_table, mask) == ['c']
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# filter_dropdown
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_filter_dropdown_empty_ranges_returns_population(population_table):
+    mask = select_population(population_table, ('biased',), {}, None, None)
+    assert filter_dropdown(population_table, mask, {}) == ['a', 'b']
+
+
+def test_filter_dropdown_intersects_metric_range(population_table):
+    mask = select_population(population_table, ALL_TYPES, {}, None, None)
+    # paw in [0.4, 0.6] -> b, d (within full population)
+    assert filter_dropdown(
+        population_table, mask, {'paw': (0.4, 0.6)}) == ['b', 'd']
+
+
+def test_filter_dropdown_no_constraints_returns_all(population_table):
+    mask = select_population(population_table, ALL_TYPES, {}, None, None)
+    assert filter_dropdown(population_table, mask, {}) == ['a', 'b', 'c', 'd']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -400,10 +478,18 @@ def cohort_model(tmp_path):
     return LPViewerModel(df_cohort, h5_dir, df_performance), traces
 
 
-def test_model_filter_couples_range_and_type(cohort_model):
+def test_model_dropdown_eids_couples_population_and_metric(cohort_model):
     model, _ = cohort_model
-    assert model.filter({'paw': (0.0, 0.5)}, ('biased', 'ephys')) == ['eid1']
-    assert model.filter({'paw': (0.0, 1.0)}, ('ephys',)) == ['eid2']
+    assert model.dropdown_eids(
+        {'paw': (0.0, 0.5)}, ('biased', 'ephys'), {}, None, None) == ['eid1']
+    assert model.dropdown_eids(
+        {'paw': (0.0, 1.0)}, ('ephys',), {}, None, None) == ['eid2']
+
+
+def test_model_population_mask_matches_select_population(cohort_model):
+    model, _ = cohort_model
+    mask = model.population_mask(('biased',), {}, None, None)
+    assert model.df_cohort.loc[mask, 'eid'].tolist() == ['eid1']
 
 
 def test_session_panels_trace_shapes(cohort_model):
