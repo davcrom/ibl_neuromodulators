@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.backends.qt_compat import QtCore, QtWidgets
+from matplotlib.backends.qt_compat import QtCore, QtGui, QtWidgets
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle, Rectangle
 from matplotlib.ticker import FuncFormatter
@@ -39,6 +39,31 @@ from iblnm.data import (
 
 # Settable IBL QC verdicts (the default 'NOT_SET' is not a manual choice).
 IBL_QC_VALUES = ('CRITICAL', 'FAIL', 'WARNING', 'PASS')
+
+
+class VerticalLabel(QtWidgets.QLabel):
+    """QLabel whose text is drawn rotated 90° counter-clockwise.
+
+    Used for column headers in the QC grid: rotating the field names to
+    vertical lets each checkbox column shrink to the checkbox width instead of
+    the (much wider) horizontal label width. The size hints are transposed so
+    the layout reserves the rotated footprint (text height as width, text width
+    as height).
+    """
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        painter = QtGui.QPainter(self)
+        painter.translate(0, self.height())
+        painter.rotate(-90)
+        painter.drawText(0, self.fontMetrics().ascent(), self.text())
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        hint = super().minimumSizeHint()
+        return QtCore.QSize(hint.height(), hint.width())
+
+    def sizeHint(self) -> QtCore.QSize:
+        hint = super().sizeHint()
+        return QtCore.QSize(hint.height(), hint.width())
 
 
 def start_time_to_numeric(values) -> np.ndarray:
@@ -595,20 +620,21 @@ class LPViewer(QtWidgets.QMainWindow):
         return panel
 
     def _build_qc_grid(self) -> QtWidgets.QGridLayout:
-        """Field × verdict grid of independent toggle cells; none checked by
-        default. Rows are `VIDEO_QC_COLS` (the `qc_videoLeft_` prefix stripped
-        for the label), columns the five `QC_VALUE_ORDER` verdicts. Populates
+        """Verdict × field grid of independent toggle cells; none checked by
+        default. Rows are the five `QC_VALUE_ORDER` verdicts, columns are
+        `VIDEO_QC_COLS` (the `qc_videoLeft_` prefix stripped, drawn vertically by
+        `VerticalLabel` to keep columns narrow). Populates
         `self.qc_grid[field][verdict]` with the cell checkboxes that
         `_qc_selections` reads."""
         grid = QtWidgets.QGridLayout()
-        for col, verdict in enumerate(QC_VALUE_ORDER, start=1):
-            grid.addWidget(QtWidgets.QLabel(verdict), 0, col)
+        for row, verdict in enumerate(QC_VALUE_ORDER, start=1):
+            grid.addWidget(QtWidgets.QLabel(verdict), row, 0)
         self.qc_grid = {}
-        for row, field in enumerate(VIDEO_QC_COLS, start=1):
+        for col, field in enumerate(VIDEO_QC_COLS, start=1):
             grid.addWidget(
-                QtWidgets.QLabel(field.removeprefix('qc_videoLeft_')), row, 0)
+                VerticalLabel(field.removeprefix('qc_videoLeft_')), 0, col)
             self.qc_grid[field] = {}
-            for col, verdict in enumerate(QC_VALUE_ORDER, start=1):
+            for row, verdict in enumerate(QC_VALUE_ORDER, start=1):
                 cell = QtWidgets.QCheckBox()
                 cell.stateChanged.connect(lambda _: self._on_population_changed())
                 self.qc_grid[field][verdict] = cell
