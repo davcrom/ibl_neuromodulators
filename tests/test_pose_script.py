@@ -8,7 +8,7 @@ import pytest
 import xarray as xr
 
 import scripts.pose as pose
-from iblnm.config import VIDEO_QC_COLS
+from iblnm.config import QCVAL2NUM, VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS
 from iblnm.data import PhotometrySession
 
 
@@ -23,45 +23,54 @@ def mock_session_series():
 
 
 def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
-                        series, baselines=None, trials=None, functions=None):
+                        series, baselines=None, trials=None, functions=None,
+                        video_qc=None, length_discrepancy=np.nan,
+                        framerate_from_tpts=np.nan):
     """Write an H5 with metadata + video groups carrying known traces.
 
     ``steps`` maps bodypart -> the response-trace level (flat across time); NaN
-    yields an all-NaN response trace (expected to collect to a NaN scalar).
-    ``baselines`` maps bodypart -> the stimOn-locked baseline-trace level (flat;
-    default 0). The collected scalar is ``step - baseline``.
-    ``trials``, when given, maps ``stimOn_times`` / ``feedback_times`` to 1D
-    arrays written as flat datasets under a ``trials`` group.
-    ``functions``, when given, is the (3, n_lags) xcorr array; defaults to zeros.
+    yields an all-NaN response trace (expected to collect to a NaN scalar). Pass
+    ``steps=None`` to write a video group with measures + QC attrs but no traces
+    (the LP-absent case). ``baselines`` maps bodypart -> the stimOn-locked
+    baseline-trace level (flat; default 0). The collected scalar is
+    ``step - baseline``. ``trials``, when given, maps ``stimOn_times`` /
+    ``feedback_times`` to 1D arrays written as flat datasets under a ``trials``
+    group. ``functions``, when given, is the (3, n_lags) xcorr array; defaults to
+    zeros. ``video_qc`` maps ``VIDEO_QC_COLS`` names to IBL QC labels written as
+    video-group attrs (default all ``NOT_SET``).
     """
     baselines = baselines or {}
-    time = np.linspace(-0.5, 0.5, 101)
-    bodyparts = list(steps)
-    n_trial = 3
-
-    def _flat(level):
-        if np.isnan(level):
-            return np.full((n_trial, time.size), np.nan)
-        return np.full((n_trial, time.size), level)
-
-    response = np.stack([_flat(steps[bp]) for bp in bodyparts])
-    baseline = np.stack([_flat(baselines.get(bp, 0.0)) for bp in bodyparts])
-
     series = series.copy()
     series['eid'] = eid
     ps = PhotometrySession(series, one=MagicMock(), load_data=False)
-    coords = {'bodypart': bodyparts, 'trial': np.arange(n_trial), 'time': time}
-    ps.pose_traces = xr.DataArray(
-        response, dims=['bodypart', 'trial', 'time'], coords=coords)
-    ps.pose_baseline_traces = xr.DataArray(
-        baseline, dims=['bodypart', 'trial', 'time'], coords=coords)
-    ps.pose_xcorr = {
-        'functions': np.zeros((3, 11)) if functions is None else np.asarray(functions),
-        'lags': np.linspace(-5, 5, 11),
-        'peak_lags': np.asarray(peak_lags),
-        'drift': drift,
-    }
     ps.qc_lp = qc_lp
+    ps.video_qc = dict(video_qc) if video_qc else {}
+    ps.length_discrepancy = length_discrepancy
+    ps.framerate_from_tpts = framerate_from_tpts
+
+    if steps is not None:
+        time = np.linspace(-0.5, 0.5, 101)
+        bodyparts = list(steps)
+        n_trial = 3
+
+        def _flat(level):
+            if np.isnan(level):
+                return np.full((n_trial, time.size), np.nan)
+            return np.full((n_trial, time.size), level)
+
+        response = np.stack([_flat(steps[bp]) for bp in bodyparts])
+        baseline = np.stack([_flat(baselines.get(bp, 0.0)) for bp in bodyparts])
+        coords = {'bodypart': bodyparts, 'trial': np.arange(n_trial), 'time': time}
+        ps.pose_traces = xr.DataArray(
+            response, dims=['bodypart', 'trial', 'time'], coords=coords)
+        ps.pose_baseline_traces = xr.DataArray(
+            baseline, dims=['bodypart', 'trial', 'time'], coords=coords)
+        ps.pose_xcorr = {
+            'functions': np.zeros((3, 11)) if functions is None else np.asarray(functions),
+            'lags': np.linspace(-5, 5, 11),
+            'peak_lags': np.asarray(peak_lags),
+            'drift': drift,
+        }
     ps.save_h5(h5_dir / f'{eid}.h5', groups=['metadata', 'video'])
 
     if trials is not None:
@@ -71,36 +80,40 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
                 grp.create_dataset(key, data=np.asarray(values))
 
 
-def _write_qc_perf(tmp_path, qc_eids, perf):
-    """Write temp ``sessions_qc.pqt`` and ``performance.pqt``, return their paths.
+def _write_errors(h5_dir, eid, error_types):
+    """Append an ``errors`` group listing ``error_types`` to ``{eid}.h5``.
 
-    ``qc_eids`` maps eid -> a fill value assigned to every ``VIDEO_QC_COLS``
-    column for that eid. ``perf`` maps eid -> ``fraction_correct`` float.
+    Creates the H5 if absent, so the bare-row case (errors but no ``video``
+    group) can be exercised. Mirrors the on-disk schema read by
+    ``util.collect_errors`` (datasets ``eid``, ``error_type``,
+    ``error_message``, ``traceback``).
     """
-    qc_fpath = tmp_path / 'sessions_qc.pqt'
+    with h5py.File(h5_dir / f'{eid}.h5', 'a') as f:
+        if 'errors' in f:
+            del f['errors']
+        grp = f.create_group('errors')
+        n = len(error_types)
+        grp.create_dataset('eid', data=[eid] * n, dtype=h5py.string_dtype())
+        grp.create_dataset('error_type', data=list(error_types),
+                           dtype=h5py.string_dtype())
+        grp.create_dataset('error_message', data=[''] * n, dtype=h5py.string_dtype())
+        grp.create_dataset('traceback', data=[''] * n, dtype=h5py.string_dtype())
+
+
+def _write_perf(tmp_path, perf):
+    """Write a temp ``performance.pqt`` mapping eid -> ``fraction_correct``."""
     perf_fpath = tmp_path / 'performance.pqt'
     pd.DataFrame(
-        [{'eid': eid, **{col: fill for col in VIDEO_QC_COLS}}
-         for eid, fill in qc_eids.items()],
-        columns=['eid'] + VIDEO_QC_COLS,
-    ).to_parquet(qc_fpath)
-    pd.DataFrame(
-        [{'eid': eid, 'fraction_correct': value}
-         for eid, value in perf.items()],
+        [{'eid': eid, 'fraction_correct': value} for eid, value in perf.items()],
         columns=['eid', 'fraction_correct'],
     ).to_parquet(perf_fpath)
-    return qc_fpath, perf_fpath
+    return perf_fpath
 
 
 @pytest.fixture
-def empty_qc_perf(tmp_path):
-    """Kwargs pointing ``collect_pose`` at empty QC/performance sources.
-
-    Lets trace-focused tests satisfy the required-file check without exercising
-    the joins; every joined column comes back NaN.
-    """
-    qc_fpath, perf_fpath = _write_qc_perf(tmp_path, qc_eids={}, perf={})
-    return {'sessions_qc_fpath': qc_fpath, 'performance_fpath': perf_fpath}
+def perf_fpath(tmp_path):
+    """Path to an empty ``performance.pqt`` for tests not exercising the join."""
+    return _write_perf(tmp_path, {})
 
 
 @pytest.fixture
@@ -236,7 +249,7 @@ class TestReadEids:
 
 class TestCollectPose:
     def test_rollup_two_sessions(self, tmp_path, mock_session_series,
-                                 empty_qc_perf):
+                                 perf_fpath):
         steps_a = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                    'tongue_likelihood': 0.5}
         baselines_a = {'paw': 0.4, 'nose': 0.5, 'tongue_speed': 1.0,
@@ -250,7 +263,7 @@ class TestCollectPose:
                             peak_lags=[0.0, np.nan, 0.5], qc_lp='PASS',
                             series=mock_session_series)
 
-        df = pose.collect_pose(tmp_path, **empty_qc_perf)
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath)
 
         assert set(df['eid']) == {'eid-a', 'eid-b'}
         row_a = df.set_index('eid').loc['eid-a']
@@ -265,7 +278,7 @@ class TestCollectPose:
              row_a['peak_lag_late']], [0.1, 0.2, 0.4])
 
     def test_peak_values_from_xcorr_functions(self, tmp_path,
-                                              mock_session_series, empty_qc_perf):
+                                              mock_session_series, perf_fpath):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5}
         # peak of each third's function = its max: 0.2, 0.7, 0.4
@@ -275,14 +288,14 @@ class TestCollectPose:
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
                             series=mock_session_series, functions=functions)
 
-        df = pose.collect_pose(tmp_path, **empty_qc_perf).set_index('eid')
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
 
         np.testing.assert_allclose(
             [df.loc['eid-pk', 'peak_val_early'], df.loc['eid-pk', 'peak_val_mid'],
              df.loc['eid-pk', 'peak_val_late']], [0.2, 0.7, 0.4])
 
     def test_mean_rt_from_trials_group(self, tmp_path, mock_session_series,
-                                       empty_qc_perf):
+                                       perf_fpath):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5}
         trials = {'stimOn_times': [0.0, 0.0, 0.0],
@@ -291,67 +304,122 @@ class TestCollectPose:
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
                             series=mock_session_series, trials=trials)
 
-        df = pose.collect_pose(tmp_path, **empty_qc_perf).set_index('eid')
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
 
         np.testing.assert_allclose(df.loc['eid-rt', 'mean_rt'], 0.75)
 
     def test_mean_rt_nan_without_trials_group(self, tmp_path,
                                               mock_session_series,
-                                              empty_qc_perf):
+                                              perf_fpath):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5}
         _write_pose_session(tmp_path, 'eid-nort', steps, drift=0.1,
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
                             series=mock_session_series)
 
-        df = pose.collect_pose(tmp_path, **empty_qc_perf).set_index('eid')
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
 
         assert np.isnan(df.loc['eid-nort', 'mean_rt'])
         assert np.isfinite(df.loc['eid-nort', 'paw'])
 
-    def test_qc_and_performance_joins(self, tmp_path, mock_session_series):
+    def test_performance_join(self, tmp_path, mock_session_series):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5}
         for eid in ('eid-a', 'eid-b'):
             _write_pose_session(tmp_path, eid, steps, drift=0.1,
                                 peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
                                 series=mock_session_series)
-        qc_fpath, perf_fpath = _write_qc_perf(
-            tmp_path, qc_eids={'eid-a': 'WARNING'}, perf={'eid-a': 0.82})
+        perf_fpath = _write_perf(tmp_path, {'eid-a': 0.82})
 
         df = pose.collect_pose(
-            tmp_path, sessions_qc_fpath=qc_fpath,
-            performance_fpath=perf_fpath).set_index('eid')
+            tmp_path, performance_fpath=perf_fpath).set_index('eid')
 
-        for col in VIDEO_QC_COLS:
-            assert df.loc['eid-a', col] == 'WARNING'
-            assert pd.isna(df.loc['eid-b', col])
         assert df.loc['eid-a', 'fraction_correct'] == 0.82
         assert pd.isna(df.loc['eid-b', 'fraction_correct'])
 
-    def test_missing_sessions_qc_raises(self, tmp_path, mock_session_series):
+    def test_runs_without_sessions_qc_file(self, tmp_path, mock_session_series,
+                                           perf_fpath):
+        """No ``sessions_qc.pqt`` anywhere: QC is sourced from the H5 group."""
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5}
         _write_pose_session(tmp_path, 'eid-a', steps, drift=0.1,
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
                             series=mock_session_series)
-        _, perf_fpath = _write_qc_perf(tmp_path, qc_eids={}, perf={})
-        missing = tmp_path / 'does_not_exist.pqt'
 
-        with pytest.raises(FileNotFoundError, match='does_not_exist.pqt'):
-            pose.collect_pose(tmp_path, sessions_qc_fpath=missing,
-                              performance_fpath=perf_fpath)
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath)
+
+        assert list(df['eid']) == ['eid-a']
 
     def test_all_nan_trace_yields_nan_scalar(self, tmp_path,
                                              mock_session_series,
-                                             empty_qc_perf):
+                                             perf_fpath):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': np.nan,
                  'tongue_likelihood': 0.5}
         _write_pose_session(tmp_path, 'eid-c', steps, drift=0.1,
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='NOT_SET',
                             series=mock_session_series)
 
-        df = pose.collect_pose(tmp_path, **empty_qc_perf).set_index('eid')
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
 
         assert np.isnan(df.loc['eid-c', 'tongue_speed'])
         assert np.isfinite(df.loc['eid-c', 'paw'])
+
+    def test_video_qc_score_from_h5_quality_cols(self, tmp_path,
+                                                 mock_session_series, perf_fpath):
+        """Traces + motion energy + clean QC: lp_exists, finite ME, scored QC."""
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5, 'motion_energy': 4.0}
+        clean_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
+        _write_pose_session(tmp_path, 'eid-q', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=mock_session_series, video_qc=clean_qc)
+
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+
+        assert df.loc['eid-q', 'lp_exists']
+        assert np.isfinite(df.loc['eid-q', 'motion_energy'])
+        expected = np.nanmean([QCVAL2NUM['PASS']] * len(VIDEO_QC_QUALITY_COLS))
+        np.testing.assert_allclose(df.loc['eid-q', 'video_qc_score'], expected)
+
+    def test_lp_absent_row_present_with_nan_traces(self, tmp_path,
+                                                   mock_session_series, perf_fpath):
+        """Video group with measures + QC but no traces: row present, scored."""
+        qc = {col: 'PASS' for col in VIDEO_QC_COLS}
+        _write_pose_session(tmp_path, 'eid-nolp', steps=None, drift=np.nan,
+                            peak_lags=None, qc_lp='NOT_SET',
+                            series=mock_session_series, video_qc=qc,
+                            length_discrepancy=12.0, framerate_from_tpts=30.0)
+
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+
+        assert not df.loc['eid-nolp', 'lp_exists']
+        assert np.isnan(df.loc['eid-nolp', 'paw'])
+        assert df.loc['eid-nolp', 'length_discrepancy'] == 12.0
+        expected = np.nanmean([QCVAL2NUM['PASS']] * len(VIDEO_QC_QUALITY_COLS))
+        np.testing.assert_allclose(df.loc['eid-nolp', 'video_qc_score'], expected)
+
+    def test_disqualifying_error_forces_score_minus_one(self, tmp_path,
+                                                        mock_session_series,
+                                                        perf_fpath):
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5}
+        clean_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
+        _write_pose_session(tmp_path, 'eid-err', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=mock_session_series, video_qc=clean_qc)
+        _write_errors(tmp_path, 'eid-err', ['VideoLengthError'])
+
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+
+        assert df.loc['eid-err', 'video_qc_score'] == -1
+
+    def test_missing_timestamps_no_video_group_emits_bare_row(
+            self, tmp_path, mock_session_series, perf_fpath):
+        _write_errors(tmp_path, 'eid-bare', ['MissingVideoTimestamps'])
+
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+
+        assert 'eid-bare' in df.index
+        assert df.loc['eid-bare', 'video_qc_score'] == -1
+        assert np.isnan(df.loc['eid-bare', 'paw'])
+        assert not df.loc['eid-bare', 'lp_exists']

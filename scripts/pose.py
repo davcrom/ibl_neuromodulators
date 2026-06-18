@@ -29,10 +29,12 @@ from iblnm.config import (
     MOVEMENT_RESPONSE_WINDOW,
     PERFORMANCE_FPATH,
     POSE_FPATH,
+    POSE_MEASURES,
+    QCVAL2NUM,
     SESSIONS_FPATH,
     SESSIONS_H5_DIR,
-    SESSIONS_QC_FPATH,
     VIDEO_QC_COLS,
+    VIDEO_QC_QUALITY_COLS,
 )
 from iblnm.data import (
     LP_QC_NOT_SET,
@@ -63,6 +65,13 @@ VIDEO_QC_ERRORS = (
     VideoLengthError, VideoTimestampsQCError,
     VideoDroppedFramesQCError, VideoPinStateQCError,
 )
+# Error types that disqualify a session in the rollup: video_qc_score forced
+# to -1 (missing timestamps plus the four leftCamera QC failures).
+VIDEO_QC_DISQUALIFYING_ERRORS = frozenset(
+    e.__name__ for e in (MissingVideoTimestamps, *VIDEO_QC_ERRORS))
+# Trace-derived scalar columns guaranteed in the rollup, NaN when their source
+# is absent: the LP keypoint measures plus the motion-energy channel.
+POSE_TRACE_COLUMNS = [*POSE_MEASURES, 'motion_energy']
 
 
 def run_video_validations(ps):
@@ -128,31 +137,94 @@ def process_pose(ps, reprocess=False):
     return 'processed'
 
 
-def collect_pose(
-    h5_dir,
-    sessions_qc_fpath=SESSIONS_QC_FPATH,
-    performance_fpath=PERFORMANCE_FPATH,
-) -> pd.DataFrame:
-    """Roll up the per-session ``video`` H5 groups into a flat pose table.
+def _decode(value):
+    """Decode an HDF5 bytes value to ``str``; pass non-bytes through unchanged."""
+    return value.decode() if isinstance(value, bytes) else value
 
-    For each H5 holding a ``video`` group, recompute the four scalar measures
-    as post-minus-pre deltas: the response mean over ``MOVEMENT_RESPONSE_WINDOW``
-    on the event-locked trace minus the baseline mean over ``BASELINE_WINDOW``
-    on the stimOn-locked baseline trace. Also read the cross-correlation drift,
-    the three per-third peak lags, and the two manual QC labels. Recomputing the
-    scalars here keeps both windows adjustable without re-extracting traces.
 
-    After assembling the per-eid rows, left-join the 8 ``VIDEO_QC_COLS`` from
-    ``sessions_qc.pqt`` and ``fraction_correct`` from ``performance.pqt`` by
-    ``eid``; eids absent from a source get NaN in the joined columns.
+def _collect_error_types(h5_dir) -> dict[str, set[str]]:
+    """Map each eid to the set of error types in its H5 ``errors`` group."""
+    df_errors = collect_errors(h5_dir)
+    if df_errors.empty:
+        return {}
+    return df_errors.groupby('eid')['error_type'].agg(set).to_dict()
+
+
+def _has_lp_traces(traces) -> bool:
+    """True when ``traces`` hold an LP keypoint channel (not just motion energy)."""
+    if traces is None:
+        return False
+    return any(bodypart != 'motion_energy'
+               for bodypart in traces.coords['bodypart'].values)
+
+
+def _score_video_qc(attrs, error_types: set[str]) -> float:
+    """Video QC score in [0, 1], or ``-1`` when a disqualifying error is logged.
+
+    The five ``VIDEO_QC_QUALITY_COLS`` labels in the ``video`` group ``attrs``
+    are mapped through ``config.QCVAL2NUM`` and averaged with ``nanmean``. Any
+    error type in ``VIDEO_QC_DISQUALIFYING_ERRORS`` forces the score to ``-1``;
+    a group with no quality labels scores NaN.
+    """
+    if error_types & VIDEO_QC_DISQUALIFYING_ERRORS:
+        return -1.0
+    quality = [QCVAL2NUM.get(_decode(attrs[col]), np.nan)
+               for col in VIDEO_QC_QUALITY_COLS if col in attrs]
+    return float(np.nanmean(quality)) if quality else np.nan
+
+
+def _add_trace_deltas(row: dict, traces, baseline_traces) -> None:
+    """Add one post-minus-pre movement delta per bodypart; no-op when absent.
+
+    The delta is the response mean over ``MOVEMENT_RESPONSE_WINDOW`` minus the
+    stimOn-locked baseline mean over ``BASELINE_WINDOW``. The ``motion_energy``
+    channel flows through this loop like any other bodypart.
+    """
+    if traces is None:
+        return
+    tpts = traces.coords['time'].values
+    for bodypart in traces.coords['bodypart'].values:
+        row[bodypart] = movement_delta(
+            traces.sel(bodypart=bodypart).values,
+            baseline_traces.sel(bodypart=bodypart).values, tpts,
+            MOVEMENT_RESPONSE_WINDOW, BASELINE_WINDOW,
+        )
+
+
+def _add_xcorr_scalars(row: dict, xcorr) -> None:
+    """Add drift and per-third peak lag/value; all NaN when no cross-correlation."""
+    if xcorr is None:
+        for col in ('drift', 'peak_lag_early', 'peak_lag_mid', 'peak_lag_late',
+                    'peak_val_early', 'peak_val_mid', 'peak_val_late'):
+            row[col] = np.nan
+        return
+    row['drift'] = xcorr['drift']
+    row['peak_lag_early'], row['peak_lag_mid'], row['peak_lag_late'] = \
+        xcorr['peak_lags']
+    # Peak value of each third's cross-correlation function (alignment strength)
+    row['peak_val_early'], row['peak_val_mid'], row['peak_val_late'] = \
+        np.nanmax(xcorr['functions'], axis=1)
+
+
+def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
+    """Roll up the per-session ``video`` H5 groups into the unified pose table.
+
+    Emits one row per session with a ``video`` group (LP-absent sessions
+    included, their trace-derived columns NaN), plus a bare row for each session
+    whose ``errors`` group holds ``MissingVideoTimestamps`` but has no ``video``
+    group. For each ``video`` group: recompute the per-bodypart movement deltas
+    (post-minus-pre, see ``_add_trace_deltas``), read the cross-correlation
+    scalars, the two manual QC labels (``qc_lp``, ``qc_movement``), the eight
+    ``VIDEO_QC_COLS`` and the basic-video measures (``length_discrepancy``,
+    ``framerate_from_tpts``) from the group attrs, and derive ``lp_exists`` and
+    ``video_qc_score`` (``_score_video_qc``). Recomputing the deltas here keeps
+    both windows adjustable without re-extracting traces. ``fraction_correct`` is
+    left-joined from ``performance.pqt`` by ``eid``; rows are not sorted.
 
     Parameters
     ----------
     h5_dir : Path or str
         Directory containing ``{eid}.h5`` files.
-    sessions_qc_fpath : Path or str
-        Extended-QC table (``sessions_qc.pqt``) holding the ``VIDEO_QC_COLS``
-        string columns. Must exist, else a ``FileNotFoundError`` is raised.
     performance_fpath : Path or str
         Per-eid performance table (``performance.pqt``) holding
         ``fraction_correct``.
@@ -160,63 +232,54 @@ def collect_pose(
     Returns
     -------
     pd.DataFrame
-        One row per eid with a ``video`` group: ``eid``, one column per
-        bodypart scalar, ``drift``, ``peak_lag_early/mid/late``,
-        ``peak_val_early/mid/late``, ``qc_lp``, ``qc_movement``, ``mean_rt``,
-        the 8 ``VIDEO_QC_COLS``, and ``fraction_correct``.
-
-    Raises
-    ------
-    FileNotFoundError
-        If ``sessions_qc_fpath`` does not exist. Regenerate it with
-        ``query_database.py --extended-qc``.
+        One row per session: ``eid``, ``lp_exists``, one column per bodypart
+        scalar, ``drift``, ``peak_lag_early/mid/late``, ``peak_val_early/mid/late``,
+        ``qc_lp``, ``qc_movement``, ``mean_rt``, the 8 ``VIDEO_QC_COLS``,
+        ``length_discrepancy``, ``framerate_from_tpts``, ``video_qc_score``, and
+        ``fraction_correct``.
     """
+    errors_by_eid = _collect_error_types(h5_dir)
     rows = []
+    eids_with_video = set()
     for fpath in sorted(Path(h5_dir).glob('*.h5')):
+        eid = fpath.stem
+        error_types = errors_by_eid.get(eid, set())
         with h5py.File(fpath, 'r') as f:
             if 'video' not in f:
                 continue
-            traces = _load_pose_traces(f['video'])
-            if traces is None:
-                continue
-            baseline_traces = _load_pose_traces(f['video'], name='baseline_traces')
-            xcorr = _load_pose_xcorr(f['video'])
+            eids_with_video.add(eid)
+            video = f['video']
+            traces = _load_pose_traces(video)
+            baseline_traces = _load_pose_traces(video, name='baseline_traces')
+            xcorr = _load_pose_xcorr(video)
             qc = _read_video_qc(f)
-            mean_rt = _read_mean_rt(f)
-
-        tpts = traces.coords['time'].values
-        row = {'eid': fpath.stem}
-        for bodypart in traces.coords['bodypart'].values:
-            row[bodypart] = movement_delta(
-                traces.sel(bodypart=bodypart).values,
-                baseline_traces.sel(bodypart=bodypart).values, tpts,
-                MOVEMENT_RESPONSE_WINDOW, BASELINE_WINDOW,
-            )
-        early, mid, late = xcorr['peak_lags']
-        row['drift'] = xcorr['drift']
-        row['peak_lag_early'] = early
-        row['peak_lag_mid'] = mid
-        row['peak_lag_late'] = late
-        # Peak value of each third's cross-correlation function (alignment strength)
-        pk_early, pk_mid, pk_late = np.nanmax(xcorr['functions'], axis=1)
-        row['peak_val_early'] = pk_early
-        row['peak_val_mid'] = pk_mid
-        row['peak_val_late'] = pk_late
-        for label in ('qc_lp', 'qc_movement'):
-            value = qc.get(label, LP_QC_NOT_SET)
-            row[label] = value.decode() if isinstance(value, bytes) else value
-        row['mean_rt'] = mean_rt
+            row = {
+                'eid': eid,
+                'lp_exists': _has_lp_traces(traces),
+                'mean_rt': _read_mean_rt(f),
+                'length_discrepancy': video.attrs.get('length_discrepancy', np.nan),
+                'framerate_from_tpts': video.attrs.get('framerate_from_tpts', np.nan),
+                'video_qc_score': _score_video_qc(video.attrs, error_types),
+            }
+            row.update({col: _decode(video.attrs[col])
+                        for col in VIDEO_QC_COLS if col in video.attrs})
+            _add_trace_deltas(row, traces, baseline_traces)
+            _add_xcorr_scalars(row, xcorr)
+        row.update({label: _decode(qc.get(label, LP_QC_NOT_SET))
+                    for label in ('qc_lp', 'qc_movement')})
         rows.append(row)
-    df_pose = pd.DataFrame(rows)
 
-    if not Path(sessions_qc_fpath).exists():
-        raise FileNotFoundError(
-            f"{sessions_qc_fpath} not found; regenerate it with "
-            "query_database.py --extended-qc before collecting pose.")
-    df_qc = pd.read_parquet(sessions_qc_fpath)[['eid'] + VIDEO_QC_COLS]
+    rows += [{'eid': eid, 'lp_exists': False, 'video_qc_score': -1.0}
+             for eid, error_types in errors_by_eid.items()
+             if eid not in eids_with_video
+             and 'MissingVideoTimestamps' in error_types]
+
+    df_pose = pd.DataFrame(rows)
+    for col in POSE_TRACE_COLUMNS:
+        if col not in df_pose.columns:
+            df_pose[col] = np.nan
     df_perf = pd.read_parquet(performance_fpath)[['eid', 'fraction_correct']]
-    return df_pose.merge(df_qc, on='eid', how='left').merge(
-        df_perf, on='eid', how='left')
+    return df_pose.merge(df_perf, on='eid', how='left')
 
 
 def _read_mean_rt(f: h5py.File) -> float:
