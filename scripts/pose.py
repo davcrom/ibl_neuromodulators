@@ -2,11 +2,13 @@
 LightningPose Pose Extraction Pipeline
 
 For each session with LightningPose output available:
-1. Load trials and wheel from ONE
-2. Load LP pose + leftCamera.times (the availability test)
-3. Extract per-trial peri-event movement traces per bodypart
-4. Compute the paw-wheel cross-correlation timing diagnostic
-5. Write the video/ group to the session HDF5 file
+1. Load leftCamera.times and compute basic-video measures (blocks the session
+   if absent)
+2. Load trials and wheel from ONE
+3. Load LP pose (the availability test)
+4. Extract per-trial peri-event movement traces per bodypart
+5. Compute the paw-wheel cross-correlation timing diagnostic
+6. Write the video/ group to the session HDF5 file
 
 Sessions without LP pose raise MissingLP, which is logged (non-fatal) and the
 session is skipped; no video/ group is written.
@@ -41,16 +43,18 @@ from iblnm.data import (
 )
 from iblnm.io import _get_default_connection
 from iblnm.util import collect_errors
-from iblnm.validation import MissingLP
+from iblnm.validation import MissingLP, MissingVideoTimestamps
 
 
 def process_pose(ps, reprocess=False):
     """Extract and save pose movement traces + timing cross-correlation.
 
-    Skips sessions whose H5 already holds a ``video/`` group unless
-    ``reprocess`` is set. A ``MissingLP`` from ``load_pose`` is logged
-    (non-fatal) and the session is skipped without writing a group.
-    Fatal errors are raised (caught by group.process()).
+    Checks basic video first: load ``leftCamera.times`` and compute the
+    basic-video measures before LP. A ``MissingVideoTimestamps`` blocks the
+    whole session (logged, no group). Skips sessions whose H5 already holds a
+    ``video/`` group unless ``reprocess`` is set. A ``MissingLP`` from
+    ``load_pose`` is logged (non-fatal) and the session is skipped without
+    writing a group. Fatal errors are raised (caught by group.process()).
     """
     if not reprocess:
         h5_path = SESSIONS_H5_DIR / f'{ps.eid}.h5'
@@ -59,6 +63,12 @@ def process_pose(ps, reprocess=False):
                 if 'video' in f:
                     return 'skipped'
 
+    try:
+        ps.load_camera_times()
+    except MissingVideoTimestamps as e:
+        ps.log_error(e)
+        return 'skipped'
+    ps.compute_video_measures()
     ps.load_trials()
     ps.load_wheel()
     try:

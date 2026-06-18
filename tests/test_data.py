@@ -1544,24 +1544,22 @@ class TestSaveLoadH5:
 class TestPoseMethods:
     """PhotometrySession LP pose loading and extraction."""
 
-    def test_load_pose_loads_only_pose_and_times(self, mock_session_series):
-        """load_pose pulls only lightningPose + times via load_dataset, never the
-        whole leftCamera object (which would also fetch features/ROIMotionEnergy)."""
+    def test_load_pose_loads_only_lightningpose(self, mock_session_series):
+        """load_pose pulls only lightningPose via load_dataset (never the whole
+        leftCamera object) and no longer loads camera times."""
         from iblnm.data import PhotometrySession
         pose_df = pd.DataFrame({'paw_l_x': [0.0, 1.0], 'paw_l_y': [0.0, 0.0],
                                 'paw_l_likelihood': [1.0, 1.0]})
-        times = np.array([0.0, 0.1])
-
-        def fake_load_dataset(eid, name, **kw):
-            return pose_df if 'lightningPose' in name else times
 
         one = MagicMock()
-        one.load_dataset.side_effect = fake_load_dataset
+        one.load_dataset.return_value = pose_df
         ps = PhotometrySession(mock_session_series, one=one, load_data=False)
         ps.load_pose()
         one.load_object.assert_not_called()
         pd.testing.assert_frame_equal(ps.pose, pose_df)
-        np.testing.assert_array_equal(ps.pose_times, times)
+        assert ps.pose_times is None
+        loaded_names = [call.args[1] for call in one.load_dataset.call_args_list]
+        assert all('lightningPose' in name for name in loaded_names)
 
     def test_load_pose_missing_raises_missing_lp(self, mock_session_series):
         """load_pose raises MissingLP when the pose dataset is absent."""
@@ -1574,6 +1572,73 @@ class TestPoseMethods:
         ps = PhotometrySession(mock_session_series, one=one, load_data=False)
         with pytest.raises(MissingLP):
             ps.load_pose()
+
+    def test_load_camera_times_sets_pose_times(self, mock_session_series):
+        """load_camera_times loads only leftCamera.times into pose_times."""
+        from iblnm.data import PhotometrySession
+        times = np.array([0.0, 0.1, 0.2])
+
+        one = MagicMock()
+        one.load_dataset.return_value = times
+        ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        ps.load_camera_times()
+        np.testing.assert_array_equal(ps.pose_times, times)
+        loaded_names = [call.args[1] for call in one.load_dataset.call_args_list]
+        assert all('times' in name for name in loaded_names)
+
+    def test_load_camera_times_missing_raises(self, mock_session_series):
+        """load_camera_times raises MissingVideoTimestamps when times are absent."""
+        from one.alf.exceptions import ALFObjectNotFound
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import MissingVideoTimestamps
+
+        one = MagicMock()
+        one.load_dataset.side_effect = ALFObjectNotFound('leftCamera.times')
+        ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        with pytest.raises(MissingVideoTimestamps):
+            ps.load_camera_times()
+
+    def test_compute_video_measures(self, mock_session_series):
+        """compute_video_measures yields hand-computed discrepancy and framerate."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        ps.pose_times = np.array([1.0, 1.1, 1.2, 1.35])
+        ps.session_length = 0.3
+        ps.compute_video_measures()
+        # video span 0.35 - session_length 0.3 = 0.05
+        assert ps.length_discrepancy == pytest.approx(0.05)
+        # diffs: [0.1, 0.1, 0.15] -> median 0.1
+        assert ps.framerate_from_tpts == pytest.approx(0.1)
+
+    def test_video_measures_round_trip_without_traces(self, mock_session_series,
+                                                       tmp_path):
+        """save_h5(['video']) with no traces but measures set writes a video group
+        that load_h5 restores both measures from."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        ps.length_discrepancy = 0.05
+        ps.framerate_from_tpts = 0.0333
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['video'])
+
+        ps2 = PhotometrySession(mock_session_series, one=MagicMock(),
+                                load_data=False)
+        ps2.load_h5(fpath, groups=['video'])
+        assert ps2.pose_traces is None
+        assert ps2.length_discrepancy == pytest.approx(0.05)
+        assert ps2.framerate_from_tpts == pytest.approx(0.0333)
+
+    def test_available_save_groups_includes_video_for_measures_only(
+            self, mock_session_series):
+        """A traceless session with only basic-video measures still saves the
+        video group (so MissingLP sessions persist their measures)."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        ps.length_discrepancy = 0.05
+        assert 'video' in ps._available_save_groups('GCaMP_preprocessed')
 
     def _make_pose_session(self, mock_session_series, fs=30, dur=60.0,
                            tongue_like=(0.2, 0.9), accelerate=False):

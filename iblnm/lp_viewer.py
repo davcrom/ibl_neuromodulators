@@ -939,6 +939,7 @@ class LPViewer(QtWidgets.QMainWindow):
             row = self.model.df_cohort.loc[
                 self.model.df_cohort['eid'] == eid].iloc[0]
             session = PhotometrySession(row, one=self.one, load_data=False)
+            session.load_camera_times()
             session.load_pose()
             session.load_trials()
             video_path = self.one.load_dataset(

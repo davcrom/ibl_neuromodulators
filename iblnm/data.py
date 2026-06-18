@@ -33,10 +33,10 @@ from iblnm.analysis import (
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.validation import (
-    MissingExtractedData, MissingRawData, MissingLP, InsufficientTrials,
-    BlockStructureBug, MissingBlockInfo, IncompleteEventTimes,
-    TrialsNotInPhotometryTime, FewUniqueSamples, QCValidationError,
-    AmbiguousRegionMapping,
+    MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
+    InsufficientTrials, BlockStructureBug, MissingBlockInfo,
+    IncompleteEventTimes, TrialsNotInPhotometryTime, FewUniqueSamples,
+    QCValidationError, AmbiguousRegionMapping,
 )
 
 
@@ -445,6 +445,8 @@ def _save_video(session, h5_file, band):
     # automatic data (extraction --overwrite) never clobbers a manual verdict.
     preserved_qc = _read_video_qc(h5_file)
     grp = _replace_group(h5_file, 'video')
+    grp.attrs['length_discrepancy'] = session.length_discrepancy
+    grp.attrs['framerate_from_tpts'] = session.framerate_from_tpts
     if session.pose_traces is not None:
         _save_pose_traces(grp, session.pose_traces)
     if session.pose_baseline_traces is not None:
@@ -462,6 +464,10 @@ def _load_video(session, h5_file, band):
     if 'video' not in h5_file:
         return
     grp = h5_file['video']
+    if 'length_discrepancy' in grp.attrs:
+        session.length_discrepancy = grp.attrs['length_discrepancy']
+    if 'framerate_from_tpts' in grp.attrs:
+        session.framerate_from_tpts = grp.attrs['framerate_from_tpts']
     session.pose_traces = _load_pose_traces(grp)
     session.pose_baseline_traces = _load_pose_traces(grp, name='baseline_traces')
     session.pose_xcorr = _load_pose_xcorr(grp)
@@ -549,11 +555,14 @@ class PhotometrySession(PhotometrySessionLoader):
         self.qc = pd.DataFrame()
         self.pose = None
         self.pose_times = None
+        self.length_discrepancy = np.nan
+        self.framerate_from_tpts = np.nan
         self.pose_traces = None
         self.pose_baseline_traces = None
         self.pose_xcorr = None
         self.qc_lp = LP_QC_NOT_SET
         self.qc_movement = LP_QC_NOT_SET
+        self.qc_timing = LP_QC_NOT_SET
         if load_data:
             self.load_trials()
             self.load_photometry()
@@ -1079,7 +1088,9 @@ class PhotometrySession(PhotometrySessionLoader):
             or (getattr(self, 'qc', None) is not None and len(self.qc) > 0)
         )
         has_video = (self.pose_traces is not None
-                     or self.pose_xcorr is not None)
+                     or self.pose_xcorr is not None
+                     or np.isfinite(self.length_discrepancy)
+                     or np.isfinite(self.framerate_from_tpts))
         return [name for name, available in (
             ('photometry', has_photometry),
             ('trials',     getattr(self, 'trials', None) is not None),
@@ -1395,25 +1406,50 @@ class PhotometrySession(PhotometrySessionLoader):
         self._wheel_t1_event = t1_event
         return self.wheel_velocity
 
+    def load_camera_times(self):
+        """Load left-camera frame timestamps, independently of LightningPose.
+
+        Stores the per-frame times (session clock, seconds) in
+        ``self.pose_times``. Raises ``MissingVideoTimestamps`` when the dataset
+        is absent, so the basic-video pass can block the session before LP is
+        attempted. Loaded separately from ``load_pose`` because the camera
+        timestamps gate the whole session while LP gates only the traces.
+        """
+        try:
+            self.pose_times = np.asarray(self.one.load_dataset(
+                self.eid, '_ibl_leftCamera.times.npy', collection='alf'))
+        except ALFObjectNotFound:
+            raise MissingVideoTimestamps("leftCamera.times")
+
     def load_pose(self):
         """Load LightningPose keypoint tracking from the left camera.
 
         Stores the pose DataFrame (columns ``{part}_x``, ``{part}_y``,
-        ``{part}_likelihood``) in ``self.pose`` and the frame times (session
-        clock, seconds) in ``self.pose_times``. Raises ``MissingLP`` when the
+        ``{part}_likelihood``) in ``self.pose``. Raises ``MissingLP`` when the
         pose dataset is not available, so batch extraction can log and skip.
 
-        Loads only the two datasets used (``lightningPose`` and ``times``) via
-        ``load_dataset`` rather than the whole ``leftCamera`` object, which would
-        also fetch ``features`` and ``ROIMotionEnergy`` that we never use.
+        Loads only the ``lightningPose`` dataset via ``load_dataset`` rather than
+        the whole ``leftCamera`` object, which would also fetch ``features`` and
+        ``ROIMotionEnergy`` that we never use. Camera timestamps are loaded
+        separately by ``load_camera_times``.
         """
         try:
             self.pose = self.one.load_dataset(
                 self.eid, '_ibl_leftCamera.lightningPose.pqt', collection='alf')
-            self.pose_times = np.asarray(self.one.load_dataset(
-                self.eid, '_ibl_leftCamera.times.npy', collection='alf'))
         except ALFObjectNotFound:
             raise MissingLP("leftCamera.lightningPose")
+
+    def compute_video_measures(self):
+        """Compute basic-video scalars from the loaded camera timestamps.
+
+        Sets ``self.length_discrepancy`` (video duration minus
+        ``session_length``, seconds) and ``self.framerate_from_tpts`` (median
+        inter-frame interval, seconds) from ``self.pose_times``. Requires
+        ``load_camera_times`` to have populated ``self.pose_times``.
+        """
+        self.length_discrepancy = (
+            (self.pose_times[-1] - self.pose_times[0]) - self.session_length)
+        self.framerate_from_tpts = np.median(np.diff(self.pose_times))
 
     def extract_movement_traces(self):
         """Extract per-trial peri-event movement traces for each bodypart.
