@@ -29,7 +29,7 @@ from iblnm.config import (
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
-    RESPONSE_EVENTS, FIGURE_DPI,
+    RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
     TIMING_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
 )
@@ -39,10 +39,10 @@ from iblnm.util import collect_session_errors
 from iblnm.vis import (
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
-    plot_lmm_ceiling, plot_lmm_main_effects, plot_lmm_loso,
+    plot_lmm_ceiling, plot_lmm_main_effects,
     plot_lmm_reliability,
     plot_mean_response_traces,
-    plot_movement_response, plot_movement_lmm_summary,
+    plot_movement_response,
     plot_movement_r2_bars, plot_movement_slope_summary,
 )
 from iblnm.analysis import (
@@ -114,21 +114,38 @@ def plot_response_figures(group, figures_dir, response_col='response'):
 # LMM statistical analysis
 # =========================================================================
 
-# Base model whose EMM/interaction/CRF summary figure is annotated.
-LMM_BASE_FORMULA = 'response ~ contrast * side * reward'
+def _save_lmm_frames(frames, data_dir):
+    """Write each named LMM result frame to ``data_dir/{name}.csv``.
+
+    Pure save step factored out of :func:`plot_lmm_figures` for testability.
+    Writes one CSV per entry, keyed by the dict's names (which follow the
+    ``response_lmm_{family}_{output}[_{qualifier}]`` convention), and no other
+    files.
+
+    Parameters
+    ----------
+    frames : dict[str, pandas.DataFrame]
+        Mapping of output base-name (no extension) to the frame to save.
+    data_dir : pathlib.Path
+        Directory the CSVs are written to.
+    """
+    for name, frame in frames.items():
+        frame.to_csv(data_dir / f'{name}.csv', index=False)
 
 
-def plot_lmm_figures(group, figures_dir, data_dir,
-                     contrast_coding='log2', response_col='response'):
-    """Run the initial-LMM suite, save every result as a CSV, and plot the
-    labelled summaries.
+def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
+    """Run the task-LMM suite via the formula-driven data-class methods, save
+    each result as a CSV, and plot the labelled summaries.
 
-    Fits the suite (base + ceiling + three main-effect models + LOSO-CV) via
-    :meth:`PhotometrySessionGroup.fit_lmm`, then writes one tidy CSV per result
-    (coefficients, ceiling R², main-effect estimates, LOSO-CV) — saving lives
-    here, not in the plot functions. Produces the per-event base-model summary
-    (annotated with its formula) plus the ceiling, main-effect, and LOSO-CV
-    generalizability figures.
+    Reads model formulas from ``config.LMM_FORMULAS`` and passes flat
+    ``{name: formula}`` dicts to the data class — no LMM logic here. Produces:
+
+    - per-event base-model summary (``task_interactions['full']``, cached under
+      the unique key ``task_full``), annotated with its formula;
+    - ceiling R² (``task_ceiling``);
+    - main-effect coefficients (the additive ``task_main_effects['full']``);
+    - out-of-sample (CV) and in-sample (jackknife) reliability ΔR², combining
+      the interaction and main-effect comparison sets onto one predictor axis.
 
     Parameters
     ----------
@@ -138,58 +155,87 @@ def plot_lmm_figures(group, figures_dir, data_dir,
         Output directory for SVG files.
     data_dir : Path
         Output directory for CSV files.
-    contrast_coding : str
-        Continuous contrast transform passed to ``fit_lmm``.
     response_col : str
         Column name for the response magnitude.
     """
-    window_label = response_col
-    group.fit_lmm(contrast_coding=contrast_coding)
-    if not group.lmm_results:
+    group_by = ['target_NM', 'event']
+    base_formula = LMM_FORMULAS['task_interactions']['full']
+
+    # Base reporting model: rename the recurring 'full' key to a unique registry
+    # key so its cached fits never collide with task_main_effects' 'full'.
+    r2_base = group.response_lmm_fit({'task_full': base_formula}, group_by)
+    if r2_base.empty:
         print("  No LMM results.")
         return
+    coefficients = group.response_lmm_effects('task_full', 'coefficients')
+    interactions = group.response_lmm_effects('task_full', 'interactions')
 
-    # Saving lives in the orchestration; plot functions only plot (#10).
-    for result, name in [
-        (group.lmm_coefficients, 'lmm_coefficients'),
-        (group.lmm_ceiling, 'lmm_ceiling'),
-        (group.lmm_main_effects, 'lmm_main_effects'),
-        (group.lmm_loso, 'lmm_loso'),
-        (group.lmm_main_effects_loso, 'lmm_main_effects_loso'),
-        (group.lmm_reliability, 'lmm_reliability'),
-    ]:
-        if len(result) > 0:
-            result.to_csv(data_dir / f'{name}_{window_label}.csv', index=False)
+    # Ceiling: one saturated reporting model. plot_lmm_ceiling reads
+    # marginal/conditional R², so rename the fit frame's R² columns.
+    ceiling = group.response_lmm_fit(
+        {'ceiling': LMM_FORMULAS['task_ceiling']['ceiling']}, group_by)
+    ceiling = ceiling.rename(
+        columns={'marginal_r2': 'marginal', 'conditional_r2': 'conditional'})
+
+    # Main effects: read the contrast/side/reward fixed-effect coefficients of
+    # the additive 'full' model (random intercept).
+    group.response_lmm_fit(LMM_FORMULAS['task_main_effects'], group_by)
+    main_effects = group.response_lmm_effects('full', 'coefficients')
+    main_effects = (main_effects[main_effects['term']
+                                 .isin(['contrast', 'side', 'reward'])]
+                    .rename(columns={'term': 'predictor'}))
+
+    # Reliability: stack the main-effect (drop-one) and interaction comparison
+    # sets onto one ΔR² frame per procedure; each set references its own 'full'.
+    reliability_cv = pd.concat([
+        group.response_lmm_crossval(LMM_FORMULAS['task_main_effects'], group_by),
+        group.response_lmm_crossval(LMM_FORMULAS['task_interactions'], group_by),
+    ], ignore_index=True)
+    reliability_jackknife = pd.concat([
+        group.response_lmm_jackknife(LMM_FORMULAS['task_main_effects'], group_by),
+        group.response_lmm_jackknife(LMM_FORMULAS['task_interactions'], group_by),
+    ], ignore_index=True)
+
+    _save_lmm_frames({
+        'response_lmm_task_coefficients': coefficients,
+        'response_lmm_task_ceiling': ceiling,
+        'response_lmm_task_main_effects': main_effects,
+        'response_lmm_task_reliability_cv': reliability_cv,
+        'response_lmm_task_reliability_jackknife': reliability_jackknife,
+    }, data_dir)
     print(f"  LMM suite CSVs saved to {data_dir}")
 
-    # Single-model base summary, annotated with its formula — one per event.
-    events_seen = sorted(set(ev for _, ev in group.lmm_results.keys()))
-    for event_label in events_seen:
-        fig = plot_lmm_summary(group, event_label, formula=LMM_BASE_FORMULA)
-        fig.savefig(
-            figures_dir / f'lmm_summary_{event_label}_{window_label}.svg',
-            dpi=FIGURE_DPI, bbox_inches='tight')
+    # Per-event base-model summary, annotated with its formula.
+    for event in sorted(r2_base['event'].unique()):
+        fig = plot_lmm_summary(r2_base, coefficients, interactions, event,
+                               formula=base_formula.format(response=response_col))
+        fig.savefig(figures_dir / f'response_lmm_task_summary_{event}.svg',
+                    dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
 
-    # Suite figures: ceiling R², main-effect estimates, LOSO-CV.
     for fig, fname in [
-        (plot_lmm_ceiling(group.lmm_ceiling),
-         f'lmm_ceiling_{window_label}.svg'),
-        (plot_lmm_main_effects(group.lmm_main_effects),
-         f'lmm_main_effects_{window_label}.svg'),
-        (plot_lmm_loso(group.lmm_loso),
-         f'lmm_loso_{window_label}.svg'),
+        (plot_lmm_ceiling(ceiling), 'response_lmm_task_ceiling.svg'),
+        (plot_lmm_main_effects(main_effects), 'response_lmm_task_main_effects.svg'),
     ]:
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
 
-    # Reliability grid: out-of-sample ΔR² per task term (main effects + omnibus
-    # interactions on one axis), one row per target-NM.
-    if len(group.lmm_reliability) > 0:
-        fig = plot_lmm_reliability(group.lmm_reliability)
-        fig.savefig(figures_dir / f'lmm_reliability_{window_label}.svg',
-                    dpi=FIGURE_DPI, bbox_inches='tight')
+    # Reliability grids: out-of-sample (CV) and in-sample (jackknife) ΔR² per
+    # predictor; both are leave-one-subject-out, named by procedure not "loso".
+    for df_reliability, qualifier, label in [
+        (reliability_cv, 'cv', 'out-of-sample (cross-validated)'),
+        (reliability_jackknife, 'jackknife', 'in-sample (jackknife)'),
+    ]:
+        if df_reliability.empty:
+            continue
+        fig = plot_lmm_reliability(
+            df_reliability,
+            title=f'Task LMM reliability — {label}\nfolds are subjects')
+        fig.savefig(
+            figures_dir / f'response_lmm_task_reliability_{qualifier}.svg',
+            dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
+    print("  LMM summary plots saved")
     print("  LMM summary plots saved")
 
 
@@ -390,10 +436,6 @@ if __name__ == '__main__':
     )
     parser.add_argument('--plot', action='store_true',
                         help='skip extraction; plot from existing parquet files')
-    parser.add_argument('--contrast-coding',
-                        choices=['log', 'log2', 'linear', 'rank'],
-                        default='log2',
-                        help='contrast transform for LMM (default: log2)')
     args = parser.parse_args()
 
     # Create output directories
@@ -553,9 +595,8 @@ if __name__ == '__main__':
     # =====================================================================
     # LMM statistical analysis
     # =====================================================================
-    print(f"\nFitting linear mixed-effects models (contrast coding: {args.contrast_coding})...")
-    plot_lmm_figures(group, fig_dirs['lmm'], data_dir,
-                     contrast_coding=args.contrast_coding)
+    print("\nFitting linear mixed-effects models...")
+    plot_lmm_figures(group, fig_dirs['lmm'], data_dir)
 
     # =====================================================================
     # Movement encoding (ordered claims, raw-data check, ΔR² comparison)
