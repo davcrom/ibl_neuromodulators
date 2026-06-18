@@ -438,6 +438,9 @@ POSE_MEASURES = {
     'tongue_likelihood': ('feedback_times', ['tongue_end_l', 'tongue_end_r'], 'max_likelihood'),
 }
 
+# Event the motion_energy channel locks to (baseline is also stimOn-locked).
+MOTION_ENERGY_EVENT = 'stimOn_times'
+
 
 # Plotting parameters
 FIGURE_DPI = 150

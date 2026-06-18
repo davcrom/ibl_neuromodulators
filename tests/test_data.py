@@ -1711,11 +1711,13 @@ class TestPoseMethods:
         assert 'video' in ps._available_save_groups('GCaMP_preprocessed')
 
     def _make_pose_session(self, mock_session_series, fs=30, dur=60.0,
-                           tongue_like=(0.2, 0.9), accelerate=False):
+                           tongue_like=(0.2, 0.9), accelerate=False,
+                           motion_energy=False):
         """PhotometrySession with injected synthetic pose + camera times + trials.
 
         With ``accelerate``, keypoint positions grow quadratically so speed rises
-        over time and the event a window is locked to changes its value.
+        over time and the event a window is locked to changes its value. With
+        ``motion_energy``, a per-frame ME ramp is injected on the camera time base.
         """
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
@@ -1726,6 +1728,8 @@ class TestPoseMethods:
         if accelerate:
             ramp = ramp ** 2
         ones = np.ones(n)
+        if motion_energy:
+            ps.motion_energy = ramp.copy()
         ps.pose = pd.DataFrame({
             'paw_l_x': ramp * 3.0, 'paw_l_y': ramp * 4.0, 'paw_l_likelihood': ones,
             'paw_r_x': ramp * 6.0, 'paw_r_y': ramp * 8.0, 'paw_r_likelihood': ones,
@@ -1781,6 +1785,34 @@ class TestPoseMethods:
         ps99.extract_movement_traces()
         assert (ps30.pose_traces.sizes['time']
                 == ps99.pose_traces.sizes['time'] == 60)
+
+    def test_extract_movement_traces_includes_motion_energy(self, mock_session_series):
+        """pose + ME present → bodypart coord adds motion_energy to the LP labels,
+        and the ME channel is stimOn-locked (baseline equals event trace)."""
+        from iblnm.config import POSE_MEASURES
+        ps = self._make_pose_session(mock_session_series, motion_energy=True)
+        ps.extract_movement_traces()
+        assert (set(ps.pose_traces.coords['bodypart'].values)
+                == set(POSE_MEASURES) | {'motion_energy'})
+        np.testing.assert_allclose(
+            ps.pose_baseline_traces.sel(bodypart='motion_energy').values,
+            ps.pose_traces.sel(bodypart='motion_energy').values)
+
+    def test_extract_movement_traces_motion_energy_only(self, mock_session_series):
+        """ME present, pose=None → pose_traces has exactly ['motion_energy']."""
+        ps = self._make_pose_session(mock_session_series, motion_energy=True)
+        ps.pose = None
+        ps.extract_movement_traces()
+        assert list(ps.pose_traces.coords['bodypart'].values) == ['motion_energy']
+
+    def test_extract_movement_traces_lp_only_when_no_motion_energy(self, mock_session_series):
+        """pose present, motion_energy=None → pose_traces has only the LP labels."""
+        from iblnm.config import POSE_MEASURES
+        ps = self._make_pose_session(mock_session_series)
+        assert ps.motion_energy is None
+        ps.extract_movement_traces()
+        assert (set(ps.pose_traces.coords['bodypart'].values)
+                == set(POSE_MEASURES))
 
     @staticmethod
     def _xcorr_session(mock_session_series, wheel_times=None):

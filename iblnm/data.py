@@ -18,7 +18,8 @@ from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
     LP_QC_LABELS,
-    MIN_NTRIALS, MIN_PERFORMANCE, N_UNIQUE_SAMPLES_THRESHOLD,
+    MIN_NTRIALS, MIN_PERFORMANCE, MOTION_ENERGY_EVENT,
+    N_UNIQUE_SAMPLES_THRESHOLD,
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
@@ -28,7 +29,7 @@ from iblnm.config import (
 )
 from iblnm.analysis import (
     get_responses, compute_response_magnitude, movement_trace,
-    per_third_crosscorr, resample_pose,
+    per_third_crosscorr, resample_pose, resample_signal,
 )
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
@@ -1213,7 +1214,7 @@ class PhotometrySession(PhotometrySessionLoader):
         the pipeline as a separate step.
         """
         from iblphotometry.pipelines import run_pipeline
-        from iblnm.analysis import compute_bleaching_tau, compute_iso_correlation, resample_signal
+        from iblnm.analysis import compute_bleaching_tau, compute_iso_correlation
 
         if pipeline is None:
             pipeline = PREPROCESSING_PIPELINES['isosbestic_correction']
@@ -1491,24 +1492,55 @@ class PhotometrySession(PhotometrySessionLoader):
         qc = get_extended_qc(self.to_series(), one=self.one)
         self.video_qc = {col: qc.get(col, LP_QC_NOT_SET) for col in VIDEO_QC_COLS}
 
-    def extract_movement_traces(self):
-        """Extract per-trial peri-event movement traces for each bodypart.
+    def _movement_signals(self):
+        """Per-frame movement signals keyed by channel label.
 
-        Builds one event-locked (trial × time) matrix per entry in
-        ``config.POSE_MEASURES`` and stores them on ``self.pose_traces`` as a
-        DataArray with dims ``(bodypart, trial, time)``.
+        Returns a dict ``label -> (signal, event)`` where ``signal`` is a
+        ``pd.Series`` on a common 1/POSE_FS time base and ``event`` is the trials
+        column the response trace locks to. LP keypoint channels
+        (``config.POSE_MEASURES``) are included only when ``self.pose`` is set;
+        the ``motion_energy`` channel only when ``self.motion_energy`` is set.
+        The two sources are independent, so a session may contribute either or
+        both. Returns an empty dict when neither source is present.
         """
-        # Resample raw pose to a common rate first, so speeds (px per time step)
-        # and trace lengths are comparable across sessions of differing camera fps.
-        pose, pose_times = resample_pose(self.pose, self.pose_times, POSE_FS)
+        signals = {}
+        if self.pose is not None:
+            # Resample raw pose to a common rate first, so speeds (px per time
+            # step) and trace lengths are comparable across camera fps.
+            pose, pose_times = resample_pose(self.pose, self.pose_times, POSE_FS)
+            for label, (event, keypoints, reduction) in POSE_MEASURES.items():
+                signals[label] = (
+                    pd.Series(movement_trace(pose, keypoints, reduction),
+                              index=pose_times),
+                    event,
+                )
+        if self.motion_energy is not None:
+            signals['motion_energy'] = (
+                resample_signal(
+                    pd.Series(self.motion_energy, index=self.pose_times), POSE_FS),
+                MOTION_ENERGY_EVENT,
+            )
+        return signals
+
+    def extract_movement_traces(self):
+        """Extract per-trial peri-event movement traces for each channel.
+
+        Assembles the available per-frame signals (LP keypoint measures and/or
+        the resampled motion-energy scalar), event-locks each to its own event,
+        and stores them on ``self.pose_traces`` as a DataArray with dims
+        ``(bodypart, trial, time)``. ``self.pose_baseline_traces`` holds the same
+        channels stimOn-locked for a common pre-stimOn baseline. Both are left
+        ``None`` when neither LP nor motion energy is present.
+        """
+        signals = self._movement_signals()
+        if not signals:
+            self.pose_traces = None
+            self.pose_baseline_traces = None
+            return
         stimon = self.trials['stimOn_times'].values
         traces = {}
         baselines = {}
-        for label, (event, keypoints, reduction) in POSE_MEASURES.items():
-            signal = pd.Series(
-                movement_trace(pose, keypoints, reduction),
-                index=pose_times,
-            )
+        for label, (signal, event) in signals.items():
             traces[label], tpts = get_responses(
                 signal, self.trials[event].values,
                 t0=RESPONSE_WINDOW[0], t1=RESPONSE_WINDOW[1],
@@ -1518,17 +1550,18 @@ class PhotometrySession(PhotometrySessionLoader):
             baselines[label], _ = get_responses(
                 signal, stimon, t0=RESPONSE_WINDOW[0], t1=RESPONSE_WINDOW[1],
             )
+        labels = list(signals)
         coords = {
-            'bodypart': list(POSE_MEASURES),
+            'bodypart': labels,
             'trial': self.trials.index.to_numpy(),
             'time': tpts,
         }
         self.pose_traces = xr.DataArray(
-            np.stack([traces[label] for label in POSE_MEASURES]),
+            np.stack([traces[label] for label in labels]),
             dims=['bodypart', 'trial', 'time'], coords=coords,
         )
         self.pose_baseline_traces = xr.DataArray(
-            np.stack([baselines[label] for label in POSE_MEASURES]),
+            np.stack([baselines[label] for label in labels]),
             dims=['bodypart', 'trial', 'time'], coords=coords,
         )
 
