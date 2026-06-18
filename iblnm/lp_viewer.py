@@ -671,7 +671,7 @@ class LPViewer(QtWidgets.QMainWindow):
         panel = QtWidgets.QWidget()
         box = QtWidgets.QVBoxLayout(panel)
         box.addWidget(QtWidgets.QLabel('Metric distributions'))
-        self.hist_fig = Figure(figsize=(4, 5.4))
+        self.hist_fig = Figure(figsize=(4, 8))
         self.hist_canvas = FigureCanvasQTAgg(self.hist_fig)
         self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
         self._draw_histograms()
@@ -753,6 +753,7 @@ class LPViewer(QtWidgets.QMainWindow):
                           color=SESSIONTYPE2COLOR.get(session_type),
                           label=session_type)
             ax.set_title(HISTOGRAM_TITLES[measure], fontsize=8)
+            ax.tick_params(labelsize=5)
             if i == 0 and types:
                 ax.legend(fontsize=6)
             selector = SpanSelector(
