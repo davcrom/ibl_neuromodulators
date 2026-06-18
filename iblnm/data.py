@@ -2425,49 +2425,97 @@ class PhotometrySessionGroup:
         return pd.DataFrame(
             rows, columns=[*group_by, 'name', 'marginal_r2', 'conditional_r2'])
 
-    def response_lmm_crossval(self, names, group_by, response_col='response',
-                              fold_col='subject', min_subjects=3, min_test=5):
+    def response_lmm_crossval(self, formulas, group_by, response_col='response',
+                              reference='full', fold_col='subject',
+                              min_subjects=3, min_test=5):
         """Out-of-sample ΔR² by leave-one-fold-out cross-validation per group.
+
+        See :meth:`_response_lmm_resample` for the orchestration; this binds the
+        scoring arguments of :func:`iblnm.analysis.crossval_lmm`.
+
+        Parameters
+        ----------
+        formulas : dict[str, str]
+            One comparison set: a flat ``{name: formula_template}`` mapping (a
+            ``reference`` key plus drop-one variants), each template containing
+            ``{response}``, filled with ``response_col``.
+        group_by : list[str]
+            Columns whose unique combinations each get an independent run.
+        response_col : str
+            Response-magnitude column; also the formula's ``{response}``.
+        reference : str
+            Key in ``formulas`` naming the baseline each other model's ΔR² is
+            measured against.
+        fold_col : str
+            Column whose unique values define the leave-one-out folds.
+        min_subjects : int
+            Minimum number of folds required to score a group.
+        min_test : int
+            Minimum held-out trials for a fold to be scored.
         """
-        def procedure(formulas, df_coded):
+        def procedure(coded_formulas, df_coded):
             return analysis.crossval_lmm(
-                df_coded, formulas, response_col, fold_col=fold_col,
-                min_subjects=min_subjects, min_test=min_test)
+                df_coded, coded_formulas, response_col, reference=reference,
+                fold_col=fold_col, min_subjects=min_subjects,
+                min_test=min_test)
 
-        return self._response_lmm_resample(procedure, names, group_by,
+        return self._response_lmm_resample(procedure, formulas, group_by,
                                            response_col)
 
-    def response_lmm_jackknife(self, names, group_by, response_col='response',
-                               fold_col='subject', min_subjects=3):
+    def response_lmm_jackknife(self, formulas, group_by, response_col='response',
+                               reference='full', fold_col='subject',
+                               min_subjects=3):
         """In-sample-influence ΔR² by leave-one-fold-out jackknife per group.
-        """
-        def procedure(formulas, df_coded):
-            return analysis.jackknife_lmm(
-                df_coded, formulas, response_col, fold_col=fold_col,
-                min_subjects=min_subjects)
 
-        return self._response_lmm_resample(procedure, names, group_by,
+        See :meth:`_response_lmm_resample` for the orchestration; this binds the
+        scoring arguments of :func:`iblnm.analysis.jackknife_lmm`.
+
+        Parameters
+        ----------
+        formulas : dict[str, str]
+            One comparison set: a flat ``{name: formula_template}`` mapping (a
+            ``reference`` key plus drop-one variants), each template containing
+            ``{response}``, filled with ``response_col``.
+        group_by : list[str]
+            Columns whose unique combinations each get an independent run.
+        response_col : str
+            Response-magnitude column; also the formula's ``{response}``.
+        reference : str
+            Key in ``formulas`` naming the model each other model's ΔR² is
+            measured against.
+        fold_col : str
+            Column whose unique values define the leave-one-out folds.
+        min_subjects : int
+            Minimum number of folds required to score a group.
+        """
+        def procedure(coded_formulas, df_coded):
+            return analysis.jackknife_lmm(
+                df_coded, coded_formulas, response_col, reference=reference,
+                fold_col=fold_col, min_subjects=min_subjects)
+
+        return self._response_lmm_resample(procedure, formulas, group_by,
                                            response_col)
 
-    def _response_lmm_resample(self, procedure, names, group_by, response_col):
-        """Run a resampling ``procedure`` per ``group_by`` group, per set.
+    def _response_lmm_resample(self, procedure, formulas, group_by,
+                               response_col):
+        """Run a resampling ``procedure`` per ``group_by`` group.
 
         Shared orchestration for :meth:`response_lmm_crossval` and
-        :meth:`response_lmm_jackknife`: for each model set in ``names``, look up
-        its ``{name: formula}`` dict in ``config.LMM_FORMULAS``, then for each
-        ``group_by`` group code the trials, apply the movement inclusion gate
+        :meth:`response_lmm_jackknife`. Formats the caller's flat
+        ``{name: formula}`` dict with ``response_col``, then for each
+        ``group_by`` group codes the trials, applies the movement inclusion gate
         (drop null ``log_<timing>`` rows and skip a group below
-        ``MIN_TRIALS_MOVEMENT`` when the set uses a timing column), call
-        ``procedure(formulas, df_coded)``, tag the long-form result with the
-        group columns, and concatenate.
+        ``MIN_TRIALS_MOVEMENT`` when the dict uses a timing column), calls
+        ``procedure(formulas, df_coded)``, tags the long-form result with the
+        group columns, and concatenates. Reads no ``config.LMM_FORMULAS``.
 
         Parameters
         ----------
         procedure : callable
             ``(formulas, df_coded) -> pd.DataFrame`` wrapping the analysis-level
             resampling function with its scoring arguments bound.
-        names : list[str]
-            Model-set names, each a key of ``config.LMM_FORMULAS``.
+        formulas : dict[str, str]
+            Flat ``{name: formula_template}`` mapping for one comparison set.
         group_by : list[str]
             Columns whose unique combinations each get an independent run.
         response_col : str
@@ -2481,23 +2529,22 @@ class PhotometrySessionGroup:
         """
         df = self._modeling_frame(response_col)
         cols = [*group_by, 'predictor', 'fold', 'n_trials', 'r2', 'delta_r2']
+        formulas = {name: template.format(response=response_col)
+                    for name, template in formulas.items()}
+        timing_col = self._movement_timing_col(formulas)
 
         frames = []
-        for set_name in names:
-            formulas = {name: formula.format(response=response_col)
-                        for name, formula in LMM_FORMULAS[set_name].items()}
-            timing_col = self._movement_timing_col(formulas)
-            for keys, df_group in df.groupby(group_by):
-                group_values = keys if isinstance(keys, tuple) else (keys,)
-                df_coded = self._code_lmm_predictors(df_group)
-                if timing_col is not None:
-                    df_coded = df_coded.dropna(subset=[timing_col])
-                    if len(df_coded) < MIN_TRIALS_MOVEMENT:
-                        continue
-                result = procedure(formulas, df_coded)
-                for col, val in zip(group_by, group_values):
-                    result[col] = val
-                frames.append(result)
+        for keys, df_group in df.groupby(group_by):
+            group_values = keys if isinstance(keys, tuple) else (keys,)
+            df_coded = self._code_lmm_predictors(df_group)
+            if timing_col is not None:
+                df_coded = df_coded.dropna(subset=[timing_col])
+                if len(df_coded) < MIN_TRIALS_MOVEMENT:
+                    continue
+            result = procedure(formulas, df_coded)
+            for col, val in zip(group_by, group_values):
+                result[col] = val
+            frames.append(result)
 
         return pd.concat(frames, ignore_index=True)[cols] if frames \
             else pd.DataFrame(columns=cols)

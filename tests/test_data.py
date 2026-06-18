@@ -4296,23 +4296,24 @@ class TestResponseLMMResampling:
 
     def test_crossval_columns_and_matches_direct_call(self):
         from iblnm.analysis import crossval_lmm
-        from iblnm.config import LMM_FORMULAS
         group = _make_group_for_response_lmm()
+        formulas = {'full': '{response} ~ contrast * side * reward',
+                    'interactions': '{response} ~ contrast + side + reward'}
         result = group.response_lmm_crossval(
-            ['task_interactions'], group_by=['target_NM', 'event'])
+            formulas, group_by=['target_NM', 'event'])
         assert list(result.columns) == [
             'target_NM', 'event', 'predictor', 'fold', 'n_trials',
             'r2', 'delta_r2']
         assert set(result['predictor']) == {'interactions'}
 
-        # Reproduce one group's interactions delta_r2 by a direct call.
+        # Reproduce one group's interactions delta_r2 by a direct call with the
+        # same reference.
         df = group._modeling_frame()
         (target_nm, event), df_group = next(
             iter(df.groupby(['target_NM', 'event'])))
         df_coded = group._code_lmm_predictors(df_group)
-        formulas = {k: v.format(response='response')
-                    for k, v in LMM_FORMULAS['task_interactions'].items()}
-        expected = crossval_lmm(df_coded, formulas, 'response')
+        coded = {k: v.format(response='response') for k, v in formulas.items()}
+        expected = crossval_lmm(df_coded, coded, 'response', reference='full')
 
         got = result[(result['target_NM'] == target_nm)
                      & (result['event'] == event)
@@ -4324,22 +4325,23 @@ class TestResponseLMMResampling:
 
     def test_jackknife_columns_and_matches_direct_call(self):
         from iblnm.analysis import jackknife_lmm
-        from iblnm.config import LMM_FORMULAS
         group = _make_group_for_response_lmm()
+        formulas = {'full': '{response} ~ contrast * side * reward',
+                    'interactions': '{response} ~ contrast + side + reward'}
         result = group.response_lmm_jackknife(
-            ['task_interactions'], group_by=['target_NM', 'event'])
+            formulas, group_by=['target_NM', 'event'])
         assert list(result.columns) == [
             'target_NM', 'event', 'predictor', 'fold', 'n_trials',
             'r2', 'delta_r2']
 
-        # Reproduce one group's interactions delta_r2 by a direct call.
+        # Reproduce one group's interactions delta_r2 by a direct call with the
+        # same reference.
         df = group._modeling_frame()
         (target_nm, event), df_group = next(
             iter(df.groupby(['target_NM', 'event'])))
         df_coded = group._code_lmm_predictors(df_group)
-        formulas = {k: v.format(response='response')
-                    for k, v in LMM_FORMULAS['task_interactions'].items()}
-        expected = jackknife_lmm(df_coded, formulas, 'response')
+        coded = {k: v.format(response='response') for k, v in formulas.items()}
+        expected = jackknife_lmm(df_coded, coded, 'response', reference='full')
 
         got = result[(result['target_NM'] == target_nm)
                      & (result['event'] == event)
@@ -4358,16 +4360,24 @@ class TestResponseLMMResampling:
         reg['log_reaction_time'] = np.log10(reg['reaction_time'])
         return group
 
+    _MOVEMENT_FORMULAS = {
+        'full': '{response} ~ contrast + log_reaction_time',
+        'contrast': '{response} ~ log_reaction_time',
+        'movement': '{response} ~ contrast',
+    }
+
     def test_movement_set_fits_when_trials_sufficient(self):
+        from iblnm.config import MIN_SUBJECTS_MOVEMENT
         # Baseline: with full timing data, every target contributes rows.
         group = self._movement_group()
         result = group.response_lmm_crossval(
-            ['movement_additive_reaction_time'],
-            group_by=['target_NM', 'event'])
+            self._MOVEMENT_FORMULAS, group_by=['target_NM', 'event'],
+            min_subjects=MIN_SUBJECTS_MOVEMENT)
         assert (result['target_NM'] == 'DR-5HT').sum() > 0
         assert (result['target_NM'] == 'VTA-DA').sum() > 0
 
     def test_movement_set_below_min_trials_contributes_no_rows(self):
+        from iblnm.config import MIN_SUBJECTS_MOVEMENT
         # Null out all but a handful of one target's timing values so its
         # per-group valid-trial count falls below MIN_TRIALS_MOVEMENT (20).
         group = self._movement_group()
@@ -4377,8 +4387,8 @@ class TestResponseLMMResampling:
         reg.loc[idx[5:], 'log_reaction_time'] = np.nan
 
         result = group.response_lmm_crossval(
-            ['movement_additive_reaction_time'],
-            group_by=['target_NM', 'event'])
+            self._MOVEMENT_FORMULAS, group_by=['target_NM', 'event'],
+            min_subjects=MIN_SUBJECTS_MOVEMENT)
         assert (result['target_NM'] == 'DR-5HT').sum() == 0
         assert (result['target_NM'] == 'VTA-DA').sum() > 0
 
