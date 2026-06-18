@@ -628,14 +628,20 @@ class LPViewer(QtWidgets.QMainWindow):
         self.population_selectors = {}
         ax_fc, ax_time = self.population_fig.subplots(2, 1)
 
-        ax_fc.hist(self.model.df_cohort['fraction_correct'].dropna(), bins=30)
+        _, fc_edges, _ = ax_fc.hist(
+            self.model.df_cohort['fraction_correct'].dropna(), bins=30)
+        # Pin x-limits to the bin span (also disables autoscale) so the
+        # interactive SpanSelector's handle artists, which start at x=0, can't
+        # drag the data limits and balloon the axis range.
+        ax_fc.set_xlim(fc_edges[0], fc_edges[-1])
         ax_fc.set_ylabel('fraction_correct', fontsize=7)
         ax_fc.set_yticks([])
         ax_fc.tick_params(axis='x', labelsize=6)
         self._add_population_selector('fraction_correct', ax_fc, self.fc_range)
 
         numeric = start_time_to_numeric(self.model.df_cohort['start_time'])
-        ax_time.hist(numeric[~np.isnan(numeric)])
+        _, time_edges, _ = ax_time.hist(numeric[~np.isnan(numeric)])
+        ax_time.set_xlim(time_edges[0], time_edges[-1])
         ax_time.set_ylabel('start_time', fontsize=7)
         ax_time.set_yticks([])
         ax_time.xaxis.set_major_formatter(FuncFormatter(
