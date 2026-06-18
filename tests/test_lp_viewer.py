@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from matplotlib.colors import to_rgba
+from matplotlib.figure import Figure
 
 from iblnm.data import _save_pose_traces, _save_pose_xcorr
 from iblnm.lp_viewer import (
@@ -11,6 +13,7 @@ from iblnm.lp_viewer import (
     HISTOGRAM_TITLES,
     LPViewerModel,
     apply_label,
+    draw_trial_schematic,
     filter_dropdown,
     format_event_timings,
     format_session_title,
@@ -23,6 +26,7 @@ from iblnm.lp_viewer import (
     select_population,
     start_time_to_numeric,
     trial_frame_window,
+    trial_schematic_values,
     update_pose_qc,
 )
 
@@ -269,6 +273,82 @@ def test_format_event_timings_nan_first_movement():
     labels = format_event_timings(
         1.0, stimOn=0.7, firstMovement=float('nan'), feedback=1.5)
     assert labels[1] == 'firstMovement: —'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# trial_schematic_values
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_trial_schematic_values_left_correct():
+    trial = pd.Series({'contrastLeft': 0.25, 'contrastRight': np.nan,
+                       'feedbackType': 1, 'probabilityLeft': 0.8})
+    values = trial_schematic_values(trial)
+    assert values == {'side': 'left', 'contrast': 0.25,
+                      'correct': True, 'prob_left': 0.8}
+
+
+def test_trial_schematic_values_right_incorrect():
+    trial = pd.Series({'contrastLeft': np.nan, 'contrastRight': 1.0,
+                       'feedbackType': -1, 'probabilityLeft': 0.2})
+    values = trial_schematic_values(trial)
+    assert values == {'side': 'right', 'contrast': 1.0,
+                      'correct': False, 'prob_left': 0.2}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# draw_trial_schematic
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _patch_by_label(ax, label):
+    return next(p for p in ax.patches if p.get_label() == label)
+
+
+def _fresh_axes():
+    return Figure().add_subplot(111)
+
+
+def test_draw_trial_schematic_disc_side_placement():
+    left_ax = _fresh_axes()
+    draw_trial_schematic(left_ax, 'left', 0.25, True, 0.5)
+    right_ax = _fresh_axes()
+    draw_trial_schematic(right_ax, 'right', 0.25, True, 0.5)
+    center = _patch_by_label(left_ax, 'strip').get_x() + \
+        _patch_by_label(left_ax, 'strip').get_width() / 2
+    assert _patch_by_label(left_ax, 'disc').center[0] < center
+    assert _patch_by_label(right_ax, 'disc').center[0] > center
+
+
+def test_draw_trial_schematic_ring_color_by_outcome():
+    correct_ax = _fresh_axes()
+    draw_trial_schematic(correct_ax, 'left', 0.25, True, 0.5)
+    wrong_ax = _fresh_axes()
+    draw_trial_schematic(wrong_ax, 'left', 0.25, False, 0.5)
+    assert _patch_by_label(correct_ax, 'disc').get_edgecolor() == to_rgba('green')
+    assert _patch_by_label(wrong_ax, 'disc').get_edgecolor() == to_rgba('red')
+
+
+def test_draw_trial_schematic_contrast_text_in_disc():
+    ax = _fresh_axes()
+    draw_trial_schematic(ax, 'left', 0.125, True, 0.5)
+    assert '12.5%' in [t.get_text() for t in ax.texts]
+
+
+def test_draw_trial_schematic_bias_bar_left_width_scales():
+    mostly_left = _fresh_axes()
+    draw_trial_schematic(mostly_left, 'left', 0.25, True, 0.8)
+    mostly_right = _fresh_axes()
+    draw_trial_schematic(mostly_right, 'left', 0.25, True, 0.2)
+    assert _patch_by_label(mostly_left, 'bias_left').get_width() > \
+        _patch_by_label(mostly_right, 'bias_left').get_width()
+
+
+def test_draw_trial_schematic_disc_radius_grows_with_contrast():
+    low = _fresh_axes()
+    draw_trial_schematic(low, 'left', 0.0625, True, 0.5)
+    high = _fresh_axes()
+    draw_trial_schematic(high, 'left', 1.0, True, 0.5)
+    assert _patch_by_label(high, 'disc').radius > \
+        _patch_by_label(low, 'disc').radius
 
 
 # ─────────────────────────────────────────────────────────────────────────────

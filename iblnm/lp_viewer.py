@@ -18,6 +18,7 @@ from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
+from matplotlib.patches import Circle, Rectangle
 from matplotlib.ticker import FuncFormatter
 from matplotlib.widgets import SpanSelector
 
@@ -167,6 +168,68 @@ def format_event_timings(
         f'{name}: —' if np.isnan(time) else f'{name}: {frame_time - time:+.2f} s'
         for name, time in events.items()
     ]
+
+
+def trial_schematic_values(trial: pd.Series) -> dict:
+    """Derive the trial-schematic inputs from a trial row.
+
+    Returns `side` (`'left'` when `contrastLeft` is non-NaN else `'right'`),
+    `contrast` (the non-NaN of `contrastLeft`/`contrastRight`, in [0, 1]),
+    `correct` (`feedbackType == 1`), and `prob_left` (`probabilityLeft`). One
+    of `contrastLeft`/`contrastRight` is NaN on every trial.
+    """
+    left = np.isnan(trial['contrastLeft'])
+    return {
+        'side': 'right' if left else 'left',
+        'contrast': trial['contrastRight'] if left else trial['contrastLeft'],
+        'correct': trial['feedbackType'] == 1,
+        'prob_left': trial['probabilityLeft'],
+    }
+
+
+def draw_trial_schematic(
+    ax,
+    side: str,
+    contrast: float,
+    correct: bool,
+    prob_left: float,
+) -> None:
+    """Render a schematic of the current trial onto `ax`.
+
+    Draws a horizontal "screen" strip with a center tick, a filled stimulus
+    disc placed left or right of center per `side`, and a two-segment bias bar
+    above the strip. The disc grayscale darkens and its radius grows with
+    `contrast` (in [0, 1]), with the contrast percentage printed inside it; the
+    disc's ring is green when `correct` else red. The bias bar's left-segment
+    width is proportional to `prob_left`. Clears `ax` first; Qt-free so it
+    renders headless under the Agg backend.
+    """
+    ax.clear()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_axis_off()
+
+    strip_x, strip_w, strip_y = 0.1, 0.8, 0.4
+    center_x = strip_x + strip_w / 2
+    ax.add_patch(Rectangle((strip_x, strip_y - 0.03), strip_w, 0.06,
+                           facecolor='0.85', edgecolor='0.4', label='strip'))
+    ax.plot([center_x, center_x], [strip_y - 0.05, strip_y + 0.05],
+            color='0.4', lw=1)
+
+    disc_x = center_x + (0.18 if side == 'right' else -0.18)
+    radius = 0.05 + 0.10 * contrast
+    ax.add_patch(Circle((disc_x, strip_y), radius, facecolor=str(1 - contrast),
+                        edgecolor='green' if correct else 'red', lw=3,
+                        label='disc'))
+    ax.text(disc_x, strip_y, f'{contrast * 100:.3g}%', ha='center',
+            va='center', color='red' if contrast > 0.5 else 'black', fontsize=8)
+
+    bar_y, bar_h = strip_y + 0.2, 0.06
+    left_w = strip_w * prob_left
+    ax.add_patch(Rectangle((strip_x, bar_y), left_w, bar_h,
+                           facecolor='tab:blue', label='bias_left'))
+    ax.add_patch(Rectangle((strip_x + left_w, bar_y), strip_w - left_w, bar_h,
+                           facecolor='tab:orange', label='bias_right'))
 
 
 def histogram_by_type(
@@ -622,6 +685,11 @@ class LPViewer(QtWidgets.QMainWindow):
         frame_row = QtWidgets.QHBoxLayout()
         frame_row.addWidget(self.frame_canvas)
         event_col = QtWidgets.QVBoxLayout()
+        self.schematic_fig = Figure(figsize=(3, 2))
+        self.schematic_canvas = FigureCanvasQTAgg(self.schematic_fig)
+        self.schematic_ax = self.schematic_fig.add_subplot(111)
+        self.schematic_ax.set_axis_off()
+        event_col.addWidget(self.schematic_canvas)
         self.event_labels = [QtWidgets.QLabel('—') for _ in range(3)]
         for label in self.event_labels:
             event_col.addWidget(label)
@@ -874,6 +942,8 @@ class LPViewer(QtWidgets.QMainWindow):
             return
         self.current_trial_idx = trial_idx
         trial = self.trials.iloc[trial_idx]
+        draw_trial_schematic(self.schematic_ax, **trial_schematic_values(trial))
+        self.schematic_canvas.draw_idle()
         low, high = trial_frame_window(
             trial['stimOn_times'], trial['feedback_times'])
         self.trial_frames = frames_in_trial(
