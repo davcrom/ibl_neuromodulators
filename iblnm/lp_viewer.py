@@ -635,7 +635,7 @@ class LPViewer(QtWidgets.QMainWindow):
         self._add_population_selector('fraction_correct', ax_fc, self.fc_range)
 
         numeric = start_time_to_numeric(self.model.df_cohort['start_time'])
-        ax_time.hist(numeric[~np.isnan(numeric)], bins=30)
+        ax_time.hist(numeric[~np.isnan(numeric)])
         ax_time.set_ylabel('start_time', fontsize=7)
         ax_time.set_yticks([])
         ax_time.xaxis.set_major_formatter(FuncFormatter(
