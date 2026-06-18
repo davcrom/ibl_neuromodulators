@@ -14,6 +14,7 @@ import cv2
 import h5py
 import numpy as np
 import pandas as pd
+import matplotlib
 from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
@@ -39,6 +40,17 @@ from iblnm.data import (
 
 # Settable IBL QC verdicts (the default 'NOT_SET' is not a manual choice).
 IBL_QC_VALUES = ('CRITICAL', 'FAIL', 'WARNING', 'PASS')
+
+# One font size for every axis title, label, tick, and legend across all of the
+# viewer's matplotlib panels, applied globally so no panel can drift out of step.
+FONTSIZE = 7
+matplotlib.rcParams.update({
+    'axes.titlesize': FONTSIZE,
+    'axes.labelsize': FONTSIZE,
+    'xtick.labelsize': FONTSIZE,
+    'ytick.labelsize': FONTSIZE,
+    'legend.fontsize': FONTSIZE,
+})
 
 
 def start_time_to_numeric(values) -> np.ndarray:
@@ -534,8 +546,11 @@ class LPViewer(QtWidgets.QMainWindow):
         panel = QtWidgets.QWidget()
         box = QtWidgets.QVBoxLayout(panel)
 
-        box.addWidget(self._build_population_panel())
-        box.addWidget(self._build_metric_panel())
+        # Stretch factors (not fixed figure heights) divide the column between
+        # the two stacked panels, so growing one shrinks the other predictably
+        # instead of one overflowing. The metric panel gets the larger share.
+        box.addWidget(self._build_population_panel(), stretch=2)
+        box.addWidget(self._build_metric_panel(), stretch=3)
 
         box.addWidget(QtWidgets.QLabel('Sessions in range'))
         self.session_combo = QtWidgets.QComboBox()
@@ -634,19 +649,17 @@ class LPViewer(QtWidgets.QMainWindow):
         # interactive SpanSelector's handle artists, which start at x=0, can't
         # drag the data limits and balloon the axis range.
         ax_fc.set_xlim(fc_edges[0], fc_edges[-1])
-        ax_fc.set_ylabel('fraction_correct', fontsize=7)
+        ax_fc.set_ylabel('fraction_correct')
         ax_fc.set_yticks([])
-        ax_fc.tick_params(axis='x', labelsize=6)
         self._add_population_selector('fraction_correct', ax_fc, self.fc_range)
 
         numeric = start_time_to_numeric(self.model.df_cohort['start_time'])
         _, time_edges, _ = ax_time.hist(numeric[~np.isnan(numeric)], bins=20)
         ax_time.set_xlim(time_edges[0], time_edges[-1])
-        ax_time.set_ylabel('start_time', fontsize=7)
+        ax_time.set_ylabel('start_time')
         ax_time.set_yticks([])
         ax_time.xaxis.set_major_formatter(FuncFormatter(
             lambda ns, _: pd.Timestamp(int(ns)).strftime('%Y-%m-%d')))
-        ax_time.tick_params(axis='x', labelsize=6)
         self._add_population_selector(
             'start_time', ax_time, self.start_time_range)
 
@@ -671,7 +684,7 @@ class LPViewer(QtWidgets.QMainWindow):
         panel = QtWidgets.QWidget()
         box = QtWidgets.QVBoxLayout(panel)
         box.addWidget(QtWidgets.QLabel('Metric distributions'))
-        self.hist_fig = Figure(figsize=(4, 8))
+        self.hist_fig = Figure(figsize=(4, 5))
         self.hist_canvas = FigureCanvasQTAgg(self.hist_fig)
         self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
         self._draw_histograms()
@@ -752,10 +765,9 @@ class LPViewer(QtWidgets.QMainWindow):
                 ax.stairs(density, edges, fill=True, alpha=0.5,
                           color=SESSIONTYPE2COLOR.get(session_type),
                           label=session_type)
-            ax.set_title(HISTOGRAM_TITLES[measure], fontsize=8)
-            ax.tick_params(labelsize=5)
+            ax.set_title(HISTOGRAM_TITLES[measure])
             if i == 0 and types:
-                ax.legend(fontsize=6)
+                ax.legend()
             selector = SpanSelector(
                 ax, lambda lo, hi, m=measure: self._on_brush(m, lo, hi),
                 'horizontal', useblit=True, interactive=True)
@@ -873,7 +885,7 @@ class LPViewer(QtWidgets.QMainWindow):
         for label, function in zip(('early', 'mid', 'late'),
                                    panels.xcorr['functions']):
             ax_xcorr.plot(panels.xcorr['lags'], function, label=label)
-        ax_xcorr.legend(fontsize=8)
+        ax_xcorr.legend()
         ax_xcorr.set_title(f"Paw–wheel xcorr (drift={panels.xcorr['drift']:.3f})")
         ax_xcorr.set_xlabel('lag (s)')
         self.panel_fig.tight_layout()
