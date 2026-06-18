@@ -146,17 +146,57 @@ class TestProcessPoseSkip:
         fake_ps.extract_paw_wheel_xcorr.assert_called_once()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
-    def test_missing_lp_logs_and_skips_without_writing(self, fake_ps, tmp_path,
-                                                       monkeypatch):
+    def test_missing_lp_logs_and_continues_with_motion_energy(self, fake_ps,
+                                                              tmp_path, monkeypatch):
+        """MissingLP is non-fatal: ME is still extracted (no xcorr) and saved."""
         monkeypatch.setattr(pose, 'SESSIONS_H5_DIR', tmp_path)
         fake_ps.load_pose.side_effect = pose.MissingLP('leftCamera.lightningPose')
+        fake_ps.pose = None
+        fake_ps.motion_energy = np.arange(10.0)
 
         result = pose.process_pose(fake_ps)
 
-        assert result == 'skipped'
+        assert result == 'processed'
         fake_ps.log_error.assert_called_once()
+        fake_ps.extract_movement_traces.assert_called_once()
+        fake_ps.extract_paw_wheel_xcorr.assert_not_called()
+        fake_ps.save_h5.assert_called_once_with(groups=['video'])
+
+    def test_missing_motion_energy_logs_and_continues_with_lp(self, fake_ps,
+                                                             tmp_path, monkeypatch):
+        """MissingMotionEnergy is non-fatal: LP traces + xcorr still extracted."""
+        monkeypatch.setattr(pose, 'SESSIONS_H5_DIR', tmp_path)
+        fake_ps.load_motion_energy.side_effect = \
+            pose.MissingMotionEnergy('leftCamera.ROIMotionEnergy')
+        fake_ps.motion_energy = None
+
+        result = pose.process_pose(fake_ps)
+
+        assert result == 'processed'
+        logged = {type(call.args[0]).__name__
+                  for call in fake_ps.log_error.call_args_list}
+        assert logged == {'MissingMotionEnergy'}
+        fake_ps.extract_movement_traces.assert_called_once()
+        fake_ps.extract_paw_wheel_xcorr.assert_called_once()
+        fake_ps.save_h5.assert_called_once_with(groups=['video'])
+
+    def test_no_lp_no_motion_energy_writes_basic_group(self, fake_ps, tmp_path,
+                                                       monkeypatch):
+        """Both sources absent → no trace extraction, but the basic-video group is
+        still written (timestamps existed)."""
+        monkeypatch.setattr(pose, 'SESSIONS_H5_DIR', tmp_path)
+        fake_ps.load_pose.side_effect = pose.MissingLP('leftCamera.lightningPose')
+        fake_ps.load_motion_energy.side_effect = \
+            pose.MissingMotionEnergy('leftCamera.ROIMotionEnergy')
+        fake_ps.pose = None
+        fake_ps.motion_energy = None
+
+        result = pose.process_pose(fake_ps)
+
+        assert result == 'processed'
         fake_ps.extract_movement_traces.assert_not_called()
-        fake_ps.save_h5.assert_not_called()
+        fake_ps.extract_paw_wheel_xcorr.assert_not_called()
+        fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
     def test_failing_video_qc_logs_and_proceeds(self, fake_ps, tmp_path,
                                                 monkeypatch):

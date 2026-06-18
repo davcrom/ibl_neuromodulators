@@ -44,7 +44,7 @@ from iblnm.data import (
 from iblnm.io import _get_default_connection
 from iblnm.util import collect_errors
 from iblnm.validation import (
-    MissingLP, MissingVideoTimestamps,
+    MissingLP, MissingMotionEnergy, MissingVideoTimestamps,
     VideoLengthError, VideoTimestampsQCError,
     VideoDroppedFramesQCError, VideoPinStateQCError,
     validate_video_length, validate_video_timestamps_qc,
@@ -87,9 +87,12 @@ def process_pose(ps, reprocess=False):
     Checks basic video first: load ``leftCamera.times`` and compute the
     basic-video measures before LP. A ``MissingVideoTimestamps`` blocks the
     whole session (logged, no group). Skips sessions whose H5 already holds a
-    ``video/`` group unless ``reprocess`` is set. A ``MissingLP`` from
-    ``load_pose`` is logged (non-fatal) and the session is skipped without
-    writing a group. Fatal errors are raised (caught by group.process()).
+    ``video/`` group unless ``reprocess`` is set. LP and motion energy load
+    independently; ``MissingLP`` and ``MissingMotionEnergy`` are logged
+    (non-fatal). Movement traces are extracted from whichever sources are
+    present (paw-wheel xcorr only when LP is), and the basic-video group is
+    written whenever timestamps existed. Fatal errors are raised (caught by
+    group.process()).
     """
     if not reprocess:
         h5_path = SESSIONS_H5_DIR / f'{ps.eid}.h5'
@@ -112,9 +115,14 @@ def process_pose(ps, reprocess=False):
         ps.load_pose()
     except MissingLP as e:
         ps.log_error(e)
-        return 'skipped'
-    ps.extract_movement_traces()
-    ps.extract_paw_wheel_xcorr()
+    try:
+        ps.load_motion_energy()
+    except MissingMotionEnergy as e:
+        ps.log_error(e)
+    if ps.pose is not None or ps.motion_energy is not None:
+        ps.extract_movement_traces()
+    if ps.pose is not None:
+        ps.extract_paw_wheel_xcorr()
     ps.save_h5(groups=['video'])
 
     return 'processed'
