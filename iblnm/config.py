@@ -51,6 +51,8 @@ VIDEO_QC_COLS = [
     'qc_videoLeft_dropped_frames',
     'qc_videoLeft_pin_state',
 ]
+VIDEO_QC_QUALITY_COLS = VIDEO_QC_COLS[:5]  # quality metrics (scored)
+VIDEO_QC_PROBLEM_COLS = VIDEO_QC_COLS[5:]  # problem flags (not scored)
 
 # IBL QC outcome categories ordered most to least severe (for category ordering).
 QC_VALUE_ORDER = ['NOT_SET', 'CRITICAL', 'FAIL', 'WARNING', 'PASS']
