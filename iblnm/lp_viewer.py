@@ -587,7 +587,7 @@ class LPViewer(QtWidgets.QMainWindow):
         box.addWidget(QtWidgets.QLabel('Video QC'))
         box.addLayout(self._build_qc_grid())
 
-        self.population_fig = Figure(figsize=(4, 3))
+        self.population_fig = Figure(figsize=(4, 3.6))
         self.population_canvas = FigureCanvasQTAgg(self.population_fig)
         self.population_canvas.mpl_connect(
             'button_press_event', self._on_population_hist_click)
@@ -629,15 +629,18 @@ class LPViewer(QtWidgets.QMainWindow):
         ax_fc, ax_time = self.population_fig.subplots(2, 1)
 
         ax_fc.hist(self.model.df_cohort['fraction_correct'].dropna(), bins=30)
-        ax_fc.set_title('fraction_correct', fontsize=8)
+        ax_fc.set_ylabel('fraction_correct', fontsize=7)
+        ax_fc.set_yticks([])
+        ax_fc.tick_params(axis='x', labelsize=6)
         self._add_population_selector('fraction_correct', ax_fc, self.fc_range)
 
         numeric = start_time_to_numeric(self.model.df_cohort['start_time'])
         ax_time.hist(numeric[~np.isnan(numeric)], bins=30)
-        ax_time.set_title('start_time', fontsize=8)
+        ax_time.set_ylabel('start_time', fontsize=7)
+        ax_time.set_yticks([])
         ax_time.xaxis.set_major_formatter(FuncFormatter(
             lambda ns, _: pd.Timestamp(int(ns)).strftime('%Y-%m-%d')))
-        ax_time.tick_params(axis='x', labelrotation=45, labelsize=6)
+        ax_time.tick_params(axis='x', labelsize=6)
         self._add_population_selector(
             'start_time', ax_time, self.start_time_range)
 
@@ -662,7 +665,7 @@ class LPViewer(QtWidgets.QMainWindow):
         panel = QtWidgets.QWidget()
         box = QtWidgets.QVBoxLayout(panel)
         box.addWidget(QtWidgets.QLabel('Metric distributions'))
-        self.hist_fig = Figure(figsize=(4, 6))
+        self.hist_fig = Figure(figsize=(4, 5.4))
         self.hist_canvas = FigureCanvasQTAgg(self.hist_fig)
         self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
         self._draw_histograms()
