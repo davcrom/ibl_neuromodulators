@@ -2358,21 +2358,25 @@ class PhotometrySessionGroup:
                 f"Ambiguous LMM formula name {name!r}: in sets {sets}")
         return matches[0][1]
 
-    def response_lmm_fit(self, names, group_by, response_col='response',
+    def response_lmm_fit(self, formulas, group_by, response_col='response',
                          reml=True, re_formula='1', min_subjects=2):
-        """Fit named LMMs per ``group_by`` group and cache each fit.
+        """Fit caller-supplied LMMs per ``group_by`` group and cache each fit.
 
         For every group with at least ``min_subjects`` subjects, codes the
-        trials (:meth:`_code_lmm_predictors`) and fits each model in ``names``
-        via :func:`iblnm.analysis.fit_lmm`. Each fitted ``LMMResult`` is cached
-        in ``self.lmm_fits`` under ``(response_col, name, *group_values)`` for
-        later effect extraction. Scoring is intrinsic: the returned frame
-        carries each fit's in-sample R².
+        trials (:meth:`_code_lmm_predictors`) and fits each model in
+        ``formulas`` via :func:`iblnm.analysis.fit_lmm`. Each fitted
+        ``LMMResult`` is cached in ``self.lmm_fits`` under
+        ``(response_col, name, *group_values)`` for later effect extraction.
+        Scoring is intrinsic: the returned frame carries each fit's in-sample
+        R². The method does no ``config.LMM_FORMULAS`` lookup — names are
+        whatever the caller keyed the dict by, so formulas from different
+        config sets passed under distinct names never collide.
 
         Parameters
         ----------
-        names : list[str]
-            Model names resolved against ``config.LMM_FORMULAS``.
+        formulas : dict[str, str]
+            Flat ``{name: formula_template}`` mapping; each template may
+            contain ``{response}``, filled with ``response_col``.
         group_by : list[str]
             Columns whose unique combinations each get individual fits; their
             values tag the registry keys and the returned rows.
@@ -2401,9 +2405,8 @@ class PhotometrySessionGroup:
                 continue
             group_values = keys if isinstance(keys, tuple) else (keys,)
             df_coded = self._code_lmm_predictors(df_group)
-            for name in names:
-                formula = self._resolve_lmm_formula(name).format(
-                    response=response_col)
+            for name, template in formulas.items():
+                formula = template.format(response=response_col)
                 rf = re_formula[name] if isinstance(re_formula, dict) \
                     else re_formula
                 fit = analysis.fit_lmm(formula, df_coded,

@@ -4157,8 +4157,9 @@ class TestResponseLMMFit:
     def test_caches_fit_and_returns_matching_r2(self):
         from iblnm.analysis import LMMResult
         group = _make_group_for_response_lmm()
-        r2 = group.response_lmm_fit(['ceiling'],
-                                    group_by=['target_NM', 'event'])
+        r2 = group.response_lmm_fit(
+            {'ceiling': '{response} ~ C(contrast) * side * reward'},
+            group_by=['target_NM', 'event'])
         # One registry entry and one R² row per (target_NM, event) group.
         assert not r2.empty
         for _, row in r2.iterrows():
@@ -4169,25 +4170,34 @@ class TestResponseLMMFit:
 
     def test_multiple_names_one_entry_and_row_each(self):
         group = _make_group_for_response_lmm()
-        names = ['ceiling', 'interactions']
-        r2 = group.response_lmm_fit(names, group_by=['target_NM', 'event'])
+        formulas = {'ceiling': '{response} ~ C(contrast) * side * reward',
+                    'interactions': '{response} ~ contrast + side + reward'}
+        r2 = group.response_lmm_fit(formulas, group_by=['target_NM', 'event'])
         groups = r2[['target_NM', 'event']].drop_duplicates()
         # One row per (group, name); one registry entry per (group, name).
-        assert len(r2) == len(groups) * len(names)
+        assert len(r2) == len(groups) * len(formulas)
         for _, g in groups.iterrows():
-            for name in names:
+            for name in formulas:
                 key = ('response', name, g['target_NM'], g['event'])
                 assert key in group.lmm_fits
 
-    def test_ambiguous_name_raises(self):
+    def test_distinct_caller_names_no_collision(self):
         group = _make_group_for_response_lmm()
-        with pytest.raises(ValueError, match='Ambiguous'):
-            group.response_lmm_fit(['full'],
-                                   group_by=['target_NM', 'event'])
+        # Two formulas the caller passes under distinct names: each caches
+        # under its own registry key, with no config.LMM_FORMULAS lookup.
+        formulas = {'task_full': '{response} ~ contrast * side * reward',
+                    'me_full': '{response} ~ contrast + side + reward'}
+        r2 = group.response_lmm_fit(formulas, group_by=['target_NM', 'event'])
+        groups = r2[['target_NM', 'event']].drop_duplicates()
+        for _, g in groups.iterrows():
+            for name in formulas:
+                key = ('response', name, g['target_NM'], g['event'])
+                assert key in group.lmm_fits
 
     def test_per_name_re_formula_adds_random_slope(self):
         group = _make_group_for_response_lmm()
-        group.response_lmm_fit(['interactions'],
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
                                group_by=['target_NM', 'event'],
                                re_formula={'interactions': '1 + side'})
         fit = next(iter(group.lmm_fits.values()))
@@ -4199,7 +4209,8 @@ class TestResponseLMMEffects:
 
     def test_coefficients_carry_terms_and_ci(self):
         group = _make_group_for_response_lmm()
-        group.response_lmm_fit(['interactions'],
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
                                group_by=['target_NM', 'event'])
         effects = group.response_lmm_effects('interactions', 'coefficients')
         # One identity-tagged row per fixed-effects term, with CI columns.
@@ -4221,7 +4232,8 @@ class TestResponseLMMEffects:
     def test_emm_matches_direct_call(self):
         from iblnm.analysis import compute_predictions, compute_marginal_means
         group = _make_group_for_response_lmm()
-        group.response_lmm_fit(['interactions'],
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
                                group_by=['target_NM', 'event'])
         effects = group.response_lmm_effects('interactions', 'emm')
         assert 'factor' in effects.columns
@@ -4245,7 +4257,8 @@ class TestResponseLMMEffects:
     def test_predictions_match_direct_call(self):
         from iblnm.analysis import compute_predictions
         group = _make_group_for_response_lmm()
-        group.response_lmm_fit(['interactions'],
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
                                group_by=['target_NM', 'event'])
         effects = group.response_lmm_effects('interactions', 'predictions')
 
@@ -4262,7 +4275,8 @@ class TestResponseLMMEffects:
 
     def test_interactions_tagged_with_factor_pair(self):
         group = _make_group_for_response_lmm()
-        group.response_lmm_fit(['interactions'],
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
                                group_by=['target_NM', 'event'])
         effects = group.response_lmm_effects('interactions', 'interactions')
         pairs = set(zip(effects['y_factor'], effects['x_factor']))
@@ -4271,7 +4285,8 @@ class TestResponseLMMEffects:
 
     def test_unknown_kind_raises(self):
         group = _make_group_for_response_lmm()
-        group.response_lmm_fit(['interactions'],
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
                                group_by=['target_NM', 'event'])
         with pytest.raises(ValueError, match='kind must be'):
             group.response_lmm_effects('interactions', 'bogus')
