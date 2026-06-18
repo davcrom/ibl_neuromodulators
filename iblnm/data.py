@@ -34,6 +34,7 @@ from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.validation import (
     MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
+    MissingMotionEnergy,
     InsufficientTrials, BlockStructureBug, MissingBlockInfo,
     IncompleteEventTimes, TrialsNotInPhotometryTime, FewUniqueSamples,
     QCValidationError, AmbiguousRegionMapping,
@@ -563,6 +564,7 @@ class PhotometrySession(PhotometrySessionLoader):
         self.qc = pd.DataFrame()
         self.pose = None
         self.pose_times = None
+        self.motion_energy = None
         self.length_discrepancy = np.nan
         self.framerate_from_tpts = np.nan
         self.pose_traces = None
@@ -1447,6 +1449,21 @@ class PhotometrySession(PhotometrySessionLoader):
                 self.eid, '_ibl_leftCamera.lightningPose.pqt', collection='alf')
         except ALFObjectNotFound:
             raise MissingLP("leftCamera.lightningPose")
+
+    def load_motion_energy(self):
+        """Load per-frame left-camera ROI motion energy, independently of LP.
+
+        Stores the per-frame motion-energy scalar (on the ``leftCamera.times``
+        base) in ``self.motion_energy``. Raises ``MissingMotionEnergy`` when the
+        dataset is absent, logged non-fatally by the pipeline. Unlike
+        ``lightningPose`` and ``times``, the ROIMotionEnergy dataset carries no
+        ``_ibl_`` prefix, so its ``load_dataset`` object string differs.
+        """
+        try:
+            self.motion_energy = np.asarray(self.one.load_dataset(
+                self.eid, 'leftCamera.ROIMotionEnergy.npy', collection='alf'))
+        except ALFObjectNotFound:
+            raise MissingMotionEnergy("leftCamera.ROIMotionEnergy")
 
     def compute_video_measures(self):
         """Compute basic-video scalars from the loaded camera timestamps.

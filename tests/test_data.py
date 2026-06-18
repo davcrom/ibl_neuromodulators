@@ -1641,6 +1641,33 @@ class TestPoseMethods:
         with pytest.raises(MissingVideoTimestamps):
             ps.load_camera_times()
 
+    def test_load_motion_energy_sets_array(self, mock_session_series):
+        """load_motion_energy loads ROIMotionEnergy (no _ibl_ prefix) into
+        self.motion_energy."""
+        from iblnm.data import PhotometrySession
+        me = np.array([0.0, 1.0, 2.0, 3.0])
+
+        one = MagicMock()
+        one.load_dataset.return_value = me
+        ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        ps.load_motion_energy()
+        np.testing.assert_array_equal(ps.motion_energy, me)
+        loaded_names = [call.args[1] for call in one.load_dataset.call_args_list]
+        assert all('ROIMotionEnergy' in name and '_ibl_' not in name
+                   for name in loaded_names)
+
+    def test_load_motion_energy_missing_raises(self, mock_session_series):
+        """load_motion_energy raises MissingMotionEnergy when the dataset is absent."""
+        from one.alf.exceptions import ALFObjectNotFound
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import MissingMotionEnergy
+
+        one = MagicMock()
+        one.load_dataset.side_effect = ALFObjectNotFound('leftCamera.ROIMotionEnergy')
+        ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        with pytest.raises(MissingMotionEnergy):
+            ps.load_motion_energy()
+
     def test_compute_video_measures(self, mock_session_series):
         """compute_video_measures yields hand-computed discrepancy and framerate."""
         from iblnm.data import PhotometrySession
