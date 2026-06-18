@@ -2799,14 +2799,14 @@ def loso_cv_main_effects_lmm(df, response_col, contrast_coding='log2',
     return pd.concat([fold_rows, aggregate], ignore_index=True)
 
 
-def crossval_lmm(df, formulas, response_col, fold_col='subject',
-                 min_subjects=3, min_test=5):
+def crossval_lmm(df, formulas, response_col, reference='full',
+                 fold_col='subject', min_subjects=3, min_test=5):
     """Out-of-sample ΔR² by leave-one-fold-out cross-validation.
 
     Formula-agnostic resampling: leave out one ``fold_col`` value at a time, fit
     each model in ``formulas`` on the N−1 training folds, and score the held-out
     fold out of sample with ``_centered_r2`` (which removes the held-out fold's
-    own random intercept). The ``'full'`` key names the reference model; every
+    own random intercept). The ``reference`` key names the baseline model; every
     other key's ΔR² is the held-out R² the reference gains over that reduced
     model. Subsumes the bespoke ``loso_cv_*`` routines; the caller codes ``df``.
 
@@ -2815,9 +2815,12 @@ def crossval_lmm(df, formulas, response_col, fold_col='subject',
     df : pd.DataFrame
         Trial-level data, already coded, with ``response_col`` and ``fold_col``.
     formulas : dict[str, str]
-        Name → Wilkinson formula. Must contain a ``'full'`` reference key.
+        Name → Wilkinson formula. Must contain the ``reference`` key.
     response_col : str
         Column name for the response magnitude.
+    reference : str
+        Key in ``formulas`` naming the baseline model each other model's ΔR² is
+        measured against.
     fold_col : str
         Column whose unique values define the leave-one-out folds.
     min_subjects : int
@@ -2828,10 +2831,10 @@ def crossval_lmm(df, formulas, response_col, fold_col='subject',
     Returns
     -------
     pd.DataFrame
-        One row per (``fold``, ``predictor``) for each non-``'full'`` formula,
+        One row per (``fold``, ``predictor``) for each non-``reference`` formula,
         with columns ``fold, predictor, n_trials, r2, delta_r2``. ``r2`` is the
-        held-out reference R²; ``delta_r2`` is ``r2_full − r2_<predictor>``. A
-        ``fold == 'aggregate'`` row per predictor holds the across-fold mean
+        held-out reference R²; ``delta_r2`` is ``r2_<reference> − r2_<predictor>``.
+        A ``fold == 'aggregate'`` row per predictor holds the across-fold mean
         ``r2``/``delta_r2`` and summed ``n_trials``. Empty frame with those
         columns if fewer than ``min_subjects`` folds or no fold is scorable.
     """
@@ -2862,8 +2865,8 @@ def crossval_lmm(df, formulas, response_col, fold_col='subject',
               for name, fit in fits.items()}
         rows.extend(
             {'fold': fold, 'predictor': name, 'n_trials': len(df_test),
-             'r2': r2['full'], 'delta_r2': r2['full'] - r2[name]}
-            for name in formulas if name != 'full'
+             'r2': r2[reference], 'delta_r2': r2[reference] - r2[name]}
+            for name in formulas if name != reference
         )
 
     return _aggregate_fold_rows(rows, cols)

@@ -3038,6 +3038,32 @@ class TestCrossvalLmm:
         assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
                                          'delta_r2']
 
+    def test_non_default_reference_no_full_key(self):
+        """With reference='additive' and no 'full' key, ΔR² is measured against
+        the named additive baseline. The 'contrast' drop reproduces the legacy
+        loso_cv_main_effects_lmm contrast rows on the same coded df."""
+        from iblnm.analysis import (crossval_lmm, loso_cv_main_effects_lmm,
+                                     _code_task_predictors)
+        formulas = {
+            'additive': 'response ~ contrast + side + reward',
+            'contrast': 'response ~ side + reward',
+        }
+        df = _make_task_lmm_df()
+        legacy = loso_cv_main_effects_lmm(df, 'response', contrast_coding='log2')
+        coded = _code_task_predictors(df, 'response', 'log2')
+        new = crossval_lmm(coded, formulas, 'response', reference='additive')
+
+        assert set(new['predictor']) == {'contrast'}
+        legacy_c = legacy[(legacy['subject'] != 'aggregate') &
+                          (legacy['predictor'] == 'contrast')]
+        new_fold = new[new['fold'] != 'aggregate']
+        merged = legacy_c.merge(new_fold, left_on='subject', right_on='fold')
+        assert len(merged) == len(legacy_c)
+        assert merged['delta_r2_x'].values == pytest.approx(
+            merged['delta_r2_y'].values)
+        assert merged['r2_additive'].values == pytest.approx(
+            merged['r2'].values)
+
 
 class TestJackknifeLmm:
     FORMULAS = {
