@@ -2872,8 +2872,8 @@ def crossval_lmm(df, formulas, response_col, reference='full',
     return _aggregate_fold_rows(rows, cols)
 
 
-def jackknife_lmm(df, formulas, response_col, fold_col='subject',
-                  min_subjects=3):
+def jackknife_lmm(df, formulas, response_col, reference='full',
+                  fold_col='subject', min_subjects=3):
     """In-sample-influence ΔR² by leave-one-fold-out jackknife.
 
     Same fold loop as ``crossval_lmm``, but each fold scores the *training* set
@@ -2881,17 +2881,20 @@ def jackknife_lmm(df, formulas, response_col, fold_col='subject',
     each model in ``formulas`` on the N−1 training folds, and read each fit's
     in-sample marginal R² (``variance_explained['marginal']``). The spread of
     the per-fold ΔR² shows whether any single fold drives the reference model's
-    advantage. The ``'full'`` key names the reference model; every other key's
-    ΔR² is the marginal R² the reference gains over that reduced model.
+    advantage. The ``reference`` key names the reference model; every other
+    key's ΔR² is the marginal R² the reference gains over that reduced model.
 
     Parameters
     ----------
     df : pd.DataFrame
         Trial-level data, already coded, with ``response_col`` and ``fold_col``.
     formulas : dict[str, str]
-        Name → Wilkinson formula. Must contain a ``'full'`` reference key.
+        Name → Wilkinson formula. Must contain the ``reference`` key.
     response_col : str
         Column name for the response magnitude.
+    reference : str
+        Key in ``formulas`` naming the model each other model's ΔR² is measured
+        against.
     fold_col : str
         Column whose unique values define the leave-one-out folds.
     min_subjects : int
@@ -2900,12 +2903,12 @@ def jackknife_lmm(df, formulas, response_col, fold_col='subject',
     Returns
     -------
     pd.DataFrame
-        One row per (``fold``, ``predictor``) for each non-``'full'`` formula,
-        with columns ``fold, predictor, n_trials, r2, delta_r2``. ``r2`` is the
-        training-set reference marginal R²; ``delta_r2`` is
-        ``r2_full − r2_<predictor>``; ``n_trials`` is the training-set size. A
-        ``fold == 'aggregate'`` row per predictor holds the across-fold mean
-        ``r2``/``delta_r2`` and summed ``n_trials``. Empty frame with those
+        One row per (``fold``, ``predictor``) for each non-``reference``
+        formula, with columns ``fold, predictor, n_trials, r2, delta_r2``.
+        ``r2`` is the training-set reference marginal R²; ``delta_r2`` is
+        ``r2_<reference> − r2_<predictor>``; ``n_trials`` is the training-set
+        size. A ``fold == 'aggregate'`` row per predictor holds the across-fold
+        mean ``r2``/``delta_r2`` and summed ``n_trials``. Empty frame with those
         columns if fewer than ``min_subjects`` folds or no fold is scorable.
     """
     cols = ['fold', 'predictor', 'n_trials', 'r2', 'delta_r2']
@@ -2929,8 +2932,8 @@ def jackknife_lmm(df, formulas, response_col, fold_col='subject',
               for name, fit in fits.items()}
         rows.extend(
             {'fold': fold, 'predictor': name, 'n_trials': len(df_train),
-             'r2': r2['full'], 'delta_r2': r2['full'] - r2[name]}
-            for name in formulas if name != 'full'
+             'r2': r2[reference], 'delta_r2': r2[reference] - r2[name]}
+            for name in formulas if name != reference
         )
 
     return _aggregate_fold_rows(rows, cols)

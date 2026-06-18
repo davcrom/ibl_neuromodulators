@@ -3119,6 +3119,30 @@ class TestJackknifeLmm:
         assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
                                          'delta_r2']
 
+    def test_non_default_reference_no_full_key(self):
+        """With reference='additive' and no 'full' key, ΔR² is measured against
+        the named additive baseline, recomputed in sample on each training set."""
+        from iblnm.analysis import (jackknife_lmm, fit_lmm,
+                                     _code_task_predictors)
+        formulas = {
+            'additive': 'response ~ contrast + side + reward',
+            'contrast': 'response ~ side + reward',
+        }
+        coded = _code_task_predictors(_make_task_lmm_df(), 'response', 'log2')
+        result = jackknife_lmm(coded, formulas, 'response', reference='additive')
+
+        assert set(result['predictor']) == {'contrast'}
+        fold = result[result['fold'] != 'aggregate']['fold'].iloc[0]
+        train = coded[coded['subject'] != fold]
+        r2 = {name: fit_lmm(f, train, groups=train['subject'],
+                            re_formula='1', reml=False
+                            ).variance_explained['marginal']
+              for name, f in formulas.items()}
+        row = result[(result['fold'] == fold)
+                     & (result['predictor'] == 'contrast')].iloc[0]
+        assert row['r2'] == pytest.approx(r2['additive'])
+        assert row['delta_r2'] == pytest.approx(r2['additive'] - r2['contrast'])
+
 
 class TestJackknifeMovementLMM:
     def test_one_row_per_subject(self):
