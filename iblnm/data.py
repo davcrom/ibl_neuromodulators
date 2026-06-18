@@ -24,7 +24,7 @@ from iblnm.config import (
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
     RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
-    TARGET_FS, TRIAL_COLUMNS, WHEEL_FS, POSE_FS,
+    TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
 )
 from iblnm.analysis import (
     get_responses, compute_response_magnitude, movement_trace,
@@ -458,6 +458,8 @@ def _save_video(session, h5_file, band):
         if value in (None, LP_QC_NOT_SET):
             value = preserved_qc.get(label, LP_QC_NOT_SET)
         grp.attrs[label] = value
+    for col in VIDEO_QC_COLS:
+        grp.attrs[col] = session.video_qc.get(col, LP_QC_NOT_SET)
 
 
 def _load_video(session, h5_file, band):
@@ -476,6 +478,12 @@ def _load_video(session, h5_file, band):
             value = grp.attrs[label]
             setattr(session, label,
                     value.decode() if isinstance(value, bytes) else value)
+    session.video_qc = {}
+    for col in VIDEO_QC_COLS:
+        if col in grp.attrs:
+            value = grp.attrs[col]
+            session.video_qc[col] = (
+                value.decode() if isinstance(value, bytes) else value)
 
 
 _SAVE_HANDLERS = {
@@ -560,6 +568,7 @@ class PhotometrySession(PhotometrySessionLoader):
         self.pose_traces = None
         self.pose_baseline_traces = None
         self.pose_xcorr = None
+        self.video_qc = {}
         self.qc_lp = LP_QC_NOT_SET
         self.qc_movement = LP_QC_NOT_SET
         self.qc_timing = LP_QC_NOT_SET
@@ -1450,6 +1459,20 @@ class PhotometrySession(PhotometrySessionLoader):
         self.length_discrepancy = (
             (self.pose_times[-1] - self.pose_times[0]) - self.session_length)
         self.framerate_from_tpts = np.median(np.diff(self.pose_times))
+
+    def fetch_video_qc(self):
+        """Live-fetch leftCamera extended QC and store the 8 ``VIDEO_QC_COLS``.
+
+        Queries Alyx via ``io.get_extended_qc`` and retains the eight
+        ``config.VIDEO_QC_COLS`` outcome labels in ``self.video_qc`` (a dict
+        keyed by column name). Columns absent from the source default to
+        ``LP_QC_NOT_SET``. The Alyx call is the only network access in this
+        method, keeping the downstream validation/storage logic testable with
+        an injected ``video_qc`` dict.
+        """
+        from iblnm.io import get_extended_qc
+        qc = get_extended_qc(self.to_series(), one=self.one)
+        self.video_qc = {col: qc.get(col, LP_QC_NOT_SET) for col in VIDEO_QC_COLS}
 
     def extract_movement_traces(self):
         """Extract per-trial peri-event movement traces for each bodypart.

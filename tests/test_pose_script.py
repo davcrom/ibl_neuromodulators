@@ -105,9 +105,16 @@ def empty_qc_perf(tmp_path):
 
 @pytest.fixture
 def fake_ps():
-    """A PhotometrySession mock whose extract methods are tracked."""
+    """A PhotometrySession mock whose extract methods are tracked.
+
+    ``video_qc`` defaults to all-PASS and ``length_discrepancy`` to 0 so the
+    leftCamera QC validations in ``process_pose`` log nothing unless a test
+    overrides them.
+    """
     ps = MagicMock()
     ps.eid = 'test-eid'
+    ps.video_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
+    ps.length_discrepancy = 0.0
     return ps
 
 
@@ -150,6 +157,34 @@ class TestProcessPoseSkip:
         fake_ps.log_error.assert_called_once()
         fake_ps.extract_movement_traces.assert_not_called()
         fake_ps.save_h5.assert_not_called()
+
+    def test_failing_video_qc_logs_and_proceeds(self, fake_ps, tmp_path,
+                                                monkeypatch):
+        monkeypatch.setattr(pose, 'SESSIONS_H5_DIR', tmp_path)
+        fake_ps.length_discrepancy = 200.0  # >= LENGTH_MISMATCH_THRESHOLD
+        fake_ps.video_qc.update({
+            'qc_videoLeft_timestamps': 'FAIL',
+            'qc_videoLeft_dropped_frames': 'WARNING',
+            'qc_videoLeft_pin_state': 'CRITICAL',
+        })
+
+        result = pose.process_pose(fake_ps)
+
+        assert result == 'processed'
+        logged = {type(call.args[0]).__name__
+                  for call in fake_ps.log_error.call_args_list}
+        assert logged == {'VideoLengthError', 'VideoTimestampsQCError',
+                          'VideoDroppedFramesQCError', 'VideoPinStateQCError'}
+        fake_ps.extract_movement_traces.assert_called_once()
+        fake_ps.save_h5.assert_called_once_with(groups=['video'])
+
+    def test_clean_video_qc_logs_nothing(self, fake_ps, tmp_path, monkeypatch):
+        monkeypatch.setattr(pose, 'SESSIONS_H5_DIR', tmp_path)
+
+        result = pose.process_pose(fake_ps)
+
+        assert result == 'processed'
+        fake_ps.log_error.assert_not_called()
 
 
 class TestReadEids:

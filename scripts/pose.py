@@ -43,7 +43,42 @@ from iblnm.data import (
 )
 from iblnm.io import _get_default_connection
 from iblnm.util import collect_errors
-from iblnm.validation import MissingLP, MissingVideoTimestamps
+from iblnm.validation import (
+    MissingLP, MissingVideoTimestamps,
+    VideoLengthError, VideoTimestampsQCError,
+    VideoDroppedFramesQCError, VideoPinStateQCError,
+    validate_video_length, validate_video_timestamps_qc,
+    validate_video_dropped_frames_qc, validate_video_pin_state_qc,
+)
+
+# leftCamera QC validations run in process_pose; failures are logged
+# non-blocking so extraction always proceeds regardless of the verdict.
+VIDEO_QC_VALIDATORS = (
+    validate_video_length,
+    validate_video_timestamps_qc,
+    validate_video_dropped_frames_qc,
+    validate_video_pin_state_qc,
+)
+VIDEO_QC_ERRORS = (
+    VideoLengthError, VideoTimestampsQCError,
+    VideoDroppedFramesQCError, VideoPinStateQCError,
+)
+
+
+def run_video_validations(ps):
+    """Run the four leftCamera QC checks, logging any failure non-blocking.
+
+    Builds a row-like dict from ``ps.length_discrepancy`` and the eight
+    ``ps.video_qc`` labels and runs each ``validate_video_*`` check. Any raised
+    QC error is routed to ``ps.log_error`` so extraction continues regardless
+    of the verdict.
+    """
+    qc_row = {'length_discrepancy': ps.length_discrepancy, **ps.video_qc}
+    for validate in VIDEO_QC_VALIDATORS:
+        try:
+            validate(qc_row)
+        except VIDEO_QC_ERRORS as e:
+            ps.log_error(e)
 
 
 def process_pose(ps, reprocess=False):
@@ -69,6 +104,8 @@ def process_pose(ps, reprocess=False):
         ps.log_error(e)
         return 'skipped'
     ps.compute_video_measures()
+    ps.fetch_video_qc()
+    run_video_validations(ps)
     ps.load_trials()
     ps.load_wheel()
     try:

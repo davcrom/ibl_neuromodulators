@@ -1536,6 +1536,49 @@ class TestSaveLoadH5:
         assert ps2.qc_lp == 'FAIL'
         assert ps2.qc_movement == 'CRITICAL'
 
+    def test_save_load_video_qc_roundtrip(self, mock_session_series, tmp_path):
+        """The 8 live-fetched VIDEO_QC_COLS round-trip via the video group."""
+        from iblnm.config import VIDEO_QC_COLS
+        from iblnm.data import PhotometrySession
+        ps = self._make_video_session(mock_session_series)
+        ps.video_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
+        ps.video_qc['qc_videoLeft_pin_state'] = 'FAIL'
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['video'])
+
+        ps2 = PhotometrySession(mock_session_series, one=MagicMock(),
+                                load_data=False)
+        ps2.load_h5(fpath, groups=['video'])
+        assert ps2.video_qc == ps.video_qc
+
+
+class TestFetchVideoQC:
+    """PhotometrySession.fetch_video_qc selects and stores the 8 VIDEO_QC_COLS."""
+
+    def test_stores_eight_qc_cols(self, mock_session_series):
+        from iblnm.config import VIDEO_QC_COLS
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        fetched = pd.Series({col: 'PASS' for col in VIDEO_QC_COLS})
+        fetched['qc_videoLeft_timestamps'] = 'FAIL'
+        with patch('iblnm.io.get_extended_qc', return_value=fetched):
+            ps.fetch_video_qc()
+        assert set(ps.video_qc) == set(VIDEO_QC_COLS)
+        assert ps.video_qc['qc_videoLeft_timestamps'] == 'FAIL'
+        assert ps.video_qc['qc_videoLeft_focus'] == 'PASS'
+
+    def test_missing_cols_default_not_set(self, mock_session_series):
+        from iblnm.config import VIDEO_QC_COLS
+        from iblnm.data import LP_QC_NOT_SET, PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        with patch('iblnm.io.get_extended_qc',
+                   return_value=pd.Series({'eid': ps.eid})):
+            ps.fetch_video_qc()
+        assert set(ps.video_qc) == set(VIDEO_QC_COLS)
+        assert all(v == LP_QC_NOT_SET for v in ps.video_qc.values())
+
 
 # =============================================================================
 # Pose (LightningPose) Method Tests
