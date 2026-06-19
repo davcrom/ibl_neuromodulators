@@ -6,7 +6,7 @@ Executes each stage in order:
 2. photometry      — QC + preprocess + responses → HDF5 files + qc_photometry.pqt
 3. task            — compute task performance → performance.pqt
 4. wheel           — extract per-trial wheel velocity → HDF5 files
-5. video           — download camera timestamps + validate video QC → video.pqt
+5. pose            — pose + video QC + motion energy → pose.pqt
 6. dataset_overview — aggregate errors + generate figures → errors.pqt
 
 Each stage is run as a subprocess so that argparse, top-level code, and
@@ -30,7 +30,7 @@ STAGES = [
     'photometry',
     'task',
     'wheel',
-    'video',
+    'pose',
     'dataset_overview',
 ]
 
