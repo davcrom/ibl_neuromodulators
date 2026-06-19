@@ -14,17 +14,22 @@ import cv2
 import h5py
 import numpy as np
 import pandas as pd
+import matplotlib
 from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
+from matplotlib.patches import Circle, Rectangle
+from matplotlib.ticker import FuncFormatter
 from matplotlib.widgets import SpanSelector
 
 from iblnm.config import (
     DATASET_CATEGORIES,
     LP_QC_LABELS,
     POSE_MEASURES,
+    QC_VALUE_ORDER,
     SESSIONTYPE2COLOR,
+    VIDEO_QC_COLS,
 )
 from iblnm.data import (
     LP_QC_NOT_SET,
@@ -36,28 +41,81 @@ from iblnm.data import (
 # Settable IBL QC verdicts (the default 'NOT_SET' is not a manual choice).
 IBL_QC_VALUES = ('CRITICAL', 'FAIL', 'WARNING', 'PASS')
 
+# One font size for every axis title, label, tick, and legend across all of the
+# viewer's matplotlib panels, applied globally so no panel can drift out of step.
+FONTSIZE = 7
+matplotlib.rcParams.update({
+    'axes.titlesize': FONTSIZE,
+    'axes.labelsize': FONTSIZE,
+    'xtick.labelsize': FONTSIZE,
+    'ytick.labelsize': FONTSIZE,
+    'legend.fontsize': FONTSIZE,
+})
 
-def filter_sessions_table(
-    df_pose: pd.DataFrame,
-    ranges: dict[str, tuple[float, float]],
-    session_types: tuple[str, ...],
-) -> list[str]:
-    """Return eids that fall within every brushed range and whose
-    `session_type` is in `session_types`.
 
-    Drives the histogram-brush → session-dropdown coupling. `ranges` maps each
-    brushed measure to an inclusive `(low, high)` interval; an eid must satisfy
-    all of them (intersection). An empty `ranges` means no histogram is brushed
-    yet and yields no sessions.
+def start_time_to_numeric(values) -> np.ndarray:
+    """Convert ISO-8601 `start_time` strings to float nanoseconds since epoch.
+
+    Returns a float array (so `NaT`/missing entries become `NaN`, which integer
+    epoch encodings cannot represent) suitable for binning and brushing on a
+    numeric datetime axis. `values` is any array-like of ISO-8601 strings.
     """
-    if not ranges:
-        return []
-    in_range = np.logical_and.reduce([
-        df_pose[measure].between(low, high)
-        for measure, (low, high) in ranges.items()
-    ])
-    in_types = df_pose['session_type'].isin(session_types)
-    return df_pose.loc[in_range & in_types, 'eid'].tolist()
+    times = pd.DatetimeIndex(pd.to_datetime(values, format='ISO8601'))
+    numeric = times.asi8.astype(float)
+    numeric[times.isna()] = np.nan
+    return numeric
+
+
+def select_population(
+    df: pd.DataFrame,
+    session_types: tuple[str, ...],
+    qc_selections: dict[str, set[str]],
+    fc_range: tuple[float, float] | None,
+    start_time_range: tuple[float, float] | None,
+) -> np.ndarray:
+    """Boolean mask over `df` for the population-filter conjunction.
+
+    Combines (AND) every active constraint: `session_type` membership in
+    `session_types`; for each `qc_selections` field with a non-empty verdict set,
+    `df[field]` membership in that set (so verdicts within a field are OR, fields
+    across are AND); `fraction_correct` in `fc_range` (inclusive) when given; and
+    the numeric `start_time` (see `start_time_to_numeric`) in `start_time_range`
+    (inclusive) when given. A field mapped to an empty set, or a `None` range, is
+    dropped from the conjunction. With no active constraints the mask is all-True.
+    """
+    constraints = [df['session_type'].isin(session_types).to_numpy()]
+    constraints += [
+        df[field].isin(verdicts).to_numpy()
+        for field, verdicts in qc_selections.items() if verdicts
+    ]
+    if fc_range is not None:
+        constraints.append(df['fraction_correct'].between(*fc_range).to_numpy())
+    if start_time_range is not None:
+        numeric = start_time_to_numeric(df['start_time'])
+        low, high = start_time_range
+        constraints.append((numeric >= low) & (numeric <= high))
+    return np.logical_and.reduce(constraints)
+
+
+def filter_dropdown(
+    df: pd.DataFrame,
+    population_mask: np.ndarray,
+    metric_ranges: dict[str, tuple[float, float]],
+) -> list[str]:
+    """Eids in the population that also fall within every metric brush range.
+
+    `population_mask` is the boolean mask from `select_population`. Each entry of
+    `metric_ranges` adds an inclusive `between` constraint on that measure (the
+    selection-only movement brushes). An empty `metric_ranges` yields the whole
+    population, not an empty set.
+    """
+    mask = population_mask
+    if metric_ranges:
+        mask = mask & np.logical_and.reduce([
+            df[measure].between(low, high).to_numpy()
+            for measure, (low, high) in metric_ranges.items()
+        ])
+    return df.loc[mask, 'eid'].tolist()
 
 
 def likelihood_to_alpha(
@@ -124,27 +182,95 @@ def format_event_timings(
     ]
 
 
+def trial_schematic_values(trial: pd.Series) -> dict:
+    """Derive the trial-schematic inputs from a trial row.
+
+    Returns `side` (`'left'` when `contrastLeft` is non-NaN else `'right'`),
+    `contrast` (the non-NaN of `contrastLeft`/`contrastRight`, in [0, 1]),
+    `correct` (`feedbackType == 1`), and `prob_left` (`probabilityLeft`). One
+    of `contrastLeft`/`contrastRight` is NaN on every trial.
+    """
+    left = np.isnan(trial['contrastLeft'])
+    return {
+        'side': 'right' if left else 'left',
+        'contrast': trial['contrastRight'] if left else trial['contrastLeft'],
+        'correct': trial['feedbackType'] == 1,
+        'prob_left': trial['probabilityLeft'],
+    }
+
+
+def draw_trial_schematic(
+    ax,
+    side: str,
+    contrast: float,
+    correct: bool,
+    prob_left: float,
+) -> None:
+    """Render a schematic of the current trial onto `ax`.
+
+    Draws a horizontal "screen" strip with a center tick, a filled stimulus
+    disc placed left or right of center per `side`, and a two-segment bias bar
+    above the strip. The disc grayscale darkens and its radius grows with
+    `contrast` (in [0, 1]), with the contrast percentage printed inside it; the
+    disc's ring is green when `correct` else red. The bias bar's left-segment
+    width is proportional to `prob_left`. Clears `ax` first; Qt-free so it
+    renders headless under the Agg backend.
+    """
+    ax.clear()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_axis_off()
+
+    strip_x, strip_w, strip_y = 0.1, 0.8, 0.4
+    center_x = strip_x + strip_w / 2
+    ax.add_patch(Rectangle((strip_x, strip_y - 0.03), strip_w, 0.06,
+                           facecolor='0.85', edgecolor='0.4', label='strip'))
+    ax.plot([center_x, center_x], [strip_y - 0.05, strip_y + 0.05],
+            color='0.4', lw=1)
+
+    disc_x = center_x + (0.18 if side == 'right' else -0.18)
+    radius = 0.05 + 0.10 * contrast
+    ax.add_patch(Circle((disc_x, strip_y), radius, facecolor=str(1 - contrast),
+                        edgecolor='green' if correct else 'red', lw=3,
+                        label='disc'))
+    ax.text(disc_x, strip_y, f'{contrast * 100:.3g}%', ha='center',
+            va='center', color='red' if contrast > 0.5 else 'black', fontsize=8)
+
+    bar_y, bar_h = strip_y + 0.2, 0.06
+    left_w = strip_w * prob_left
+    ax.add_patch(Rectangle((strip_x, bar_y), left_w, bar_h,
+                           facecolor='tab:blue', label='bias_left'))
+    ax.add_patch(Rectangle((strip_x + left_w, bar_y), strip_w - left_w, bar_h,
+                           facecolor='tab:orange', label='bias_right'))
+
+
 def histogram_by_type(
     df: pd.DataFrame,
     measure: str,
     session_types: tuple[str, ...],
     bins: int = 30,
+    edge_source: pd.DataFrame | None = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Split a cohort measure into per-session-type density histograms.
 
-    Bin edges are fixed to the full `df[measure]` range across all sessions, so
-    they don't shift as session types are toggled on and off. For each type in
-    `session_types`, returns its density-normalized counts over those shared
-    edges. NaN measure values are dropped. Returns `(bin_edges, {session_type:
-    density_counts})`.
+    Bin edges are fixed to the `edge_source[measure]` range (the full cohort)
+    while per-type density counts are taken from `df` (the population-filtered
+    subset), so the histograms reshape to the current population without the
+    bins shifting as it changes. When `edge_source is None`, edges come from
+    `df` itself — identical to taking counts and edges from one frame. For each
+    type in `session_types`, returns its density-normalized counts over the
+    shared edges; a type with no rows in `df` (e.g. filtered out of the
+    population) yields all-zero counts. NaN measure values are dropped. Returns
+    `(bin_edges, {session_type: density_counts})`.
     """
-    bin_edges = np.histogram_bin_edges(df[measure].dropna(), bins=bins)
-    per_type = {
-        session_type: np.histogram(
-            df.loc[df['session_type'] == session_type, measure].dropna(),
-            bins=bin_edges, density=True)[0]
-        for session_type in session_types
-    }
+    edge_frame = edge_source if edge_source is not None else df
+    bin_edges = np.histogram_bin_edges(edge_frame[measure].dropna(), bins=bins)
+    per_type = {}
+    for session_type in session_types:
+        values = df.loc[df['session_type'] == session_type, measure].dropna()
+        per_type[session_type] = (
+            np.histogram(values, bins=bin_edges, density=True)[0]
+            if len(values) else np.zeros(len(bin_edges) - 1))
     return bin_edges, per_type
 
 
@@ -256,8 +382,8 @@ class LPViewerModel:
     """Cohort + per-session data model behind the LPViewer, free of any Qt.
 
     Wraps the pose roll-up table (one row per session, scalar measures +
-    ``session_type``), the session H5 directory, and an optional performance
-    table. Drives the histogram-brush → dropdown filtering and assembles the
+    ``session_type`` + ``fraction_correct``) and the session H5 directory.
+    Drives the histogram-brush → dropdown filtering and assembles the
     trial-averaged panel data for a selected session.
     """
 
@@ -265,23 +391,39 @@ class LPViewerModel:
         self,
         df_cohort: pd.DataFrame,
         h5_dir: str | Path,
-        df_performance: pd.DataFrame | None = None,
         pose_path: str | Path | None = None,
     ):
         self.df_cohort = df_cohort
         self.h5_dir = Path(h5_dir)
-        self.df_performance = df_performance
         self.pose_path = pose_path
 
-    def filter(
+    def population_mask(
         self,
-        ranges: dict[str, tuple[float, float]],
         session_types: tuple[str, ...],
+        qc_selections: dict[str, set[str]],
+        fc_range: tuple[float, float] | None,
+        start_time_range: tuple[float, float] | None,
+    ) -> np.ndarray:
+        """Boolean mask over `df_cohort` for the population-filter selections
+        (session types, video-QC grid, `fraction_correct`, `start_time`)."""
+        return select_population(
+            self.df_cohort, session_types, qc_selections, fc_range,
+            start_time_range)
+
+    def dropdown_eids(
+        self,
+        metric_ranges: dict[str, tuple[float, float]],
+        session_types: tuple[str, ...],
+        qc_selections: dict[str, set[str]],
+        fc_range: tuple[float, float] | None,
+        start_time_range: tuple[float, float] | None,
     ) -> list[str]:
-        """Return eids that fall within every brushed range in `ranges` and
-        whose `session_type` is in `session_types` (the brushed-histogram →
-        dropdown coupling)."""
-        return filter_sessions_table(self.df_cohort, ranges, session_types)
+        """Session-dropdown eids: the population mask AND the movement-metric
+        brushes in `metric_ranges` (the population predicate refined by the
+        selection-only histogram brushes)."""
+        mask = self.population_mask(
+            session_types, qc_selections, fc_range, start_time_range)
+        return filter_dropdown(self.df_cohort, mask, metric_ranges)
 
     def session_panels(self, eid: str) -> SessionPanels:
         """Load the `video` H5 group for `eid` and assemble its panel data:
@@ -294,20 +436,15 @@ class LPViewerModel:
             str(bodypart): traces.sel(bodypart=bodypart).mean('trial').values
             for bodypart in traces.coords['bodypart'].values
         }
+        match = self.df_cohort.loc[
+            self.df_cohort['eid'] == eid, 'fraction_correct']
+        fraction_correct = match.item() if len(match) else None
         return SessionPanels(
             times=traces.coords['time'].values,
             traces=trial_means,
             xcorr=xcorr,
-            fraction_correct=self._fraction_correct(eid),
+            fraction_correct=None if pd.isna(fraction_correct) else fraction_correct,
         )
-
-    def _fraction_correct(self, eid: str) -> float | None:
-        """Look up `fraction_correct` for `eid` in the performance table."""
-        if self.df_performance is None:
-            return None
-        match = self.df_performance.loc[
-            self.df_performance['eid'] == eid, 'fraction_correct']
-        return match.item() if len(match) else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -386,6 +523,8 @@ class LPViewer(QtWidgets.QMainWindow):
         self.model = model
         self.one = one
         self.brush_ranges: dict[str, tuple[float, float]] = {}
+        self.fc_range: tuple[float, float] | None = None
+        self.start_time_range: tuple[float, float] | None = None
         self.frame_source: FrameSource | None = None
         self.trial_frames = np.array([], dtype=int)
         self.frame_pos = 0
@@ -402,27 +541,16 @@ class LPViewer(QtWidgets.QMainWindow):
     # -- construction ---------------------------------------------------------
 
     def _build_controls(self) -> QtWidgets.QWidget:
-        """Session-type multiselect, the four brushable histograms, the session
-        dropdown, the fraction-correct readout, and the two QC selectors."""
+        """Static population-filter panel above the reactive metric-distribution
+        panel, then the session dropdown and the two QC selectors."""
         panel = QtWidgets.QWidget()
         box = QtWidgets.QVBoxLayout(panel)
 
-        box.addWidget(QtWidgets.QLabel('Session types'))
-        type_row = QtWidgets.QHBoxLayout()
-        self.type_checks = []
-        for session_type in sorted(self.model.df_cohort['session_type'].dropna().unique()):
-            check = QtWidgets.QCheckBox(session_type)
-            check.setChecked(True)
-            check.stateChanged.connect(lambda _: self._on_types_changed())
-            self.type_checks.append(check)
-            type_row.addWidget(check)
-        box.addLayout(type_row)
-
-        self.hist_fig = Figure(figsize=(4, 6))
-        self.hist_canvas = FigureCanvasQTAgg(self.hist_fig)
-        self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
-        self._draw_histograms()
-        box.addWidget(self.hist_canvas)
+        # Stretch factors (not fixed figure heights) divide the column between
+        # the two stacked panels, so growing one shrinks the other predictably
+        # instead of one overflowing. The metric panel gets the larger share.
+        box.addWidget(self._build_population_panel(), stretch=2)
+        box.addWidget(self._build_metric_panel(), stretch=3)
 
         box.addWidget(QtWidgets.QLabel('Sessions in range'))
         self.session_combo = QtWidgets.QComboBox()
@@ -430,6 +558,10 @@ class LPViewer(QtWidgets.QMainWindow):
         # Up/Down (to change its item) before they reach keyPressEvent, which
         # is where Up/Down drive trial navigation. Mouse selection still works.
         self.session_combo.setFocusPolicy(QtCore.Qt.NoFocus)
+        # Force a bounded scrollable popup (combobox-popup: 0) so a long session
+        # list scrolls instead of clipping or spilling off-screen.
+        self.session_combo.setStyleSheet('QComboBox { combobox-popup: 0; }')
+        self.session_combo.setMaxVisibleItems(20)
         self.session_combo.currentTextChanged.connect(self._on_session_selected)
         box.addWidget(self.session_combo)
 
@@ -444,6 +576,119 @@ class LPViewer(QtWidgets.QMainWindow):
             self.label_combos[field] = combo
             box.addWidget(combo)
 
+        return panel
+
+    def _build_population_panel(self) -> QtWidgets.QWidget:
+        """Static population filters: session-type checkboxes, the video-QC grid,
+        and the full-cohort fraction_correct / start_time histograms. Toggling
+        any control reshapes the reactive metric panel and refilters the
+        dropdown; these distributions themselves never reshape."""
+        panel = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(panel)
+        box.setSpacing(2)
+        box.setContentsMargins(4, 4, 4, 4)
+
+        box.addWidget(QtWidgets.QLabel('Session types'))
+        type_row = QtWidgets.QHBoxLayout()
+        self.type_checks = []
+        for session_type in sorted(self.model.df_cohort['session_type'].dropna().unique()):
+            check = QtWidgets.QCheckBox(session_type)
+            check.setChecked(True)
+            check.stateChanged.connect(lambda _: self._on_population_changed())
+            self.type_checks.append(check)
+            type_row.addWidget(check)
+        box.addLayout(type_row)
+
+        box.addWidget(QtWidgets.QLabel('Video QC'))
+        box.addLayout(self._build_qc_grid())
+
+        self.population_fig = Figure(figsize=(4, 3.6))
+        self.population_canvas = FigureCanvasQTAgg(self.population_fig)
+        self.population_canvas.mpl_connect(
+            'button_press_event', self._on_population_hist_click)
+        self._draw_population_histograms()
+        box.addWidget(self.population_canvas)
+
+        return panel
+
+    def _build_qc_grid(self) -> QtWidgets.QGridLayout:
+        """Field × verdict grid of independent toggle cells; none checked by
+        default. Rows are `VIDEO_QC_COLS` (the `qc_videoLeft_` prefix stripped
+        for the label), columns the five `QC_VALUE_ORDER` verdicts. Populates
+        `self.qc_grid[field][verdict]` with the cell checkboxes that
+        `_qc_selections` reads."""
+        grid = QtWidgets.QGridLayout()
+        grid.setVerticalSpacing(2)
+        for col, verdict in enumerate(QC_VALUE_ORDER, start=1):
+            grid.addWidget(QtWidgets.QLabel(verdict), 0, col)
+        self.qc_grid = {}
+        for row, field in enumerate(VIDEO_QC_COLS, start=1):
+            grid.addWidget(
+                QtWidgets.QLabel(field.removeprefix('qc_videoLeft_')), row, 0)
+            self.qc_grid[field] = {}
+            for col, verdict in enumerate(QC_VALUE_ORDER, start=1):
+                cell = QtWidgets.QCheckBox()
+                cell.stateChanged.connect(lambda _: self._on_population_changed())
+                self.qc_grid[field][verdict] = cell
+                grid.addWidget(cell, row, col)
+        return grid
+
+    def _draw_population_histograms(self) -> None:
+        """Draw the full-cohort fraction_correct and start_time distributions,
+        each with a brushable SpanSelector. `start_time` is plotted on the
+        numeric epoch-nanosecond axis (`start_time_to_numeric`) with date-string
+        tick labels, so a brush's extents are directly the predicate's numeric
+        `start_time_range`. Stored ranges are re-applied as visible spans."""
+        self.population_fig.clear()
+        self.population_selectors = {}
+        ax_fc, ax_time = self.population_fig.subplots(2, 1)
+
+        _, fc_edges, _ = ax_fc.hist(
+            self.model.df_cohort['fraction_correct'].dropna(), bins=30)
+        # Pin x-limits to the bin span (also disables autoscale) so the
+        # interactive SpanSelector's handle artists, which start at x=0, can't
+        # drag the data limits and balloon the axis range.
+        ax_fc.set_xlim(fc_edges[0], fc_edges[-1])
+        ax_fc.set_ylabel('fraction_correct')
+        ax_fc.set_yticks([])
+        self._add_population_selector('fraction_correct', ax_fc, self.fc_range)
+
+        numeric = start_time_to_numeric(self.model.df_cohort['start_time'])
+        _, time_edges, _ = ax_time.hist(numeric[~np.isnan(numeric)], bins=20)
+        ax_time.set_xlim(time_edges[0], time_edges[-1])
+        ax_time.set_ylabel('start_time')
+        ax_time.set_yticks([])
+        ax_time.xaxis.set_major_formatter(FuncFormatter(
+            lambda ns, _: pd.Timestamp(int(ns)).strftime('%Y-%m-%d')))
+        self._add_population_selector(
+            'start_time', ax_time, self.start_time_range)
+
+        self.population_fig.tight_layout()
+        self.population_canvas.draw_idle()
+
+    def _add_population_selector(
+        self, measure: str, ax, current_range: tuple[float, float] | None,
+    ) -> None:
+        """Attach a horizontal SpanSelector for `measure` to `ax`, restoring
+        `current_range` as a visible span when one is set."""
+        selector = SpanSelector(
+            ax, lambda lo, hi, m=measure: self._on_population_brush(m, lo, hi),
+            'horizontal', useblit=True, interactive=True)
+        if current_range is not None:
+            selector.extents = current_range
+        self.population_selectors[measure] = selector
+
+    def _build_metric_panel(self) -> QtWidgets.QWidget:
+        """Reactive panel: the four movement-metric histograms, reshaped to the
+        current population and brushable to refine the dropdown."""
+        panel = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(panel)
+        box.addWidget(QtWidgets.QLabel('Metric distributions'))
+        self.hist_fig = Figure(figsize=(4, 5))
+        self.hist_canvas = FigureCanvasQTAgg(self.hist_fig)
+        self.hist_canvas.mpl_connect('button_press_event', self._on_hist_click)
+        self._draw_histograms()
+        box.addWidget(self.hist_canvas)
         return panel
 
     def _build_display(self) -> QtWidgets.QWidget:
@@ -465,6 +710,11 @@ class LPViewer(QtWidgets.QMainWindow):
         frame_row = QtWidgets.QHBoxLayout()
         frame_row.addWidget(self.frame_canvas)
         event_col = QtWidgets.QVBoxLayout()
+        self.schematic_fig = Figure(figsize=(3, 2))
+        self.schematic_canvas = FigureCanvasQTAgg(self.schematic_fig)
+        self.schematic_ax = self.schematic_fig.add_subplot(111)
+        self.schematic_ax.set_axis_off()
+        event_col.addWidget(self.schematic_canvas)
         self.event_labels = [QtWidgets.QLabel('—') for _ in range(3)]
         for label in self.event_labels:
             event_col.addWidget(label)
@@ -492,24 +742,32 @@ class LPViewer(QtWidgets.QMainWindow):
 
     def _draw_histograms(self) -> None:
         """Per cohort measure, overlay one density histogram per checked session
-        type (colored via SESSIONTYPE2COLOR, alpha < 1). Each axes carries a
-        brushable SpanSelector; stored brush ranges are re-applied as visible
-        spans. Rebuilds the figure from scratch so it tracks the checkbox state.
-        Double-clicking an axes clears its range."""
+        type (colored via SESSIONTYPE2COLOR, alpha < 1). Counts come from the
+        population-filtered subset while bin edges stay pinned to the full
+        cohort, so the panels reshape to the current population without bins
+        shifting. Each axes carries a brushable SpanSelector; stored brush
+        ranges are re-applied as visible spans. Rebuilds the figure from scratch
+        so it tracks the checkbox state. Double-clicking an axes clears its
+        range."""
         self.hist_fig.clear()
         self.span_selectors = {}
         self.hist_axes = {}
         types = self._selected_types()
+        mask = self.model.population_mask(
+            types, self._qc_selections(), self.fc_range, self.start_time_range)
+        population = self.model.df_cohort.loc[mask]
         for i, measure in enumerate(HISTOGRAM_MEASURES):
             ax = self.hist_fig.add_subplot(len(HISTOGRAM_MEASURES), 1, i + 1)
-            edges, per_type = histogram_by_type(self.model.df_cohort, measure, types)
+            edges, per_type = histogram_by_type(
+                population, measure, types,
+                edge_source=self.model.df_cohort)
             for session_type, density in per_type.items():
                 ax.stairs(density, edges, fill=True, alpha=0.5,
                           color=SESSIONTYPE2COLOR.get(session_type),
                           label=session_type)
-            ax.set_title(HISTOGRAM_TITLES[measure], fontsize=8)
+            ax.set_title(HISTOGRAM_TITLES[measure])
             if i == 0 and types:
-                ax.legend(fontsize=6)
+                ax.legend()
             selector = SpanSelector(
                 ax, lambda lo, hi, m=measure: self._on_brush(m, lo, hi),
                 'horizontal', useblit=True, interactive=True)
@@ -520,17 +778,49 @@ class LPViewer(QtWidgets.QMainWindow):
         self.hist_fig.tight_layout()
         self.hist_canvas.draw_idle()
 
-    def _on_types_changed(self) -> None:
-        """Checkbox toggle: redraw the per-type histograms and refilter the
-        dropdown."""
+    def _on_population_changed(self) -> None:
+        """Any population-filter toggle (session type or video-QC cell): reshape
+        the reactive metric panel and refilter the dropdown."""
         self._draw_histograms()
         self._refresh_dropdown()
+
+    def _on_population_brush(self, measure: str, low: float, high: float) -> None:
+        """Store a fraction_correct / start_time brush range, then reshape the
+        metric panel and refilter the dropdown."""
+        if measure == 'fraction_correct':
+            self.fc_range = (low, high)
+        else:
+            self.start_time_range = (low, high)
+        self._on_population_changed()
+
+    def _on_population_hist_click(self, event) -> None:
+        """Double-clicking a population histogram clears its stored range."""
+        if not event.dblclick:
+            return
+        for measure, selector in self.population_selectors.items():
+            if event.inaxes is selector.ax:
+                if measure == 'fraction_correct':
+                    self.fc_range = None
+                else:
+                    self.start_time_range = None
+                selector.clear()
+                self.population_canvas.draw_idle()
+                self._on_population_changed()
+                return
 
     # -- filtering ------------------------------------------------------------
 
     def _selected_types(self) -> tuple[str, ...]:
         return tuple(
             check.text() for check in self.type_checks if check.isChecked())
+
+    def _qc_selections(self) -> dict[str, set[str]]:
+        """Per-field set of checked verdicts from the video-QC grid; a field with
+        no checked cell maps to an empty set (unconstrained downstream)."""
+        return {
+            field: {verdict for verdict, cell in cells.items() if cell.isChecked()}
+            for field, cells in self.qc_grid.items()
+        }
 
     def _on_brush(self, measure: str, low: float, high: float) -> None:
         self.brush_ranges[measure] = (low, high)
@@ -547,10 +837,13 @@ class LPViewer(QtWidgets.QMainWindow):
             self._refresh_dropdown()
 
     def _refresh_dropdown(self) -> None:
-        """Repopulate the session dropdown from the brushed ranges + type
-        filter. Does not auto-load a session — loading happens only when the
+        """Repopulate the session dropdown from the population predicate (types,
+        video-QC grid, fraction_correct, start_time) AND the movement-metric
+        brushes. Does not auto-load a session — loading happens only when the
         user picks an entry."""
-        eids = self.model.filter(self.brush_ranges, self._selected_types())
+        eids = self.model.dropdown_eids(
+            self.brush_ranges, self._selected_types(), self._qc_selections(),
+            self.fc_range, self.start_time_range)
         self.session_combo.blockSignals(True)
         self.session_combo.clear()
         self.session_combo.addItems(eids)
@@ -592,7 +885,7 @@ class LPViewer(QtWidgets.QMainWindow):
         for label, function in zip(('early', 'mid', 'late'),
                                    panels.xcorr['functions']):
             ax_xcorr.plot(panels.xcorr['lags'], function, label=label)
-        ax_xcorr.legend(fontsize=8)
+        ax_xcorr.legend()
         ax_xcorr.set_title(f"Paw–wheel xcorr (drift={panels.xcorr['drift']:.3f})")
         ax_xcorr.set_xlabel('lag (s)')
         self.panel_fig.tight_layout()
@@ -646,6 +939,7 @@ class LPViewer(QtWidgets.QMainWindow):
             row = self.model.df_cohort.loc[
                 self.model.df_cohort['eid'] == eid].iloc[0]
             session = PhotometrySession(row, one=self.one, load_data=False)
+            session.load_camera_times()
             session.load_pose()
             session.load_trials()
             video_path = self.one.load_dataset(
@@ -674,6 +968,8 @@ class LPViewer(QtWidgets.QMainWindow):
             return
         self.current_trial_idx = trial_idx
         trial = self.trials.iloc[trial_idx]
+        draw_trial_schematic(self.schematic_ax, **trial_schematic_values(trial))
+        self.schematic_canvas.draw_idle()
         low, high = trial_frame_window(
             trial['stimOn_times'], trial['feedback_times'])
         self.trial_frames = frames_in_trial(

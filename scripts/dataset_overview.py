@@ -4,7 +4,7 @@ Dataset Overview
 Produces session overview matrices and target barplots from the session catalog.
 
 Plots 1–4: session matrices (all, raw data, complete, QC-passing)
-Plot 5: video-ready matrix (if VIDEO_FPATH exists)
+Plot 5: video-ready matrix (if POSE_FPATH exists)
 Plots 6–7: target/mouse barplots (QC-passing, VALID_TARGETNMS)
 Plots 8–9: target/mouse barplots (QC-passing, TARGETNMS_TO_ANALYZE)
 Recording capacity projection
@@ -27,7 +27,7 @@ from iblnm.config import (
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
     PERFORMANCE_FPATH, ERRORS_FPATH,
     SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
-    TARGETNMS_TO_ANALYZE, VIDEO_FPATH,
+    TARGETNMS_TO_ANALYZE, POSE_FPATH,
     SESSIONTYPE2FLOAT, SESSIONTYPE2COLOR,
     MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
@@ -154,8 +154,8 @@ if 'fraction_correct' in df.columns and 'contrasts' in df.columns:
     df['proficient_label'] = _compute_proficient_label(df)
 
 # Merge video QC flags if available
-if VIDEO_FPATH.exists():
-    df_video = pd.read_parquet(VIDEO_FPATH, columns=['eid'] + VIDEO_QC_COLS)
+if POSE_FPATH.exists():
+    df_video = pd.read_parquet(POSE_FPATH, columns=['eid'] + VIDEO_QC_COLS)
     df = df.merge(df_video, on='eid', how='left')
     df['_passes_video_qc'] = (
         df['qc_videoLeft_timestamps'].eq('PASS')
@@ -237,7 +237,7 @@ set_plotsize(w=48, h=32, ax=ax)
 ax.get_figure().savefig(figures_dir / '4_passes_qc.svg', dpi=FIGURE_DPI, bbox_inches='tight')
 plt.close('all')
 
-if VIDEO_FPATH.exists():
+if POSE_FPATH.exists():
     print("\n[Plot 5: Video-ready]")
     grp.filter_sessions(session_types=False, qc_blockers=VIDEO_QC_BLOCKERS, targetnms=False,
                         min_performance=False, required_contrasts=False)

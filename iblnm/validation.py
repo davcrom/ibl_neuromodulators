@@ -138,6 +138,9 @@ class VideoDroppedFramesQCError(Exception):
 class VideoPinStateQCError(Exception):
     """qc_videoLeft_pin_state is not PASS."""
 
+class MissingMotionEnergy(Exception):
+    """leftCamera.ROIMotionEnergy could not be loaded."""
+
 
 # =============================================================================
 # Logging helpers

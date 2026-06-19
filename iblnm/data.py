@@ -18,25 +18,27 @@ from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
     LP_QC_LABELS,
-    MIN_NTRIALS, MIN_PERFORMANCE, N_UNIQUE_SAMPLES_THRESHOLD,
+    MIN_NTRIALS, MIN_PERFORMANCE, MOTION_ENERGY_EVENT,
+    N_UNIQUE_SAMPLES_THRESHOLD,
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
     RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
-    TARGET_FS, TRIAL_COLUMNS, WHEEL_FS, POSE_FS,
+    TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
 )
 from iblnm.analysis import (
     get_responses, compute_response_magnitude, movement_trace,
-    per_third_crosscorr, resample_pose,
+    per_third_crosscorr, resample_pose, resample_signal,
 )
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.validation import (
-    MissingExtractedData, MissingRawData, MissingLP, InsufficientTrials,
-    BlockStructureBug, MissingBlockInfo, IncompleteEventTimes,
-    TrialsNotInPhotometryTime, FewUniqueSamples, QCValidationError,
-    AmbiguousRegionMapping,
+    MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
+    MissingMotionEnergy,
+    InsufficientTrials, BlockStructureBug, MissingBlockInfo,
+    IncompleteEventTimes, TrialsNotInPhotometryTime, FewUniqueSamples,
+    QCValidationError, AmbiguousRegionMapping,
 )
 
 
@@ -445,6 +447,8 @@ def _save_video(session, h5_file, band):
     # automatic data (extraction --overwrite) never clobbers a manual verdict.
     preserved_qc = _read_video_qc(h5_file)
     grp = _replace_group(h5_file, 'video')
+    grp.attrs['length_discrepancy'] = session.length_discrepancy
+    grp.attrs['framerate_from_tpts'] = session.framerate_from_tpts
     if session.pose_traces is not None:
         _save_pose_traces(grp, session.pose_traces)
     if session.pose_baseline_traces is not None:
@@ -456,12 +460,18 @@ def _save_video(session, h5_file, band):
         if value in (None, LP_QC_NOT_SET):
             value = preserved_qc.get(label, LP_QC_NOT_SET)
         grp.attrs[label] = value
+    for col in VIDEO_QC_COLS:
+        grp.attrs[col] = session.video_qc.get(col, LP_QC_NOT_SET)
 
 
 def _load_video(session, h5_file, band):
     if 'video' not in h5_file:
         return
     grp = h5_file['video']
+    if 'length_discrepancy' in grp.attrs:
+        session.length_discrepancy = grp.attrs['length_discrepancy']
+    if 'framerate_from_tpts' in grp.attrs:
+        session.framerate_from_tpts = grp.attrs['framerate_from_tpts']
     session.pose_traces = _load_pose_traces(grp)
     session.pose_baseline_traces = _load_pose_traces(grp, name='baseline_traces')
     session.pose_xcorr = _load_pose_xcorr(grp)
@@ -470,6 +480,12 @@ def _load_video(session, h5_file, band):
             value = grp.attrs[label]
             setattr(session, label,
                     value.decode() if isinstance(value, bytes) else value)
+    session.video_qc = {}
+    for col in VIDEO_QC_COLS:
+        if col in grp.attrs:
+            value = grp.attrs[col]
+            session.video_qc[col] = (
+                value.decode() if isinstance(value, bytes) else value)
 
 
 _SAVE_HANDLERS = {
@@ -549,11 +565,16 @@ class PhotometrySession(PhotometrySessionLoader):
         self.qc = pd.DataFrame()
         self.pose = None
         self.pose_times = None
+        self.motion_energy = None
+        self.length_discrepancy = np.nan
+        self.framerate_from_tpts = np.nan
         self.pose_traces = None
         self.pose_baseline_traces = None
         self.pose_xcorr = None
+        self.video_qc = {}
         self.qc_lp = LP_QC_NOT_SET
         self.qc_movement = LP_QC_NOT_SET
+        self.qc_timing = LP_QC_NOT_SET
         if load_data:
             self.load_trials()
             self.load_photometry()
@@ -1079,7 +1100,9 @@ class PhotometrySession(PhotometrySessionLoader):
             or (getattr(self, 'qc', None) is not None and len(self.qc) > 0)
         )
         has_video = (self.pose_traces is not None
-                     or self.pose_xcorr is not None)
+                     or self.pose_xcorr is not None
+                     or np.isfinite(self.length_discrepancy)
+                     or np.isfinite(self.framerate_from_tpts))
         return [name for name, available in (
             ('photometry', has_photometry),
             ('trials',     getattr(self, 'trials', None) is not None),
@@ -1191,7 +1214,7 @@ class PhotometrySession(PhotometrySessionLoader):
         the pipeline as a separate step.
         """
         from iblphotometry.pipelines import run_pipeline
-        from iblnm.analysis import compute_bleaching_tau, compute_iso_correlation, resample_signal
+        from iblnm.analysis import compute_bleaching_tau, compute_iso_correlation
 
         if pipeline is None:
             pipeline = PREPROCESSING_PIPELINES['isosbestic_correction']
@@ -1395,44 +1418,129 @@ class PhotometrySession(PhotometrySessionLoader):
         self._wheel_t1_event = t1_event
         return self.wheel_velocity
 
+    def load_camera_times(self):
+        """Load left-camera frame timestamps, independently of LightningPose.
+
+        Stores the per-frame times (session clock, seconds) in
+        ``self.pose_times``. Raises ``MissingVideoTimestamps`` when the dataset
+        is absent, so the basic-video pass can block the session before LP is
+        attempted. Loaded separately from ``load_pose`` because the camera
+        timestamps gate the whole session while LP gates only the traces.
+        """
+        try:
+            self.pose_times = np.asarray(self.one.load_dataset(
+                self.eid, '_ibl_leftCamera.times.npy', collection='alf'))
+        except ALFObjectNotFound:
+            raise MissingVideoTimestamps("leftCamera.times")
+
     def load_pose(self):
         """Load LightningPose keypoint tracking from the left camera.
 
         Stores the pose DataFrame (columns ``{part}_x``, ``{part}_y``,
-        ``{part}_likelihood``) in ``self.pose`` and the frame times (session
-        clock, seconds) in ``self.pose_times``. Raises ``MissingLP`` when the
+        ``{part}_likelihood``) in ``self.pose``. Raises ``MissingLP`` when the
         pose dataset is not available, so batch extraction can log and skip.
 
-        Loads only the two datasets used (``lightningPose`` and ``times``) via
-        ``load_dataset`` rather than the whole ``leftCamera`` object, which would
-        also fetch ``features`` and ``ROIMotionEnergy`` that we never use.
+        Loads only the ``lightningPose`` dataset via ``load_dataset`` rather than
+        the whole ``leftCamera`` object, which would also fetch ``features`` and
+        ``ROIMotionEnergy`` that we never use. Camera timestamps are loaded
+        separately by ``load_camera_times``.
         """
         try:
             self.pose = self.one.load_dataset(
                 self.eid, '_ibl_leftCamera.lightningPose.pqt', collection='alf')
-            self.pose_times = np.asarray(self.one.load_dataset(
-                self.eid, '_ibl_leftCamera.times.npy', collection='alf'))
         except ALFObjectNotFound:
             raise MissingLP("leftCamera.lightningPose")
 
-    def extract_movement_traces(self):
-        """Extract per-trial peri-event movement traces for each bodypart.
+    def load_motion_energy(self):
+        """Load per-frame left-camera ROI motion energy, independently of LP.
 
-        Builds one event-locked (trial × time) matrix per entry in
-        ``config.POSE_MEASURES`` and stores them on ``self.pose_traces`` as a
-        DataArray with dims ``(bodypart, trial, time)``.
+        Stores the per-frame motion-energy scalar (on the ``leftCamera.times``
+        base) in ``self.motion_energy``. Raises ``MissingMotionEnergy`` when the
+        dataset is absent, logged non-fatally by the pipeline. Unlike
+        ``lightningPose`` and ``times``, the ROIMotionEnergy dataset carries no
+        ``_ibl_`` prefix, so its ``load_dataset`` object string differs.
         """
-        # Resample raw pose to a common rate first, so speeds (px per time step)
-        # and trace lengths are comparable across sessions of differing camera fps.
-        pose, pose_times = resample_pose(self.pose, self.pose_times, POSE_FS)
+        try:
+            self.motion_energy = np.asarray(self.one.load_dataset(
+                self.eid, 'leftCamera.ROIMotionEnergy.npy', collection='alf'))
+        except ALFObjectNotFound:
+            raise MissingMotionEnergy("leftCamera.ROIMotionEnergy")
+
+    def compute_video_measures(self):
+        """Compute basic-video scalars from the loaded camera timestamps.
+
+        Sets ``self.length_discrepancy`` (video duration minus
+        ``session_length``, seconds) and ``self.framerate_from_tpts`` (median
+        inter-frame interval, seconds) from ``self.pose_times``. Requires
+        ``load_camera_times`` to have populated ``self.pose_times``.
+        """
+        self.length_discrepancy = (
+            (self.pose_times[-1] - self.pose_times[0]) - self.session_length)
+        self.framerate_from_tpts = np.median(np.diff(self.pose_times))
+
+    def fetch_video_qc(self):
+        """Live-fetch leftCamera extended QC and store the 8 ``VIDEO_QC_COLS``.
+
+        Queries Alyx via ``io.get_extended_qc`` and retains the eight
+        ``config.VIDEO_QC_COLS`` outcome labels in ``self.video_qc`` (a dict
+        keyed by column name). Columns absent from the source default to
+        ``LP_QC_NOT_SET``. The Alyx call is the only network access in this
+        method, keeping the downstream validation/storage logic testable with
+        an injected ``video_qc`` dict.
+        """
+        from iblnm.io import get_extended_qc
+        qc = get_extended_qc(self.to_series(), one=self.one)
+        self.video_qc = {col: qc.get(col, LP_QC_NOT_SET) for col in VIDEO_QC_COLS}
+
+    def _movement_signals(self):
+        """Per-frame movement signals keyed by channel label.
+
+        Returns a dict ``label -> (signal, event)`` where ``signal`` is a
+        ``pd.Series`` on a common 1/POSE_FS time base and ``event`` is the trials
+        column the response trace locks to. LP keypoint channels
+        (``config.POSE_MEASURES``) are included only when ``self.pose`` is set;
+        the ``motion_energy`` channel only when ``self.motion_energy`` is set.
+        The two sources are independent, so a session may contribute either or
+        both. Returns an empty dict when neither source is present.
+        """
+        signals = {}
+        if self.pose is not None:
+            # Resample raw pose to a common rate first, so speeds (px per time
+            # step) and trace lengths are comparable across camera fps.
+            pose, pose_times = resample_pose(self.pose, self.pose_times, POSE_FS)
+            for label, (event, keypoints, reduction) in POSE_MEASURES.items():
+                signals[label] = (
+                    pd.Series(movement_trace(pose, keypoints, reduction),
+                              index=pose_times),
+                    event,
+                )
+        if self.motion_energy is not None:
+            signals['motion_energy'] = (
+                resample_signal(
+                    pd.Series(self.motion_energy, index=self.pose_times), POSE_FS),
+                MOTION_ENERGY_EVENT,
+            )
+        return signals
+
+    def extract_movement_traces(self):
+        """Extract per-trial peri-event movement traces for each channel.
+
+        Assembles the available per-frame signals (LP keypoint measures and/or
+        the resampled motion-energy scalar), event-locks each to its own event,
+        and stores them on ``self.pose_traces`` as a DataArray with dims
+        ``(bodypart, trial, time)``. ``self.pose_baseline_traces`` holds the same
+        channels stimOn-locked for a common pre-stimOn baseline. Both are left
+        ``None`` when neither LP nor motion energy is present.
+        """
+        signals = self._movement_signals()
+        if not signals:
+            self.pose_traces = None
+            self.pose_baseline_traces = None
+            return
         stimon = self.trials['stimOn_times'].values
         traces = {}
         baselines = {}
-        for label, (event, keypoints, reduction) in POSE_MEASURES.items():
-            signal = pd.Series(
-                movement_trace(pose, keypoints, reduction),
-                index=pose_times,
-            )
+        for label, (signal, event) in signals.items():
             traces[label], tpts = get_responses(
                 signal, self.trials[event].values,
                 t0=RESPONSE_WINDOW[0], t1=RESPONSE_WINDOW[1],
@@ -1442,17 +1550,18 @@ class PhotometrySession(PhotometrySessionLoader):
             baselines[label], _ = get_responses(
                 signal, stimon, t0=RESPONSE_WINDOW[0], t1=RESPONSE_WINDOW[1],
             )
+        labels = list(signals)
         coords = {
-            'bodypart': list(POSE_MEASURES),
+            'bodypart': labels,
             'trial': self.trials.index.to_numpy(),
             'time': tpts,
         }
         self.pose_traces = xr.DataArray(
-            np.stack([traces[label] for label in POSE_MEASURES]),
+            np.stack([traces[label] for label in labels]),
             dims=['bodypart', 'trial', 'time'], coords=coords,
         )
         self.pose_baseline_traces = xr.DataArray(
-            np.stack([baselines[label] for label in POSE_MEASURES]),
+            np.stack([baselines[label] for label in labels]),
             dims=['bodypart', 'trial', 'time'], coords=coords,
         )
 

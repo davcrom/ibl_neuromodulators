@@ -30,14 +30,29 @@ PHOTOMETRY_LOG_FPATH = PROJECT_ROOT / 'metadata/photometry_log.pqt'
 TASK_LOG_FPATH = PROJECT_ROOT / 'metadata/task_log.pqt'
 EVENTS_LOG_FPATH = PROJECT_ROOT / 'metadata/events_log.pqt'
 ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
-VIDEO_LOG_FPATH = PROJECT_ROOT / 'metadata/video_log.pqt'
-VIDEO_FPATH = PROJECT_ROOT / 'metadata/video.pqt'
-LP_SESSIONS_FPATH = PROJECT_ROOT / 'metadata/LightningPoseSessions.csv'
 POSE_FPATH = PROJECT_ROOT / 'metadata/pose.pqt'
 POSE_LOG_FPATH = PROJECT_ROOT / 'metadata/pose_log.pqt'
 
 # Video QC parameters
 LENGTH_MISMATCH_THRESHOLD = 120  # seconds
+
+# Video QC column names (leftCamera extended-QC fields), in source order.
+# First 5 are quality metrics (scored), last 3 are problem flags.
+VIDEO_QC_COLS = [
+    'qc_videoLeft_focus',
+    'qc_videoLeft_position',
+    'qc_videoLeft_brightness',
+    'qc_videoLeft_resolution',
+    'qc_videoLeft_wheel_alignment',
+    'qc_videoLeft_timestamps',
+    'qc_videoLeft_dropped_frames',
+    'qc_videoLeft_pin_state',
+]
+VIDEO_QC_QUALITY_COLS = VIDEO_QC_COLS[:5]  # quality metrics (scored)
+VIDEO_QC_PROBLEM_COLS = VIDEO_QC_COLS[5:]  # problem flags (not scored)
+
+# IBL QC outcome categories ordered most to least severe (for category ordering).
+QC_VALUE_ORDER = ['NOT_SET', 'CRITICAL', 'FAIL', 'WARNING', 'PASS']
 
 # Schema for sessions DataFrame: column -> (type, default)
 # Used by enforce_schema() to fill missing columns and coerce NaN in list columns
@@ -412,7 +427,7 @@ LIKELIHOOD_THRESHOLD = 0.9          # gate keypoint speed where confidence < thi
 MOVEMENT_RESPONSE_WINDOW = (0.1, 0.35)  # post-event scalar window (reuse BASELINE_WINDOW for pre)
 CROSSCORR_LAG_WINDOW = 5.0          # paw/wheel cross-correlation lag half-width (s)
 CROSSCORR_FS = WHEEL_FS             # common resample rate for paw/wheel cross-correlation (Hz)
-LP_QC_LABELS = ('qc_lp', 'qc_movement')  # manual QC fields; IBL vocab, default 'NOT_SET'
+LP_QC_LABELS = ('qc_lp', 'qc_movement', 'qc_timing')  # manual QC fields; IBL vocab, default 'NOT_SET'
 
 # Bodypart trace label -> (event column, keypoints, reduction). Read by tickets 02, 05.
 POSE_MEASURES = {
@@ -421,6 +436,9 @@ POSE_MEASURES = {
     'tongue_speed': ('feedback_times', ['tongue_end_l', 'tongue_end_r'], 'sum_speed'),
     'tongue_likelihood': ('feedback_times', ['tongue_end_l', 'tongue_end_r'], 'max_likelihood'),
 }
+
+# Event the motion_energy channel locks to (baseline is also stimOn-locked).
+MOTION_ENERGY_EVENT = 'stimOn_times'
 
 
 # Plotting parameters

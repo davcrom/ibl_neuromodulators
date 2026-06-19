@@ -19,6 +19,23 @@ def test_lp_qc_labels():
     assert config.LP_QC_LABELS == ('qc_lp', 'qc_movement')
 
 
+def test_video_qc_cols():
+    assert config.VIDEO_QC_COLS == [
+        'qc_videoLeft_focus',
+        'qc_videoLeft_position',
+        'qc_videoLeft_brightness',
+        'qc_videoLeft_resolution',
+        'qc_videoLeft_wheel_alignment',
+        'qc_videoLeft_timestamps',
+        'qc_videoLeft_dropped_frames',
+        'qc_videoLeft_pin_state',
+    ]
+
+
+def test_qc_value_order():
+    assert config.QC_VALUE_ORDER == ['NOT_SET', 'CRITICAL', 'FAIL', 'WARNING', 'PASS']
+
+
 def test_pose_measures_structure():
     assert config.POSE_MEASURES['paw'] == (
         'firstMovement_times', ['paw_l', 'paw_r'], 'sum_speed')

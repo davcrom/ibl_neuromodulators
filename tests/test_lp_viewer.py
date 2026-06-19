@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from matplotlib.colors import to_rgba
+from matplotlib.figure import Figure
 
 from iblnm.data import _save_pose_traces, _save_pose_xcorr
 from iblnm.lp_viewer import (
@@ -11,7 +13,8 @@ from iblnm.lp_viewer import (
     HISTOGRAM_TITLES,
     LPViewerModel,
     apply_label,
-    filter_sessions_table,
+    draw_trial_schematic,
+    filter_dropdown,
     format_event_timings,
     format_session_title,
     frames_in_trial,
@@ -20,50 +23,129 @@ from iblnm.lp_viewer import (
     likelihood_to_alpha,
     persist_labels,
     save_label,
+    select_population,
+    start_time_to_numeric,
     trial_frame_window,
+    trial_schematic_values,
     update_pose_qc,
 )
 
 
 @pytest.fixture
-def pose_table():
+def population_table():
     return pd.DataFrame({
         'eid': ['a', 'b', 'c', 'd'],
-        'paw_speed': [0.1, 0.5, 0.9, 0.5],
-        'nose_speed': [0.5, 0.5, 0.5, 0.9],
+        'paw': [0.1, 0.5, 0.9, 0.5],
+        'nose': [0.5, 0.5, 0.5, 0.9],
         'session_type': ['biased', 'biased', 'ephys', 'training'],
+        'fraction_correct': [0.6, 0.8, 0.75, 0.95],
+        'start_time': ['2025-12-01T00:00:00.000000',
+                       '2025-12-02T00:00:00.000000',
+                       '2025-12-03T00:00:00.000000',
+                       '2025-12-04T00:00:00.000000'],
+        'qc_videoLeft_focus': ['PASS', 'PASS', 'WARNING', 'FAIL'],
+        'qc_videoLeft_brightness': ['PASS', 'WARNING', 'PASS', 'PASS'],
     })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# filter_sessions_table
+# start_time_to_numeric
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_filter_sessions_table_single_range_and_type(pose_table):
-    eids = filter_sessions_table(
-        pose_table, {'paw_speed': (0.4, 0.6)}, ('biased', 'training'))
-    assert eids == ['b', 'd']
+def test_start_time_to_numeric_round_trips_iso_string():
+    iso = '2025-12-02T16:46:04.524000'
+    numeric = start_time_to_numeric([iso])
+    assert numeric[0] == float(pd.Timestamp(iso).value)
 
 
-def test_filter_sessions_table_intersects_ranges(pose_table):
-    # paw in [0.4, 0.6] -> b, d; nose in [0.0, 0.6] -> a, b, c; both -> b
-    eids = filter_sessions_table(
-        pose_table,
-        {'paw_speed': (0.4, 0.6), 'nose_speed': (0.0, 0.6)},
-        ('biased', 'training'))
-    assert eids == ['b']
+def test_start_time_to_numeric_nat_becomes_nan():
+    numeric = start_time_to_numeric(['2025-12-02T00:00:00.000000', None])
+    assert np.isnan(numeric[1])
 
 
-def test_filter_sessions_table_type_excludes(pose_table):
-    eids = filter_sessions_table(
-        pose_table, {'paw_speed': (0.0, 1.0)}, ('ephys',))
-    assert eids == ['c']
+def _eids(df, mask):
+    return df.loc[mask, 'eid'].tolist()
 
 
-def test_filter_sessions_table_empty_ranges(pose_table):
-    eids = filter_sessions_table(
-        pose_table, {}, ('biased', 'ephys', 'training'))
-    assert eids == []
+# ─────────────────────────────────────────────────────────────────────────────
+# select_population
+# ─────────────────────────────────────────────────────────────────────────────
+
+ALL_TYPES = ('biased', 'ephys', 'training')
+
+
+def test_select_population_qc_field_single_verdict(population_table):
+    mask = select_population(
+        population_table, ALL_TYPES,
+        {'qc_videoLeft_focus': {'PASS'}}, None, None)
+    assert _eids(population_table, mask) == ['a', 'b']
+
+
+def test_select_population_qc_field_or_within_field(population_table):
+    # brightness in {PASS, WARNING} keeps every row (all four are one of these)
+    mask = select_population(
+        population_table, ALL_TYPES,
+        {'qc_videoLeft_brightness': {'PASS', 'WARNING'}}, None, None)
+    assert _eids(population_table, mask) == ['a', 'b', 'c', 'd']
+
+
+def test_select_population_qc_fields_and_across(population_table):
+    # focus==PASS -> a, b; brightness==PASS -> a, c, d; AND -> a
+    mask = select_population(
+        population_table, ALL_TYPES,
+        {'qc_videoLeft_focus': {'PASS'}, 'qc_videoLeft_brightness': {'PASS'}},
+        None, None)
+    assert _eids(population_table, mask) == ['a']
+
+
+def test_select_population_empty_set_field_unconstrained(population_table):
+    mask = select_population(
+        population_table, ALL_TYPES, {'qc_videoLeft_focus': set()}, None, None)
+    assert _eids(population_table, mask) == ['a', 'b', 'c', 'd']
+
+
+def test_select_population_fc_range_inclusive(population_table):
+    mask = select_population(
+        population_table, ALL_TYPES, {}, (0.7, 0.9), None)
+    assert _eids(population_table, mask) == ['b', 'c']
+
+
+def test_select_population_fc_range_none_unconstrained(population_table):
+    mask = select_population(population_table, ALL_TYPES, {}, None, None)
+    assert _eids(population_table, mask) == ['a', 'b', 'c', 'd']
+
+
+def test_select_population_start_time_range(population_table):
+    lo = float(pd.Timestamp('2025-12-02T00:00:00').value)
+    hi = float(pd.Timestamp('2025-12-03T00:00:00').value)
+    mask = select_population(population_table, ALL_TYPES, {}, None, (lo, hi))
+    assert _eids(population_table, mask) == ['b', 'c']
+
+
+def test_select_population_session_type_restricts(population_table):
+    mask = select_population(population_table, ('ephys',), {}, None, None)
+    assert _eids(population_table, mask) == ['c']
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# filter_dropdown
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_filter_dropdown_empty_ranges_returns_population(population_table):
+    mask = select_population(population_table, ('biased',), {}, None, None)
+    assert filter_dropdown(population_table, mask, {}) == ['a', 'b']
+
+
+def test_filter_dropdown_intersects_metric_range(population_table):
+    mask = select_population(population_table, ALL_TYPES, {}, None, None)
+    # paw in [0.4, 0.6] -> b, d (within full population)
+    assert filter_dropdown(
+        population_table, mask, {'paw': (0.4, 0.6)}) == ['b', 'd']
+
+
+def test_filter_dropdown_no_constraints_returns_all(population_table):
+    mask = select_population(population_table, ALL_TYPES, {}, None, None)
+    assert filter_dropdown(population_table, mask, {}) == ['a', 'b', 'c', 'd']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -141,6 +223,42 @@ def test_histogram_by_type_drops_nan(split_table):
     assert np.sum(per_type['biased'] * widths) == pytest.approx(1.0)
 
 
+def test_histogram_by_type_edges_pinned_to_edge_source(split_table):
+    # A subset spanning a narrower range still gets the full-cohort edges, so
+    # bins do not shift as the population shrinks.
+    subset = split_table[split_table['paw_speed'].between(1.0, 2.0)]
+    edges, _ = histogram_by_type(
+        subset, 'paw_speed', ('biased', 'ephys'), bins=4,
+        edge_source=split_table)
+    full_edges, _ = histogram_by_type(
+        split_table, 'paw_speed', ('biased', 'ephys'), bins=4)
+    np.testing.assert_allclose(edges, full_edges)
+
+
+def test_histogram_by_type_counts_from_subset_not_edge_source(split_table):
+    # A type present in edge_source but filtered out of df gets all-zero counts:
+    # density counts come from the subset, not the full cohort.
+    subset = split_table[split_table['session_type'] == 'biased']
+    _, per_type = histogram_by_type(
+        subset, 'paw_speed', ('biased', 'ephys'), bins=4,
+        edge_source=split_table)
+    assert np.all(per_type['ephys'] == 0.0)
+    assert np.any(per_type['biased'] > 0.0)
+
+
+def test_histogram_by_type_edge_source_none_matches_single_frame(split_table):
+    # With edge_source=None, edges and counts both come from df (prior behavior).
+    edges_none, per_type_none = histogram_by_type(
+        split_table, 'paw_speed', ('biased', 'ephys'), bins=4)
+    edges_self, per_type_self = histogram_by_type(
+        split_table, 'paw_speed', ('biased', 'ephys'), bins=4,
+        edge_source=split_table)
+    np.testing.assert_allclose(edges_none, edges_self)
+    for session_type in per_type_none:
+        np.testing.assert_allclose(
+            per_type_none[session_type], per_type_self[session_type])
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # format_event_timings
 # ─────────────────────────────────────────────────────────────────────────────
@@ -155,6 +273,82 @@ def test_format_event_timings_nan_first_movement():
     labels = format_event_timings(
         1.0, stimOn=0.7, firstMovement=float('nan'), feedback=1.5)
     assert labels[1] == 'firstMovement: —'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# trial_schematic_values
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_trial_schematic_values_left_correct():
+    trial = pd.Series({'contrastLeft': 0.25, 'contrastRight': np.nan,
+                       'feedbackType': 1, 'probabilityLeft': 0.8})
+    values = trial_schematic_values(trial)
+    assert values == {'side': 'left', 'contrast': 0.25,
+                      'correct': True, 'prob_left': 0.8}
+
+
+def test_trial_schematic_values_right_incorrect():
+    trial = pd.Series({'contrastLeft': np.nan, 'contrastRight': 1.0,
+                       'feedbackType': -1, 'probabilityLeft': 0.2})
+    values = trial_schematic_values(trial)
+    assert values == {'side': 'right', 'contrast': 1.0,
+                      'correct': False, 'prob_left': 0.2}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# draw_trial_schematic
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _patch_by_label(ax, label):
+    return next(p for p in ax.patches if p.get_label() == label)
+
+
+def _fresh_axes():
+    return Figure().add_subplot(111)
+
+
+def test_draw_trial_schematic_disc_side_placement():
+    left_ax = _fresh_axes()
+    draw_trial_schematic(left_ax, 'left', 0.25, True, 0.5)
+    right_ax = _fresh_axes()
+    draw_trial_schematic(right_ax, 'right', 0.25, True, 0.5)
+    center = _patch_by_label(left_ax, 'strip').get_x() + \
+        _patch_by_label(left_ax, 'strip').get_width() / 2
+    assert _patch_by_label(left_ax, 'disc').center[0] < center
+    assert _patch_by_label(right_ax, 'disc').center[0] > center
+
+
+def test_draw_trial_schematic_ring_color_by_outcome():
+    correct_ax = _fresh_axes()
+    draw_trial_schematic(correct_ax, 'left', 0.25, True, 0.5)
+    wrong_ax = _fresh_axes()
+    draw_trial_schematic(wrong_ax, 'left', 0.25, False, 0.5)
+    assert _patch_by_label(correct_ax, 'disc').get_edgecolor() == to_rgba('green')
+    assert _patch_by_label(wrong_ax, 'disc').get_edgecolor() == to_rgba('red')
+
+
+def test_draw_trial_schematic_contrast_text_in_disc():
+    ax = _fresh_axes()
+    draw_trial_schematic(ax, 'left', 0.125, True, 0.5)
+    assert '12.5%' in [t.get_text() for t in ax.texts]
+
+
+def test_draw_trial_schematic_bias_bar_left_width_scales():
+    mostly_left = _fresh_axes()
+    draw_trial_schematic(mostly_left, 'left', 0.25, True, 0.8)
+    mostly_right = _fresh_axes()
+    draw_trial_schematic(mostly_right, 'left', 0.25, True, 0.2)
+    assert _patch_by_label(mostly_left, 'bias_left').get_width() > \
+        _patch_by_label(mostly_right, 'bias_left').get_width()
+
+
+def test_draw_trial_schematic_disc_radius_grows_with_contrast():
+    low = _fresh_axes()
+    draw_trial_schematic(low, 'left', 0.0625, True, 0.5)
+    high = _fresh_axes()
+    draw_trial_schematic(high, 'left', 1.0, True, 0.5)
+    assert _patch_by_label(high, 'disc').radius > \
+        _patch_by_label(low, 'disc').radius
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -386,24 +580,33 @@ def cohort_model(tmp_path):
     }
     h5_dir = tmp_path / 'sessions'
     h5_dir.mkdir()
-    with h5py.File(h5_dir / 'eid1.h5', 'w') as f:
-        grp = f.create_group('video')
-        _save_pose_traces(grp, traces)
-        _save_pose_xcorr(grp, xcorr)
+    for eid in ('eid1', 'eid2'):
+        with h5py.File(h5_dir / f'{eid}.h5', 'w') as f:
+            grp = f.create_group('video')
+            _save_pose_traces(grp, traces)
+            _save_pose_xcorr(grp, xcorr)
 
     df_cohort = pd.DataFrame({
         'eid': ['eid1', 'eid2'],
         'paw': [0.3, 0.8],
         'session_type': ['biased', 'ephys'],
+        'fraction_correct': [0.77, np.nan],
     })
-    df_performance = pd.DataFrame({'eid': ['eid1'], 'fraction_correct': [0.77]})
-    return LPViewerModel(df_cohort, h5_dir, df_performance), traces
+    return LPViewerModel(df_cohort, h5_dir), traces
 
 
-def test_model_filter_couples_range_and_type(cohort_model):
+def test_model_dropdown_eids_couples_population_and_metric(cohort_model):
     model, _ = cohort_model
-    assert model.filter({'paw': (0.0, 0.5)}, ('biased', 'ephys')) == ['eid1']
-    assert model.filter({'paw': (0.0, 1.0)}, ('ephys',)) == ['eid2']
+    assert model.dropdown_eids(
+        {'paw': (0.0, 0.5)}, ('biased', 'ephys'), {}, None, None) == ['eid1']
+    assert model.dropdown_eids(
+        {'paw': (0.0, 1.0)}, ('ephys',), {}, None, None) == ['eid2']
+
+
+def test_model_population_mask_matches_select_population(cohort_model):
+    model, _ = cohort_model
+    mask = model.population_mask(('biased',), {}, None, None)
+    assert model.df_cohort.loc[mask, 'eid'].tolist() == ['eid1']
 
 
 def test_session_panels_trace_shapes(cohort_model):
@@ -423,7 +626,14 @@ def test_session_panels_xcorr_and_performance(cohort_model):
     panels = model.session_panels('eid1')
     assert panels.xcorr['functions'].shape == (3, N_LAGS)
     assert panels.xcorr['lags'].shape == (N_LAGS,)
+    # fraction_correct sourced from the cohort row
     assert panels.fraction_correct == pytest.approx(0.77)
+
+
+def test_session_panels_fraction_correct_none_when_nan(cohort_model):
+    model, _ = cohort_model
+    # eid2's cohort fraction_correct is NaN
+    assert model.session_panels('eid2').fraction_correct is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
