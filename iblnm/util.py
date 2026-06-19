@@ -554,6 +554,13 @@ def fill_parallel_lists_from_group(df, columns, group_col='subject'):
     -------
     pd.DataFrame
         Copy with empty lists filled where a consistent source exists.
+
+    Notes
+    -----
+    Iterates over each group's row indices and writes filled values back by
+    label, rather than ``groupby(...).apply``. ``apply`` excludes the grouping
+    column from the operation in pandas >=3, which silently dropped
+    ``group_col`` from the result.
     """
     df = df.copy()
 
@@ -563,44 +570,43 @@ def fill_parallel_lists_from_group(df, columns, group_col='subject'):
     def _is_empty_list(x):
         return isinstance(x, (list, np.ndarray)) and len(x) == 0
 
-    def fill_group(group):
-        # Find rows where ALL columns are non-empty and have matching lengths
-        def _is_valid_source(row):
-            lengths = []
-            for col in columns:
-                val = row[col]
-                if not _is_nonempty_list(val):
-                    return False
-                lengths.append(len(val))
-            return len(set(lengths)) == 1
-
-        valid_mask = group.apply(_is_valid_source, axis=1)
-        valid_rows = group[valid_mask]
-
-        if len(valid_rows) == 0:
-            return group
-
-        # Check consistency: all valid rows must have identical values
-        first = valid_rows.iloc[0]
-        for _, row in valid_rows.iloc[1:].iterrows():
-            for col in columns:
-                if not np.array_equal(row[col], first[col]):
-                    return group  # inconsistent sources
-
-        # Fill rows where ANY column is empty
-        source_vals = {col: first[col] for col in columns}
-
-        def _needs_fill(row):
-            return any(_is_empty_list(row[col]) for col in columns)
-
-        needs_fill = group.apply(_needs_fill, axis=1)
+    def _is_valid_source(row):
+        # A source row needs every column non-empty with matching lengths
+        lengths = []
         for col in columns:
-            group.loc[needs_fill, col] = group.loc[needs_fill, col].apply(
-                lambda _: source_vals[col]
-            )
-        return group
+            val = row[col]
+            if not _is_nonempty_list(val):
+                return False
+            lengths.append(len(val))
+        return len(set(lengths)) == 1
 
-    return df.groupby(group_col, group_keys=False).apply(fill_group)
+    def _needs_fill(row):
+        return any(_is_empty_list(row[col]) for col in columns)
+
+    for idx in df.groupby(group_col).groups.values():
+        group = df.loc[idx, columns]
+        valid_rows = group[group.apply(_is_valid_source, axis=1)]
+        if valid_rows.empty:
+            continue
+
+        # Consistency: all valid source rows must agree across columns
+        first = valid_rows.iloc[0]
+        consistent = all(
+            np.array_equal(row[col], first[col])
+            for _, row in valid_rows.iloc[1:].iterrows()
+            for col in columns
+        )
+        if not consistent:
+            continue
+
+        # Fill every column of any row that has at least one empty column
+        source_vals = {col: first[col] for col in columns}
+        needs_fill = group.apply(_needs_fill, axis=1)
+        for i in group.index[needs_fill.to_numpy()]:
+            for col in columns:
+                df.at[i, col] = source_vals[col]
+
+    return df
 
 
 def validate_parallel_lists(df, columns):

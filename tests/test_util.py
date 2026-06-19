@@ -109,7 +109,13 @@ class TestResolveDuplicateGroup:
         assert result['eid'] == 'b'
 
     def test_groupby_apply_integration(self):
-        """groupby.apply with resolve_duplicate_group deduplicates correctly."""
+        """groupby.apply with resolve_duplicate_group deduplicates correctly.
+
+        Uses ``include_groups=False`` to match production
+        (``PhotometrySessionGroup.deduplicate``) and stay valid on pandas >=3,
+        where grouping columns are excluded from ``apply``. Production reads
+        only ``eid`` from the result, so the kept eids are what we assert on.
+        """
         df = pd.DataFrame({
             'eid': ['a', 'b', 'c', 'd', 'e'],
             'subject': ['S1', 'S1', 'S1', 'S2', 'S2'],
@@ -119,12 +125,12 @@ class TestResolveDuplicateGroup:
         exlog = []
         result = (
             df.groupby(['subject', 'day_n'], group_keys=False)
-            .apply(resolve_duplicate_group, exlog=exlog, include_groups=True)
+            .apply(resolve_duplicate_group, exlog=exlog, include_groups=False)
             .reset_index(drop=True)
         )
+        # 'a' dropped (bad duplicate of 'b'); S2 conflict (d,e) logged, keeps 'd'
         assert len(result) == 3
-        s1d1 = result[(result['subject'] == 'S1') & (result['day_n'] == 1)]
-        assert list(s1d1['eid']) == ['b']
+        assert set(result['eid']) == {'b', 'c', 'd'}
         assert len(exlog) == 1
         assert exlog[0]['error_type'] == 'TrueDuplicateSession'
 
@@ -863,6 +869,18 @@ class TestFillParallelListsFromGroup:
         })
         fill_parallel_lists_from_group(df, ['brain_region', 'hemisphere'])
         assert df['brain_region'].iloc[1] == []
+
+    def test_preserves_grouping_column(self):
+        """The grouping column survives the fill (pandas >=3 apply drops it)."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['VTA'], []],
+            'hemisphere': [['r'], []],
+        })
+        result = fill_parallel_lists_from_group(df, ['brain_region', 'hemisphere'])
+        assert 'subject' in result.columns
+        assert list(result['subject']) == ['mouse1', 'mouse1']
 
     def test_mismatched_lengths_in_source_row_skipped(self):
         """Source row where columns have different lengths is not used."""
