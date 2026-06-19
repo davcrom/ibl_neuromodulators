@@ -595,6 +595,23 @@ def cohort_model(tmp_path):
     return LPViewerModel(df_cohort, h5_dir), traces
 
 
+def test_model_drops_sessions_without_traces(cohort_model):
+    model, _ = cohort_model
+    h5_dir = model.h5_dir
+    # eid3: H5 with an empty video group (QC attrs only, no traces).
+    with h5py.File(h5_dir / 'eid3.h5', 'w') as f:
+        f.create_group('video')
+    # eid4: no H5 file on disk at all.
+    df_cohort = pd.DataFrame({
+        'eid': ['eid1', 'eid3', 'eid4'],
+        'paw': [0.3, 0.5, 0.7],
+        'session_type': ['biased', 'biased', 'biased'],
+        'fraction_correct': [0.77, 0.6, 0.6],
+    })
+    model = LPViewerModel(df_cohort, h5_dir)
+    assert model.df_cohort['eid'].tolist() == ['eid1']
+
+
 def test_model_dropdown_eids_couples_population_and_metric(cohort_model):
     model, _ = cohort_model
     assert model.dropdown_eids(

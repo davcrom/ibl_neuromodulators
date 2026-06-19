@@ -393,9 +393,23 @@ class LPViewerModel:
         h5_dir: str | Path,
         pose_path: str | Path | None = None,
     ):
-        self.df_cohort = df_cohort
         self.h5_dir = Path(h5_dir)
+        self.df_cohort = df_cohort[df_cohort['eid'].map(
+            self._has_pose_traces)].reset_index(drop=True)
         self.pose_path = pose_path
+
+    def _has_pose_traces(self, eid: str) -> bool:
+        """True when ``{eid}.h5`` has an extracted ``video/traces`` subgroup.
+
+        The pose roll-up carries a row for every session, but trial-mean traces
+        are only written for sessions with LightningPose output. The viewer can
+        only display the latter, so the cohort is restricted to these.
+        """
+        fpath = self.h5_dir / f'{eid}.h5'
+        if not fpath.exists():
+            return False
+        with h5py.File(fpath, 'r') as f:
+            return 'video' in f and 'traces' in f['video']
 
     def population_mask(
         self,
