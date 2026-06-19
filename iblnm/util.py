@@ -486,32 +486,48 @@ def df2pqt(df, fpath, timestamp=None):
 
 
 def fill_empty_lists_from_group(df, col, group_col='subject'):
+    """Fill empty-list rows in ``col`` from a consistent value within each group.
+
+    Within each ``group_col`` group, locate the non-empty list entries in
+    ``col``. If they all agree, copy that value into the group's empty-list
+    rows. Groups with no non-empty entry, or with disagreeing non-empty
+    entries, are left untouched; non-list cells (e.g. NaN) are never filled.
+
+    Implemented with ``groupby(...)[col].transform`` rather than
+    ``groupby(...).apply`` so only ``col`` is rewritten and every other column
+    is preserved. ``apply`` excludes the grouping column from the operation in
+    pandas >=3, which silently dropped ``group_col`` from the result.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame whose ``col`` holds per-row lists (or NaN).
+    col : str
+        Name of the list-valued column to fill.
+    group_col : str
+        Column to group by (default 'subject').
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``df`` with empty lists in ``col`` filled where a consistent
+        source exists; all other columns unchanged.
+    """
     df = df.copy()
 
-    def fill_group(group):
-        # Find non-empty lists
-        non_empty = group[
-            group[col].apply(
-                # FIXME: too cumbersome to always check lists and arrays, fix at source
-                lambda x: isinstance(x, (list, np.ndarray)) and len(x) > 0
-            )
-        ]
+    def fill_series(s):
+        non_empty = s[s.apply(
+            lambda x: isinstance(x, (list, np.ndarray)) and len(x) > 0)]
+        if non_empty.empty:
+            return s  # No non-empty lists to use
+        source = non_empty.iloc[0]
+        if not all(np.array_equal(x, source) for x in non_empty):
+            return s  # Cannot fill from inconsistent lists
+        return s.apply(
+            lambda x: source if isinstance(x, (list, np.ndarray)) and len(x) == 0 else x)
 
-        if len(non_empty) == 0:
-            return group  # No non-empty lists to use
-
-        # Check consistency
-        first_list = non_empty[col].iloc[0]
-        if not all(np.array_equal(x, first_list) for x in non_empty[col]):
-            return group  # Cannot fill from inconsistent lists
-
-        # Fill empty lists
-        group[col] = group[col].apply(
-            lambda x: first_list if isinstance(x, (list, np.ndarray)) and len(x) == 0 else x
-        )
-        return group
-
-    return df.groupby(group_col, group_keys=False).apply(fill_group)
+    df[col] = df.groupby(group_col)[col].transform(fill_series)
+    return df
 
 
 def fill_parallel_lists_from_group(df, columns, group_col='subject'):

@@ -726,6 +726,60 @@ class TestDeriveTargetNM:
         assert 'target_NM' not in df.columns
 
 
+class TestFillEmptyListsFromGroup:
+
+    def test_fills_empty_from_consistent_source(self):
+        """Empty list rows get filled from the group's non-empty value."""
+        from iblnm.util import fill_empty_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['VTA'], []],
+        })
+        result = fill_empty_lists_from_group(df, 'brain_region')
+        assert result['brain_region'].iloc[1] == ['VTA']
+
+    def test_preserves_grouping_column(self):
+        """The grouping column survives the fill (pandas >=3 apply drops it)."""
+        from iblnm.util import fill_empty_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['VTA'], []],
+        })
+        result = fill_empty_lists_from_group(df, 'brain_region')
+        assert 'subject' in result.columns
+        assert list(result['subject']) == ['mouse1', 'mouse1']
+
+    def test_does_not_fill_from_inconsistent_group(self):
+        """If non-empty rows in a group disagree, don't fill."""
+        from iblnm.util import fill_empty_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1', 'mouse1'],
+            'brain_region': [['VTA'], ['DR'], []],
+        })
+        result = fill_empty_lists_from_group(df, 'brain_region')
+        assert result['brain_region'].iloc[2] == []
+
+    def test_multiple_groups_fill_independently(self):
+        """Each subject group fills from its own source."""
+        from iblnm.util import fill_empty_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1', 'mouse2', 'mouse2'],
+            'brain_region': [['VTA'], [], ['DR'], []],
+        })
+        result = fill_empty_lists_from_group(df, 'brain_region')
+        assert result['brain_region'].iloc[1] == ['VTA']
+        assert result['brain_region'].iloc[3] == ['DR']
+
+    def test_does_not_modify_input(self):
+        from iblnm.util import fill_empty_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['VTA'], []],
+        })
+        fill_empty_lists_from_group(df, 'brain_region')
+        assert df['brain_region'].iloc[1] == []
+
+
 class TestFillParallelListsFromGroup:
 
     def test_fills_all_columns_from_same_source(self):
