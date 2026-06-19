@@ -31,6 +31,7 @@ from iblnm.config import (
     POSE_FPATH,
     POSE_MEASURES,
     QCVAL2NUM,
+    SESSION_TYPES,
     SESSIONS_FPATH,
     SESSIONS_H5_DIR,
     VIDEO_QC_COLS,
@@ -317,6 +318,10 @@ if __name__ == '__main__':
     parser.add_argument('--eids-file', default=None,
                         help='Restrict processing to eids listed one-per-line in '
                              'this file (avoids shell expansion under IPython)')
+    parser.add_argument('--session-type', nargs='+', choices=SESSION_TYPES,
+                        default=None,
+                        help='Restrict processing to these session types '
+                             '(default: all types)')
     args = parser.parse_args()
 
     if args.collect:
@@ -337,7 +342,7 @@ if __name__ == '__main__':
                              f"{SESSIONS_FPATH}")
     group = PhotometrySessionGroup.from_catalog(catalog, one=one)
     group.filter_sessions(
-        session_types=False, qc_blockers=set(),
+        session_types=args.session_type or False, qc_blockers=set(),
         targetnms=False, min_performance=False,
         required_contrasts=False,
     )

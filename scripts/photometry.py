@@ -24,7 +24,7 @@ import pandas as pd
 
 from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_H5_DIR, QCPHOTOMETRY_FPATH,
-    RESPONSE_EVENTS,
+    RESPONSE_EVENTS, SESSION_TYPES,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -99,6 +99,10 @@ if __name__ == '__main__':
                         help='Re-process all sessions, ignoring existing signal data')
     parser.add_argument('--workers', '-w', type=int, default=1,
                         help='Number of parallel workers')
+    parser.add_argument('--session-type', nargs='+', choices=SESSION_TYPES,
+                        default=None,
+                        help='Restrict processing to these session types '
+                             '(default: all types)')
     args = parser.parse_args()
 
     one = _get_default_connection()
@@ -106,7 +110,7 @@ if __name__ == '__main__':
     print(f"Loading sessions from {SESSIONS_FPATH}")
     group = PhotometrySessionGroup.from_catalog(pd.read_parquet(SESSIONS_FPATH), one=one)
     group.filter_sessions(
-        session_types=False, qc_blockers=set(),
+        session_types=args.session_type or False, qc_blockers=set(),
         targetnms=False, min_performance=False,
         required_contrasts=False,
     )
