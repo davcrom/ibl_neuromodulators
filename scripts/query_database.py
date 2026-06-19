@@ -129,6 +129,10 @@ if __name__ == '__main__':
     # Normalize schema
     df_sessions = enforce_schema(df_sessions, SESSION_SCHEMA)
 
+    # Save derived catalog
+    df_sessions.to_parquet(SESSIONS_FPATH, index=False)
+    print(f"Saved {len(df_sessions)} sessions to {SESSIONS_FPATH}")
+
     # Extended QC (optional)
     error_log = []
     df_qc = None
@@ -139,10 +143,6 @@ if __name__ == '__main__':
         df_qc = df_qc.progress_apply(
             get_extended_qc, axis='columns', exlog=error_log
         ).copy()
-
-    # Save derived catalog
-    df_sessions.to_parquet(SESSIONS_FPATH, index=False)
-    print(f"Saved {len(df_sessions)} sessions to {SESSIONS_FPATH}")
 
     # Save QC
     if df_qc is not None:
