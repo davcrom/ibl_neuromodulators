@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from brainbox.io.one import PhotometrySessionLoader
-from iblphotometry.fpio import from_neurophotometrics_df_to_photometry_df
+#from brainbox.io.one import PhotometrySessionLoader
+from iblphotometry.fpio import PhotometrySessionLoader, from_neurophotometrics_df_to_photometry_df
 from iblphotometry import metrics
 from iblphotometry.qc import qc_signals
 
