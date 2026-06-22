@@ -555,12 +555,16 @@ class PhotometrySession(PhotometrySessionLoader):
         self.session_length = session_series.get('session_length')
         self.day_n = session_series.get('day_n')
 
-        raw_br = session_series.get('brain_region', [])
-        self.brain_region = list(raw_br) if isinstance(raw_br, (list, np.ndarray)) else []
-        raw_hm = session_series.get('hemisphere', [])
-        self.hemisphere = list(raw_hm) if isinstance(raw_hm, (list, np.ndarray)) else []
-        raw_tnm = session_series.get('target_NM', [])
-        self.target_NM = list(raw_tnm) if isinstance(raw_tnm, (list, np.ndarray)) else []
+        def _as_list(raw):
+            """Normalize a parallel-list field: list/ndarray → list, non-null
+            scalar → length-1 list, missing/null → []."""
+            if isinstance(raw, (list, np.ndarray)):
+                return list(raw)
+            return [raw] if pd.notna(raw) else []
+
+        self.brain_region = _as_list(session_series.get('brain_region', []))
+        self.hemisphere = _as_list(session_series.get('hemisphere', []))
+        self.target_NM = _as_list(session_series.get('target_NM', []))
 
         self.errors = []
 

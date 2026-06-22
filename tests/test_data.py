@@ -211,6 +211,24 @@ class TestInit:
         assert ps.errors == []
         assert isinstance(ps.errors, list)
 
+    def test_scalar_region_fields_normalized_to_lists(self):
+        """Scalar region fields (a recording row) become length-1 lists."""
+        from iblnm.data import PhotometrySession
+        recording_row = pd.Series({
+            'eid': 'test-eid-rec',
+            'subject': 'test_mouse',
+            'start_time': '2024-01-01T10:00:00',
+            'number': 1,
+            'brain_region': 'VTA',
+            'hemisphere': 'l',
+            'target_NM': 'VTA-DA',
+        })
+        mock_one = MagicMock()
+        ps = PhotometrySession(recording_row, one=mock_one, load_data=False)
+        assert ps.brain_region == ['VTA']
+        assert ps.hemisphere == ['l']
+        assert ps.target_NM == ['VTA-DA']
+
 
 class TestToDict:
     """Tests for PhotometrySession.to_dict and to_series."""
