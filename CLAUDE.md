@@ -77,14 +77,18 @@ histology/           # Histology images (.tif) and fiber track CSVs
 - `analysis.py` — pure, **variable-agnostic** functions: take arrays/DataFrames
   plus arguments, return results. No model formulas, no predictor coding for
   specific variable sets, no hardcoded column-name logic.
-- `data.py` — `PhotometrySessionGroup` methods orchestrate only: unpack `self`,
-  code and shape data, call `analysis.py` with the right arguments, package
-  results back onto `self`. No computational logic in methods.
-- `scripts/` — chain method calls to answer a specific scientific question.
-  Never put generic functions here.
+- `data.py` — `PhotometrySessionGroup` methods orchestrate: unpack `self`, code
+  and shape this object's data, route it through `analysis.py`, package results
+  back onto `self`. Reusable computation belongs in `analysis.py`; the analysis
+  to run is the caller's, not chosen here.
+- `scripts/` — answer a specific scientific question; every analysis choice is
+  made here, read from `config.py` and passed downward as arguments. Never put
+  generic functions here.
+- Decisions about what to compute flow downward as arguments — which models,
+  predictors, and comparisons, in what sequence; no layer reaches up to
+  `config.py` to choose its own analysis.
 - New model or variable set? Generalize the existing `analysis.py` function and
-  pass the specifics (formulas from `config.py`) as arguments — never add a
-  case-specific variant.
+  have the caller pass the specifics — never add a case-specific variant.
 
 **Group object rule**: All data loading and session filtering in scripts MUST
 flow through `PhotometrySessionGroup`. Never load parquet/HDF5 files and
