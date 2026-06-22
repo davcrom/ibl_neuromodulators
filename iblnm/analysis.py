@@ -1,3 +1,4 @@
+import re
 import warnings
 
 import numpy as np
@@ -1794,6 +1795,57 @@ def _warn_dropped_fit(formula: str, groups: pd.Series, exc: Exception) -> None:
     )
 
 
+def formula_columns(formula: str, columns) -> list:
+    """Return the data columns a Wilkinson formula references.
+
+    Selects the members of ``columns`` that appear as whole words in
+    ``formula``, so wrapping (``C(contrast)``), interactions
+    (``contrast * side``), and the response on the left-hand side are all
+    handled without parsing the formula grammar. Word boundaries keep
+    ``contrast`` from matching inside ``relative_contrast`` and ``reaction_time``
+    from matching inside ``log_reaction_time``, so only columns actually named
+    are returned.
+
+    Parameters
+    ----------
+    formula : str
+        A Wilkinson formula, e.g. ``'response ~ contrast + log_reaction_time'``.
+    columns : iterable of str
+        Candidate column names (typically ``df.columns``).
+
+    Returns
+    -------
+    list of str
+        The subset of ``columns`` named in ``formula``, in the order of
+        ``columns``.
+    """
+    return [c for c in columns
+            if re.search(rf'\b{re.escape(c)}\b', formula)]
+
+
+def formula_union_columns(formulas, columns) -> list:
+    """Columns referenced by any formula in a family, for complete-case fitting.
+
+    The union of :func:`formula_columns` over ``formulas``, so a set of models
+    meant to be compared can be reduced to the rows valid for every member.
+
+    Parameters
+    ----------
+    formulas : iterable of str
+        Wilkinson formulas (one comparison family).
+    columns : iterable of str
+        Candidate column names (typically ``df.columns``).
+
+    Returns
+    -------
+    list of str
+        Every column named by at least one formula, in the order of ``columns``.
+    """
+    referenced = set().union(
+        *(formula_columns(f, columns) for f in formulas))
+    return [c for c in columns if c in referenced]
+
+
 def fit_lmm(formula, df, groups, re_formula='1', reml=True,
              contrast_coding='log', contrast_center=0.0):
     """Fit a linear mixed-effects model and return an LMMResult.
@@ -1822,6 +1874,12 @@ def fit_lmm(formula, df, groups, re_formula='1', reml=True,
     """
     import statsmodels.formula.api as smf
     from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
+    # Complete-case rows: statsmodels' formula path drops NaN rows from the
+    # design but not from the separately-passed ``groups``, misaligning them.
+    # Drop here so ``df``, ``groups``, and the fit all share the same rows.
+    keep = df[formula_columns(formula, df.columns)].notna().all(axis=1)
+    df, groups = df[keep], groups[keep]
 
     try:
         with warnings.catch_warnings(record=True) as caught:

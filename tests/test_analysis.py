@@ -2401,6 +2401,47 @@ class TestJackknifeLmm:
         assert row['delta_r2'] == pytest.approx(r2['additive'] - r2['contrast'])
 
 
+class TestFormulaColumns:
+    def test_returns_referenced_columns_only(self):
+        from iblnm.analysis import formula_columns
+        cols = ['response', 'contrast', 'side', 'reward',
+                'reaction_time', 'log_reaction_time']
+        got = formula_columns('response ~ contrast + log_reaction_time', cols)
+        assert got == ['response', 'contrast', 'log_reaction_time']
+
+    def test_word_boundaries_and_wrapping(self):
+        from iblnm.analysis import formula_columns
+        cols = ['contrast', 'relative_contrast', 'reaction_time',
+                'log_reaction_time']
+        # C(contrast) names contrast; the bare log column does not pull in
+        # reaction_time, nor does contrast pull in relative_contrast.
+        got = formula_columns(
+            'response ~ C(contrast) * side + log_reaction_time', cols)
+        assert got == ['contrast', 'log_reaction_time']
+
+    def test_union_across_formulas_ordered_by_columns(self):
+        from iblnm.analysis import formula_union_columns
+        cols = ['response', 'contrast', 'side', 'reward', 'log_reaction_time']
+        formulas = ['response ~ contrast + log_reaction_time',
+                    'response ~ reward + side']
+        got = formula_union_columns(formulas, cols)
+        # Union of all referenced columns, deduplicated, in cols order.
+        assert got == ['response', 'contrast', 'side', 'reward',
+                       'log_reaction_time']
+
+
+class TestFitLMMNaNHandling:
+    def test_drops_nan_rows_in_formula_columns(self):
+        """A NaN in a formula column must not misalign statsmodels' groups
+        array; fit_lmm drops those rows and fits the complete cases."""
+        from iblnm.analysis import fit_lmm
+        df = _make_movement_lmm_df()
+        df.loc[df.index[::5], 'log_reaction_time'] = np.nan
+        fit = fit_lmm('response ~ log_reaction_time', df, groups=df['subject'])
+        assert fit is not None
+        assert len(fit.model.endog) == int(df['log_reaction_time'].notna().sum())
+
+
 class TestFitLMMFailLoud:
     def test_missing_column_propagates(self):
         """A formula referencing a column that does not exist is a coding bug,
