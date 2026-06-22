@@ -1185,6 +1185,38 @@ def fit_response_glm(events, event_name, min_trials=20, contrast_coding='log',
     return coefs, ses
 
 
+def permutation_pvalue(observed: float, null, alternative: str = 'two-sided') -> float:
+    """Add-one-corrected permutation p-value for a scalar against a null.
+
+    Parameters
+    ----------
+    observed : float
+        Observed test statistic.
+    null : 1-D array-like
+        Null distribution of the statistic, length ``n_iter``.
+    alternative : {'two-sided', 'greater', 'less'}
+        Tail of the test. ``'greater'`` tests ``observed`` in the upper tail,
+        ``'less'`` in the lower tail, ``'two-sided'`` doubles the smaller tail.
+
+    Returns
+    -------
+    float
+        p-value in ``(0, 1]``, floored at ``1 / (n_iter + 1)`` by the add-one
+        correction (matches the ``fit_cca`` convention).
+    """
+    null = np.asarray(null)
+    n = len(null)
+    p_greater = (np.sum(null >= observed) + 1) / (n + 1)
+    p_less = (np.sum(null <= observed) + 1) / (n + 1)
+    if alternative == 'greater':
+        return p_greater
+    if alternative == 'less':
+        return p_less
+    if alternative == 'two-sided':
+        return min(1.0, 2 * min(p_greater, p_less))
+    raise ValueError(f"Unrecognized alternative: {alternative!r}")
+
+
 # =============================================================================
 # Canonical Correlation Analysis
 # =============================================================================

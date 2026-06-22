@@ -2553,3 +2553,41 @@ def _code_task(df):
     df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
     df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
     return df
+
+
+class TestPermutationPvalue:
+    def test_observed_above_null(self):
+        """Null entirely below observed: minimal greater-tail, maximal less-tail."""
+        from iblnm.analysis import permutation_pvalue
+        null = np.zeros(999)
+        observed = 1.0
+        assert permutation_pvalue(observed, null, 'greater') == 1 / 1000
+        assert permutation_pvalue(observed, null, 'less') == 1.0
+        assert permutation_pvalue(observed, null, 'two-sided') == 2 / 1000
+
+    def test_two_sided_symmetric_null(self):
+        """Two-sided equals 2 * smaller tail when below 1, capped at 1."""
+        from iblnm.analysis import permutation_pvalue
+        null = np.arange(-500, 501)  # symmetric around 0
+        observed = 250.0
+        n = len(null)
+        p_greater = (np.sum(null >= observed) + 1) / (n + 1)
+        p_less = (np.sum(null <= observed) + 1) / (n + 1)
+        p = permutation_pvalue(observed, null, 'two-sided')
+        assert 0 < p <= 1
+        assert p == min(1.0, 2 * min(p_greater, p_less))
+
+    def test_floor_at_one_over_n_plus_one(self):
+        """Every returned p is at least 1 / (n + 1)."""
+        from iblnm.analysis import permutation_pvalue
+        rng = np.random.default_rng(0)
+        null = rng.standard_normal(99)
+        floor = 1 / (len(null) + 1)
+        for alt in ('greater', 'less', 'two-sided'):
+            assert permutation_pvalue(5.0, null, alt) >= floor
+            assert permutation_pvalue(-5.0, null, alt) >= floor
+
+    def test_bogus_alternative_raises(self):
+        from iblnm.analysis import permutation_pvalue
+        with pytest.raises(ValueError):
+            permutation_pvalue(1.0, np.zeros(10), 'bogus')
