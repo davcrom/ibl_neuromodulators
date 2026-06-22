@@ -1701,7 +1701,7 @@ class LMMResult:
     random_effects : dict
         Subject → pd.Series of BLUPs.
     predictions : pd.DataFrame or None
-        Model predictions on a design grid (set by callers, not by _fit_lmm).
+        Model predictions on a design grid (set by callers, not by fit_lmm).
     emm_reward : pd.DataFrame or None
         Estimated marginal means for reward factor.
     emm_side : pd.DataFrame or None
@@ -1789,12 +1789,12 @@ def _warn_dropped_fit(formula: str, groups: pd.Series, exc: Exception) -> None:
     """Warn that a singular/degenerate LMM fit was dropped, so the loss of a
     fit from a result set is never silent."""
     warnings.warn(
-        f"_fit_lmm dropped a singular/degenerate fit "
+        f"fit_lmm dropped a singular/degenerate fit "
         f"(formula={formula!r}, groups={groups.name!r}): {exc}"
     )
 
 
-def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
+def fit_lmm(formula, df, groups, re_formula='1', reml=True,
              contrast_coding='log', contrast_center=0.0):
     """Fit a linear mixed-effects model and return an LMMResult.
 
@@ -1883,406 +1883,57 @@ def _fit_lmm(formula, df, groups, re_formula='1', reml=True,
     )
 
 
-def fit_response_lmm(df, response_col, formula=None, re_formula='1',
-                      contrast_coding='log'):
-    """Fit a linear mixed-effects model to trial-level response data.
+def compute_marginal_means(lmm_result, factors):
+    """Estimated marginal means for a set of factors from an LMM fit.
 
-    Uses deviation coding (±0.5) for side and reward so that every
-    coefficient is interpretable at the grand mean of all other factors.
-
-    Model: ``response ~ contrast * side * reward`` with subject
-    as random effect. The contrast predictor is mean-centered so that main
-    effects are evaluated at the average contrast level.
-
-    Coding:
-        side:   contra = +0.5, ipsi = −0.5
-        reward: correct = +0.5, incorrect = −0.5
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Trial-level data with columns: contrast, side, feedbackType,
-        subject, and ``response_col``.
-    response_col : str
-        Column name for the response magnitude.
-    formula : str, optional
-        Wilkinson formula for fixed effects. Default:
-        ``'{response_col} ~ contrast * side * reward'``.
-    re_formula : str
-        Random effects formula passed to ``statsmodels.MixedLM``.
-        Default ``'1'`` (random intercept only).
-
-    Returns
-    -------
-    LMMResult or None
-        None if the model fails to converge or data is degenerate.
-    """
-    _transform, _ = get_contrast_coding(contrast_coding)
-
-    df = df.copy()
-    original_contrasts = df['contrast'].copy()
-    coded = _transform(df['contrast'])
-    contrast_center = float(np.mean(coded))
-    df['contrast'] = coded - contrast_center
-    # Deviation coding: ±0.5
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-
-    # Check minimum requirements
-    if df['subject'].nunique() < 2:
-        return None
-    if df['side'].nunique() < 2 or df['reward'].nunique() < 2:
-        return None
-    if df[response_col].std() == 0:
-        return None
-
-    if formula is None:
-        formula = f'{response_col} ~ contrast * side * reward'
-
-    lmm_result = _fit_lmm(formula, df, groups=df['subject'],
-                           re_formula=re_formula, reml=True,
-                           contrast_coding=contrast_coding,
-                           contrast_center=contrast_center)
-    if lmm_result is None:
-        return None
-
-    # Predictions on contrast grid (fixed effects only)
-    result = lmm_result.result
-    fe_params = result.fe_params.values
-    fe_names = list(result.fe_params.index)
-    fe_cov = result.cov_params().loc[fe_names, fe_names].values
-
-    original_contrast_levels = sorted(original_contrasts.unique())
-    pred_rows = []
-    for side_label, side_val in [('contra', 0.5), ('ipsi', -0.5)]:
-        for reward_label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
-            grid = pd.DataFrame({
-                'contrast': _transform(original_contrast_levels) - contrast_center,
-                'side': side_val,
-                'reward': reward_val,
-                'subject': df['subject'].iloc[0],  # dummy
-                response_col: 0.0,
-            })
-            from patsy import dmatrix
-            design_info = result.model.data.orig_exog.design_info
-            X_grid = np.asarray(dmatrix(design_info, grid))
-            pred = X_grid @ fe_params
-            se_pred = np.sqrt(np.maximum(np.diag(X_grid @ fe_cov @ X_grid.T), 0))
-            for i, c in enumerate(original_contrast_levels):
-                pred_rows.append({
-                    'contrast': c,
-                    'side': side_label,
-                    'reward': reward_label,
-                    'predicted': float(pred[i]),
-                    'ci_lower': float(pred[i] - 1.96 * se_pred[i]),
-                    'ci_upper': float(pred[i] + 1.96 * se_pred[i]),
-                })
-    lmm_result.predictions = pd.DataFrame(pred_rows)
-
-    return lmm_result
-
-
-def fit_ceiling_lmm(df: pd.DataFrame, response_col: str) -> 'LMMResult | None':
-    """Fit the saturated 'ceiling' model and return its variance partition.
-
-    Model: ``response ~ C(contrast) * side * reward`` with a random intercept
-    per subject. Coding contrast as a categorical factor saturates the
-    task-condition design, so the marginal R² is the upper bound on the
-    variance any task-condition model can explain for that target/event. This
-    is a standalone reference, not a decomposition.
-
-    Side and reward use the same deviation coding (±0.5) as
-    ``fit_response_lmm``; their coding does not change the fitted subspace
-    (and hence the R²) for two-level factors.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Trial-level data with columns ``contrast``, ``side``, ``feedbackType``,
-        ``subject``, and ``response_col``.
-    response_col : str
-        Column name for the response magnitude.
-
-    Returns
-    -------
-    LMMResult or None
-        None if the model fails to converge or data is degenerate.
-    """
-    df = df.copy()
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-
-    if df['subject'].nunique() < 2:
-        return None
-    if df['side'].nunique() < 2 or df['reward'].nunique() < 2:
-        return None
-    if df[response_col].std() == 0:
-        return None
-
-    formula = f'{response_col} ~ C(contrast) * side * reward'
-    return _fit_lmm(formula, df, groups=df['subject'], re_formula='1',
-                    reml=True)
-
-
-def compute_marginal_means(lmm_result, factor):
-    """Compute estimated marginal means for a factor from an LMM fit.
-
-    Averages model predictions over the levels of all other factors in the
-    design, yielding the marginal mean response at each level of ``factor``.
-    With deviation coding (±0.5), averaged factors are set to 0.
+    For each combination of the listed factors' levels — taken from the values
+    present in the fitted design — predicts the fixed-effects mean response
+    (± 95% CI), holding every other predictor at its sample mean (0 under the
+    deviation/centered coding). One factor yields main-effect EMMs; two yield the
+    interaction grid whose non-parallel pattern is the interaction. Builds its
+    own design row via the model's patsy design info and predicts, subsuming the
+    old ``compute_predictions`` grid. Names no variable: the caller passes which
+    factors, and the output carries each factor's coded level (label mapping is
+    the plotting layer's job).
 
     Parameters
     ----------
     lmm_result : LMMResult
-        Output from ``fit_response_lmm`` (deviation-coded model).
-    factor : str
-        Factor to compute EMMs for: 'reward', 'side', or 'contrast'.
+    factors : sequence of str
+        Predictor columns (as named in the fitted formula) to cross.
 
     Returns
     -------
     pd.DataFrame
-        Columns: level, mean, ci_lower, ci_upper.
+        One row per factor-level combination: a column per factor (its coded
+        level value), plus ``predicted``, ``ci_lower``, ``ci_upper``.
     """
+    from itertools import product
+    from patsy import dmatrix
+
     result = lmm_result.result
     fe_names = list(result.fe_params.index)
     fe_params = result.fe_params.values
     fe_cov = result.cov_params().loc[fe_names, fe_names].values
+    design_info = result.model.data.orig_exog.design_info
+    frame = result.model.data.frame
 
-    _transform, _ = get_contrast_coding(lmm_result.contrast_coding)
-    cc = lmm_result.contrast_col
-    contrast_center = lmm_result.contrast_center
-
-    predictions = lmm_result.predictions
-    contrast_levels = sorted(predictions['contrast'].unique())
-
-    # Factor level specs: (label, {column: value})
-    if factor == 'reward':
-        level_specs = [
-            ('incorrect', {'reward': -0.5}),
-            ('correct', {'reward': 0.5}),
-        ]
-    elif factor == 'side':
-        level_specs = [
-            ('contra', {'side': 0.5}),
-            ('ipsi', {'side': -0.5}),
-        ]
-    elif factor == 'contrast':
-        level_specs = [
-            (c, {cc: _transform(c) - contrast_center})
-            for c in contrast_levels
-        ]
-    else:
-        raise ValueError(f"factor must be 'reward', 'side', or 'contrast', got {factor}")
-
-    # Build name→index map for the 8 deviation-coded coefficients
-    idx = {name: i for i, name in enumerate(fe_names)}
+    predictors = [fi.name() for fi in design_info.factor_infos]
+    means = {p: float(frame[p].mean()) for p in predictors}
+    grids = {f: sorted(frame[f].unique()) for f in factors}
 
     rows = []
-    for label, factor_vals in level_specs:
-        # Set factor to its level value, all other factors to 0 (grand mean)
-        # Centered contrast at grand mean = 0
-        lc = factor_vals.get(cc, 0.0)
-        side = factor_vals.get('side', 0.0)
-        reward = factor_vals.get('reward', 0.0)
-
-        # Construct the design vector manually
-        c = np.zeros(len(fe_names))
-        c[idx['Intercept']] = 1.0
-        if cc in idx:
-            c[idx[cc]] = lc
-        if 'side' in idx:
-            c[idx['side']] = side
-        if 'reward' in idx:
-            c[idx['reward']] = reward
-        if f'{cc}:side' in idx:
-            c[idx[f'{cc}:side']] = lc * side
-        if f'{cc}:reward' in idx:
-            c[idx[f'{cc}:reward']] = lc * reward
-        if 'side:reward' in idx:
-            c[idx['side:reward']] = side * reward
-        if f'{cc}:side:reward' in idx:
-            c[idx[f'{cc}:side:reward']] = lc * side * reward
-
-        mean_pred = float(c @ fe_params)
-        se = float(np.sqrt(max(c @ fe_cov @ c, 0)))
-
-        rows.append({
-            'level': label,
-            'mean': mean_pred,
-            'ci_lower': mean_pred - 1.96 * se,
-            'ci_upper': mean_pred + 1.96 * se,
-        })
-
-    return pd.DataFrame(rows)
-
-
-def compute_contrast_slopes(lmm_result):
-    """Compute contrast slopes per reward condition from an LMM fit.
-
-    With deviation coding (±0.5):
-        incorrect (reward=-0.5): β_c - 0.5 × β_c:reward
-        correct   (reward=+0.5): β_c + 0.5 × β_c:reward
-
-    When the model includes random slopes for the contrast predictor,
-    subject-level slopes (population + BLUP deviation) are also returned.
-
-    Parameters
-    ----------
-    lmm_result : LMMResult
-        Output from ``fit_response_lmm`` (deviation-coded model).
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: reward, slope, ci_lower, ci_upper, type, subject.
-        type is 'population' or 'subject'.
-    """
-    cc = lmm_result.contrast_col
-    result = lmm_result.result
-    fe_params = result.fe_params
-    fe_names = list(fe_params.index)
-    fe_cov = result.cov_params().loc[fe_names, fe_names].values
-
-    beta_lc = fe_params[cc]
-    idx_lc = fe_names.index(cc)
-
-    interaction_name = f'{cc}:reward'
-    has_interaction = interaction_name in fe_names
-    if has_interaction:
-        beta_int = fe_params[interaction_name]
-        idx_int = fe_names.index(interaction_name)
-    else:
-        beta_int = 0.0
-
-    rows = []
-    for label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
-        slope = beta_lc + reward_val * beta_int
-        # Var(β_c + r × β_c:r) = Var(β_c) + r²Var(β_c:r) + 2r·Cov
-        if has_interaction:
-            var = (fe_cov[idx_lc, idx_lc]
-                   + reward_val**2 * fe_cov[idx_int, idx_int]
-                   + 2 * reward_val * fe_cov[idx_lc, idx_int])
-            se = np.sqrt(max(var, 0))
-        else:
-            se = np.sqrt(fe_cov[idx_lc, idx_lc])
-
-        rows.append({
-            'reward': label,
-            'slope': float(slope),
-            'ci_lower': float(slope - 1.96 * se),
-            'ci_upper': float(slope + 1.96 * se),
-            'type': 'population',
-            'subject': None,
-        })
-
-    # Subject-level slopes (population + BLUP)
-    re_dict = lmm_result.random_effects
-    has_random_slope = any(
-        cc in effects.index for effects in re_dict.values()
-    )
-    if has_random_slope:
-        for subj, effects in re_dict.items():
-            u_slope = effects.get(cc, 0.0)
-            for i, (label, _) in enumerate(
-                    [('incorrect', -0.5), ('correct', 0.5)]):
-                pop_slope = rows[i]['slope']
-                rows.append({
-                    'reward': label,
-                    'slope': float(pop_slope + u_slope),
-                    'ci_lower': np.nan,
-                    'ci_upper': np.nan,
-                    'type': 'subject',
-                    'subject': subj,
-                })
-
-    return pd.DataFrame(rows)
-
-
-def compute_interaction_effects(lmm_result, y_factor, x_factor):
-    """Compute the effect of y_factor at each level of x_factor.
-
-    Uses deviation coding (±0.5). For each level of x_factor, computes
-    the y_factor effect while the remaining factor is set to 0 (its grand
-    mean under deviation coding).
-
-    Parameters
-    ----------
-    lmm_result : LMMResult
-        Output from ``fit_response_lmm`` (deviation-coded model).
-    y_factor : str
-        Factor whose effect to compute: 'contrast', 'reward', or 'side'.
-    x_factor : str
-        Factor to condition on: 'reward' or 'side'.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: x_level, effect, ci_lower, ci_upper, p_interaction.
-        ``p_interaction`` is the p-value of the two-way interaction
-        coefficient (same for both rows).
-    """
-    result = lmm_result.result
-    fe_params = result.fe_params
-    fe_names = list(fe_params.index)
-    fe_cov = result.cov_params().loc[fe_names, fe_names].values
-
-    def _idx(name):
-        return fe_names.index(name) if name in fe_names else None
-
-    # Deviation-coded coefficient names
-    cc = lmm_result.contrast_col
-    _coef = {
-        'contrast': cc,
-        'reward': 'reward',
-        'side': 'side',
-        'contrast:reward': f'{cc}:reward',
-        'contrast:side': f'{cc}:side',
-        'reward:side': 'side:reward',
-    }
-
-    # X-factor levels: (label, deviation-coded value)
-    if x_factor == 'reward':
-        x_levels = [('incorrect', -0.5), ('correct', 0.5)]
-    elif x_factor == 'side':
-        x_levels = [('contra', 0.5), ('ipsi', -0.5)]
-    else:
-        raise ValueError(f"x_factor must be 'reward' or 'side', got {x_factor}")
-
-    # Two-way interaction coefficient name
-    yx_key = f'{min(y_factor, x_factor)}:{max(y_factor, x_factor)}'
-    int_name = _coef.get(yx_key)
-    if int_name and int_name in fe_names:
-        p_interaction = float(result.pvalues[int_name])
-    else:
-        p_interaction = 1.0
-
-    rows = []
-    for x_label, x_val in x_levels:
-        # Build contrast vector for the y_factor effect at this x_level.
-        # Third factor is set to 0 (grand mean under deviation coding).
-        c = np.zeros(len(fe_names))
-
-        # y_factor main effect (slope for contrast, difference for categorical)
-        y_name = _coef[y_factor]
-        if _idx(y_name) is not None:
-            c[_idx(y_name)] = 1.0
-
-        # y_factor × x_factor interaction, weighted by x_val
-        if int_name and _idx(int_name) is not None:
-            c[_idx(int_name)] = x_val
-
-        # Third factor = 0, so y×third and y×x×third terms vanish.
-
-        effect = float(c @ fe_params.values)
-        se = float(np.sqrt(max(c @ fe_cov @ c, 0)))
-
-        rows.append({
-            'x_level': x_label,
-            'effect': effect,
-            'ci_lower': effect - 1.96 * se,
-            'ci_upper': effect + 1.96 * se,
-            'p_interaction': p_interaction,
-        })
+    for combo in product(*(grids[f] for f in factors)):
+        row_vals = dict(means)
+        row_vals.update(dict(zip(factors, combo)))
+        X = np.asarray(dmatrix(design_info, pd.DataFrame([row_vals])))
+        pred = float((X @ fe_params)[0])
+        se = float(np.sqrt(max((X @ fe_cov @ X.T)[0, 0], 0.0)))
+        row = dict(zip(factors, combo))
+        row['predicted'] = pred
+        row['ci_lower'] = pred - 1.96 * se
+        row['ci_upper'] = pred + 1.96 * se
+        rows.append(row)
 
     return pd.DataFrame(rows)
 
@@ -2345,134 +1996,6 @@ def feature_unique_contribution(response_matrix, labels, subjects,
 # =============================================================================
 
 
-def _movement_formulas(response_col, timing_col):
-    """The three nested additive movement models, the single source of the
-    model specification shared by the full-data, jackknife, and LOSO-CV
-    routines. Side is intentionally excluded (see ``_code_movement_predictors``)."""
-    return {
-        'full': f'{response_col} ~ contrast + {timing_col} + reward',
-        'drop_contrast': f'{response_col} ~ {timing_col} + reward',
-        'drop_movement': f'{response_col} ~ contrast + reward',
-    }
-
-
-def _code_movement_predictors(df, timing_col):
-    """log2-code and mean-center contrast; deviation-code reward (±0.5).
-
-    Side is omitted on purpose: choice-side bias is idiosyncratic per animal,
-    not a consistent population-level confound, whereas reward is (correct
-    trials are systematically more vigorous across animals). The timing column
-    is assumed already log-transformed.
-    """
-    transform, _ = get_contrast_coding('log2')
-    df = df.copy()
-    coded = transform(df['contrast'])
-    df['contrast'] = coded - float(np.mean(coded))
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-    return df
-
-
-def fit_movement_lmm_r2(df, response_col, timing_col):
-    """Fit the three nested additive movement LMMs on ``df``; return in-sample
-    marginal (fixed-effects) R² and the drop-one deltas.
-
-    Models share a random intercept ``(1 | subject)``:
-
-    - Full: ``response ~ contrast + timing + reward``
-    - Drop-contrast: ``response ~ timing + reward``
-    - Drop-movement: ``response ~ contrast + reward``
-
-    ``delta_r2_contrast`` / ``delta_r2_timing`` are the marginal R² lost when
-    contrast / the movement variable are removed from the full model. The
-    marginal R² uses a fixed empirical denominator (``var(observed y)``), so each
-    delta is a unique (semipartial) R²; it can be negative when a predictor does
-    not help. This is the general-purpose kernel: ``jackknife_movement_lmm``
-    calls it on leave-one-subject-out subsets, and the pipeline calls it on the
-    full dataset for the absolute-R² bars.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Trial-level data with columns: contrast, feedbackType, subject,
-        ``response_col``, and ``timing_col`` (already log-transformed).
-    response_col : str
-        Column name for the NM response magnitude.
-    timing_col : str
-        Column name for the (log-transformed) movement variable.
-
-    Returns
-    -------
-    dict or None
-        Keys: r2_full, r2_drop_contrast, r2_drop_movement, delta_r2_contrast,
-        delta_r2_timing. None if fewer than two subjects or any fit fails.
-    """
-    df = _code_movement_predictors(
-        df.dropna(subset=[response_col, timing_col]), timing_col)
-    if df['subject'].nunique() < 2:
-        return None
-
-    fits = {
-        name: _fit_lmm(formula, df, groups=df['subject'], re_formula='1',
-                       reml=False)
-        for name, formula in _movement_formulas(response_col, timing_col).items()
-    }
-    if any(fit is None for fit in fits.values()):
-        return None
-
-    r2 = {name: fit.variance_explained['marginal'] for name, fit in fits.items()}
-    return {
-        'r2_full': r2['full'],
-        'r2_drop_contrast': r2['drop_contrast'],
-        'r2_drop_movement': r2['drop_movement'],
-        'delta_r2_contrast': r2['full'] - r2['drop_contrast'],
-        'delta_r2_timing': r2['full'] - r2['drop_movement'],
-    }
-
-
-def jackknife_movement_lmm(df, response_col, timing_col, min_subjects=3):
-    """Leave-one-subject-out jackknife of the movement-model marginal R².
-
-    For each subject, refits the three models (``fit_movement_lmm_r2``) on the
-    *remaining* subjects and records the in-sample marginal R² and drop-one
-    deltas. The spread across subjects shows whether any single animal drives
-    the result.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Trial-level data (see ``fit_movement_lmm_r2``).
-    response_col : str
-        Column name for the NM response magnitude.
-    timing_col : str
-        Column name for the (log-transformed) movement variable.
-    min_subjects : int
-        Minimum subjects required to run the jackknife.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per left-out subject with columns: subject, r2_full,
-        r2_drop_contrast, r2_drop_movement, delta_r2_contrast, delta_r2_timing,
-        timing_col. Empty DataFrame if fewer than min_subjects.
-    """
-    cols = ['subject', 'r2_full', 'r2_drop_contrast', 'r2_drop_movement',
-            'delta_r2_contrast', 'delta_r2_timing', 'timing_col']
-    df = df.dropna(subset=[response_col, timing_col])
-    subjects = df['subject'].unique()
-    if len(subjects) < min_subjects:
-        return pd.DataFrame(columns=cols)
-
-    rows = []
-    for held_out in subjects:
-        res = fit_movement_lmm_r2(df[df['subject'] != held_out],
-                                  response_col, timing_col)
-        if res is None:
-            continue
-        rows.append({'subject': held_out, **res, 'timing_col': timing_col})
-
-    return pd.DataFrame(rows, columns=cols)
-
-
 def _centered_r2(lmm_result, df_held, y_centered, ss_tot):
     """Out-of-sample R² for a held-out subject after removing its intercept.
 
@@ -2490,155 +2013,59 @@ def _centered_r2(lmm_result, df_held, y_centered, ss_tot):
     return float(1 - np.sum((y_centered - (pred - np.mean(pred))) ** 2) / ss_tot)
 
 
-def loso_cv_movement_lmm(df, response_col, timing_col, min_subjects=3):
-    """Leave-one-subject-out cross-validation of the movement models.
+def crossval_lmm(df, formulas, response_col, reference='full',
+                 fold_col='subject', min_subjects=3, min_test=5):
+    """Out-of-sample ΔR² by leave-one-fold-out cross-validation.
 
-    Same three additive models as ``fit_movement_lmm_r2``, but each fold fits
-    on N−1 subjects and scores the *held-out* subject out-of-sample, after
-    removing that subject's own intercept (centering both responses and the
-    fixed-effects prediction on the subject's mean). This tests whether the
-    population fixed-effect slopes generalize to a new animal, rather than how
-    well they describe the training set; use ``jackknife_movement_lmm`` for the
-    in-sample influence view.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Trial-level data (see ``fit_movement_lmm_r2``).
-    response_col : str
-        Column name for the NM response magnitude.
-    timing_col : str
-        Column name for the (log-transformed) movement variable.
-    min_subjects : int
-        Minimum subjects required (≥ 3 so training sets keep ≥ 2 subjects).
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per held-out subject with columns: subject, n_trials, r2_full,
-        r2_drop_contrast, r2_drop_movement, delta_r2_contrast, delta_r2_timing,
-        timing_col. Empty DataFrame if fewer than min_subjects.
-    """
-    cols = ['subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
-            'r2_drop_movement', 'delta_r2_contrast', 'delta_r2_timing',
-            'timing_col']
-    df = _code_movement_predictors(
-        df.dropna(subset=[response_col, timing_col]), timing_col)
-    subjects = df['subject'].unique()
-    if len(subjects) < min_subjects:
-        return pd.DataFrame(columns=cols)
-
-    formulas = _movement_formulas(response_col, timing_col)
-
-    rows = []
-    for held_out in subjects:
-        df_train = df[df['subject'] != held_out]
-        df_test = df[df['subject'] == held_out]
-        if len(df_test) < 5 or df_train['subject'].nunique() < 2:
-            continue
-
-        fits = {name: _fit_lmm(formula, df_train, groups=df_train['subject'],
-                               re_formula='1', reml=False)
-                for name, formula in formulas.items()}
-        if any(fit is None for fit in fits.values()):
-            continue
-
-        y_centered = df_test[response_col].values - df_test[response_col].mean()
-        ss_tot = np.sum(y_centered ** 2)
-        if ss_tot == 0:
-            continue
-
-        r2 = {name: _centered_r2(fit, df_test, y_centered, ss_tot)
-              for name, fit in fits.items()}
-        rows.append({
-            'subject': held_out,
-            'n_trials': len(df_test),
-            'r2_full': r2['full'],
-            'r2_drop_contrast': r2['drop_contrast'],
-            'r2_drop_movement': r2['drop_movement'],
-            'delta_r2_contrast': r2['full'] - r2['drop_contrast'],
-            'delta_r2_timing': r2['full'] - r2['drop_movement'],
-            'timing_col': timing_col,
-        })
-
-    return pd.DataFrame(rows, columns=cols)
-
-
-def _code_task_predictors(df, response_col, contrast_coding):
-    """Drop null responses and code task predictors for the LOSO models:
-    contrast transformed then mean-centered, side and reward deviation-coded
-    (±0.5). Shared by the interaction and main-effect LOSO routines."""
-    transform, _ = get_contrast_coding(contrast_coding)
-    df = df.dropna(subset=[response_col]).copy()
-    coded = transform(df['contrast'])
-    df['contrast'] = coded - float(np.mean(coded))
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-    return df
-
-
-def loso_cv_task_lmm(df, response_col, contrast_coding='log2', min_subjects=3):
-    """Leave-one-subject-out cross-validation of the task model.
-
-    Full model = ``response ~ contrast * side * reward``; reduced =
-    ``response ~ contrast + side + reward`` (no interactions). Both share a
-    random intercept ``(1 | subject)`` and are fit with ML (so the two
-    fixed-effects designs are on a comparable scale). Each fold fits on N−1
-    subjects and scores the held-out subject out of sample, centering out that
-    subject's own intercept (``_centered_r2``). Comparing full vs reduced
-    out-of-sample R² tests whether the interaction structure generalizes to a
-    new animal — the substitute for random interaction slopes, which the
-    subject count cannot support.
-
-    Predictors are coded as in ``fit_response_lmm``: contrast via
-    ``contrast_coding`` then mean-centered, side and reward deviation-coded
-    (±0.5). Contrast is centered once on the full data before splitting, so
-    every fold shares the same coding.
-
-    At 6–11 subjects (one fold each) the CV estimate is noisy and should be
-    read qualitatively, not as a precise generalization score.
+    Formula-agnostic resampling: leave out one ``fold_col`` value at a time, fit
+    each model in ``formulas`` on the N−1 training folds, and score the held-out
+    fold out of sample with ``_centered_r2`` (which removes the held-out fold's
+    own random intercept). The ``reference`` key names the baseline model; every
+    other key's ΔR² is the held-out R² the reference gains over that reduced
+    model. Subsumes the bespoke ``loso_cv_*`` routines; the caller codes ``df``.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Trial-level data with columns ``contrast``, ``side``, ``feedbackType``,
-        ``subject``, and ``response_col``.
+        Trial-level data, already coded, with ``response_col`` and ``fold_col``.
+    formulas : dict[str, str]
+        Name → Wilkinson formula. Must contain the ``reference`` key.
     response_col : str
         Column name for the response magnitude.
-    contrast_coding : str
-        Continuous contrast coding passed to ``get_contrast_coding``.
+    reference : str
+        Key in ``formulas`` naming the baseline model each other model's ΔR² is
+        measured against.
+    fold_col : str
+        Column whose unique values define the leave-one-out folds.
     min_subjects : int
-        Minimum subjects required (≥ 3 so training sets keep ≥ 2 subjects).
+        Minimum number of folds required (≥ 3 so training keeps ≥ 2 folds).
+    min_test : int
+        Minimum held-out trials for a fold to be scored.
 
     Returns
     -------
     pd.DataFrame
-        One row per held-out subject (``subject``, ``n_trials``, ``r2_full``,
-        ``r2_reduced``, ``delta_r2``) plus a final ``subject == 'aggregate'``
-        row holding the across-fold means and total trial count. Empty
-        DataFrame if fewer than ``min_subjects``.
+        One row per (``fold``, ``predictor``) for each non-``reference`` formula,
+        with columns ``fold, predictor, n_trials, r2, delta_r2``. ``r2`` is the
+        held-out reference R²; ``delta_r2`` is ``r2_<reference> − r2_<predictor>``.
+        A ``fold == 'aggregate'`` row per predictor holds the across-fold mean
+        ``r2``/``delta_r2`` and summed ``n_trials``. Empty frame with those
+        columns if fewer than ``min_subjects`` folds or no fold is scorable.
     """
-    cols = ['subject', 'n_trials', 'r2_full', 'r2_reduced', 'delta_r2']
-    df = _code_task_predictors(df, response_col, contrast_coding)
-
-    subjects = df['subject'].unique()
-    if len(subjects) < min_subjects:
+    cols = ['fold', 'predictor', 'n_trials', 'r2', 'delta_r2']
+    folds = df[fold_col].unique()
+    if len(folds) < min_subjects:
         return pd.DataFrame(columns=cols)
 
-    formulas = {
-        'full': f'{response_col} ~ contrast * side * reward',
-        'reduced': f'{response_col} ~ contrast + side + reward',
-    }
-
     rows = []
-    for held_out in subjects:
-        df_train = df[df['subject'] != held_out]
-        df_test = df[df['subject'] == held_out]
-        if len(df_test) < 5 or df_train['subject'].nunique() < 2:
+    for fold in folds:
+        df_train = df[df[fold_col] != fold]
+        df_test = df[df[fold_col] == fold]
+        if len(df_test) < min_test or df_train[fold_col].nunique() < 2:
             continue
 
-        fits = {name: _fit_lmm(formula, df_train, groups=df_train['subject'],
-                               re_formula='1', reml=False)
+        fits = {name: fit_lmm(formula, df_train, groups=df_train[fold_col],
+                              re_formula='1', reml=False)
                 for name, formula in formulas.items()}
         if any(fit is None for fit in fits.values()):
             continue
@@ -2650,252 +2077,101 @@ def loso_cv_task_lmm(df, response_col, contrast_coding='log2', min_subjects=3):
 
         r2 = {name: _centered_r2(fit, df_test, y_centered, ss_tot)
               for name, fit in fits.items()}
-        rows.append({
-            'subject': held_out,
-            'n_trials': len(df_test),
-            'r2_full': r2['full'],
-            'r2_reduced': r2['reduced'],
-            'delta_r2': r2['full'] - r2['reduced'],
-        })
+        rows.extend(
+            {'fold': fold, 'predictor': name, 'n_trials': len(df_test),
+             'r2': r2[reference], 'delta_r2': r2[reference] - r2[name]}
+            for name in formulas if name != reference
+        )
 
-    if not rows:
-        return pd.DataFrame(columns=cols)
-
-    rows.append({
-        'subject': 'aggregate',
-        'n_trials': sum(r['n_trials'] for r in rows),
-        'r2_full': float(np.mean([r['r2_full'] for r in rows])),
-        'r2_reduced': float(np.mean([r['r2_reduced'] for r in rows])),
-        'delta_r2': float(np.mean([r['delta_r2'] for r in rows])),
-    })
-    return pd.DataFrame(rows, columns=cols)
+    return _aggregate_fold_rows(rows, cols)
 
 
-def loso_cv_main_effects_lmm(df, response_col, contrast_coding='log2',
-                             min_subjects=3):
-    """Leave-one-subject-out reliability of each additive main effect.
+def jackknife_lmm(df, formulas, response_col, reference='full',
+                  fold_col='subject', min_subjects=3):
+    """In-sample-influence ΔR² by leave-one-fold-out jackknife.
 
-    Companion to ``loso_cv_task_lmm``, applying the same out-of-sample logic to
-    the main effects instead of the interactions. The baseline is the additive
-    model ``response ~ contrast + side + reward``; for each main effect, a
-    reduced model drops just that term. Each fold fits both on N−1 subjects and
-    scores the held-out subject out of sample (``_centered_r2``); the per-term
-    ΔR² = R²(additive) − R²(additive without that term) is the out-of-sample
-    variance that main effect uniquely carries to a new animal. This is the
-    generalization counterpart to the random-slope coefficient estimates, on the
-    same axis as the interaction LOSO.
-
-    Predictors are coded as in ``loso_cv_task_lmm`` (contrast transformed then
-    mean-centered, side and reward deviation-coded ±0.5), all share a random
-    intercept ``(1 | subject)``, and are fit with ML.
+    Same fold loop as ``crossval_lmm``, but each fold scores the *training* set
+    in sample rather than a held-out fold: leave out one ``fold_col`` value, fit
+    each model in ``formulas`` on the N−1 training folds, and read each fit's
+    in-sample marginal R² (``variance_explained['marginal']``). The spread of
+    the per-fold ΔR² shows whether any single fold drives the reference model's
+    advantage. The ``reference`` key names the reference model; every other
+    key's ΔR² is the marginal R² the reference gains over that reduced model.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Trial-level data with columns ``contrast``, ``side``, ``feedbackType``,
-        ``subject``, and ``response_col``.
+        Trial-level data, already coded, with ``response_col`` and ``fold_col``.
+    formulas : dict[str, str]
+        Name → Wilkinson formula. Must contain the ``reference`` key.
     response_col : str
         Column name for the response magnitude.
-    contrast_coding : str
-        Continuous contrast coding passed to ``get_contrast_coding``.
+    reference : str
+        Key in ``formulas`` naming the model each other model's ΔR² is measured
+        against.
+    fold_col : str
+        Column whose unique values define the leave-one-out folds.
     min_subjects : int
-        Minimum subjects required (≥ 3 so training sets keep ≥ 2 subjects).
+        Minimum number of folds required (≥ 3 so training keeps ≥ 2 folds).
 
     Returns
     -------
     pd.DataFrame
-        One row per (held-out subject × main effect) with columns ``subject``,
-        ``predictor``, ``n_trials``, ``r2_additive``, ``r2_drop``, ``delta_r2``,
-        plus a ``subject == 'aggregate'`` row per predictor holding across-fold
-        means. Empty DataFrame if fewer than ``min_subjects``.
+        One row per (``fold``, ``predictor``) for each non-``reference``
+        formula, with columns ``fold, predictor, n_trials, r2, delta_r2``.
+        ``r2`` is the training-set reference marginal R²; ``delta_r2`` is
+        ``r2_<reference> − r2_<predictor>``; ``n_trials`` is the training-set
+        size. A ``fold == 'aggregate'`` row per predictor holds the across-fold
+        mean ``r2``/``delta_r2`` and summed ``n_trials``. Empty frame with those
+        columns if fewer than ``min_subjects`` folds or no fold is scorable.
     """
-    cols = ['subject', 'predictor', 'n_trials', 'r2_additive', 'r2_drop',
-            'delta_r2']
-    df = _code_task_predictors(df, response_col, contrast_coding)
-
-    subjects = df['subject'].unique()
-    if len(subjects) < min_subjects:
+    cols = ['fold', 'predictor', 'n_trials', 'r2', 'delta_r2']
+    folds = df[fold_col].unique()
+    if len(folds) < min_subjects:
         return pd.DataFrame(columns=cols)
 
-    predictors = ['contrast', 'side', 'reward']
-    additive = f'{response_col} ~ contrast + side + reward'
-    drop_formulas = {
-        p: f'{response_col} ~ ' + ' + '.join(q for q in predictors if q != p)
-        for p in predictors
-    }
-
     rows = []
-    for held_out in subjects:
-        df_train = df[df['subject'] != held_out]
-        df_test = df[df['subject'] == held_out]
-        if len(df_test) < 5 or df_train['subject'].nunique() < 2:
+    for fold in folds:
+        df_train = df[df[fold_col] != fold]
+        if df_train[fold_col].nunique() < 2:
             continue
 
-        formulas = {'additive': additive, **drop_formulas}
-        fits = {name: _fit_lmm(formula, df_train, groups=df_train['subject'],
-                               re_formula='1', reml=False)
+        fits = {name: fit_lmm(formula, df_train, groups=df_train[fold_col],
+                              re_formula='1', reml=False)
                 for name, formula in formulas.items()}
         if any(fit is None for fit in fits.values()):
             continue
 
-        y_centered = df_test[response_col].values - df_test[response_col].mean()
-        ss_tot = np.sum(y_centered ** 2)
-        if ss_tot == 0:
-            continue
-
-        r2 = {name: _centered_r2(fit, df_test, y_centered, ss_tot)
+        r2 = {name: fit.variance_explained['marginal']
               for name, fit in fits.items()}
-        for p in predictors:
-            rows.append({
-                'subject': held_out,
-                'predictor': p,
-                'n_trials': len(df_test),
-                'r2_additive': r2['additive'],
-                'r2_drop': r2[p],
-                'delta_r2': r2['additive'] - r2[p],
-            })
+        rows.extend(
+            {'fold': fold, 'predictor': name, 'n_trials': len(df_train),
+             'r2': r2[reference], 'delta_r2': r2[reference] - r2[name]}
+            for name in formulas if name != reference
+        )
 
+    return _aggregate_fold_rows(rows, cols)
+
+
+def _aggregate_fold_rows(rows: list, cols: list) -> pd.DataFrame:
+    """Append a per-predictor ``aggregate`` row to per-fold resampling rows.
+
+    Shared tail of ``crossval_lmm`` and ``jackknife_lmm``: the aggregate row
+    sums ``n_trials`` and averages ``r2``/``delta_r2`` across folds. ``rows`` is
+    the list of per-fold dicts; ``cols`` the standard resampling columns. Empty
+    frame with ``cols`` if ``rows`` is empty.
+    """
     if not rows:
         return pd.DataFrame(columns=cols)
 
     fold_rows = pd.DataFrame(rows, columns=cols)
     aggregate = (fold_rows.groupby('predictor', sort=False)
                  .agg(n_trials=('n_trials', 'sum'),
-                      r2_additive=('r2_additive', 'mean'),
-                      r2_drop=('r2_drop', 'mean'),
+                      r2=('r2', 'mean'),
                       delta_r2=('delta_r2', 'mean'))
                  .reset_index())
-    aggregate.insert(0, 'subject', 'aggregate')
+    aggregate.insert(0, 'fold', 'aggregate')
     return pd.concat([fold_rows, aggregate], ignore_index=True)
-
-
-_TIDY_LMM_COLS = ['term', 'coef', 'se', 'z', 'p', 'ci_low', 'ci_high',
-                  'marginal_r2', 'n_trials', 'n_subjects', 'timing_col']
-
-
-def _empty_tidy_lmm() -> pd.DataFrame:
-    """Empty tidy frame with the standard movement-LMM result columns, returned
-    when a group has too few subjects or the fit fails."""
-    return pd.DataFrame(columns=_TIDY_LMM_COLS)
-
-
-def _tidy_lmm_row(lmm: 'LMMResult', term: str, df: pd.DataFrame,
-                  timing_col: str) -> pd.DataFrame:
-    """One-row tidy frame for the fixed-effect ``term`` of a fitted ``lmm``.
-
-    ``term`` is the coefficient reported (the contrast or timing slope);
-    ``timing_col`` is the timing-variable identifier carried on every row.
-    """
-    res = lmm.result
-    ci = res.conf_int().loc[term]
-    return pd.DataFrame([{
-        'term': term,
-        'coef': float(res.fe_params[term]),
-        'se': float(res.bse_fe[term]),
-        'z': float(res.tvalues[term]),
-        'p': float(res.pvalues[term]),
-        'ci_low': float(ci.iloc[0]),
-        'ci_high': float(ci.iloc[1]),
-        'marginal_r2': lmm.variance_explained['marginal'],
-        'n_trials': len(df),
-        'n_subjects': df['subject'].nunique(),
-        'timing_col': timing_col,
-    }], columns=_TIDY_LMM_COLS)
-
-
-def fit_movement_vs_contrast(df, timing_col, min_subjects=2):
-    """Movement-vs-contrast claim: does the timing variable track contrast?
-
-    Marginal model ``{timing_col} ~ contrast`` with a by-subject random slope
-    ``(1 + contrast | subject)``; no side/reward nuisance terms. Contrast is
-    log2-floored and mean-centered (``_code_movement_predictors``). Reports the
-    contrast slope. ``df`` is one ``(target_NM, timing_var)`` subset.
-
-    Returns a one-row tidy frame (``_TIDY_LMM_COLS``), empty if fewer than
-    ``min_subjects`` subjects or the fit fails.
-    """
-    df = _code_movement_predictors(df.dropna(subset=[timing_col]), timing_col)
-    if df['subject'].nunique() < min_subjects:
-        return _empty_tidy_lmm()
-    lmm = _fit_lmm(f'{timing_col} ~ contrast', df, groups=df['subject'],
-                   re_formula='1 + contrast', reml=True)
-    if lmm is None:
-        return _empty_tidy_lmm()
-    return _tidy_lmm_row(lmm, 'contrast', df, timing_col)
-
-
-def fit_movement_predicts_response(df, response_col, timing_col, min_subjects=2):
-    """Unadjusted movement-predicts-response claim (deliberately
-    contrast-confounded).
-
-    Model ``{response_col} ~ {timing_col}`` with a by-subject random slope
-    ``(1 + timing | subject)``. No contrast control — establishes the gross
-    phenomenon before the within-contrast model. ``df`` is one
-    ``(target_NM, event, timing_var)`` subset. Reports the timing slope.
-
-    Returns a one-row tidy frame (``_TIDY_LMM_COLS``), empty if fewer than
-    ``min_subjects`` subjects or the fit fails.
-    """
-    df = df.dropna(subset=[response_col, timing_col]).copy()
-    if df['subject'].nunique() < min_subjects:
-        return _empty_tidy_lmm()
-    lmm = _fit_lmm(f'{response_col} ~ {timing_col}', df, groups=df['subject'],
-                   re_formula=f'1 + {timing_col}', reml=True)
-    if lmm is None:
-        return _empty_tidy_lmm()
-    return _tidy_lmm_row(lmm, timing_col, df, timing_col)
-
-
-def fit_movement_within_contrast(df, response_col, timing_col, min_subjects=2):
-    """Within-contrast movement-predicts-response claim (collinearity-controlled).
-
-    Model ``{response_col} ~ C(contrast) + {timing_col} + side + reward`` with a
-    by-subject random slope ``(1 + timing | subject)``. Categorical
-    ``C(contrast)`` absorbs all between-contrast variation, so the timing slope
-    is the within-contrast estimator; no ``C(contrast):timing`` interaction.
-    Side and reward are deviation-coded (±0.5). ``df`` is one
-    ``(target_NM, event, timing_var)`` subset. Reports the timing slope and the
-    model's marginal R².
-
-    Returns a one-row tidy frame (``_TIDY_LMM_COLS``), empty if fewer than
-    ``min_subjects`` subjects or the fit fails.
-    """
-    df = df.dropna(subset=[response_col, timing_col]).copy()
-    if df['subject'].nunique() < min_subjects:
-        return _empty_tidy_lmm()
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-    formula = f'{response_col} ~ C(contrast) + {timing_col} + side + reward'
-    lmm = _fit_lmm(formula, df, groups=df['subject'],
-                   re_formula=f'1 + {timing_col}', reml=True)
-    if lmm is None:
-        return _empty_tidy_lmm()
-    return _tidy_lmm_row(lmm, timing_col, df, timing_col)
-
-
-def within_contrast_variation(df, timing_col):
-    """Descriptive precondition for the within-contrast model: does the timing
-    variable still vary *within* a contrast level?
-
-    Partitions the timing variable's spread into within- and between-contrast
-    components: ``var_within`` is the mean of the per-contrast variances,
-    ``var_between`` is the variance of the per-contrast means. A within
-    component comparable to (or larger than) the between component means there
-    is within-contrast movement variation for the model to exploit. No model
-    fit. ``df`` is one ``(target_NM, timing_var)`` subset.
-
-    Returns a one-row tidy frame with columns ``timing_col``, ``var_within``,
-    ``var_between``, ``n_contrasts``, ``n_trials``.
-    """
-    df = df.dropna(subset=[timing_col])
-    by_contrast = df.groupby('contrast')[timing_col]
-    return pd.DataFrame([{
-        'timing_col': timing_col,
-        'var_within': float(by_contrast.var(ddof=1).mean()),
-        'var_between': float(by_contrast.mean().var(ddof=1)),
-        'n_contrasts': df['contrast'].nunique(),
-        'n_trials': len(df),
-    }])
 
 
 def compute_recording_projection(n_analysis_ready, n_total, target_n,

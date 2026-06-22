@@ -72,9 +72,23 @@ notes/               # Personal notes, code snippets, reports, brainstorm docs
 histology/           # Histology images (.tif) and fiber track CSVs
 ```
 
-**Module vs script rule**: `iblnm/` contains generic, reusable functions.
-`scripts/` contains analysis-specific orchestration. Never put generic
-functions in scripts.
+**Layering rules** (the dependency diagram is the spine; these constrain it):
+
+- `analysis.py` — pure, **variable-agnostic** functions: take arrays/DataFrames
+  plus arguments, return results. No model formulas, no predictor coding for
+  specific variable sets, no hardcoded column-name logic.
+- `data.py` — `PhotometrySessionGroup` methods orchestrate: unpack `self`, code
+  and shape this object's data, route it through `analysis.py`, package results
+  back onto `self`. Reusable computation belongs in `analysis.py`; the analysis
+  to run is the caller's, not chosen here.
+- `scripts/` — answer a specific scientific question; every analysis choice is
+  made here, read from `config.py` and passed downward as arguments. Never put
+  generic functions here.
+- Decisions about what to compute flow downward as arguments — which models,
+  predictors, and comparisons, in what sequence; no layer reaches up to
+  `config.py` to choose its own analysis.
+- New model or variable set? Generalize the existing `analysis.py` function and
+  have the caller pass the specifics — never add a case-specific variant.
 
 **Group object rule**: All data loading and session filtering in scripts MUST
 flow through `PhotometrySessionGroup`. Never load parquet/HDF5 files and
@@ -83,13 +97,6 @@ risks silently bypassing the canonical filters (`filter_sessions`,
 exclusions, etc.). The group object is the single source of truth for which
 sessions are in scope. Scripts that currently do ad-hoc merges against
 `rec_meta` are known exceptions (FIXME), not patterns to follow.
-
-**analysis.py vs data.py rule**: `analysis.py` contains pure functions that
-take arrays/DataFrames and return results. `data.py` contains the
-`PhotometrySessionGroup` class whose methods unpack `self` attributes, call
-`analysis.py` functions with the correct arguments for each operation (e.g.,
-each pairwise comparison), and package results back onto `self`. Never put
-computational logic directly in `data.py` methods — they are orchestrators.
 
 ## Key Patterns
 

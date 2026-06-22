@@ -1827,8 +1827,9 @@ class TestPoseMethods:
         rng = np.random.default_rng(0)
         freqs = rng.uniform(1.0, 10.0, 40)
         phases = rng.uniform(0, 2 * np.pi, 40)
-        base = lambda tt: np.sin(2 * np.pi * freqs[:, None] * tt[None, :]
-                                 + phases[:, None]).sum(0)
+        def base(tt):
+            return np.sin(2 * np.pi * freqs[:, None] * tt[None, :]
+                          + phases[:, None]).sum(0)
         # Wheel speed used by the method is |velocity|, so build both signals
         # from the same non-negative pattern for a lag-0 match in aligned thirds.
         wheel_velocity = base(t)
@@ -2523,49 +2524,6 @@ class TestFromCatalog:
         assert all(group.recordings['session_type'] == 'training')
 
 
-class TestBuildLmmReliability:
-    """Tests for PhotometrySessionGroup._build_lmm_reliability."""
-
-    def _group(self):
-        from iblnm.data import PhotometrySessionGroup
-        df = pd.DataFrame([
-            {'eid': 'e1', 'subject': 'A', 'day_n': 0, 'session_type': 'biased',
-             'brain_region': ['VTA'], 'hemisphere': ['l'],
-             'target_NM': ['VTA-DA'], 'logged_errors': []},
-        ])
-        return PhotometrySessionGroup(df, one=MagicMock())
-
-    def test_combines_main_effects_and_omnibus_interactions(self):
-        """Reliability frame carries per-main-effect rows plus an 'interactions'
-        row sourced from the omnibus task LOSO."""
-        group = self._group()
-        group.lmm_main_effects_loso = pd.DataFrame([
-            {'target_NM': 'VTA-DA', 'event': 'feedback', 'predictor': 'contrast',
-             'subject': 's0', 'delta_r2': 0.04},
-            {'target_NM': 'VTA-DA', 'event': 'feedback', 'predictor': 'reward',
-             'subject': 's0', 'delta_r2': 0.02},
-        ])
-        group.lmm_loso = pd.DataFrame([
-            {'target_NM': 'VTA-DA', 'event': 'feedback', 'subject': 's0',
-             'delta_r2': 0.01},
-        ])
-        rel = group._build_lmm_reliability()
-        assert {'target_NM', 'event', 'predictor', 'subject',
-                'delta_r2'} <= set(rel.columns)
-        assert set(rel['predictor']) == {'contrast', 'reward', 'interactions'}
-        interactions = rel[rel['predictor'] == 'interactions']
-        assert interactions['delta_r2'].iloc[0] == 0.01
-
-    def test_empty_inputs_give_empty_frame(self):
-        group = self._group()
-        group.lmm_main_effects_loso = pd.DataFrame()
-        group.lmm_loso = pd.DataFrame()
-        rel = group._build_lmm_reliability()
-        assert len(rel) == 0
-        assert {'target_NM', 'event', 'predictor', 'subject',
-                'delta_r2'} <= set(rel.columns)
-
-
 class TestDeduplicate:
     """Tests for PhotometrySessionGroup.deduplicate."""
 
@@ -2938,7 +2896,7 @@ class TestGetResponseVector:
 
 def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
               all_biased=False, all_nogo=False, fast_response=False,
-              baseline_value=0.0):
+              baseline_value=0.0, pre_event_ramp=False):
     """Write a minimal H5 file with trials and responses.
 
     Parameters
@@ -2952,6 +2910,9 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
     baseline_value : float
         Pre-event (t < 0) signal level. Defaults to 0; set non-zero to give
         the raw pre-stimulus baseline a known magnitude.
+    pre_event_ramp : bool
+        If True, set each pre-event sample to its own time value (a ramp in t),
+        so a magnitude depends on which pre-event window is used.
     """
     import h5py
 
@@ -2999,7 +2960,7 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
             for event in events:
                 data = np.zeros((n_trials, n_time))
                 data[:, post_mask] = 1.0
-                data[:, pre_mask] = baseline_value
+                data[:, pre_mask] = tpts[pre_mask] if pre_event_ramp else baseline_value
                 resp_grp.create_dataset(event, data=data)
 
 
@@ -3687,6 +3648,25 @@ class TestGetResponseMagnitudes:
         stim = df[df['event'] == 'stimOn_times']
         assert not np.allclose(stim['response'].values, baseline_value)
 
+    def test_baseline_event_uses_mirror_of_early_window(self, tmp_path):
+        """The 'baseline' pseudo-event magnitude is the raw pre-event mean over
+        the time-mirror of RESPONSE_WINDOWS['early'] (i.e. (-hi, -lo)), not the
+        subtraction window."""
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.config import RESPONSE_WINDOWS
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=10, pre_event_ramp=True)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+
+        df = group.get_response_magnitudes()
+
+        tpts = np.linspace(-1, 1, 61)
+        lo, hi = RESPONSE_WINDOWS['early']
+        i0, i1 = np.searchsorted(tpts, [-hi, -lo])
+        expected = tpts[i0:i1].mean()
+        baseline = df[df['event'] == 'baseline']
+        np.testing.assert_allclose(baseline['response'].values, expected)
+
     def test_baseline_rows_share_recording_columns(self, tmp_path):
         """Baseline rows carry the same recording-key columns as event rows."""
         from iblnm.data import PhotometrySessionGroup
@@ -3829,142 +3809,16 @@ def _make_group_with_events():
     return group
 
 
-class TestFitLMM:
-
-    def test_stores_lmm_results(self):
-        group = _make_group_with_events()
-        group.fit_lmm()
-        assert group.lmm_results is not None
-        assert isinstance(group.lmm_results, dict)
-
-    def test_keys_are_target_event_tuples(self):
-        group = _make_group_with_events()
-        group.fit_lmm()
-        for key in group.lmm_results:
-            assert isinstance(key, tuple)
-            assert len(key) == 2
-
-    def test_values_are_lmm_results(self):
-        from iblnm.analysis import LMMResult
-        group = _make_group_with_events()
-        group.fit_lmm()
-        for result in group.lmm_results.values():
-            assert isinstance(result, LMMResult)
-
-    def test_results_have_emms(self):
-        """Each result should have emm_reward and emm_side attributes."""
-        group = _make_group_with_events()
-        group.fit_lmm()
-        for result in group.lmm_results.values():
-            assert hasattr(result, 'emm_reward')
-            assert hasattr(result, 'emm_side')
-            assert isinstance(result.emm_reward, pd.DataFrame)
-            assert isinstance(result.emm_side, pd.DataFrame)
-
-    def test_results_have_contrast_slopes(self):
-        group = _make_group_with_events()
-        group.fit_lmm()
-        for result in group.lmm_results.values():
-            assert hasattr(result, 'contrast_slopes')
-            assert isinstance(result.contrast_slopes, pd.DataFrame)
-
-    def test_saves_coefficients(self):
-        """All coefficient summaries should be aggregated."""
-        group = _make_group_with_events()
-        group.fit_lmm()
-        assert group.lmm_coefficients is not None
-        assert isinstance(group.lmm_coefficients, pd.DataFrame)
-        assert 'target_NM' in group.lmm_coefficients.columns
-        assert 'event' in group.lmm_coefficients.columns
-
-    def test_requires_events(self):
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        group = PhotometrySessionGroup(recs, one=MagicMock())
-        with pytest.raises(ValueError, match='response_magnitudes'):
-            group.fit_lmm()
-
-    def test_requires_trial_regressors(self):
-        group = _make_group_with_events()
-        group.trial_regressors = None
-        with pytest.raises(ValueError, match='trial_regressors'):
-            group.fit_lmm()
-
-    def test_excludes_false_start_trials(self):
-        """Trials with response_time <= 0.05 must be excluded; all-fast → empty results."""
-        group = _make_group_with_events()
-        group.trial_regressors['response_time'] = 0.01
-        group.fit_lmm()
-        assert len(group.lmm_results) == 0
-
-    def test_base_model_intercept_only(self):
-        """The base EMM/interaction/slope model uses a random intercept only."""
-        group = _make_group_with_events()
-        group.fit_lmm()
-        for result in group.lmm_results.values():
-            for effects in result.random_effects.values():
-                assert result.contrast_col not in effects.index
-
-    def test_stores_ceiling_r2(self):
-        """A ceiling R² row per fitted (target, event) group."""
-        group = _make_group_with_events()
-        group.fit_lmm()
-        ceiling = group.lmm_ceiling
-        assert isinstance(ceiling, pd.DataFrame)
-        for col in ('target_NM', 'event', 'marginal', 'conditional'):
-            assert col in ceiling.columns
-        assert len(ceiling) == len(group.lmm_results)
-        assert ceiling['marginal'].notna().all()
-
-    def test_stores_three_main_effects(self):
-        """Three single-slope main-effect rows per fitted (target, event)."""
-        group = _make_group_with_events()
-        group.fit_lmm()
-        me = group.lmm_main_effects
-        assert isinstance(me, pd.DataFrame)
-        for col in ('target_NM', 'event', 'predictor', 'Coef.', 'Std.Err.',
-                    'z', 'P>|z|', 'ci_lower', 'ci_upper', 'marginal_r2'):
-            assert col in me.columns
-        # One row per predictor per group.
-        per_group = me.groupby(['target_NM', 'event'])['predictor'].apply(set)
-        for predictors in per_group:
-            assert predictors == {'contrast', 'side', 'reward'}
-
-    def test_main_effect_read_from_own_model(self):
-        """Each main effect's marginal R² comes from its own single-slope model,
-        so the three rows of a group need not share a marginal R²."""
-        group = _make_group_with_events()
-        group.fit_lmm()
-        me = group.lmm_main_effects
-        first = me.groupby(['target_NM', 'event'])['marginal_r2'].nunique()
-        assert (first > 1).any()
-
-    def test_stores_loso_cv(self):
-        """LOSO-CV of the task model: per-subject rows plus an aggregate, per
-        fitted (target, event) group, tagged with the group identifiers."""
-        group = _make_group_with_events()
-        group.fit_lmm()
-        loso = group.lmm_loso
-        assert isinstance(loso, pd.DataFrame)
-        for col in ('target_NM', 'event', 'subject', 'n_trials', 'r2_full',
-                    'r2_reduced', 'delta_r2'):
-            assert col in loso.columns
-        # Each fitted group contributes one aggregate row.
-        agg = loso[loso['subject'] == 'aggregate']
-        assert len(agg) == len(group.lmm_results)
-        assert agg['delta_r2'].notna().all()
-
-
 class TestAnovaResponseMagnitudes:
 
     def test_returns_dict(self):
         group = _make_group_with_events()
-        result = group.anova_response_magnitudes()
+        result = group.response_anovaRM_fit()
         assert isinstance(result, dict)
 
     def test_keys_are_target_event_tuples(self):
         group = _make_group_with_events()
-        result = group.anova_response_magnitudes()
+        result = group.response_anovaRM_fit()
         for key in result:
             assert len(key) == 2
             target_nm, event_label = key
@@ -3973,7 +3827,7 @@ class TestAnovaResponseMagnitudes:
 
     def test_values_are_anova_tables(self):
         group = _make_group_with_events()
-        result = group.anova_response_magnitudes()
+        result = group.response_anovaRM_fit()
         assert len(result) > 0
         for table in result.values():
             assert isinstance(table, pd.DataFrame)
@@ -3983,7 +3837,7 @@ class TestAnovaResponseMagnitudes:
     def test_seven_terms_per_group(self):
         """3 factors → 7 terms (3 main + 3 two-way + 1 three-way)."""
         group = _make_group_with_events()
-        result = group.anova_response_magnitudes()
+        result = group.response_anovaRM_fit()
         for table in result.values():
             assert len(table) == 7
 
@@ -3992,17 +3846,17 @@ class TestAnovaResponseMagnitudes:
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         group = PhotometrySessionGroup(recs, one=MagicMock())
         with pytest.raises(ValueError, match='response_magnitudes'):
-            group.anova_response_magnitudes()
+            group.response_anovaRM_fit()
 
     def test_requires_trial_regressors(self):
         group = _make_group_with_events()
         group.trial_regressors = None
         with pytest.raises(ValueError, match='trial_regressors'):
-            group.anova_response_magnitudes()
+            group.response_anovaRM_fit()
 
     def test_stores_results_on_self(self):
         group = _make_group_with_events()
-        group.anova_response_magnitudes()
+        group.response_anovaRM_fit()
         assert hasattr(group, 'anova_results')
         assert isinstance(group.anova_results, dict)
 
@@ -4071,6 +3925,294 @@ class TestModelingFrame:
         df = group._modeling_frame()
         for col in ('relative_contrast', 'contrast', 'side'):
             assert col in df.columns
+
+
+class TestCodeLmmPredictors:
+
+    def _frame(self):
+        # contrast in percent units (compute_trial_contrasts multiplies by 100);
+        # log2 coding requires nonzero values >= 1.
+        return pd.DataFrame({
+            'contrast': [0.0, 6.25, 100.0],
+            'side': ['contra', 'ipsi', 'contra'],
+            'feedbackType': [1, -1, 1],
+            'log_reaction_time': [-1.5, -0.5, -2.0],
+        })
+
+    def test_side_and_reward_deviation_coded(self):
+        group = _make_group_with_planted_trials()
+        coded = group._code_lmm_predictors(self._frame())
+        assert set(coded['side']) <= {-0.5, 0.5}
+        assert set(coded['reward']) <= {-0.5, 0.5}
+        assert coded['side'].tolist() == [0.5, -0.5, 0.5]
+        assert coded['reward'].tolist() == [0.5, -0.5, 0.5]
+
+    def test_contrast_log2_coded_and_centered(self):
+        group = _make_group_with_planted_trials()
+        coded = group._code_lmm_predictors(self._frame())
+        expected = np.array([0.0, np.log2(6.25), np.log2(100.0)])
+        expected = expected - expected.mean()
+        assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
+        np.testing.assert_allclose(coded['contrast'].values, expected)
+
+    def test_timing_column_unchanged(self):
+        group = _make_group_with_planted_trials()
+        df = self._frame()
+        coded = group._code_lmm_predictors(df)
+        np.testing.assert_array_equal(
+            coded['log_reaction_time'].values, df['log_reaction_time'].values)
+
+    def test_input_frame_not_mutated(self):
+        group = _make_group_with_planted_trials()
+        df = self._frame()
+        before = df.copy(deep=True)
+        group._code_lmm_predictors(df)
+        pd.testing.assert_frame_equal(df, before)
+
+
+def _make_group_for_response_lmm():
+    """``_make_group_with_events`` with percent-unit contrasts.
+
+    ``response_lmm_fit`` codes contrast with the default ``log2`` scheme, which
+    requires percent units (nonzero values >= 1); the shared events fixture uses
+    fractional contrasts. Rescaling the sign-preserving contrast columns leaves
+    ``add_relative_contrast``'s side/relative_contrast derivation unchanged.
+    """
+    group = _make_group_with_events()
+    group.trial_regressors['contrast'] *= 100
+    group.trial_regressors['signed_contrast'] *= 100
+    return group
+
+
+class TestResponseLMMFit:
+
+    def test_caches_fit_and_returns_matching_r2(self):
+        from iblnm.analysis import LMMResult
+        group = _make_group_for_response_lmm()
+        r2 = group.response_lmm_fit(
+            {'ceiling': '{response} ~ C(contrast) * side * reward'},
+            group_by=['target_NM', 'event'])
+        # One registry entry and one R² row per (target_NM, event) group.
+        assert not r2.empty
+        for _, row in r2.iterrows():
+            key = ('response', 'ceiling', row['target_NM'], row['event'])
+            fit = group.lmm_fits[key]
+            assert isinstance(fit, LMMResult)
+            assert row['marginal_r2'] == fit.variance_explained['marginal']
+
+    def test_multiple_names_one_entry_and_row_each(self):
+        group = _make_group_for_response_lmm()
+        formulas = {'ceiling': '{response} ~ C(contrast) * side * reward',
+                    'interactions': '{response} ~ contrast + side + reward'}
+        r2 = group.response_lmm_fit(formulas, group_by=['target_NM', 'event'])
+        groups = r2[['target_NM', 'event']].drop_duplicates()
+        # One row per (group, name); one registry entry per (group, name).
+        assert len(r2) == len(groups) * len(formulas)
+        for _, g in groups.iterrows():
+            for name in formulas:
+                key = ('response', name, g['target_NM'], g['event'])
+                assert key in group.lmm_fits
+
+    def test_distinct_caller_names_no_collision(self):
+        group = _make_group_for_response_lmm()
+        # Two formulas the caller passes under distinct names: each caches
+        # under its own registry key, with no config.LMM_FORMULAS lookup.
+        formulas = {'task_full': '{response} ~ contrast * side * reward',
+                    'me_full': '{response} ~ contrast + side + reward'}
+        r2 = group.response_lmm_fit(formulas, group_by=['target_NM', 'event'])
+        groups = r2[['target_NM', 'event']].drop_duplicates()
+        for _, g in groups.iterrows():
+            for name in formulas:
+                key = ('response', name, g['target_NM'], g['event'])
+                assert key in group.lmm_fits
+
+    def test_per_name_re_formula_adds_random_slope(self):
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
+                               group_by=['target_NM', 'event'],
+                               re_formula={'interactions': '1 + side'})
+        fit = next(iter(group.lmm_fits.values()))
+        slopes = next(iter(fit.random_effects.values()))
+        assert 'side' in slopes.index
+
+
+class TestResponseLMMEffects:
+
+    def test_coefficients_carry_terms_and_ci(self):
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
+                               group_by=['target_NM', 'event'])
+        effects = group.response_lmm_effects('interactions', 'coefficients')
+        # One identity-tagged row per fixed-effects term, with CI columns.
+        for col in ('term', 'Coef.', 'ci_lower', 'ci_upper',
+                    'target_NM', 'event'):
+            assert col in effects.columns
+        key = ('response', 'interactions',
+               effects.iloc[0]['target_NM'], effects.iloc[0]['event'])
+        fit = group.lmm_fits[key]
+        row = effects[(effects['target_NM'] == key[2])
+                      & (effects['event'] == key[3])
+                      & (effects['term'] == 'Intercept')].iloc[0]
+        coef = fit.summary_df.loc['Intercept', 'Coef.']
+        se = fit.summary_df.loc['Intercept', 'Std.Err.']
+        assert row['Coef.'] == coef
+        assert row['ci_lower'] == pytest.approx(coef - 1.96 * se)
+        assert row['ci_upper'] == pytest.approx(coef + 1.96 * se)
+
+    def test_emm_matches_direct_call(self):
+        from iblnm.analysis import compute_marginal_means
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
+                               group_by=['target_NM', 'event'])
+        effects = group.response_lmm_effects(
+            'interactions', 'emm', ['reward'])
+        # The factor is its own column; identity columns are appended.
+        for col in ('reward', 'predicted', 'ci_lower', 'ci_upper',
+                    'target_NM', 'event'):
+            assert col in effects.columns
+
+        # Reproduce one group's reward EMMs by a direct call on the cached fit.
+        df = group._modeling_frame()
+        (target_nm, event), _ = next(iter(df.groupby(['target_NM', 'event'])))
+        fit = group.lmm_fits[('response', 'interactions', target_nm, event)]
+        expected = compute_marginal_means(fit, ['reward'])
+
+        got = effects[(effects['target_NM'] == target_nm)
+                      & (effects['event'] == event)].sort_values('reward')
+        np.testing.assert_allclose(
+            got['predicted'].values,
+            expected.sort_values('reward')['predicted'].values)
+
+    def test_emm_two_factors_give_interaction_grid(self):
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
+                               group_by=['target_NM', 'event'])
+        effects = group.response_lmm_effects(
+            'interactions', 'emm', ['contrast', 'reward'])
+        assert {'contrast', 'reward'}.issubset(effects.columns)
+
+    def test_emm_requires_variables(self):
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
+                               group_by=['target_NM', 'event'])
+        with pytest.raises(ValueError, match='requires a `variables`'):
+            group.response_lmm_effects('interactions', 'emm')
+
+    def test_unknown_kind_raises(self):
+        group = _make_group_for_response_lmm()
+        group.response_lmm_fit(
+            {'interactions': '{response} ~ contrast + side + reward'},
+                               group_by=['target_NM', 'event'])
+        with pytest.raises(ValueError, match='kind must be'):
+            group.response_lmm_effects('interactions', 'bogus')
+
+
+class TestResponseLMMResampling:
+
+    def test_crossval_columns_and_matches_direct_call(self):
+        from iblnm.analysis import crossval_lmm
+        group = _make_group_for_response_lmm()
+        formulas = {'full': '{response} ~ contrast * side * reward',
+                    'interactions': '{response} ~ contrast + side + reward'}
+        result = group.response_lmm_crossval(
+            formulas, group_by=['target_NM', 'event'])
+        assert list(result.columns) == [
+            'target_NM', 'event', 'predictor', 'fold', 'n_trials',
+            'r2', 'delta_r2']
+        assert set(result['predictor']) == {'interactions'}
+
+        # Reproduce one group's interactions delta_r2 by a direct call with the
+        # same reference.
+        df = group._modeling_frame()
+        (target_nm, event), df_group = next(
+            iter(df.groupby(['target_NM', 'event'])))
+        df_coded = group._code_lmm_predictors(df_group)
+        coded = {k: v.format(response='response') for k, v in formulas.items()}
+        expected = crossval_lmm(df_coded, coded, 'response', reference='full')
+
+        got = result[(result['target_NM'] == target_nm)
+                     & (result['event'] == event)
+                     & (result['predictor'] == 'interactions')]
+        np.testing.assert_allclose(
+            got['delta_r2'].values,
+            expected[expected['predictor'] == 'interactions']
+            ['delta_r2'].values)
+
+    def test_jackknife_columns_and_matches_direct_call(self):
+        from iblnm.analysis import jackknife_lmm
+        group = _make_group_for_response_lmm()
+        formulas = {'full': '{response} ~ contrast * side * reward',
+                    'interactions': '{response} ~ contrast + side + reward'}
+        result = group.response_lmm_jackknife(
+            formulas, group_by=['target_NM', 'event'])
+        assert list(result.columns) == [
+            'target_NM', 'event', 'predictor', 'fold', 'n_trials',
+            'r2', 'delta_r2']
+
+        # Reproduce one group's interactions delta_r2 by a direct call with the
+        # same reference.
+        df = group._modeling_frame()
+        (target_nm, event), df_group = next(
+            iter(df.groupby(['target_NM', 'event'])))
+        df_coded = group._code_lmm_predictors(df_group)
+        coded = {k: v.format(response='response') for k, v in formulas.items()}
+        expected = jackknife_lmm(df_coded, coded, 'response', reference='full')
+
+        got = result[(result['target_NM'] == target_nm)
+                     & (result['event'] == event)
+                     & (result['predictor'] == 'interactions')]
+        np.testing.assert_allclose(
+            got['delta_r2'].values,
+            expected[expected['predictor'] == 'interactions']
+            ['delta_r2'].values)
+
+    def _movement_group(self):
+        """Events fixture with a varying ``log_reaction_time`` predictor."""
+        group = _make_group_for_response_lmm()
+        reg = group.trial_regressors
+        rng = np.random.default_rng(0)
+        reg['reaction_time'] = rng.uniform(0.1, 2.0, len(reg))
+        reg['log_reaction_time'] = np.log10(reg['reaction_time'])
+        return group
+
+    _MOVEMENT_FORMULAS = {
+        'full': '{response} ~ contrast + log_reaction_time',
+        'contrast': '{response} ~ log_reaction_time',
+        'movement': '{response} ~ contrast',
+    }
+
+    def test_movement_set_fits_when_trials_sufficient(self):
+        from iblnm.config import MIN_SUBJECTS_MOVEMENT
+        # Baseline: with full timing data, every target contributes rows.
+        group = self._movement_group()
+        result = group.response_lmm_crossval(
+            self._MOVEMENT_FORMULAS, group_by=['target_NM', 'event'],
+            min_subjects=MIN_SUBJECTS_MOVEMENT)
+        assert (result['target_NM'] == 'DR-5HT').sum() > 0
+        assert (result['target_NM'] == 'VTA-DA').sum() > 0
+
+    def test_movement_set_below_min_trials_contributes_no_rows(self):
+        from iblnm.config import MIN_SUBJECTS_MOVEMENT
+        # Null out all but a handful of one target's timing values so its
+        # per-group valid-trial count falls below MIN_TRIALS_MOVEMENT (20).
+        group = self._movement_group()
+        reg = group.trial_regressors
+        starved = reg['eid'].str.contains('DR-5HT')
+        idx = reg[starved].index
+        # ``_modeling_frame`` derives ``log_reaction_time`` from the raw column,
+        # so starve the raw ``reaction_time`` to push the group below the gate.
+        reg.loc[idx[5:], 'reaction_time'] = np.nan
+
+        result = group.response_lmm_crossval(
+            self._MOVEMENT_FORMULAS, group_by=['target_NM', 'event'],
+            min_subjects=MIN_SUBJECTS_MOVEMENT)
+        assert (result['target_NM'] == 'DR-5HT').sum() == 0
+        assert (result['target_NM'] == 'VTA-DA').sum() > 0
 
 
 # =============================================================================

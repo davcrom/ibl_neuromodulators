@@ -18,7 +18,6 @@ Usage:
 import argparse
 
 import matplotlib
-import numpy as np
 import pandas as pd
 
 matplotlib.use('Agg')  # batch figure generation; never open interactive windows
@@ -29,9 +28,9 @@ from iblnm.config import (
     QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
-    RESPONSE_EVENTS, FIGURE_DPI,
+    RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
-    TIMING_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
+    TIMING_VARS, MIN_SUBJECTS_MOVEMENT,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -39,17 +38,13 @@ from iblnm.util import collect_session_errors
 from iblnm.vis import (
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
-    plot_lmm_ceiling, plot_lmm_main_effects, plot_lmm_loso,
-    plot_lmm_reliability,
+    plot_lmm_ceiling, plot_lmm_main_effects,
+    plot_lmm_reliability, plot_lmm_coefficient_heatmap,
     plot_mean_response_traces,
-    plot_movement_response, plot_movement_lmm_summary,
-    plot_movement_r2_bars, plot_movement_slope_summary,
+    plot_movement_r2_bars,
 )
 from iblnm.analysis import (
     split_features_by_event,
-    fit_movement_lmm_r2, jackknife_movement_lmm,
-    fit_movement_vs_contrast, fit_movement_predicts_response,
-    fit_movement_within_contrast, within_contrast_variation,
 )
 
 
@@ -114,21 +109,38 @@ def plot_response_figures(group, figures_dir, response_col='response'):
 # LMM statistical analysis
 # =========================================================================
 
-# Base model whose EMM/interaction/CRF summary figure is annotated.
-LMM_BASE_FORMULA = 'response ~ contrast * side * reward'
+def _save_lmm_frames(frames, data_dir):
+    """Write each named LMM result frame to ``data_dir/{name}.csv``.
+
+    Pure save step factored out of :func:`plot_lmm_figures` for testability.
+    Writes one CSV per entry, keyed by the dict's names (which follow the
+    ``response_lmm_{family}_{output}[_{qualifier}]`` convention), and no other
+    files.
+
+    Parameters
+    ----------
+    frames : dict[str, pandas.DataFrame]
+        Mapping of output base-name (no extension) to the frame to save.
+    data_dir : pathlib.Path
+        Directory the CSVs are written to.
+    """
+    for name, frame in frames.items():
+        frame.to_csv(data_dir / f'{name}.csv', index=False)
 
 
-def plot_lmm_figures(group, figures_dir, data_dir,
-                     contrast_coding='log2', response_col='response'):
-    """Run the initial-LMM suite, save every result as a CSV, and plot the
-    labelled summaries.
+def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
+    """Run the task-LMM suite via the formula-driven data-class methods, save
+    each result as a CSV, and plot the labelled summaries.
 
-    Fits the suite (base + ceiling + three main-effect models + LOSO-CV) via
-    :meth:`PhotometrySessionGroup.fit_lmm`, then writes one tidy CSV per result
-    (coefficients, ceiling R², main-effect estimates, LOSO-CV) — saving lives
-    here, not in the plot functions. Produces the per-event base-model summary
-    (annotated with its formula) plus the ceiling, main-effect, and LOSO-CV
-    generalizability figures.
+    Reads model formulas from ``config.LMM_FORMULAS`` and passes flat
+    ``{name: formula}`` dicts to the data class — no LMM logic here. Produces:
+
+    - per-event base-model summary (``task_interactions['full']``, cached under
+      the unique key ``task_full``), annotated with its formula;
+    - ceiling R² (``task_ceiling``);
+    - main-effect coefficients (the additive ``task_main_effects['full']``);
+    - out-of-sample (CV) and in-sample (jackknife) reliability ΔR², combining
+      the interaction and main-effect comparison sets onto one predictor axis.
 
     Parameters
     ----------
@@ -138,58 +150,89 @@ def plot_lmm_figures(group, figures_dir, data_dir,
         Output directory for SVG files.
     data_dir : Path
         Output directory for CSV files.
-    contrast_coding : str
-        Continuous contrast transform passed to ``fit_lmm``.
     response_col : str
         Column name for the response magnitude.
     """
-    window_label = response_col
-    group.fit_lmm(contrast_coding=contrast_coding)
-    if not group.lmm_results:
+    group_by = ['target_NM', 'event']
+    base_formula = LMM_FORMULAS['task_interactions']['full']
+
+    # Base reporting model: rename the recurring 'full' key to a unique registry
+    # key so its cached fits never collide with task_main_effects' 'full'.
+    r2_base = group.response_lmm_fit({'task_full': base_formula}, group_by)
+    if r2_base.empty:
         print("  No LMM results.")
         return
+    coefficients = group.response_lmm_effects('task_full', 'coefficients')
+    # Bottom-row panels: main-effect EMMs (predicted mean ± CI) per factor.
+    emm_frames = {f: group.response_lmm_effects('task_full', 'emm', [f])
+                  for f in ('reward', 'side', 'contrast')}
 
-    # Saving lives in the orchestration; plot functions only plot (#10).
-    for result, name in [
-        (group.lmm_coefficients, 'lmm_coefficients'),
-        (group.lmm_ceiling, 'lmm_ceiling'),
-        (group.lmm_main_effects, 'lmm_main_effects'),
-        (group.lmm_loso, 'lmm_loso'),
-        (group.lmm_main_effects_loso, 'lmm_main_effects_loso'),
-        (group.lmm_reliability, 'lmm_reliability'),
-    ]:
-        if len(result) > 0:
-            result.to_csv(data_dir / f'{name}_{window_label}.csv', index=False)
+    # Ceiling: one saturated reporting model. plot_lmm_ceiling reads
+    # marginal/conditional R², so rename the fit frame's R² columns.
+    ceiling = group.response_lmm_fit(
+        {'ceiling': LMM_FORMULAS['task_ceiling']['ceiling']}, group_by)
+    ceiling = ceiling.rename(
+        columns={'marginal_r2': 'marginal', 'conditional_r2': 'conditional'})
+
+    # Main effects: read the contrast/side/reward fixed-effect coefficients of
+    # the additive 'full' model (random intercept).
+    group.response_lmm_fit(LMM_FORMULAS['task_main_effects'], group_by)
+    main_effects = group.response_lmm_effects('full', 'coefficients')
+    main_effects = (main_effects[main_effects['term']
+                                 .isin(['contrast', 'side', 'reward'])]
+                    .rename(columns={'term': 'predictor'}))
+
+    # Reliability: stack the main-effect (drop-one) and interaction comparison
+    # sets onto one ΔR² frame per procedure; each set references its own 'full'.
+    reliability_cv = pd.concat([
+        group.response_lmm_crossval(LMM_FORMULAS['task_main_effects'], group_by),
+        group.response_lmm_crossval(LMM_FORMULAS['task_interactions'], group_by),
+    ], ignore_index=True)
+    reliability_jackknife = pd.concat([
+        group.response_lmm_jackknife(LMM_FORMULAS['task_main_effects'], group_by),
+        group.response_lmm_jackknife(LMM_FORMULAS['task_interactions'], group_by),
+    ], ignore_index=True)
+
+    _save_lmm_frames({
+        'response_lmm_task_coefficients': coefficients,
+        'response_lmm_task_ceiling': ceiling,
+        'response_lmm_task_main_effects': main_effects,
+        'response_lmm_task_reliability_cv': reliability_cv,
+        'response_lmm_task_reliability_jackknife': reliability_jackknife,
+    }, data_dir)
     print(f"  LMM suite CSVs saved to {data_dir}")
 
-    # Single-model base summary, annotated with its formula — one per event.
-    events_seen = sorted(set(ev for _, ev in group.lmm_results.keys()))
-    for event_label in events_seen:
-        fig = plot_lmm_summary(group, event_label, formula=LMM_BASE_FORMULA)
-        fig.savefig(
-            figures_dir / f'lmm_summary_{event_label}_{window_label}.svg',
-            dpi=FIGURE_DPI, bbox_inches='tight')
+    # Per-event base-model summary, annotated with its formula.
+    for event in sorted(r2_base['event'].unique()):
+        fig = plot_lmm_summary(r2_base, coefficients, emm_frames, event,
+                               formula=base_formula.format(response=response_col))
+        fig.savefig(figures_dir / f'response_lmm_task_summary_{event}.svg',
+                    dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
 
-    # Suite figures: ceiling R², main-effect estimates, LOSO-CV.
     for fig, fname in [
-        (plot_lmm_ceiling(group.lmm_ceiling),
-         f'lmm_ceiling_{window_label}.svg'),
-        (plot_lmm_main_effects(group.lmm_main_effects),
-         f'lmm_main_effects_{window_label}.svg'),
-        (plot_lmm_loso(group.lmm_loso),
-         f'lmm_loso_{window_label}.svg'),
+        (plot_lmm_ceiling(ceiling), 'response_lmm_task_ceiling.svg'),
+        (plot_lmm_main_effects(main_effects), 'response_lmm_task_main_effects.svg'),
     ]:
         fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
 
-    # Reliability grid: out-of-sample ΔR² per task term (main effects + omnibus
-    # interactions on one axis), one row per target-NM.
-    if len(group.lmm_reliability) > 0:
-        fig = plot_lmm_reliability(group.lmm_reliability)
-        fig.savefig(figures_dir / f'lmm_reliability_{window_label}.svg',
-                    dpi=FIGURE_DPI, bbox_inches='tight')
+    # Reliability grids: out-of-sample (CV) and in-sample (jackknife) ΔR² per
+    # predictor; both are leave-one-subject-out, named by procedure not "loso".
+    for df_reliability, qualifier, label in [
+        (reliability_cv, 'cv', 'out-of-sample (cross-validated)'),
+        (reliability_jackknife, 'jackknife', 'in-sample (jackknife)'),
+    ]:
+        if df_reliability.empty:
+            continue
+        fig = plot_lmm_reliability(
+            df_reliability,
+            title=f'Task LMM reliability — {label}\nfolds are subjects')
+        fig.savefig(
+            figures_dir / f'response_lmm_task_reliability_{qualifier}.svg',
+            dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
+    print("  LMM summary plots saved")
     print("  LMM summary plots saved")
 
 
@@ -239,148 +282,111 @@ def plot_similarity_figures(group, similarity_dir, data_dir):
 MOVEMENT_EVENTS = ('baseline', 'stimOn_times', 'firstMovement_times')
 
 
-def build_movement_df(group):
-    """Merge response magnitudes with trial regressors for movement modeling.
+def _movement_reliability(group, group_by):
+    """Stack cv and jackknife ΔR² across the per-timing-variable additive sets."""
+    cv, jk = [], []
+    for t in TIMING_VARS:
+        formulas = LMM_FORMULAS[f'movement_additive_{t}']
+        cv.append(group.response_lmm_crossval(
+            formulas, group_by, min_subjects=MIN_SUBJECTS_MOVEMENT).assign(
+                timing_var=t))
+        jk.append(group.response_lmm_jackknife(
+            formulas, group_by, min_subjects=MIN_SUBJECTS_MOVEMENT).assign(
+                timing_var=t))
+    return (pd.concat(cv, ignore_index=True),
+            pd.concat(jk, ignore_index=True))
 
-    Keeps unbiased-block go trials with ``response_time > 0.05`` and a
-    non-null response (via :meth:`_modeling_frame`), restricts the response DV
-    set to the ``baseline``, ``stimOn``, and ``firstMovement`` events (feedback
-    excluded), adds hemisphere-relative contrast/side, and appends a
-    ``log_<var>`` column per timing variable (NaN where the value is ≤ 0).
+
+def _movement_saturated_r2(group, group_by):
+    """Per-model in-sample marginal R² of the saturated movement sets.
+
+    Keys are renamed ``<name>_<t>`` so cached fits don't collide across timing
+    variables, then stripped back to ``full``/``contrast``/``movement`` for
+    :func:`plot_movement_r2_bars`.
     """
-    df = group._modeling_frame()
-    df = df[df['event'].isin(MOVEMENT_EVENTS)].copy()
-    for var in TIMING_VARS:
-        df[f'log_{var}'] = np.where(df[var] > 0, np.log10(df[var]), np.nan)
-    return df
+    rows = []
+    for t in TIMING_VARS:
+        formulas = {f'{name}_{t}': formula for name, formula
+                    in LMM_FORMULAS[f'movement_saturated_{t}'].items()}
+        r2 = group.response_lmm_fit(formulas, group_by)
+        r2['name'] = r2['name'].str.replace(f'_{t}$', '', regex=True)
+        rows.append(r2.assign(timing_var=t))
+    return pd.concat(rows, ignore_index=True)
 
 
-def _movement_descriptive_figures(df_resp, figures_dir):
-    """Raw-data within-contrast check: NM response vs log(timing) per
-    (target_NM, event, predictor), with contrast as color."""
-    for (target_nm, event), df_group in df_resp.groupby(['target_NM', 'event']):
-        if df_group['subject'].nunique() < MIN_SUBJECTS_MOVEMENT:
-            continue
-        for var in TIMING_VARS:
-            df_valid = df_group.dropna(subset=[f'log_{var}'])
-            if len(df_valid) < MIN_TRIALS_MOVEMENT:
-                continue
-            fig = plot_movement_response(
-                df_valid, 'response', f'log_{var}', target_nm, event=event)
-            fname = f'{target_nm}_{event}_{var}.svg'
-            fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
-            plt.close(fig)
+def _movement_effect_coefficients(group, group_by):
+    """Coefficients of the two movement-claim models per timing variable.
 
-
-def _fit_claim_over_grid(df, group_cols, fit_fn):
-    """Apply a per-group movement fit ``fit_fn(df_group, timing_col)`` across
-    every (group × timing variable) cell, tag each tidy result with its group
-    identifiers, and concatenate. Empty fits (too few subjects / non-convergence)
-    contribute their columns but no rows."""
-    frames = []
-    for keys, df_group in df.groupby(group_cols):
-        keys = keys if isinstance(keys, tuple) else (keys,)
-        for var in TIMING_VARS:
-            res = fit_fn(df_group, f'log_{var}')
-            for col, val in zip(reversed(group_cols), reversed(keys)):
-                res.insert(0, col, val)
-            frames.append(res)
-    # Drop empty fits before concat (avoids the all-NA concat dtype warning);
-    # fall back to the first (schema-carrying) frame if every fit was empty.
-    nonempty = [f for f in frames if len(f)]
-    if nonempty:
-        return pd.concat(nonempty, ignore_index=True)
-    return frames[0] if frames else pd.DataFrame()
-
-
-def _fit_movement_claims(df_resp, figures_dir, data_dir):
-    """Fit the three movement claims plus the within-contrast variation check off
-    the shared frame, save one tidy CSV per claim, and plot the slope summaries.
-
-    Behavioral claims (movement vs contrast; within-contrast variation) use one
-    row per trial (the stimOn event); the response claims (unadjusted and
-    within-contrast) run per (target_NM, event, timing variable).
+    ``predicts_response`` = ``response ~ log_<t>`` (plain effect),
+    ``within_contrast`` = ``response ~ contrast + log_<t> + side + reward``
+    (effect after the stimulus). The ``log_<t>`` coefficient is the movement
+    effect, read off the coefficient heatmap.
     """
-    behavioral = df_resp[df_resp['event'] == 'stimOn_times']
-    vs_contrast = _fit_claim_over_grid(
-        behavioral, ['target_NM'], fit_movement_vs_contrast)
-    variation = _fit_claim_over_grid(
-        behavioral, ['target_NM'], within_contrast_variation)
-    predicts = _fit_claim_over_grid(
-        df_resp, ['target_NM', 'event'],
-        lambda df, col: fit_movement_predicts_response(df, 'response', col))
-    within = _fit_claim_over_grid(
-        df_resp, ['target_NM', 'event'],
-        lambda df, col: fit_movement_within_contrast(df, 'response', col))
-
-    vs_contrast.to_csv(data_dir / 'movement_vs_contrast.csv', index=False)
-    variation.to_csv(data_dir / 'within_contrast_variation.csv', index=False)
-    predicts.to_csv(data_dir / 'movement_predicts_response.csv', index=False)
-    within.to_csv(data_dir / 'movement_within_contrast.csv', index=False)
-
-    for tidy, title, formula, fname in [
-        (vs_contrast, 'Movement vs contrast', 'timing ~ contrast',
-         'movement_vs_contrast.svg'),
-        (predicts, 'Movement predicts response (unadjusted)', 'response ~ timing',
-         'movement_predicts_response.svg'),
-        (within, 'Movement predicts response within contrast',
-         'response ~ C(contrast) + timing + side + reward',
-         'movement_within_contrast.svg'),
-    ]:
-        fig = plot_movement_slope_summary(tidy, title, formula=formula)
-        fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
-
-
-def _movement_model_comparison(df_resp, figures_dir, data_dir):
-    """Jackknife ΔR² (dots) and full-dataset fixed-effects R² (bars) per
-    (target_NM, event, movement variable), one figure per event."""
-    jackknife_frames = []
-    bar_rows = []
-    for (target_nm, event), df_te in df_resp.groupby(['target_NM', 'event']):
-        for var in TIMING_VARS:
-            df_valid = df_te.dropna(subset=[f'log_{var}'])
-            if len(df_valid) < MIN_TRIALS_MOVEMENT:
-                continue
-            df_jk = jackknife_movement_lmm(df_valid, 'response', f'log_{var}')
-            if not df_jk.empty:
-                df_jk['target_NM'] = target_nm
-                df_jk['event'] = event
-                jackknife_frames.append(df_jk)
-            full = fit_movement_lmm_r2(df_valid, 'response', f'log_{var}')
-            if full is not None:
-                bar_rows.append({'target_NM': target_nm, 'event': event,
-                                 'timing_col': f'log_{var}', **full})
-
-    if not jackknife_frames:
-        return
-    df_jk_all = pd.concat(jackknife_frames, ignore_index=True)
-    df_jk_all.to_csv(data_dir / 'jackknife_model_comparison.csv', index=False)
-    df_bars = pd.DataFrame(bar_rows)
-    df_bars.to_csv(data_dir / 'movement_marginal_r2.csv', index=False)
-
-    for event, df_jk_ev in df_jk_all.groupby('event'):
-        fig = plot_movement_lmm_summary(df_jk_ev)
-        fig.savefig(figures_dir / f'model_comparison_{event}.svg',
-                    dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
-    for event, df_bars_ev in df_bars.groupby('event'):
-        fig = plot_movement_r2_bars(df_bars_ev)
-        fig.savefig(figures_dir / f'r2_model_comparison_{event}.svg',
-                    dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
+    out = {}
+    for claim in ('predicts_response', 'within_contrast'):
+        frames = []
+        for t in TIMING_VARS:
+            name = f'{claim}_{t}'
+            group.response_lmm_fit(
+                {name: LMM_FORMULAS[f'movement_claims_{t}'][claim]}, group_by)
+            frames.append(group.response_lmm_effects(name, 'coefficients')
+                          .assign(timing_var=t))
+        out[claim] = pd.concat(frames, ignore_index=True)
+    return out
 
 
 def plot_movement_figures(group, fig_dirs, data_dir):
-    """Run the movement-encoding analyses off the merged modeling frame: the
-    ordered claims, the raw-data within-contrast check, and the ΔR²
-    unique-contribution comparison (one figure per event: baseline, stimOn,
-    firstMovement)."""
-    df_resp = build_movement_df(group)
-    _fit_movement_claims(df_resp, fig_dirs['movement_slopes'], data_dir)
-    _movement_descriptive_figures(df_resp, fig_dirs['movement_descriptive'])
-    _movement_model_comparison(
-        df_resp, fig_dirs['movement_model_comparison'], data_dir)
+    """Movement-encoding analyses, restricted to the pre-feedback movement
+    events: the movement effect via coefficient heatmaps, the three-bar in-sample
+    R² comparison, and cv/jackknife reliability ΔR² per timing variable."""
+    group_by = ['target_NM', 'event']
+
+    reliability_cv, reliability_jk = _movement_reliability(group, group_by)
+    saturated_r2 = _movement_saturated_r2(group, group_by)
+    claims = _movement_effect_coefficients(group, group_by)
+
+    _save_lmm_frames({
+        'response_lmm_movement_reliability_cv': reliability_cv,
+        'response_lmm_movement_reliability_jackknife': reliability_jk,
+        'response_lmm_movement_saturated_r2': saturated_r2,
+        'response_lmm_movement_predicts_response': claims['predicts_response'],
+        'response_lmm_movement_within_contrast': claims['within_contrast'],
+    }, data_dir)
+    print(f"  Movement LMM CSVs saved to {data_dir}")
+
+    # Reliability ΔR²: one figure per (procedure, timing variable).
+    for proc, df_rel in (('cv', reliability_cv), ('jackknife', reliability_jk)):
+        for t in TIMING_VARS:
+            sub = df_rel[df_rel['timing_var'] == t]
+            if sub.empty:
+                continue
+            fig = plot_lmm_reliability(sub, title=f'movement {proc} — {t}')
+            fig.savefig(
+                fig_dirs['movement_model_comparison']
+                / f'response_lmm_movement_reliability_{proc}_{t}.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+            plt.close(fig)
+
+    # Three-bar in-sample R² comparison: one figure per movement event.
+    sat_mv = saturated_r2[saturated_r2['event'].isin(MOVEMENT_EVENTS)]
+    for event, df_ev in sat_mv.groupby('event'):
+        fig = plot_movement_r2_bars(df_ev)
+        fig.savefig(
+            fig_dirs['movement_model_comparison']
+            / f'response_lmm_movement_saturated_r2_{event}.svg',
+            dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
+
+    # Movement effect: coefficient heatmap per claim, timing variable, event.
+    for claim, coef in claims.items():
+        coef_mv = coef[coef['event'].isin(MOVEMENT_EVENTS)]
+        for (t, event), df_ce in coef_mv.groupby(['timing_var', 'event']):
+            fig = plot_lmm_coefficient_heatmap(df_ce)
+            fig.savefig(
+                fig_dirs['movement_slopes']
+                / f'response_lmm_movement_{claim}_{t}_{event}.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+            plt.close(fig)
 
 
 if __name__ == '__main__':
@@ -390,10 +396,6 @@ if __name__ == '__main__':
     )
     parser.add_argument('--plot', action='store_true',
                         help='skip extraction; plot from existing parquet files')
-    parser.add_argument('--contrast-coding',
-                        choices=['log', 'log2', 'linear', 'rank'],
-                        default='log2',
-                        help='contrast transform for LMM (default: log2)')
     args = parser.parse_args()
 
     # Create output directories
@@ -530,7 +532,7 @@ if __name__ == '__main__':
     # Repeated-measures ANOVA on subject means
     # =====================================================================
     print("\nRunning repeated-measures ANOVA on subject means...")
-    anova_results = group.anova_response_magnitudes()
+    anova_results = group.response_anovaRM_fit()
     if anova_results:
         all_tables = []
         for (tnm, ev), table in anova_results.items():
@@ -553,9 +555,8 @@ if __name__ == '__main__':
     # =====================================================================
     # LMM statistical analysis
     # =====================================================================
-    print(f"\nFitting linear mixed-effects models (contrast coding: {args.contrast_coding})...")
-    plot_lmm_figures(group, fig_dirs['lmm'], data_dir,
-                     contrast_coding=args.contrast_coding)
+    print("\nFitting linear mixed-effects models...")
+    plot_lmm_figures(group, fig_dirs['lmm'], data_dir)
 
     # =====================================================================
     # Movement encoding (ordered claims, raw-data check, ΔR² comparison)

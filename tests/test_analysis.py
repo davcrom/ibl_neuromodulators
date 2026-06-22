@@ -1125,450 +1125,6 @@ def _make_lmm_data(n_per_cell=20, seed=42):
     return pd.DataFrame(rows)
 
 
-class TestFitResponseLMM:
-
-    def test_returns_lmm_result(self):
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        assert result is not None
-
-    def test_accepts_re_formula(self):
-        """re_formula parameter controls the random effects structure."""
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response', re_formula='1')
-        assert result is not None
-        # Intercept-only: random effects should not have the contrast column
-        for effects in result.random_effects.values():
-            assert result.contrast_col not in effects.index
-
-    def test_re_formula_with_slope(self):
-        """Random slope model should include contrast col in random effects."""
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_response_lmm(df, 'response', re_formula='contrast')
-        if result is not None:
-            has_slope = any(
-                result.contrast_col in eff.index
-                for eff in result.random_effects.values()
-            )
-            assert has_slope
-
-    def test_result_has_expected_fields(self):
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        assert hasattr(result, 'result')
-        assert hasattr(result, 'summary_df')
-        assert hasattr(result, 'variance_explained')
-
-    def test_variance_explained_keys(self):
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        ve = result.variance_explained
-        assert 'marginal' in ve
-        assert 'conditional' in ve
-        assert np.isfinite(ve['marginal'])
-        assert np.isfinite(ve['conditional'])
-        assert ve['conditional'] >= ve['marginal']
-
-    def test_summary_df_has_coefficients(self):
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        assert isinstance(result.summary_df, pd.DataFrame)
-        assert 'Coef.' in result.summary_df.columns
-        assert 'P>|z|' in result.summary_df.columns
-        assert len(result.summary_df) > 0
-
-    def test_detects_contrast_effect(self):
-        """With known contrast slope of 0.5, the model should detect it."""
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_response_lmm(df, 'response')
-        # Contrast coefficient should be significantly positive
-        coef = result.summary_df.loc[result.contrast_col, 'Coef.']
-        pval = result.summary_df.loc[result.contrast_col, 'P>|z|']
-        assert coef > 0.2, f"Expected positive contrast effect, got {coef}"
-        assert pval < 0.05, f"Expected significant contrast effect, got p={pval}"
-
-    def test_convergence_failure_returns_none(self):
-        """Degenerate data should return None, not raise."""
-        from iblnm.analysis import fit_response_lmm
-        # Single subject, single side — model can't fit random effect or side
-        df = pd.DataFrame({
-            'contrast': [0.25] * 10,
-            'side': ['contra'] * 10,
-            'feedbackType': [1] * 10,
-            'subject': ['s0'] * 10,
-            'response': np.zeros(10),
-        })
-        result = fit_response_lmm(df, 'response')
-        assert result is None
-
-    def test_predictions_on_grid(self):
-        """Result should include predicted values on a contrast grid."""
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        assert hasattr(result, 'predictions')
-        assert isinstance(result.predictions, pd.DataFrame)
-        assert 'contrast' in result.predictions.columns
-        assert 'predicted' in result.predictions.columns
-        assert 'ci_lower' in result.predictions.columns
-        assert 'ci_upper' in result.predictions.columns
-        assert 'side' in result.predictions.columns
-        assert 'reward' in result.predictions.columns
-
-
-class TestContrastCodingParameter:
-    """Test that fit_response_lmm accepts different contrast coding schemes."""
-
-    def test_default_is_log(self):
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        assert result.contrast_coding == 'log'
-
-    def test_linear_coding_converges(self):
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response', contrast_coding='linear')
-        assert result is not None
-        assert result.contrast_coding == 'linear'
-
-    def test_rank_coding_converges(self):
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response', contrast_coding='rank')
-        assert result is not None
-        assert result.contrast_coding == 'rank'
-
-    def test_rank_coding_detects_contrast_effect(self):
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_response_lmm(df, 'response', contrast_coding='rank')
-        coef = result.summary_df.loc[result.contrast_col, 'Coef.']
-        assert coef > 0, f"Expected positive contrast effect under rank coding, got {coef}"
-
-    def test_marginal_means_use_stored_coding(self):
-        from iblnm.analysis import fit_response_lmm, compute_marginal_means
-        df = _make_lmm_data()
-        result_log = fit_response_lmm(df, 'response', contrast_coding='log')
-        result_rank = fit_response_lmm(df, 'response', contrast_coding='rank')
-        emm_log = compute_marginal_means(result_log, 'contrast')
-        emm_rank = compute_marginal_means(result_rank, 'contrast')
-        # Both should return valid DataFrames but with different predictions
-        assert len(emm_log) == len(emm_rank)
-        assert not np.allclose(emm_log['mean'].values, emm_rank['mean'].values)
-
-
-class TestContrastCenteringAndNaming:
-
-    @pytest.mark.parametrize('coding', ['log', 'linear', 'rank'])
-    def test_contrast_col_named_by_coding(self, coding):
-        """LMM result.contrast_col is always 'contrast' regardless of coding."""
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response', contrast_coding=coding)
-        assert result.contrast_col == 'contrast'
-        assert result.contrast_col in result.summary_df.index
-
-    @pytest.mark.parametrize('coding', ['log', 'linear', 'rank'])
-    def test_contrast_predictor_is_centered(self, coding):
-        """The contrast predictor in the fitted model has mean ≈ 0."""
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data(n_per_cell=30)
-        result = fit_response_lmm(df, 'response', contrast_coding=coding)
-        # The exog matrix column for the contrast predictor
-        col_idx = result.result.model.exog_names.index(result.contrast_col)
-        contrast_vals = result.result.model.exog[:, col_idx]
-        assert abs(contrast_vals.mean()) < 1e-10
-
-    @pytest.mark.parametrize('coding', ['log', 'linear', 'rank'])
-    def test_glm_contrast_col_named_by_coding(self, coding):
-        """GLM coefficient column is always 'contrast' regardless of coding."""
-        from iblnm.analysis import fit_response_glm
-        events = _make_glm_events(n=200, seed=0)
-        coefs, ses = fit_response_glm(events, 'stimOn_times',
-                                      contrast_coding=coding)
-        assert 'contrast' in coefs.columns
-        assert 'contrast:reward' in coefs.columns
-
-    def test_glm_contrast_predictor_is_centered(self):
-        """GLM contrast predictor per recording has mean ≈ 0.
-
-        We verify indirectly: fitting with a constant response should give
-        near-zero contrast coefficient when centered (intercept absorbs all).
-        """
-        from iblnm.analysis import fit_response_glm
-        events = _make_glm_events(n=200, seed=0)
-        events['response'] = 1.0  # constant response
-        coefs, _ = fit_response_glm(events, 'stimOn_times')
-        # All non-intercept coefficients should be near zero
-        non_intercept = coefs.drop(columns='intercept').values
-        np.testing.assert_allclose(non_intercept, 0, atol=1e-10)
-
-
-class TestFitCeilingLMM:
-    """Saturated categorical 'ceiling' model: response ~ C(contrast)*side*reward."""
-
-    def test_returns_lmm_result(self):
-        from iblnm.analysis import fit_ceiling_lmm
-        df = _make_lmm_data()
-        result = fit_ceiling_lmm(df, 'response')
-        assert result is not None
-
-    def test_variance_explained_finite(self):
-        from iblnm.analysis import fit_ceiling_lmm
-        df = _make_lmm_data()
-        result = fit_ceiling_lmm(df, 'response')
-        ve = result.variance_explained
-        assert np.isfinite(ve['marginal'])
-        assert np.isfinite(ve['conditional'])
-
-    def test_contrast_is_categorical(self):
-        """Saturated model codes contrast as a categorical factor, so each
-        non-zero level gets its own dummy term."""
-        from iblnm.analysis import fit_ceiling_lmm
-        df = _make_lmm_data()
-        result = fit_ceiling_lmm(df, 'response')
-        contrast_terms = [t for t in result.summary_df.index
-                          if 'C(contrast)' in t and ':' not in t]
-        # 5 contrast levels → 4 dummy main-effect terms.
-        assert len(contrast_terms) == 4
-
-
-class TestComputeMarginalMeans:
-
-    def test_returns_dataframe(self):
-        from iblnm.analysis import fit_response_lmm, compute_marginal_means
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        emm = compute_marginal_means(result, 'reward')
-        assert isinstance(emm, pd.DataFrame)
-
-    def test_reward_has_two_levels(self):
-        from iblnm.analysis import fit_response_lmm, compute_marginal_means
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        emm = compute_marginal_means(result, 'reward')
-        assert len(emm) == 2
-        assert set(emm['level']) == {'incorrect', 'correct'}
-
-    def test_side_has_two_levels(self):
-        from iblnm.analysis import fit_response_lmm, compute_marginal_means
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        emm = compute_marginal_means(result, 'side')
-        assert len(emm) == 2
-        assert set(emm['level']) == {'contra', 'ipsi'}
-
-    def test_has_ci_columns(self):
-        from iblnm.analysis import fit_response_lmm, compute_marginal_means
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        emm = compute_marginal_means(result, 'reward')
-        assert 'mean' in emm.columns
-        assert 'ci_lower' in emm.columns
-        assert 'ci_upper' in emm.columns
-
-    def test_reward_effect_detected(self):
-        """With known reward effect of 0.2, correct EMM should exceed incorrect."""
-        from iblnm.analysis import fit_response_lmm, compute_marginal_means
-        df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_response_lmm(df, 'response')
-        emm = compute_marginal_means(result, 'reward')
-        correct = emm[emm['level'] == 'correct']['mean'].iloc[0]
-        incorrect = emm[emm['level'] == 'incorrect']['mean'].iloc[0]
-        assert correct > incorrect
-
-    def test_contrast_column_present(self):
-        """EMM DataFrame should include the contrast column for the factor."""
-        from iblnm.analysis import fit_response_lmm, compute_marginal_means
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        emm = compute_marginal_means(result, 'reward')
-        assert 'contrast_diff' in emm.columns or 'diff' in emm.columns or len(emm) == 2
-
-    def test_contrast_emm_returns_one_row_per_contrast(self):
-        """EMM for contrast should have one row per contrast level."""
-        from iblnm.analysis import fit_response_lmm, compute_marginal_means
-        df = _make_lmm_data()
-        lmm = fit_response_lmm(df, 'response')
-        emm = compute_marginal_means(lmm, 'contrast')
-        assert isinstance(emm, pd.DataFrame)
-        assert len(emm) == 5  # 5 contrast levels
-        assert 'level' in emm.columns
-        assert 'mean' in emm.columns
-        assert 'ci_lower' in emm.columns
-
-    def test_contrast_emm_monotonic(self):
-        """With known positive contrast slope, EMMs should increase with contrast."""
-        from iblnm.analysis import fit_response_lmm, compute_marginal_means
-        df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_response_lmm(df, 'response')
-        emm = compute_marginal_means(result, 'contrast')
-        means = emm.sort_values('level')['mean'].values
-        # Not strictly monotonic due to log transform, but highest > lowest
-        assert means[-1] > means[0]
-
-
-# =============================================================================
-# Random Effects and Contrast Slopes Tests
-# =============================================================================
-
-
-class TestLMMResultRandomEffects:
-
-    def test_random_effects_field_exists(self):
-        """LMMResult should have a random_effects field."""
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        assert hasattr(result, 'random_effects')
-
-    def test_random_effects_is_dict(self):
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        assert isinstance(result.random_effects, dict)
-
-    def test_random_effects_has_subjects(self):
-        """random_effects keys should be subjects from the data."""
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        assert set(result.random_effects.keys()) == {'s0', 's1', 's2'}
-
-    def test_random_effects_has_slope_when_converged(self):
-        """When random slope model converges, each subject's effects should
-        include both intercept and slope."""
-        from iblnm.analysis import fit_response_lmm
-        df = _make_lmm_data(n_per_cell=30)
-        result = fit_response_lmm(df, 'response')
-        for subj, effects in result.random_effects.items():
-            # effects is a Series with 'Group' (intercept) and possibly 'contrast'
-            assert len(effects) >= 1  # at minimum, intercept
-
-
-class TestComputeContrastSlopes:
-
-    def test_returns_dataframe(self):
-        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        slopes = compute_contrast_slopes(result)
-        assert isinstance(slopes, pd.DataFrame)
-
-    def test_has_expected_columns(self):
-        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        slopes = compute_contrast_slopes(result)
-        assert 'reward' in slopes.columns
-        assert 'slope' in slopes.columns
-        assert 'ci_lower' in slopes.columns
-        assert 'ci_upper' in slopes.columns
-
-    def test_two_reward_conditions(self):
-        """Should have slopes for both correct and incorrect."""
-        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
-        df = _make_lmm_data()
-        result = fit_response_lmm(df, 'response')
-        slopes = compute_contrast_slopes(result)
-        pop = slopes[slopes['type'] == 'population']
-        assert set(pop['reward']) == {'incorrect', 'correct'}
-
-    def test_subject_slopes_present(self):
-        """When random slope model converges, subject-level slopes should appear."""
-        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
-        df = _make_lmm_data(n_per_cell=30)
-        result = fit_response_lmm(df, 'response')
-        slopes = compute_contrast_slopes(result)
-        subj_rows = slopes[slopes['type'] == 'subject']
-        # Should have subject rows if random slope converged
-        if result.contrast_col in list(result.random_effects.values())[0].index:
-            assert len(subj_rows) > 0
-            assert 'subject' in slopes.columns
-
-    def test_known_contrast_effect(self):
-        """Population slope for correct should reflect contrast + interaction."""
-        from iblnm.analysis import fit_response_lmm, compute_contrast_slopes
-        df = _make_lmm_data(n_per_cell=30, seed=0)
-        result = fit_response_lmm(df, 'response')
-        slopes = compute_contrast_slopes(result)
-        pop = slopes[slopes['type'] == 'population']
-        # Both conditions should have positive contrast slopes
-        # (data has 0.5 contrast effect, no interaction)
-        for _, row in pop.iterrows():
-            assert row['slope'] > 0.2
-
-
-class TestComputeInteractionEffects:
-
-    def test_contrast_by_reward_returns_dataframe(self):
-        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
-        df = _make_lmm_data()
-        lmm = fit_response_lmm(df, 'response')
-        result = compute_interaction_effects(lmm, 'contrast', 'reward')
-        assert isinstance(result, pd.DataFrame)
-
-    def test_contrast_by_reward_has_two_rows(self):
-        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
-        df = _make_lmm_data()
-        lmm = fit_response_lmm(df, 'response')
-        result = compute_interaction_effects(lmm, 'contrast', 'reward')
-        assert len(result) == 2
-        assert set(result['x_level']) == {'incorrect', 'correct'}
-
-    def test_contrast_by_side_has_two_rows(self):
-        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
-        df = _make_lmm_data()
-        lmm = fit_response_lmm(df, 'response')
-        result = compute_interaction_effects(lmm, 'contrast', 'side')
-        assert len(result) == 2
-        assert set(result['x_level']) == {'contra', 'ipsi'}
-
-    def test_reward_by_side_has_two_rows(self):
-        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
-        df = _make_lmm_data()
-        lmm = fit_response_lmm(df, 'response')
-        result = compute_interaction_effects(lmm, 'reward', 'side')
-        assert len(result) == 2
-        assert set(result['x_level']) == {'contra', 'ipsi'}
-
-    def test_has_ci_columns(self):
-        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
-        df = _make_lmm_data()
-        lmm = fit_response_lmm(df, 'response')
-        result = compute_interaction_effects(lmm, 'contrast', 'reward')
-        for col in ['effect', 'ci_lower', 'ci_upper', 'x_level', 'p_interaction']:
-            assert col in result.columns
-
-    def test_known_contrast_effect_positive(self):
-        """Synthetic data has contrast slope 0.5; both reward levels should show it."""
-        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
-        df = _make_lmm_data(n_per_cell=30, seed=0)
-        lmm = fit_response_lmm(df, 'response')
-        result = compute_interaction_effects(lmm, 'contrast', 'reward')
-        for _, row in result.iterrows():
-            assert row['effect'] > 0.2
-
-    def test_known_reward_effect_positive(self):
-        """Synthetic data has reward effect 0.2; both side levels should show it."""
-        from iblnm.analysis import fit_response_lmm, compute_interaction_effects
-        df = _make_lmm_data(n_per_cell=30, seed=0)
-        lmm = fit_response_lmm(df, 'response')
-        result = compute_interaction_effects(lmm, 'reward', 'side')
-        for _, row in result.iterrows():
-            assert row['effect'] > 0.0
-
-
-# =============================================================================
-# CCA Tests
 # =============================================================================
 
 
@@ -2719,443 +2275,140 @@ def _make_movement_lmm_df(n_per_cell=40, seed=0, subjects=('s1', 's2', 's3', 's4
     return pd.DataFrame(rows)
 
 
-class TestFitMovementLMMR2:
-    def test_returns_marginal_r2_and_deltas(self):
-        from iblnm.analysis import fit_movement_lmm_r2
-        df = _make_movement_lmm_df()
-        result = fit_movement_lmm_r2(df, 'response', 'log_reaction_time')
-        assert set(result) >= {
-            'r2_full', 'r2_drop_contrast', 'r2_drop_movement',
-            'delta_r2_contrast', 'delta_r2_timing',
-        }
-
-    def test_deltas_match_r2_differences(self):
-        from iblnm.analysis import fit_movement_lmm_r2
-        df = _make_movement_lmm_df()
-        r = fit_movement_lmm_r2(df, 'response', 'log_reaction_time')
-        assert r['delta_r2_contrast'] == pytest.approx(
-            r['r2_full'] - r['r2_drop_contrast'])
-        assert r['delta_r2_timing'] == pytest.approx(
-            r['r2_full'] - r['r2_drop_movement'])
-
-    def test_deltas_nonnegative_in_sample(self):
-        """Dropping a predictor cannot raise in-sample marginal R²."""
-        from iblnm.analysis import fit_movement_lmm_r2
-        df = _make_movement_lmm_df()
-        r = fit_movement_lmm_r2(df, 'response', 'log_reaction_time')
-        assert r['delta_r2_contrast'] >= -1e-9
-        assert r['delta_r2_timing'] >= -1e-9
-
-
-class TestLosoCVMovementLMM:
-    def test_returns_dataframe(self):
-        from iblnm.analysis import loso_cv_movement_lmm
-        df = _make_movement_lmm_df()
-        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
-        assert isinstance(result, pd.DataFrame)
-
-    def test_one_row_per_subject(self):
-        from iblnm.analysis import loso_cv_movement_lmm
-        df = _make_movement_lmm_df()
-        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
-        assert len(result) == df['subject'].nunique()
-        assert set(result['subject']) == set(df['subject'].unique())
+class TestCrossvalLmm:
+    FORMULAS = {
+        'full': 'response ~ contrast * side * reward',
+        'interactions': 'response ~ contrast + side + reward',
+    }
 
     def test_required_columns(self):
-        from iblnm.analysis import loso_cv_movement_lmm
-        df = _make_movement_lmm_df()
-        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
-        expected_cols = {
-            'subject', 'n_trials', 'r2_full', 'r2_drop_contrast',
-            'r2_drop_movement', 'delta_r2_contrast', 'delta_r2_timing',
-            'timing_col',
-        }
-        assert expected_cols <= set(result.columns)
+        from iblnm.analysis import crossval_lmm
+        coded = _code_task(_make_task_lmm_df())
+        result = crossval_lmm(coded, self.FORMULAS, 'response')
+        assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
+                                         'delta_r2']
 
-    def test_mean_delta_r2_positive(self):
-        """Both predictors have real effects, so mean delta-R² across
-        subjects should be positive."""
-        from iblnm.analysis import loso_cv_movement_lmm
-        df = _make_movement_lmm_df()
-        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
-        assert result['delta_r2_contrast'].mean() > 0
-        assert result['delta_r2_timing'].mean() > 0
+    def test_fold_below_min_test_excluded(self):
+        from iblnm.analysis import crossval_lmm
+        df = _make_task_lmm_df()
+        coded = _code_task(df)
+        # Shrink one subject to fewer than min_test trials.
+        small = coded[coded['subject'] == 's0'].iloc[:3]
+        coded = pd.concat([small, coded[coded['subject'] != 's0']])
+        result = crossval_lmm(coded, self.FORMULAS, 'response', min_test=5)
+        folds = result[result['fold'] != 'aggregate']['fold']
+        assert 's0' not in set(folds)
 
     def test_too_few_subjects_returns_empty(self):
-        from iblnm.analysis import loso_cv_movement_lmm
-        df = _make_movement_lmm_df()
-        df['subject'] = 's1'
-        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
+        from iblnm.analysis import crossval_lmm
+        coded = _code_task(_make_task_lmm_df())
+        coded['subject'] = 's0'
+        result = crossval_lmm(coded, self.FORMULAS, 'response', min_subjects=3)
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
+        assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
+                                         'delta_r2']
 
-    def test_r2_robust_to_subject_baseline(self):
-        """Held-out R² is computed after removing the subject's own intercept,
-        so huge between-subject baseline offsets do not drive it negative when
-        the FE slopes genuinely track within-subject variation."""
-        from iblnm.analysis import loso_cv_movement_lmm
-        rng = np.random.default_rng(0)
-        rows = []
-        for i, subj in enumerate(['s1', 's2', 's3', 's4']):
-            baseline = 50.0 * i  # massive between-subject intercept differences
-            for contrast in [0.0, 25.0, 100.0]:
-                for _ in range(40):
-                    t = rng.normal(-0.7, 0.3)
-                    sv = 0.5 if rng.random() < 0.5 else -0.5
-                    rv = 0.5 if rng.random() < 0.5 else -0.5
-                    resp = (baseline + 0.3 * (contrast / 100) + 0.4 * t
-                            + 0.2 * sv + rng.normal(0, 0.3))
-                    rows.append({
-                        'subject': subj, 'contrast': contrast,
-                        'side': 'contra' if sv > 0 else 'ipsi',
-                        'feedbackType': 1 if rv > 0 else -1,
-                        'response': resp, 'log_reaction_time': t,
-                    })
-        df = pd.DataFrame(rows)
-        result = loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
-        assert (result['r2_full'] > 0).all()
-
-    def test_model_formulas_and_intercept_only_re(self):
-        """All three models are additive (no interactions, no side) and share a
-        random intercept only."""
-        from unittest.mock import patch
-        from iblnm import analysis
-        df = _make_movement_lmm_df()
-        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
-            analysis.loso_cv_movement_lmm(df, 'response', 'log_reaction_time')
-        formulas = {call.args[0] for call in mock_fit.call_args_list}
-        re_formulas = {call.kwargs['re_formula'] for call in mock_fit.call_args_list}
-        assert re_formulas == {'1'}
-        assert 'response ~ contrast + log_reaction_time + reward' in formulas
-        assert 'response ~ log_reaction_time + reward' in formulas
-        assert 'response ~ contrast + reward' in formulas
+    def test_non_default_reference_no_full_key(self):
+        """With reference='additive' and no 'full' key, ΔR² is measured against
+        the named additive baseline; only the dropped predictor is reported."""
+        from iblnm.analysis import crossval_lmm
+        formulas = {
+            'additive': 'response ~ contrast + side + reward',
+            'contrast': 'response ~ side + reward',
+        }
+        coded = _code_task(_make_task_lmm_df())
+        new = crossval_lmm(coded, formulas, 'response', reference='additive')
+        assert set(new['predictor']) == {'contrast'}
+        # r2 column is the reference (additive) model's held-out R².
+        assert new['r2'].notna().all()
 
 
-def _make_task_lmm_df(n_per_cell=20, seed=0,
-                      subjects=('s0', 's1', 's2', 's3')):
-    """Synthetic task-model trial data: contrast x side x reward x subject.
-
-    Response has linear contrast, side, and reward main effects plus a
-    contrast:reward interaction, so the full model can outperform the
-    no-interaction model out of sample.
-    """
-    rng = np.random.default_rng(seed)
-    sides = ['contra', 'ipsi']
-    rewards = [1, -1]
-    contrasts = [0.0, 6.25, 12.5, 25.0, 100.0]
-
-    rows = []
-    for subj in subjects:
-        subj_intercept = rng.normal(0, 0.3)
-        for side in sides:
-            for reward in rewards:
-                for contrast in contrasts:
-                    for _ in range(n_per_cell):
-                        log_c = np.log2(contrast) if contrast > 0 else 0.0
-                        sv = 0.5 if side == 'contra' else -0.5
-                        rv = 0.5 if reward == 1 else -0.5
-                        response = (
-                            1.0
-                            + 0.5 * log_c
-                            + 0.3 * sv
-                            + 0.2 * rv
-                            + 0.25 * log_c * rv   # contrast:reward interaction
-                            + subj_intercept
-                            + rng.normal(0, 0.5)
-                        )
-                        rows.append({
-                            'contrast': contrast,
-                            'side': side,
-                            'feedbackType': reward,
-                            'subject': subj,
-                            'response': response,
-                        })
-    return pd.DataFrame(rows)
-
-
-class TestLosoCVTaskLMM:
-    def test_one_row_per_subject(self):
-        from iblnm.analysis import loso_cv_task_lmm
-        df = _make_task_lmm_df()
-        result = loso_cv_task_lmm(df, 'response')
-        subject_rows = result[result['subject'] != 'aggregate']
-        assert set(subject_rows['subject']) == set(df['subject'].unique())
+class TestJackknifeLmm:
+    FORMULAS = {
+        'full': 'response ~ contrast * side * reward',
+        'interactions': 'response ~ contrast + side + reward',
+    }
 
     def test_required_columns(self):
-        from iblnm.analysis import loso_cv_task_lmm
-        df = _make_task_lmm_df()
-        result = loso_cv_task_lmm(df, 'response')
-        expected_cols = {'subject', 'n_trials', 'r2_full', 'r2_reduced',
-                         'delta_r2'}
-        assert expected_cols <= set(result.columns)
+        from iblnm.analysis import jackknife_lmm
+        coded = _code_task(_make_task_lmm_df())
+        result = jackknife_lmm(coded, self.FORMULAS, 'response')
+        assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
+                                         'delta_r2']
 
-    def test_aggregate_row_is_finite(self):
-        from iblnm.analysis import loso_cv_task_lmm
-        df = _make_task_lmm_df()
-        result = loso_cv_task_lmm(df, 'response')
-        agg = result[result['subject'] == 'aggregate']
-        assert len(agg) == 1
-        assert np.isfinite(agg[['r2_full', 'r2_reduced', 'delta_r2']]).all().all()
+    def test_delta_matches_insample_recompute(self):
+        """A fold's delta_r2 equals r2(full) − r2(predictor model) recomputed
+        directly on that fold's N−1 training subset."""
+        from iblnm.analysis import jackknife_lmm, fit_lmm
+        coded = _code_task(_make_task_lmm_df())
+        result = jackknife_lmm(coded, self.FORMULAS, 'response')
 
-    def test_delta_equals_difference(self):
-        from iblnm.analysis import loso_cv_task_lmm
-        df = _make_task_lmm_df()
-        result = loso_cv_task_lmm(df, 'response')
-        assert result['delta_r2'].values == pytest.approx(
-            (result['r2_full'] - result['r2_reduced']).values)
+        fold = result[result['fold'] != 'aggregate']['fold'].iloc[0]
+        train = coded[coded['subject'] != fold]
+        r2 = {name: fit_lmm(f, train, groups=train['subject'],
+                            re_formula='1', reml=False
+                            ).variance_explained['marginal']
+              for name, f in self.FORMULAS.items()}
 
-    def test_too_few_subjects_returns_empty(self):
-        from iblnm.analysis import loso_cv_task_lmm
-        df = _make_task_lmm_df()
-        df['subject'] = 's0'
-        result = loso_cv_task_lmm(df, 'response')
-        assert isinstance(result, pd.DataFrame)
-        assert len(result) == 0
-
-    def test_full_vs_reduced_formulas_intercept_only_re(self):
-        """Full model has interactions, reduced is additive; both share a
-        random intercept only."""
-        from unittest.mock import patch
-        from iblnm import analysis
-        df = _make_task_lmm_df()
-        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
-            analysis.loso_cv_task_lmm(df, 'response')
-        formulas = {call.args[0] for call in mock_fit.call_args_list}
-        re_formulas = {call.kwargs['re_formula'] for call in mock_fit.call_args_list}
-        assert re_formulas == {'1'}
-        assert 'response ~ contrast * side * reward' in formulas
-        assert 'response ~ contrast + side + reward' in formulas
-
-
-class TestLosoCVMainEffectsLMM:
-    def test_one_row_per_subject_and_predictor(self):
-        from iblnm.analysis import loso_cv_main_effects_lmm
-        df = _make_task_lmm_df()
-        result = loso_cv_main_effects_lmm(df, 'response')
-        folds = result[result['subject'] != 'aggregate']
-        n_subjects = df['subject'].nunique()
-        assert set(folds['predictor']) == {'contrast', 'side', 'reward'}
-        assert len(folds) == n_subjects * 3
-
-    def test_required_columns(self):
-        from iblnm.analysis import loso_cv_main_effects_lmm
-        df = _make_task_lmm_df()
-        result = loso_cv_main_effects_lmm(df, 'response')
-        assert {'subject', 'predictor', 'n_trials', 'r2_additive', 'r2_drop',
-                'delta_r2'} <= set(result.columns)
-
-    def test_delta_is_additive_minus_drop(self):
-        """ΔR² is the out-of-sample R² lost when that main effect is removed
-        from the additive model."""
-        from iblnm.analysis import loso_cv_main_effects_lmm
-        df = _make_task_lmm_df()
-        result = loso_cv_main_effects_lmm(df, 'response')
-        assert result['delta_r2'].values == pytest.approx(
-            (result['r2_additive'] - result['r2_drop']).values)
+        row = result[(result['fold'] == fold)
+                     & (result['predictor'] == 'interactions')].iloc[0]
+        assert row['r2'] == pytest.approx(r2['full'])
+        assert row['delta_r2'] == pytest.approx(r2['full'] - r2['interactions'])
+        assert row['n_trials'] == len(train)
 
     def test_aggregate_row_per_predictor(self):
-        from iblnm.analysis import loso_cv_main_effects_lmm
-        df = _make_task_lmm_df()
-        result = loso_cv_main_effects_lmm(df, 'response')
-        agg = result[result['subject'] == 'aggregate']
-        assert set(agg['predictor']) == {'contrast', 'side', 'reward'}
-        assert np.isfinite(agg['delta_r2']).all()
+        from iblnm.analysis import jackknife_lmm
+        coded = _code_task(_make_task_lmm_df())
+        result = jackknife_lmm(coded, self.FORMULAS, 'response')
+        agg = result[result['fold'] == 'aggregate']
+        assert list(agg['predictor']) == ['interactions']
+        fold_delta = result[(result['fold'] != 'aggregate')
+                            & (result['predictor'] == 'interactions')]['delta_r2']
+        assert agg['delta_r2'].iloc[0] == pytest.approx(fold_delta.mean())
 
     def test_too_few_subjects_returns_empty(self):
-        from iblnm.analysis import loso_cv_main_effects_lmm
-        df = _make_task_lmm_df()
-        df['subject'] = 's0'
-        result = loso_cv_main_effects_lmm(df, 'response')
+        from iblnm.analysis import jackknife_lmm
+        coded = _code_task(_make_task_lmm_df())
+        coded['subject'] = 's0'
+        result = jackknife_lmm(coded, self.FORMULAS, 'response', min_subjects=3)
+        assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
+        assert list(result.columns) == ['fold', 'predictor', 'n_trials', 'r2',
+                                         'delta_r2']
 
-
-class TestJackknifeMovementLMM:
-    def test_one_row_per_subject(self):
-        from iblnm.analysis import jackknife_movement_lmm
-        df = _make_movement_lmm_df()
-        result = jackknife_movement_lmm(df, 'response', 'log_reaction_time')
-        assert set(result['subject']) == set(df['subject'].unique())
-
-    def test_required_columns(self):
-        from iblnm.analysis import jackknife_movement_lmm
-        df = _make_movement_lmm_df()
-        result = jackknife_movement_lmm(df, 'response', 'log_reaction_time')
-        expected_cols = {
-            'subject', 'r2_full', 'r2_drop_contrast', 'r2_drop_movement',
-            'delta_r2_contrast', 'delta_r2_timing', 'timing_col',
+    def test_non_default_reference_no_full_key(self):
+        """With reference='additive' and no 'full' key, ΔR² is measured against
+        the named additive baseline, recomputed in sample on each training set."""
+        from iblnm.analysis import jackknife_lmm, fit_lmm
+        formulas = {
+            'additive': 'response ~ contrast + side + reward',
+            'contrast': 'response ~ side + reward',
         }
-        assert expected_cols <= set(result.columns)
+        coded = _code_task(_make_task_lmm_df())
+        result = jackknife_lmm(coded, formulas, 'response', reference='additive')
 
-    def test_deltas_nonnegative(self):
-        """Each fold is in-sample, so dropping a predictor cannot raise R²."""
-        from iblnm.analysis import jackknife_movement_lmm
-        df = _make_movement_lmm_df()
-        result = jackknife_movement_lmm(df, 'response', 'log_reaction_time')
-        assert (result['delta_r2_contrast'] >= -1e-9).all()
-        assert (result['delta_r2_timing'] >= -1e-9).all()
-
-    def test_too_few_subjects_returns_empty(self):
-        from iblnm.analysis import jackknife_movement_lmm
-        df = _make_movement_lmm_df()
-        df['subject'] = 's1'
-        result = jackknife_movement_lmm(df, 'response', 'log_reaction_time')
-        assert len(result) == 0
-
-
-def _make_movement_vs_contrast_df(seed=0, subjects=('s1', 's2', 's3', 's4')):
-    """Synthetic data where the timing variable rises with contrast, so the
-    movement-vs-contrast slope is positive."""
-    rng = np.random.default_rng(seed)
-    rows = []
-    for subj in subjects:
-        subj_intercept = rng.normal(0, 0.3)
-        for contrast in [6.25, 25.0, 100.0]:
-            for _ in range(40):
-                log_rt = (subj_intercept + 0.3 * np.log2(contrast)
-                          + rng.normal(0, 0.2))
-                rows.append({
-                    'subject': subj,
-                    'contrast': contrast,
-                    'feedbackType': 1 if rng.random() < 0.5 else -1,
-                    'log_reaction_time': log_rt,
-                })
-    return pd.DataFrame(rows)
-
-
-class TestFitMovementVsContrast:
-    def test_returns_one_row_tidy_frame(self):
-        from iblnm.analysis import fit_movement_vs_contrast, _TIDY_LMM_COLS
-        df = _make_movement_vs_contrast_df()
-        result = fit_movement_vs_contrast(df, 'log_reaction_time')
-        assert list(result.columns) == _TIDY_LMM_COLS
-        assert len(result) == 1
-        assert result['term'].iloc[0] == 'contrast'
-        assert result['timing_col'].iloc[0] == 'log_reaction_time'
-
-    def test_recovers_positive_contrast_slope(self):
-        from iblnm.analysis import fit_movement_vs_contrast
-        df = _make_movement_vs_contrast_df()
-        result = fit_movement_vs_contrast(df, 'log_reaction_time')
-        assert result['coef'].iloc[0] > 0
-
-    def test_too_few_subjects_returns_empty(self):
-        from iblnm.analysis import fit_movement_vs_contrast, _TIDY_LMM_COLS
-        df = _make_movement_vs_contrast_df()
-        df['subject'] = 's1'
-        result = fit_movement_vs_contrast(df, 'log_reaction_time')
-        assert result.empty
-        assert list(result.columns) == _TIDY_LMM_COLS
-
-
-class TestFitMovementPredictsResponse:
-    def test_returns_one_row_tidy_frame(self):
-        from iblnm.analysis import (fit_movement_predicts_response,
-                                    _TIDY_LMM_COLS)
-        df = _make_movement_lmm_df()
-        result = fit_movement_predicts_response(
-            df, 'response', 'log_reaction_time')
-        assert list(result.columns) == _TIDY_LMM_COLS
-        assert len(result) == 1
-        assert result['term'].iloc[0] == 'log_reaction_time'
-
-    def test_recovers_positive_timing_slope(self):
-        """Synthetic data has a +0.4 timing effect on the response."""
-        from iblnm.analysis import fit_movement_predicts_response
-        df = _make_movement_lmm_df()
-        result = fit_movement_predicts_response(
-            df, 'response', 'log_reaction_time')
-        assert result['coef'].iloc[0] > 0
-
-    def test_random_timing_slope(self):
-        from unittest.mock import patch
-        from iblnm import analysis
-        df = _make_movement_lmm_df()
-        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
-            analysis.fit_movement_predicts_response(
-                df, 'response', 'log_reaction_time')
-        assert (mock_fit.call_args.kwargs['re_formula']
-                == '1 + log_reaction_time')
-
-    def test_too_few_subjects_returns_empty(self):
-        from iblnm.analysis import fit_movement_predicts_response
-        df = _make_movement_lmm_df()
-        df['subject'] = 's1'
-        result = fit_movement_predicts_response(
-            df, 'response', 'log_reaction_time')
-        assert result.empty
-
-
-class TestFitMovementWithinContrast:
-    def test_returns_one_row_tidy_frame(self):
-        from iblnm.analysis import (fit_movement_within_contrast,
-                                    _TIDY_LMM_COLS)
-        df = _make_movement_lmm_df()
-        result = fit_movement_within_contrast(
-            df, 'response', 'log_reaction_time')
-        assert list(result.columns) == _TIDY_LMM_COLS
-        assert len(result) == 1
-        assert result['term'].iloc[0] == 'log_reaction_time'
-        assert np.isfinite(result['marginal_r2'].iloc[0])
-
-    def test_recovers_positive_timing_slope_with_contrast_controlled(self):
-        """Timing effect (+0.4) is within-contrast in the synthetic data, so the
-        slope stays positive when C(contrast) absorbs between-contrast variance."""
-        from iblnm.analysis import fit_movement_within_contrast
-        df = _make_movement_lmm_df()
-        result = fit_movement_within_contrast(
-            df, 'response', 'log_reaction_time')
-        assert result['coef'].iloc[0] > 0
-
-    def test_controls_contrast_categorically(self):
-        from unittest.mock import patch
-        from iblnm import analysis
-        df = _make_movement_lmm_df()
-        with patch.object(analysis, '_fit_lmm', return_value=None) as mock_fit:
-            analysis.fit_movement_within_contrast(
-                df, 'response', 'log_reaction_time')
-        formula = mock_fit.call_args.args[0]
-        assert 'C(contrast)' in formula
-        assert 'C(contrast):log_reaction_time' not in formula
-        assert (mock_fit.call_args.kwargs['re_formula']
-                == '1 + log_reaction_time')
-
-    def test_too_few_subjects_returns_empty(self):
-        from iblnm.analysis import fit_movement_within_contrast
-        df = _make_movement_lmm_df()
-        df['subject'] = 's1'
-        result = fit_movement_within_contrast(
-            df, 'response', 'log_reaction_time')
-        assert result.empty
-
-
-class TestWithinContrastVariation:
-    def test_returns_finite_within_and_between_variances(self):
-        from iblnm.analysis import within_contrast_variation
-        df = _make_movement_lmm_df()
-        result = within_contrast_variation(df, 'log_reaction_time')
-        assert len(result) == 1
-        assert np.isfinite(result['var_within'].iloc[0])
-        assert np.isfinite(result['var_between'].iloc[0])
-        assert result['n_contrasts'].iloc[0] == df['contrast'].nunique()
-
-    def test_within_dominates_when_timing_independent_of_contrast(self):
-        """Synthetic timing is drawn independently of contrast, so almost all
-        spread is within-contrast (between-contrast variance near zero)."""
-        from iblnm.analysis import within_contrast_variation
-        df = _make_movement_lmm_df()
-        result = within_contrast_variation(df, 'log_reaction_time')
-        assert (result['var_within'].iloc[0]
-                > result['var_between'].iloc[0])
+        assert set(result['predictor']) == {'contrast'}
+        fold = result[result['fold'] != 'aggregate']['fold'].iloc[0]
+        train = coded[coded['subject'] != fold]
+        r2 = {name: fit_lmm(f, train, groups=train['subject'],
+                            re_formula='1', reml=False
+                            ).variance_explained['marginal']
+              for name, f in formulas.items()}
+        row = result[(result['fold'] == fold)
+                     & (result['predictor'] == 'contrast')].iloc[0]
+        assert row['r2'] == pytest.approx(r2['additive'])
+        assert row['delta_r2'] == pytest.approx(r2['additive'] - r2['contrast'])
 
 
 class TestFitLMMFailLoud:
     def test_missing_column_propagates(self):
         """A formula referencing a column that does not exist is a coding bug,
         not a numerical failure: it must propagate, not be swallowed as None."""
-        from iblnm.analysis import _fit_lmm
+        from iblnm.analysis import fit_lmm
         df = _make_movement_lmm_df()
         with pytest.raises(Exception):
-            _fit_lmm('response ~ nonexistent_col', df, groups=df['subject'])
+            fit_lmm('response ~ nonexistent_col', df, groups=df['subject'])
 
     def test_singular_fit_returns_none_and_warns(self):
         """A degenerate fit whose lazy BLUP evaluation raises ValueError returns
@@ -3171,7 +2424,91 @@ class TestFitLMMFailLoud:
         with patch.object(analysis, '_variance_explained',
                           side_effect=ValueError('singular covariance')):
             with pytest.warns(UserWarning):
-                result = analysis._fit_lmm(
+                result = analysis.fit_lmm(
                     'response ~ side + reward + log_reaction_time', coded,
                     groups=coded['subject'])
         assert result is None
+
+
+def _fit_for_emm(seed=0):
+    """A converged ``response ~ contrast * side * reward`` fit on coded data."""
+    from iblnm.analysis import fit_lmm
+    rng = np.random.default_rng(seed)
+    rows = []
+    for subj in ['s1', 's2', 's3', 's4']:
+        b = rng.normal(0, 0.3)
+        for contrast in [-1.0, 0.0, 1.0]:
+            for side in [-0.5, 0.5]:
+                for reward in [-0.5, 0.5]:
+                    for _ in range(20):
+                        resp = (b + 0.5 * contrast + 0.2 * side + 0.3 * reward
+                                + rng.normal(0, 0.5))
+                        rows.append({'subject': subj, 'contrast': contrast,
+                                     'side': side, 'reward': reward,
+                                     'response': resp})
+    df = pd.DataFrame(rows)
+    return fit_lmm('response ~ contrast * side * reward', df,
+                   groups=df['subject'])
+
+
+class TestComputeMarginalMeans:
+    def test_single_factor_one_row_per_level(self):
+        from iblnm.analysis import compute_marginal_means
+        emm = compute_marginal_means(_fit_for_emm(), ['reward'])
+        assert set(emm.columns) == {'reward', 'predicted', 'ci_lower',
+                                    'ci_upper'}
+        assert sorted(emm['reward']) == [-0.5, 0.5]
+
+    def test_two_factors_give_interaction_grid(self):
+        from iblnm.analysis import compute_marginal_means
+        emm = compute_marginal_means(_fit_for_emm(), ['contrast', 'reward'])
+        # 3 contrast levels x 2 reward levels.
+        assert len(emm) == 6
+        assert {'contrast', 'reward'}.issubset(emm.columns)
+
+    def test_ci_brackets_the_mean(self):
+        from iblnm.analysis import compute_marginal_means
+        emm = compute_marginal_means(_fit_for_emm(), ['side'])
+        assert (emm['ci_lower'] <= emm['predicted']).all()
+        assert (emm['predicted'] <= emm['ci_upper']).all()
+
+    def test_positive_reward_effect_recovered(self):
+        from iblnm.analysis import compute_marginal_means
+        emm = compute_marginal_means(_fit_for_emm(), ['reward']).set_index('reward')
+        assert emm.loc[0.5, 'predicted'] > emm.loc[-0.5, 'predicted']
+
+
+def _make_task_lmm_df(n_per_cell=20, seed=0,
+                      subjects=('s0', 's1', 's2', 's3')):
+    """Synthetic task-model trial data: contrast x side x reward x subject."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for subj in subjects:
+        subj_intercept = rng.normal(0, 0.3)
+        for side in ['contra', 'ipsi']:
+            for reward in [1, -1]:
+                for contrast in [0.0, 6.25, 12.5, 25.0, 100.0]:
+                    for _ in range(n_per_cell):
+                        log_c = np.log2(contrast) if contrast > 0 else 0.0
+                        sv = 0.5 if side == 'contra' else -0.5
+                        rv = 0.5 if reward == 1 else -0.5
+                        response = (1.0 + 0.5 * log_c + 0.3 * sv + 0.2 * rv
+                                    + 0.25 * log_c * rv + subj_intercept
+                                    + rng.normal(0, 0.5))
+                        rows.append({'contrast': contrast, 'side': side,
+                                     'feedbackType': reward, 'subject': subj,
+                                     'response': response})
+    return pd.DataFrame(rows)
+
+
+def _code_task(df):
+    """Code task predictors for the resampling tests: contrast log2-floored and
+    mean-centered, side and reward deviation-coded (±0.5)."""
+    from iblnm.util import get_contrast_coding
+    transform, _ = get_contrast_coding('log2')
+    df = df.dropna(subset=['response']).copy()
+    coded = transform(df['contrast'])
+    df['contrast'] = coded - float(np.mean(coded))
+    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+    return df

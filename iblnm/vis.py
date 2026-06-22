@@ -16,7 +16,6 @@ from iblnm.config import (
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
 )
-from iblnm.util import get_contrast_coding
 
 
 def _coef_label(term):
@@ -1700,13 +1699,13 @@ def _target_legend_handles(targets: Iterable[str]) -> list[Line2D]:
                    color=TARGETNM_COLORS.get(t, 'gray')) for t in targets]
 
 
-def _scatter_loso_folds(ax, x, df_group, color):
-    """Plot one LOSO group at x-position ``x``: per-subject fold ΔR² as small
-    faint markers and the across-fold aggregate as a large black-edged marker."""
-    folds = df_group[df_group['subject'] != 'aggregate']
+def _scatter_folds(ax, x, df_group, color):
+    """Plot one group at x-position ``x``: per-fold ΔR² as small faint markers
+    and the across-fold aggregate as a large black-edged marker."""
+    folds = df_group[df_group['fold'] != 'aggregate']
     ax.scatter(np.full(len(folds), x), folds['delta_r2'], color=color, s=20,
                alpha=0.5, zorder=2)
-    agg = df_group[df_group['subject'] == 'aggregate']
+    agg = df_group[df_group['fold'] == 'aggregate']
     if len(agg):
         ax.scatter(x, agg['delta_r2'].iloc[0], color=color, s=90,
                    edgecolor='k', zorder=3)
@@ -1943,205 +1942,109 @@ def plot_empirical_similarity(target_sim, loso_matrix=None, fig=None):
     return fig
 
 
-def plot_lmm_response(predictions, target_nm, event, fig=None,
-                      window_label=None, df_raw=None, response_col=None,
-                      contrast_coding='log'):
-    """Plot modeled response curves with 95% CI from an LMM fit.
+def plot_lmm_variance_explained(r2_df, ax=None):
+    """Paired marginal/conditional R² bars per target-NM, for one event.
 
-    Layout mirrors ``plot_relative_contrast``: contra (left) and ipsi (right)
-    panels, with correct/incorrect lines from the model predictions.
+    Single-panel, ax-injectable. Each target-NM gets two bars in its colour
+    (``TARGETNM_COLORS``): marginal R² (alpha 0.5) and conditional R² (opaque).
 
     Parameters
     ----------
-    predictions : pd.DataFrame
-        Output from ``fit_response_lmm().predictions`` with columns:
-        contrast, side, reward, predicted, ci_lower, ci_upper.
-    target_nm : str
-        Target neuromodulator label (for title and color).
-    event : str
-        Event name (e.g. 'stimOn_times').
-    fig : plt.Figure, optional
-    window_label : str, optional
-    df_raw : pd.DataFrame, optional
-        Raw trial data for overlay. Must have contrast, side, feedbackType,
-        and ``response_col``.
-    response_col : str, optional
-        Column in df_raw for raw data overlay.
+    r2_df : pd.DataFrame
+        Columns ``target_NM``, ``marginal_r2``, ``conditional_r2`` (one event).
+    ax : plt.Axes, optional
+        Axis to draw into; a new figure is created when None.
 
     Returns
     -------
     plt.Figure
     """
-    if fig is None:
-        fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05},
-                              layout='constrained')
-
-    ax_c, ax_i = fig.axes[0], fig.axes[1]
-
-    event_label = event.replace('_times', '')
-    _window = window_label or ''
-    color = TARGETNM_COLORS.get(target_nm, 'black')
-    fig.suptitle(f'{target_nm} — {event_label} ({_window}) [LMM]', fontsize=LABELFONTSIZE)
-
-    _transform, _ = get_contrast_coding(contrast_coding)
-
-    contrasts = sorted(predictions['contrast'].unique())
-    coded_contrasts = _transform(contrasts)
-
-    for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
-        df_side = predictions[predictions['side'] == side]
-
-        for reward, ls, label in ((1, '-', 'correct'), (0, '--', 'incorrect')):
-            df_r = df_side[df_side['reward'] == reward].sort_values('contrast')
-            if len(df_r) == 0:
-                continue
-            xvals = _transform(df_r['contrast'].values)
-            ax.plot(xvals, df_r['predicted'].values,
-                    color=color, linestyle=ls, label=label, marker='o',
-                    markersize=3)
-            ax.fill_between(xvals,
-                            df_r['ci_lower'].values, df_r['ci_upper'].values,
-                            color=color, alpha=0.15)
-
-        # Raw data overlay
-        if df_raw is not None and response_col is not None:
-            raw_side = df_raw[df_raw['side'] == side]
-            for fb, marker in ((1, 'o'), (-1, 's')):
-                raw_fb = raw_side[raw_side['feedbackType'] == fb]
-                if len(raw_fb) == 0:
-                    continue
-                means = raw_fb.groupby('contrast')[response_col].mean()
-                ax.scatter(_transform(means.index), means.values,
-                           color=color, marker=marker, alpha=0.3, s=15,
-                           zorder=0)
-
-        ax.set_xticks(coded_contrasts if len(coded_contrasts) else [])
-        ax.set_xticklabels([f'{c:g}' for c in contrasts])
-        ax.set_xlabel('Contrast')
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-    ax_c.invert_xaxis()
-    ax_c.text(0.05, 0.02, 'Contra', ha='left', transform=ax_c.transAxes,
-              fontsize=TICKFONTSIZE)
-    ax_i.text(0.95, 0.02, 'Ipsi', ha='right', transform=ax_i.transAxes,
-              fontsize=TICKFONTSIZE)
-    ax_c.set_ylabel('z-score (modeled)')
-    ax_i.tick_params(left=False)
-    ax_i.spines['left'].set_visible(False)
-    ax_i.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
-                fontsize=TICKFONTSIZE)
-    ax_i.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-    return fig
-
-
-def plot_lmm_variance_explained(ve_dict, fig=None):
-    """Grouped bar chart of marginal and conditional R² per (target, event).
-
-    Parameters
-    ----------
-    ve_dict : dict
-        Keys are (target_nm, event) tuples, values are dicts with
-        'marginal' and 'conditional' R² values.
-    fig : plt.Figure, optional
-
-    Returns
-    -------
-    plt.Figure
-    """
-    if fig is None:
-        fig, ax = plt.subplots(1, 1, figsize=(max(4, len(ve_dict) * 1.5), 4),
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(max(4, len(r2_df)), 4),
                                layout='constrained')
     else:
-        ax = fig.axes[0]
+        fig = ax.figure
 
-    if not ve_dict:
-        ax.set_title('Variance explained (R²)')
-        return fig
+    targets = sorted(r2_df['target_NM'],
+                     key=lambda t: TARGETNM2POSITION.get(t, 999))
+    bar_w = 0.35
+    for i, tnm in enumerate(targets):
+        row = r2_df[r2_df['target_NM'] == tnm].iloc[0]
+        color = TARGETNM_COLORS.get(tnm, f'C{i}')
+        ax.bar(i - bar_w / 2, row['marginal_r2'], width=bar_w, color=color,
+               alpha=0.5, label='Fixed' if i == 0 else '')
+        ax.bar(i + bar_w / 2, row['conditional_r2'], width=bar_w, color=color,
+               alpha=1.0, label='Fixed + random' if i == 0 else '')
 
-    labels = [f'{t}\n{e}' for t, e in ve_dict.keys()]
-    marginal = [v['marginal'] for v in ve_dict.values()]
-    conditional = [v['conditional'] for v in ve_dict.values()]
-
-    x = np.arange(len(labels))
-    width = 0.35
-    ax.bar(x - width / 2, marginal, width, label='Marginal R²', color='steelblue')
-    ax.bar(x + width / 2, conditional, width, label='Conditional R²', color='coral')
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=TICKFONTSIZE)
+    ax.set_xticks(range(len(targets)))
+    ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
     ax.set_ylabel('R²')
-    ax.set_ylim(0, 1)
-    ax.legend(frameon=False)
-    ax.set_title('Variance explained by LMM')
-
+    ax.set_title('Variance explained')
+    ax.legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
     return fig
 
 
-def plot_marginal_means(emm_dict, event, fig=None):
-    """Plot estimated marginal means for reward and side, per target-NM.
+# Readable x-tick labels for deviation-coded categorical factors. Continuous
+# factors (contrast) fall through to their coded level value.
+_EMM_LEVEL_LABELS = {
+    'reward': {-0.5: 'incorrect', 0.5: 'correct'},
+    'side': {0.5: 'contra', -0.5: 'ipsi'},
+}
+
+
+def plot_marginal_means(emm_df, ax=None):
+    """Main-effect estimated marginal means for one factor, per target-NM.
+
+    Single-panel, ax-injectable. The factor is the lone non-value column of
+    ``emm_df`` (every column except ``predicted``/``ci_lower``/``ci_upper`` and
+    the identity columns ``target_NM``/``event``). Each target-NM is an errorbar
+    series across the factor's levels (predicted mean ± 95% CI), slightly offset
+    to avoid overlap.
 
     Parameters
     ----------
-    emm_dict : dict
-        Keys are (target_NM, event_label) tuples. Values are dicts with
-        'reward' and 'side' keys mapping to DataFrames from
-        ``compute_marginal_means`` (columns: level, mean, ci_lower, ci_upper).
-    event : str
-        Event label to filter from emm_dict (e.g. 'stimOn').
-    fig : plt.Figure, optional
+    emm_df : pd.DataFrame
+        :func:`iblnm.analysis.compute_marginal_means` output tagged with
+        ``target_NM`` for one event: a factor column (coded levels),
+        ``predicted``, ``ci_lower``, ``ci_upper``.
+    ax : plt.Axes, optional
+        Axis to draw into; a new figure is created when None.
 
     Returns
     -------
     plt.Figure
     """
-    # Filter to the requested event
-    targets = []
-    for (tnm, ev), emms in emm_dict.items():
-        if ev == event:
-            targets.append((tnm, emms))
-    targets.sort(key=lambda x: x[0])
-
-    if fig is None:
-        fig, axes = plt.subplots(1, 2, figsize=(8, 4), layout='constrained')
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(4, 4), layout='constrained')
     else:
-        axes = fig.axes[:2]
+        fig = ax.figure
 
-    for ax, factor, level_labels in zip(
-        axes,
-        ['reward', 'side'],
-        [{'0': 'incorrect', '1': 'correct', 0: 'incorrect', 1: 'correct'},
-         {'contra': 'contra', 'ipsi': 'ipsi'}],
-    ):
-        for i, (tnm, emms) in enumerate(targets):
-            emm = emms[factor]
-            color = TARGETNM_COLORS.get(tnm, f'C{i}')
-            levels = emm['level'].values
-            means = emm['mean'].values
-            ci_lo = emm['ci_lower'].values
-            ci_hi = emm['ci_upper'].values
-            yerr = np.array([means - ci_lo, ci_hi - means])
+    value_cols = {'predicted', 'ci_lower', 'ci_upper', 'target_NM', 'event'}
+    factor = next(c for c in emm_df.columns if c not in value_cols)
+    levels = sorted(emm_df[factor].unique())
+    label_map = _EMM_LEVEL_LABELS.get(factor, {})
 
-            x = np.arange(len(levels))
-            ax.errorbar(x + i * 0.05 - 0.025 * len(targets),
-                        means, yerr=yerr,
-                        fmt='o', capsize=4, color=color, label=tnm,
-                        markersize=5)
+    targets = sorted(emm_df['target_NM'].unique(),
+                     key=lambda t: TARGETNM2POSITION.get(t, 999))
+    for i, tnm in enumerate(targets):
+        sub = (emm_df[emm_df['target_NM'] == tnm]
+               .set_index(factor).reindex(levels))
+        means = sub['predicted'].values
+        yerr = np.array([means - sub['ci_lower'].values,
+                         sub['ci_upper'].values - means])
+        x = np.arange(len(levels)) + i * 0.05 - 0.025 * len(targets)
+        color = TARGETNM_COLORS.get(tnm, f'C{i}')
+        ax.errorbar(x, means, yerr=yerr, fmt='o', capsize=4, color=color,
+                    label=tnm, markersize=5)
 
-        # X-axis labels
-        if len(targets) > 0:
-            sample_emm = targets[0][1][factor]
-            levels = sample_emm['level'].values
-            x = np.arange(len(levels))
-            ax.set_xticks(x)
-            ax.set_xticklabels([level_labels.get(lvl, str(lvl)) for lvl in levels])
-
-        ax.set_ylabel('z-score (EMM)')
-        ax.set_title(f'Effect of {factor}')
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-    axes[-1].legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
-                    fontsize=TICKFONTSIZE)
-    fig.suptitle(f'Estimated marginal means — {event}', fontsize=LABELFONTSIZE)
+    ax.set_xticks(range(len(levels)))
+    ax.set_xticklabels([str(label_map.get(lvl, round(lvl, 2)))
+                        for lvl in levels])
+    ax.set_ylabel('z-score (EMM)')
+    ax.set_title(f'Effect of {factor}')
+    ax.axhline(0, ls='--', color='gray', lw=0.5)
+    ax.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
+              fontsize=TICKFONTSIZE)
     return fig
 
 
@@ -2156,321 +2059,135 @@ def _pval_to_stars(p):
     return ''
 
 
-def plot_lmm_coefficient_heatmap(df_coefs):
-    """Heatmap of LMM coefficients per event: targets × terms.
+def plot_lmm_coefficient_heatmap(coef_df, ax=None):
+    """Heatmap of LMM coefficients for one event: targets × terms.
 
-    Drops the Intercept term (uninterpretable for firstMovement and feedback
-    due to prior-event contamination of the baseline). Colorbar scale is
-    shared across all events for comparability.
+    Single-panel, ax-injectable. Drops the Intercept term (uninterpretable for
+    firstMovement and feedback due to prior-event contamination of the
+    baseline). Cell colour is the coefficient (diverging ``RdBu_r``, symmetric
+    about zero); asterisks mark significance.
 
     Parameters
     ----------
-    df_coefs : pd.DataFrame
-        LMM coefficients with columns: term, target_NM, event, Coef., P>|z|.
+    coef_df : pd.DataFrame
+        Coefficients for a single event, columns ``term``, ``target_NM``,
+        ``Coef.``, ``P>|z|``.
+    ax : plt.Axes, optional
+        Axis to draw into; a new figure is created when None.
 
     Returns
     -------
-    dict[str, plt.Figure]
-        One figure per event, keyed by event name.
+    plt.Figure
     """
-    df_coefs = df_coefs[df_coefs['term'] != 'Intercept']
+    coef_df = coef_df[coef_df['term'] != 'Intercept']
 
     term_order = [
         'side', 'reward', 'contrast',
         'side:reward', 'contrast:side',
         'contrast:reward', 'contrast:side:reward',
     ]
-
-    events = sorted(df_coefs['event'].unique())
-    targets = sorted(df_coefs['target_NM'].unique(),
+    targets = sorted(coef_df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
+    present_terms = [t for t in term_order if t in coef_df['term'].values]
+    present_terms += sorted(set(coef_df['term']) - set(term_order))
 
-    # Global vmax across all events for shared colorbar scale
-    vmax = df_coefs['Coef.'].abs().max()
-
-    figs = {}
-    for event in events:
-        df_ev = df_coefs[df_coefs['event'] == event]
-        present_terms = [t for t in term_order if t in df_ev['term'].values]
-        present_terms += sorted(set(df_ev['term']) - set(term_order))
-
-        coef_matrix = np.full((len(targets), len(present_terms)), np.nan)
-        pval_matrix = np.ones((len(targets), len(present_terms)))
-        for i, tnm in enumerate(targets):
-            for j, term in enumerate(present_terms):
-                row = df_ev[(df_ev['target_NM'] == tnm)
-                            & (df_ev['term'] == term)]
-                if len(row) == 1:
-                    coef_matrix[i, j] = row['Coef.'].iloc[0]
-                    pval_matrix[i, j] = row['P>|z|'].iloc[0]
-
-        col_labels = [_coef_label(t) for t in present_terms]
-
+    if ax is None:
         fig, ax = plt.subplots(
             figsize=(0.9 * len(present_terms) + 1.5, 0.6 * len(targets) + 1))
-        im = ax.imshow(coef_matrix, aspect='auto', cmap='RdBu_r',
-                        vmin=-vmax, vmax=vmax)
+    else:
+        fig = ax.figure
 
-        # Asterisk annotations
-        for i in range(len(targets)):
-            for j in range(len(present_terms)):
-                stars = _pval_to_stars(pval_matrix[i, j])
-                if stars:
-                    ax.text(j, i, stars, ha='center', va='center',
-                            fontsize=TICKFONTSIZE, fontweight='bold',
-                            color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
-                            else 'w')
+    coef_matrix = np.full((len(targets), len(present_terms)), np.nan)
+    pval_matrix = np.ones((len(targets), len(present_terms)))
+    for i, tnm in enumerate(targets):
+        for j, term in enumerate(present_terms):
+            row = coef_df[(coef_df['target_NM'] == tnm)
+                          & (coef_df['term'] == term)]
+            if len(row) == 1:
+                coef_matrix[i, j] = row['Coef.'].iloc[0]
+                pval_matrix[i, j] = row['P>|z|'].iloc[0]
 
-        ax.set_xticks(range(len(col_labels)))
-        ax.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=TICKFONTSIZE)
-        ax.set_yticks(range(len(targets)))
-        ax.set_yticklabels(targets, fontsize=TICKFONTSIZE)
-        ax.set_title(event, fontsize=LABELFONTSIZE)
-        fig.colorbar(im, ax=ax, label='Coefficient', shrink=0.8)
-        fig.tight_layout()
-        figs[event] = fig
+    vmax = np.nanmax(np.abs(coef_matrix))
+    im = ax.imshow(coef_matrix, aspect='auto', cmap='RdBu_r',
+                   vmin=-vmax, vmax=vmax)
 
-    return figs
+    for i in range(len(targets)):
+        for j in range(len(present_terms)):
+            stars = _pval_to_stars(pval_matrix[i, j])
+            if stars:
+                ax.text(j, i, stars, ha='center', va='center',
+                        fontsize=TICKFONTSIZE, fontweight='bold',
+                        color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
+                        else 'w')
+
+    col_labels = [_coef_label(t) for t in present_terms]
+    ax.set_xticks(range(len(col_labels)))
+    ax.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=TICKFONTSIZE)
+    ax.set_yticks(range(len(targets)))
+    ax.set_yticklabels(targets, fontsize=TICKFONTSIZE)
+    ax.set_title('Coefficients')
+    fig.colorbar(im, ax=ax, label='Coefficient', shrink=0.8)
+    return fig
 
 
-def plot_lmm_summary(group, event, fig=None, formula=None):
-    """5-panel LMM summary for one event.
+def plot_lmm_summary(r2_df, coef_df, emm_frames, event, formula=None,
+                     fig=None):
+    """5-panel LMM summary for one event, composed from the modular plotters.
+
+    Thin orchestrator: builds the gridspec and delegates each panel to an
+    ax-injectable plotter, sourcing data from the precomputed effect frames.
+    Each input frame may span several events; all are filtered to ``event``
+    before plotting.
 
     Panels:
-    1. R² (fixed effects and fixed+random) as paired dots per target-NM.
-    2. Contrast × reward interaction plot.
-    3. Contrast × side interaction plot.
-    4. Reward × side interaction plot.
-    5. Coefficient heatmap (targets × terms, color = coefficient, stars = p).
-
-    Interaction panels: each target-NM gets its own x-position with the two
-    levels of the x-factor offset left/right. Dot fill encodes the y-factor
-    main effect significance; connecting line style encodes the interaction
-    significance (solid = p < 0.05, dashed = not).
+    1. Variance explained (R² bars), top-left.
+    2. Coefficient heatmap, top-right.
+    3-5. Main-effect EMM panels for reward, side, contrast (bottom row).
 
     Parameters
     ----------
-    group : PhotometrySessionGroup
-        Must have ``lmm_results`` populated (via ``fit_lmm``).
+    r2_df : pd.DataFrame
+        ``response_lmm_fit`` output for one model: ``target_NM``, ``event``,
+        ``marginal_r2``, ``conditional_r2``.
+    coef_df : pd.DataFrame
+        ``response_lmm_effects(name, 'coefficients')``: ``term``,
+        ``target_NM``, ``event``, ``Coef.``, ``P>|z|``.
+    emm_frames : dict[str, pd.DataFrame]
+        Maps each bottom-row factor (``'reward'``, ``'side'``, ``'contrast'``)
+        to its ``response_lmm_effects(name, 'emm', [factor])`` frame.
     event : str
-        Event label to plot (e.g. 'stimOn').
-    fig : plt.Figure, optional
-    formula : str or None
+        Event to plot; selects rows from each frame.
+    formula : str, optional
         Base-model formula; annotated under the title when given.
+    fig : plt.Figure, optional
 
     Returns
     -------
     plt.Figure
     """
-    lmm_results = group.lmm_results
-
     if fig is None:
         fig = plt.figure(figsize=(14, 8), layout='constrained')
-        gs = fig.add_gridspec(2, 6)
-        axes = [
-            fig.add_subplot(gs[0, :2]),   # R²
-            fig.add_subplot(gs[0, 2:]),   # coefficient heatmap
-            fig.add_subplot(gs[1, :2]),   # contrast × reward
-            fig.add_subplot(gs[1, 2:4]),  # contrast × side
-            fig.add_subplot(gs[1, 4:]),   # reward × side
-        ]
-    else:
-        axes = fig.axes[:5]
+    gs = fig.add_gridspec(2, 6)
+    ax_r2 = fig.add_subplot(gs[0, :2])
+    ax_hm = fig.add_subplot(gs[0, 2:])
+    ax_a = fig.add_subplot(gs[1, :2])
+    ax_b = fig.add_subplot(gs[1, 2:4])
+    ax_c = fig.add_subplot(gs[1, 4:])
 
-    ax_r2 = axes[0]
+    r2_event = r2_df[r2_df['event'] == event]
+    coef_event = coef_df[coef_df['event'] == event]
 
-    targets = sorted(
-        set(tnm for (tnm, ev) in lmm_results if ev == event),
-        key=lambda x: TARGETNM2POSITION.get(x, 999),
-    )
+    plot_lmm_variance_explained(r2_event, ax=ax_r2)
+    plot_lmm_coefficient_heatmap(coef_event, ax=ax_hm)
 
-    # --- Panel 1: R² side-by-side bars ---
-    bar_w = 0.35
-    for i, tnm in enumerate(targets):
-        key = (tnm, event)
-        if key not in lmm_results:
-            continue
-        ve = lmm_results[key].variance_explained
-        color = TARGETNM_COLORS.get(tnm, f'C{i}')
-        ax_r2.bar(i - bar_w / 2, ve['marginal'], width=bar_w,
-                  color=color, alpha=0.5, label='Fixed' if i == 0 else '')
-        ax_r2.bar(i + bar_w / 2, ve['conditional'], width=bar_w,
-                  color=color, alpha=1.0, label='Fixed + random' if i == 0 else '')
+    for ax, factor in zip((ax_a, ax_b, ax_c), ('reward', 'side', 'contrast')):
+        emm = emm_frames[factor]
+        plot_marginal_means(emm[emm['event'] == event], ax=ax)
 
-    ax_r2.set_xticks(range(len(targets)))
-    ax_r2.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
-    ax_r2.set_ylabel('R²')
-    ax_r2.set_ylim(0, 0.35)
-    ax_r2.set_title('Variance explained')
-    ax_r2.legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
-
-    # --- Panels 2–4: Interaction plots ---
-    _interaction_specs = [
-        # (ax_idx, attr, y_label, title, x_labels, y_main_coef)
-        # 'contrast' is resolved to lmm.contrast_col inside the loop
-        (2, 'interaction_contrast_reward', 'Contrast slope',
-         'Contrast × reward',
-         {'incorrect': 'incorrect', 'correct': 'correct'},
-         'contrast'),
-        (3, 'interaction_contrast_side', 'Contrast slope',
-         'Contrast × side',
-         {'contra': 'contra', 'ipsi': 'ipsi'},
-         'contrast'),
-        (4, 'interaction_reward_side', 'Reward effect',
-         'Reward × side',
-         {'contra': 'contra', 'ipsi': 'ipsi'},
-         'reward'),
-    ]
-
-    for ax_idx, attr, ylabel, title, x_labels, y_coef in \
-            _interaction_specs:
-        ax = axes[ax_idx]
-        for i, tnm in enumerate(targets):
-            key = (tnm, event)
-            if key not in lmm_results:
-                continue
-            lmm = lmm_results[key]
-            idf = getattr(lmm, attr, None)
-            if idf is None:
-                continue
-            color = TARGETNM_COLORS.get(tnm, f'C{i}')
-
-            # Resolve 'contrast' sentinel to actual column name
-            coef_name = lmm.contrast_col if y_coef == 'contrast' else y_coef
-            # Dot fill: y-factor main effect significance
-            y_sig = (coef_name in lmm.summary_df.index
-                     and lmm.summary_df.loc[coef_name, 'P>|z|'] < 0.05)
-            fs = 'full' if y_sig else 'none'
-
-            # Line style: interaction significance (from interaction DataFrame)
-            int_sig = idf['p_interaction'].iloc[0] < 0.05
-            ls = '-' if int_sig else '--'
-
-            x_levels = idf['x_level'].values
-            effects = idf['effect'].values
-            ci_lo = idf['ci_lower'].values
-            ci_hi = idf['ci_upper'].values
-
-            # Position: each target at its own x, two levels offset
-            x_center = i
-            dx = 0.15
-            x_pos = [x_center - dx, x_center + dx]
-
-            for j in range(len(x_levels)):
-                ax.errorbar(
-                    x_pos[j], effects[j],
-                    yerr=[[effects[j] - ci_lo[j]], [ci_hi[j] - effects[j]]],
-                    fmt='o', capsize=4, color=color, markersize=6,
-                    zorder=3, fillstyle=fs,
-                )
-            ax.plot(x_pos, effects, color=color, ls=ls, lw=1.5, zorder=2)
-
-        # X-axis: label each target position with target name,
-        # and add level labels as a secondary indication
-        ax.set_xticks(range(len(targets)))
-        ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-        # Add level labels inside the plot, at the bottom
-        if targets:
-            level_names = list(x_labels.values())
-            dx = 0.15
-            for j, name in enumerate(level_names):
-                x_pos = -dx if j == 0 else dx
-                ax.annotate(
-                    name, xy=(x_pos, 0.02), xycoords=('data', 'axes fraction'),
-                    fontsize=TICKFONTSIZE, ha='center', va='bottom', color='k',
-                    rotation=90,
-                )
-
-    # Legend on interaction panels
-    target_handles = [
-        Line2D([0], [0], marker='o', color=TARGETNM_COLORS.get(t, f'C{i}'),
-               ls='none', markersize=5)
-        for i, t in enumerate(targets)
-    ]
-    encoding_handles = [
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
-               fillstyle='full'),
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
-               fillstyle='none'),
-        Line2D([0], [0], color='gray', ls='-', lw=1.2),
-        Line2D([0], [0], color='gray', ls='--', lw=1.2),
-    ]
-    encoding_labels = ['main effect p<0.05', 'main effect n.s.',
-                       'interaction p<0.05', 'interaction n.s.']
-    axes[4].legend(
-        target_handles + encoding_handles,
-        targets + encoding_labels,
-        frameon=False, fontsize=LABELFONTSIZE, loc='upper left',
-        bbox_to_anchor=(1, 1),
-    )
-
-    # --- Panel 2 (top right): Coefficient heatmap ---
-    ax_hm = axes[1]
-    # Detect contrast column from the first available result
-    _first_lmm = next(v for (tnm, ev), v in lmm_results.items()
-                       if ev == event)
-    _cc = _first_lmm.contrast_col
-    _term_order = [
-        _cc, 'side', 'reward',
-        f'{_cc}:side', f'{_cc}:reward',
-        'side:reward', f'{_cc}:side:reward',
-    ]
-
-    # Collect coefficients for this event
-    present_terms = []
-    for term in _term_order:
-        for tnm in targets:
-            key = (tnm, event)
-            if key in lmm_results and term in lmm_results[key].summary_df.index:
-                present_terms.append(term)
-                break
-
-    if present_terms:
-        coef_matrix = np.full((len(targets), len(present_terms)), np.nan)
-        pval_matrix = np.ones((len(targets), len(present_terms)))
-        for i, tnm in enumerate(targets):
-            key = (tnm, event)
-            if key not in lmm_results:
-                continue
-            sdf = lmm_results[key].summary_df
-            for j, term in enumerate(present_terms):
-                if term in sdf.index:
-                    coef_matrix[i, j] = sdf.loc[term, 'Coef.']
-                    pval_matrix[i, j] = sdf.loc[term, 'P>|z|']
-
-        vmax = np.nanmax(np.abs(coef_matrix))
-
-        im = ax_hm.imshow(coef_matrix, aspect='auto', cmap='RdBu_r',
-                           vmin=-vmax, vmax=vmax)
-        for i in range(len(targets)):
-            for j in range(len(present_terms)):
-                stars = _pval_to_stars(pval_matrix[i, j])
-                if stars:
-                    ax_hm.text(
-                        j, i, stars, ha='center', va='center',
-                        fontsize=TICKFONTSIZE, fontweight='bold',
-                        color='k' if abs(coef_matrix[i, j]) < 0.6 * vmax
-                        else 'w')
-
-        col_labels = [_coef_label(t) for t in present_terms]
-        ax_hm.set_xticks(range(len(col_labels)))
-        ax_hm.set_xticklabels(col_labels, rotation=45, ha='right', fontsize=TICKFONTSIZE)
-        ax_hm.set_yticks(range(len(targets)))
-        ax_hm.set_yticklabels(targets, fontsize=TICKFONTSIZE)
-        ax_hm.set_title('Coefficients')
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
-        divider = make_axes_locatable(ax_hm)
-        cax = divider.append_axes('right', size='5%', pad=0.08)
-        fig.colorbar(im, cax=cax, label='β')
-
-    title = f'LMM summary — {event}'
+    suptitle = f'LMM summary — {event}'
     if formula is not None:
-        title += f'\n{formula}'
-    fig.suptitle(title, fontsize=LABELFONTSIZE)
+        suptitle += f'\n{formula}'
+    fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
     return fig
 
 
@@ -2598,88 +2315,39 @@ def plot_lmm_main_effects(main_effects_df):
     return fig
 
 
-def plot_lmm_loso(loso_df):
-    """LOSO-CV generalizability: ΔR² (full − no-interaction) out of sample.
-
-    One panel per event. Per target-NM, the small markers are the per-held-out-
-    subject ΔR² (positive = interactions help generalize to a new animal) and
-    the large marker is the across-fold aggregate. At 6–11 subjects the CV
-    estimate is noisy and qualitative.
-
-    Parameters
-    ----------
-    loso_df : pd.DataFrame
-        ``fit_lmm`` LOSO rows: ``target_NM``, ``event``, ``subject``,
-        ``delta_r2`` (with a per-group ``subject == 'aggregate'`` row).
-
-    Returns
-    -------
-    plt.Figure
-    """
-    events = _sort_events(loso_df['event'].unique()) if len(loso_df) else []
-    n_panels = max(len(events), 1)
-    fig, axes = plt.subplots(1, n_panels, figsize=(3 * n_panels + 1, 4),
-                             sharey=True, layout='constrained')
-    axes = np.atleast_1d(axes)
-    if len(loso_df) == 0:
-        fig.suptitle('LOSO-CV generalizability (full − no-interaction ΔR²)',
-                     fontsize=LABELFONTSIZE)
-        return fig
-
-    for ax, event in zip(axes, events):
-        df_ev = loso_df[loso_df['event'] == event]
-        targets = sorted(df_ev['target_NM'].unique(),
-                         key=lambda x: TARGETNM2POSITION.get(x, 999))
-        for i, tnm in enumerate(targets):
-            color = TARGETNM_COLORS.get(tnm, f'C{i}')
-            _scatter_loso_folds(ax, i, df_ev[df_ev['target_NM'] == tnm], color)
-        ax.set_xticks(range(len(targets)))
-        ax.set_xticklabels(targets, rotation=45, ha='right',
-                           fontsize=TICKFONTSIZE)
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-        ax.set_title(event)
-    axes[0].set_ylabel('Out-of-sample ΔR² (full − reduced)')
-
-    targets_all = sorted(loso_df['target_NM'].unique(),
-                         key=lambda x: TARGETNM2POSITION.get(x, 999))
-    target_handles = _target_legend_handles(targets_all)
-    role_handles = [
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
-               alpha=0.5),
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=9,
-               markeredgecolor='k'),
-    ]
-    axes[-1].legend(
-        target_handles + role_handles,
-        targets_all + ['per-subject fold', 'across-fold aggregate'],
-        frameon=False, fontsize=TICKFONTSIZE, loc='upper left',
-        bbox_to_anchor=(1, 1))
-    fig.suptitle('LOSO-CV generalizability (full − no-interaction ΔR²)',
-                 fontsize=LABELFONTSIZE)
-    return fig
-
-
-# Order of task terms on the reliability x-axis: main effects, then the
-# omnibus interaction block.
+# Order of recognized task terms on the reliability x-axis: main effects, then
+# the omnibus interaction block. Unrecognized predictors (e.g. movement timing
+# variables) are appended in encounter order.
 _RELIABILITY_TERMS = ['contrast', 'side', 'reward', 'interactions']
 
 
-def plot_lmm_reliability(reliability_df):
-    """Out-of-sample ΔR² per task term — grid of target-NM (rows) × event (cols).
+def _reliability_predictor_order(predictors: Iterable[str]) -> list[str]:
+    """Order predictors: known task terms first (``_RELIABILITY_TERMS``), then
+    any others in encounter order."""
+    present = list(dict.fromkeys(predictors))
+    known = [t for t in _RELIABILITY_TERMS if t in present]
+    others = [p for p in present if p not in _RELIABILITY_TERMS]
+    return known + others
 
-    Each cell shows leave-one-subject-out ΔR² for the four task terms on a
-    common x-axis: the three main effects (R² lost when that term is dropped
-    from the additive model) and the omnibus interaction block (R² gained by
-    the full model over the additive model). Small markers are the per-held-out-
-    subject folds, the large marker is the across-fold mean. Positive = the term
-    helps predict a new animal. Each target-NM row is drawn in its own color and
-    shares a y-axis so terms and events are comparable within an NM.
+
+def plot_lmm_reliability(reliability_df, title):
+    """Out-of-sample ΔR² per predictor — grid of target-NM (rows) × event (cols).
+
+    Each cell shows the per-fold ΔR² for every predictor on a common x-axis.
+    Small faint markers are the per-fold values (e.g. leave-one-subject-out),
+    the large marker is the across-fold aggregate. Positive = the predictor
+    helps predict held-out data. Each target-NM row is drawn in its own color
+    and shares a y-axis so predictors and events are comparable within an NM.
+    Predictor order keeps the recognized task terms (``_RELIABILITY_TERMS``)
+    first and appends any others (e.g. ``log_<var>``) in encounter order.
 
     Parameters
     ----------
     reliability_df : pd.DataFrame
-        ``PhotometrySessionGroup.lmm_reliability`` rows: ``target_NM``,
-        ``event``, ``predictor``, ``subject``, ``delta_r2``.
+        Long-form ΔR² rows: ``target_NM``, ``event``, ``predictor``, ``fold``,
+        ``delta_r2`` (with a per-group ``fold == 'aggregate'`` row).
+    title : str
+        Figure suptitle.
 
     Returns
     -------
@@ -2695,14 +2363,11 @@ def plot_lmm_reliability(reliability_df):
                              sharey='row', layout='constrained',
                              figsize=(2.6 * n_cols + 1, 2.0 * n_rows + 1))
 
-    suptitle = ('Out-of-sample ΔR² (leave-one-subject-out)\n'
-                'main effects: R²(additive) − R²(dropping term);  '
-                'interactions: R²(full) − R²(additive)')
     if not has_data:
-        fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
+        fig.suptitle(title, fontsize=LABELFONTSIZE)
         return fig
 
-    terms = [t for t in _RELIABILITY_TERMS if t in set(reliability_df['predictor'])]
+    terms = _reliability_predictor_order(reliability_df['predictor'])
     for r, target_nm in enumerate(targets):
         color = TARGETNM_COLORS.get(target_nm, 'gray')
         df_t = reliability_df[reliability_df['target_NM'] == target_nm]
@@ -2710,8 +2375,7 @@ def plot_lmm_reliability(reliability_df):
             ax = axes[r, c]
             df_ev = df_t[df_t['event'] == event]
             for x, term in enumerate(terms):
-                _scatter_loso_folds(ax, x, df_ev[df_ev['predictor'] == term],
-                                    color)
+                _scatter_folds(ax, x, df_ev[df_ev['predictor'] == term], color)
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
                 ax.set_title(event)
@@ -2729,9 +2393,9 @@ def plot_lmm_reliability(reliability_df):
         Line2D([0], [0], marker='o', color='gray', ls='none', markersize=9,
                markeredgecolor='k'),
     ]
-    fig.legend(role_handles, ['per-subject fold', 'across-fold aggregate'],
+    fig.legend(role_handles, ['per-fold', 'across-fold aggregate'],
                frameon=False, fontsize=TICKFONTSIZE, loc='upper right')
-    fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
+    fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
 
@@ -3085,109 +2749,41 @@ _DV_LABELS = {
 }
 
 
-def plot_movement_lmm_summary(summary_df):
-    """Dot-and-whisker plot of per-subject jackknife delta-R².
-
-    Two rows of panels: top shows the marginal R² lost when contrast is removed
-    from the full model, bottom shows the R² lost when the movement variable is
-    removed. One column per movement variable. Each dot is one left-out subject;
-    horizontal bar shows mean ± SEM, so the spread flags whether one animal
-    drives the effect.
-
-    Parameters
-    ----------
-    summary_df : pd.DataFrame
-        One row per (target_NM, timing_variable, subject). Required columns:
-        target_NM, timing_col, subject, delta_r2_contrast, delta_r2_timing.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    from scipy.stats import sem as scipy_sem
-
-    timing_vars = sorted(summary_df['timing_col'].unique()) if len(summary_df) > 0 else []
-    n_panels = max(len(timing_vars), 1)
-
-    fig, axes = plt.subplots(2, n_panels, figsize=(4 * n_panels + 1, 7),
-                             sharey='row', layout='constrained')
-    if n_panels == 1:
-        axes = axes.reshape(2, 1)
-
-    _title = ('Jackknife ΔR² (leave-one-subject-out)\n'
-              'response ~ contrast + timing + reward')
-    if len(summary_df) == 0:
-        fig.suptitle(_title, fontsize=LABELFONTSIZE)
-        return fig
-
-    targets = sorted(summary_df['target_NM'].unique(),
-                     key=lambda x: TARGETNM2POSITION.get(x, 999))
-
-    for j, tvar in enumerate(timing_vars):
-        df_tv = summary_df[summary_df['timing_col'] == tvar]
-        timing_label = tvar.replace('log_', '')
-
-        for row_idx, (delta_col, label) in enumerate([
-            ('delta_r2_contrast', r'$\Delta R^2$ lost removing contrast'),
-            ('delta_r2_timing', r'$\Delta R^2$ lost removing movement'),
-        ]):
-            ax = axes[row_idx, j]
-
-            for i, tnm in enumerate(targets):
-                df_tnm = df_tv[df_tv['target_NM'] == tnm]
-                if len(df_tnm) == 0:
-                    continue
-                color = TARGETNM_COLORS.get(tnm, f'C{i}')
-                vals = df_tnm[delta_col].values
-
-                # Individual subject dots (jittered)
-                jitter = np.random.default_rng(i).uniform(-0.15, 0.15, len(vals))
-                ax.scatter(i + jitter, vals, color=color, alpha=0.5,
-                           s=25, zorder=3)
-
-                # Mean ± SEM bar
-                m = np.mean(vals)
-                se = scipy_sem(vals) if len(vals) > 1 else 0
-                ax.errorbar(i, m, yerr=se, fmt='_', color='black',
-                            markersize=12, markeredgewidth=2, capsize=4,
-                            zorder=4)
-
-            ax.set_xticks(range(len(targets)))
-            ax.set_xticklabels(targets, fontsize=TICKFONTSIZE,
-                               rotation=30, ha='right')
-            ax.axhline(0, ls='--', color='gray', lw=0.5)
-            if j == 0:
-                ax.set_ylabel(label)
-            if row_idx == 0:
-                ax.set_title(timing_label)
-
-    fig.suptitle(_title, fontsize=LABELFONTSIZE)
-    return fig
+# Saturated movement models, in bar order: which model each name denotes, its
+# display label, and its colour. The config key names the *dropped* predictor,
+# so 'movement' (timing dropped) is the contrast-family model and 'contrast'
+# (contrast dropped) is the movement-family model.
+_SATURATED_MODEL_BARS = [
+    ('movement', 'contrast-family', '#888888'),
+    ('contrast', 'movement-family', '#1f77b4'),
+    ('full', 'full', '#d62728'),
+]
 
 
 def plot_movement_r2_bars(summary_df):
-    """Fixed-effects R² of the three additive models, per target-NM.
+    """In-sample marginal R² of the three saturated models, per target-NM.
 
-    Full-dataset fit, no cross-validation. One panel per movement variable;
-    each target-NM gets three bars — contrast model (contrast + reward),
-    movement model (movement + reward), and full model. Heights read two ways:
-    contrast vs. movement = which predictor explains more; full vs. either =
-    added value.
+    Reads the saturated in-sample R² frame from ``response_lmm_fit``: for each
+    timing variable, three nested models — the saturated ``full``
+    (``contrast * reward * side * log_<timing>``), ``contrast`` (contrast
+    dropped, the movement-family model), and ``movement`` (timing dropped, the
+    contrast-family model). One panel per timing variable; each target-NM gets
+    three bars. Heights read two ways: contrast-family vs. movement-family =
+    which predictor explains more; full vs. either = added value.
 
     Parameters
     ----------
     summary_df : pd.DataFrame
-        One row per (target_NM, timing_col). Required columns: target_NM,
-        timing_col, r2_drop_movement, r2_drop_contrast, r2_full.
+        Long-form, one row per (target_NM, timing var, model). Required columns:
+        ``target_NM``, ``timing_var``, ``name`` (``full``/``contrast``/
+        ``movement``), ``marginal_r2``. Any ``event`` column is ignored; the
+        script passes one event's rows per figure.
 
     Returns
     -------
     plt.Figure
     """
-    models = [('r2_drop_movement', 'contrast', '#888888'),
-              ('r2_drop_contrast', 'movement', '#1f77b4'),
-              ('r2_full', 'full', '#d62728')]
-    timing_vars = sorted(summary_df['timing_col'].unique()) if len(summary_df) > 0 else []
+    timing_vars = sorted(summary_df['timing_var'].unique()) if len(summary_df) else []
     n_panels = max(len(timing_vars), 1)
 
     fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels + 1, 4),
@@ -3195,110 +2791,36 @@ def plot_movement_r2_bars(summary_df):
     if n_panels == 1:
         axes = [axes]
 
-    _title = ('Fixed-effects R² (full-data fit)\n'
-              'full: response ~ contrast + timing + reward')
+    _title = ('In-sample marginal R² (saturated, full-data fit)\n'
+              'full: response ~ contrast * reward * side * log_<timing>')
     if len(summary_df) == 0:
         fig.suptitle(_title, fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(summary_df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
-    bar_w = 0.8 / len(models)
+    bar_w = 0.8 / len(_SATURATED_MODEL_BARS)
 
     for ax, tvar in zip(axes, timing_vars):
-        df_tv = summary_df[summary_df['timing_col'] == tvar]
+        df_tv = summary_df[summary_df['timing_var'] == tvar]
         for i, tnm in enumerate(targets):
-            row = df_tv[df_tv['target_NM'] == tnm]
-            if len(row) == 0:
-                continue
-            for k, (col, label, color) in enumerate(models):
-                offset = (k - (len(models) - 1) / 2) * bar_w
-                ax.bar(i + offset, row[col].iloc[0], width=bar_w, color=color,
+            df_tnm = df_tv[df_tv['target_NM'] == tnm].set_index('name')
+            for k, (name, label, color) in enumerate(_SATURATED_MODEL_BARS):
+                if name not in df_tnm.index:
+                    continue
+                offset = (k - (len(_SATURATED_MODEL_BARS) - 1) / 2) * bar_w
+                ax.bar(i + offset, df_tnm.loc[name, 'marginal_r2'],
+                       width=bar_w, color=color,
                        label=label if i == 0 else '')
         ax.set_xticks(range(len(targets)))
         ax.set_xticklabels(targets, rotation=30, ha='right', fontsize=TICKFONTSIZE)
         ax.axhline(0, ls='--', color='gray', lw=0.5)
         ax.set_title(tvar.replace('log_', ''))
 
-    axes[0].set_ylabel('Fixed-effects R²')
+    axes[0].set_ylabel('Marginal R²')
     axes[-1].legend(frameon=False, fontsize=TICKFONTSIZE,
                     loc='upper left', bbox_to_anchor=(1, 1))
     fig.suptitle(_title, fontsize=LABELFONTSIZE)
-    return fig
-
-
-def plot_movement_slope_summary(tidy_df, title, formula=None):
-    """Dot-and-whisker of the reported slope (± 95% CI) per target_NM.
-
-    One panel per timing variable. Filled markers are significant (p < 0.05),
-    open markers are not. When the frame carries an ``event`` column (the
-    response-based claims), the events are separated along the x-axis within each
-    target and distinguished by color; the behavioral movement-vs-contrast frame
-    has no event column and shows one point per target. ``formula``, if given, is
-    shown in the title to identify the model.
-
-    Parameters
-    ----------
-    tidy_df : pd.DataFrame
-        Movement-claim result rows (``analysis._TIDY_LMM_COLS`` plus
-        ``target_NM`` and, for the response-based claims, ``event``).
-    title : str
-        Figure title naming the claim.
-    formula : str or None
-        Model formula to annotate.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    timing_vars = sorted(tidy_df['timing_col'].unique()) if len(tidy_df) else []
-    n_panels = max(len(timing_vars), 1)
-    fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels + 1, 4),
-                             sharey=True, layout='constrained')
-    if n_panels == 1:
-        axes = [axes]
-
-    suptitle = f'{title}\n{formula}' if formula is not None else title
-    if len(tidy_df) == 0:
-        fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
-        return fig
-
-    targets = sorted(tidy_df['target_NM'].unique(),
-                     key=lambda x: TARGETNM2POSITION.get(x, 999))
-    has_event = 'event' in tidy_df.columns
-    events = sorted(tidy_df['event'].unique()) if has_event else [None]
-    offsets = np.linspace(-0.25, 0.25, len(events)) if len(events) > 1 else [0.0]
-    event_colors = {ev: f'C{k}' for k, ev in enumerate(events)}
-
-    for ax, tvar in zip(axes, timing_vars):
-        df_tv = tidy_df[tidy_df['timing_col'] == tvar]
-        for i, tnm in enumerate(targets):
-            for ev, dx in zip(events, offsets):
-                row = df_tv[df_tv['target_NM'] == tnm]
-                if has_event:
-                    row = row[row['event'] == ev]
-                if len(row) == 0:
-                    continue
-                row = row.iloc[0]
-                color = (event_colors[ev] if has_event
-                         else TARGETNM_COLORS.get(tnm, 'gray'))
-                fs = 'full' if row['p'] < 0.05 else 'none'
-                yerr = [[row['coef'] - row['ci_low']],
-                        [row['ci_high'] - row['coef']]]
-                ax.errorbar(i + dx, row['coef'], yerr=yerr, fmt='o',
-                            color=color, markersize=6, capsize=3, fillstyle=fs,
-                            label=ev if (has_event and i == 0) else '')
-        ax.set_title(tvar.replace('log_', ''))
-        ax.set_xticks(range(len(targets)))
-        ax.set_xticklabels(targets, rotation=30, ha='right',
-                           fontsize=TICKFONTSIZE)
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-    axes[0].set_ylabel('Slope (coef ± 95% CI)')
-    if has_event:
-        axes[-1].legend(frameon=False, loc='upper left',
-                        bbox_to_anchor=(1, 1), fontsize=TICKFONTSIZE)
-    fig.suptitle(suptitle, fontsize=LABELFONTSIZE)
     return fig
 
 
