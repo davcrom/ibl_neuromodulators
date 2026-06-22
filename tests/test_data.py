@@ -1289,6 +1289,33 @@ class TestExtractResponses:
 # HDF5 Save/Load Tests
 # =============================================================================
 
+class TestWriteReadDataframe:
+    def test_string_dtype_column_roundtrips(self, tmp_path):
+        """A pandas string-dtype column survives _write_dataframe/_read_dataframe.
+
+        pandas 3.0 makes a dedicated ``string`` dtype the default for text
+        columns, whose ``.values`` is a StringArray that is not numpy ``object``.
+        The writer must still encode it to bytes rather than handing h5py a
+        non-native dtype.
+        """
+        import h5py
+        from iblnm.data import _write_dataframe, _read_dataframe
+
+        df = pd.DataFrame({
+            'probabilityLeft': np.full(3, 0.5),
+            'stim_side': pd.array(['left', 'right', 'left'], dtype='string'),
+            'contrast': np.array([50., 100., 25.]),
+        })
+        fpath = tmp_path / 'frame.h5'
+        with h5py.File(fpath, 'w') as f:
+            _write_dataframe(f.create_group('trials'), df)
+        with h5py.File(fpath, 'r') as f:
+            out = _read_dataframe(f['trials'])
+
+        assert set(out.columns) == {'probabilityLeft', 'stim_side', 'contrast'}
+        assert out['stim_side'].tolist() == ['left', 'right', 'left']
+
+
 class TestSaveLoadH5:
     def test_save_preprocessed_float64(self, mock_photometry_session, tmp_path):
         """save_h5 should write preprocessed signal as float64 with timestamps."""
@@ -4035,6 +4062,41 @@ class TestResponseLMMFit:
         fit = next(iter(group.lmm_fits.values()))
         slopes = next(iter(fit.random_effects.values()))
         assert 'side' in slopes.index
+
+    def test_movement_family_with_nan_timing_fits_shared_trials(self):
+        """Regression: a family mixing a timing-using model with one that
+        omits the timing predictor must fit every member on the same
+        NaN-dropped trials. A NaN ``log_<timing>`` row otherwise misaligns
+        statsmodels' ``groups`` array against the design matrix, raising
+        ``IndexError`` from ``MixedLM.group_list``.
+        """
+        group = _make_group_for_response_lmm()
+        reg = group.trial_regressors
+        rng = np.random.default_rng(0)
+        reg['reaction_time'] = rng.uniform(0.1, 2.0, len(reg))
+        # Non-positive reaction times -> _modeling_frame sets log to NaN.
+        reg.loc[reg.index[::5], 'reaction_time'] = -1.0
+        formulas = {
+            'full': '{response} ~ contrast + log_reaction_time',
+            'contrast': '{response} ~ log_reaction_time',
+            'movement': '{response} ~ contrast',
+        }
+        r2 = group.response_lmm_fit(formulas, group_by=['target_NM', 'event'])
+        assert not r2.empty
+        # Within each fitted group, every member fits the same trial count,
+        # below the group's full total (the NaN-timing rows were dropped) — so
+        # the drop-one ΔR² shares a denominator even for the timing-free model.
+        df = group._modeling_frame()
+        checked = 0
+        for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
+            keys = [('response', name, target_nm, event) for name in formulas]
+            if not all(k in group.lmm_fits for k in keys):
+                continue
+            nobs = {len(group.lmm_fits[k].model.endog) for k in keys}
+            assert len(nobs) == 1
+            assert nobs.pop() < len(df_group)
+            checked += 1
+        assert checked > 0
 
 
 class TestResponseLMMEffects:

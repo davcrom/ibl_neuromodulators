@@ -68,7 +68,11 @@ def _replace_group(parent, name):
 def _write_dataframe(h5_group, dataframe):
     """Write each column of `dataframe` as a dataset under `h5_group`."""
     for col in dataframe.columns:
-        values = dataframe[col].values
+        # .to_numpy() (not .values) collapses pandas extension arrays — e.g. the
+        # string dtype that is default in pandas 3.0 — to numpy object, so the
+        # bytes encoding below catches them instead of handing h5py a non-native
+        # dtype.
+        values = dataframe[col].to_numpy()
         if values.dtype == object:
             values = values.astype('S')
         h5_group.create_dataset(col, data=values)
@@ -2372,15 +2376,24 @@ class PhotometrySessionGroup:
         """
         df = self._modeling_frame(response_col)
         self._lmm_group_by = list(group_by)
+        formulas = {name: template.format(response=response_col)
+                    for name, template in formulas.items()}
+        timing_col = self._movement_timing_col(formulas)
 
         rows = []
         for keys, df_group in df.groupby(group_by):
-            if df_group['subject'].nunique() < min_subjects:
-                continue
             group_values = keys if isinstance(keys, tuple) else (keys,)
             df_coded = self._code_lmm_predictors(df_group)
-            for name, template in formulas.items():
-                formula = template.format(response=response_col)
+            # Drop NaN timing rows once for the whole family so every model
+            # fits the same trials (a timing-free member must not include the
+            # NaN rows the timing models drop, else statsmodels misaligns
+            # ``groups`` against the design matrix and the ΔR² denominators
+            # diverge).
+            if timing_col is not None:
+                df_coded = df_coded.dropna(subset=[timing_col])
+            if df_coded['subject'].nunique() < min_subjects:
+                continue
+            for name, formula in formulas.items():
                 rf = re_formula[name] if isinstance(re_formula, dict) \
                     else re_formula
                 fit = analysis.fit_lmm(formula, df_coded,
