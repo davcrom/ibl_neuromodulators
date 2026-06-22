@@ -23,7 +23,7 @@ from iblnm.config import (
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
-    LMM_FORMULAS, TIMING_VARS,
+    TIMING_VARS,
     RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
@@ -2331,33 +2331,6 @@ class PhotometrySessionGroup:
         df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
         df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
         return df
-
-    @staticmethod
-    def _resolve_lmm_formula(name: str) -> str:
-        """Look up a model formula by name across ``config.LMM_FORMULAS``.
-
-        The config groups formulas into comparison sets (``set → {name →
-        formula}``); this resolves a model name to its formula, failing loud if
-        the name is absent or shared by more than one set.
-
-        Raises
-        ------
-        KeyError
-            If no set contains ``name``.
-        ValueError
-            If ``name`` appears in more than one set (ambiguous).
-        """
-        matches = [(model_set, formula)
-                   for model_set, models in LMM_FORMULAS.items()
-                   for model_name, formula in models.items()
-                   if model_name == name]
-        if not matches:
-            raise KeyError(f"No LMM formula named {name!r}")
-        if len(matches) > 1:
-            sets = [model_set for model_set, _ in matches]
-            raise ValueError(
-                f"Ambiguous LMM formula name {name!r}: in sets {sets}")
-        return matches[0][1]
 
     def response_lmm_fit(self, formulas, group_by, response_col='response',
                          reml=True, re_formula='1', min_subjects=2):

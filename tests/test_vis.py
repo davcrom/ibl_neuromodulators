@@ -2384,49 +2384,6 @@ class TestPlotMovementR2Bars:
         plt.close(fig)
 
 
-class TestPlotMovementSlopeSummary:
-    def test_returns_figure(self):
-        from iblnm.vis import plot_movement_slope_summary
-        fig = plot_movement_slope_summary(
-            _make_claim_slopes(), 'movement predicts response')
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_one_panel_per_timing_var(self):
-        from iblnm.vis import plot_movement_slope_summary
-        fig = plot_movement_slope_summary(
-            _make_claim_slopes(), 'movement predicts response')
-        assert len(fig.axes) == 2  # log_reaction_time, log_movement_time
-        plt.close(fig)
-
-    def test_formula_in_title(self):
-        """A formula passed in is rendered in the figure title, not bottom text."""
-        from iblnm.vis import plot_movement_slope_summary
-        formula = 'response ~ C(contrast) + timing + side + reward'
-        fig = plot_movement_slope_summary(
-            _make_claim_slopes(), 'within contrast', formula=formula)
-        assert formula in fig._suptitle.get_text()
-        plt.close(fig)
-
-    def test_no_event_column(self):
-        """The behavioral movement-vs-contrast frame has no event column."""
-        from iblnm.vis import plot_movement_slope_summary
-        fig = plot_movement_slope_summary(
-            _make_claim_slopes(with_event=False), 'movement vs contrast')
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_empty_df(self):
-        from iblnm.vis import plot_movement_slope_summary
-        from iblnm.analysis import _TIDY_LMM_COLS
-        df = pd.DataFrame(columns=['target_NM', *_TIDY_LMM_COLS])
-        fig = plot_movement_slope_summary(df, 'movement vs contrast')
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-
-# ---- Barplot orientation tests ----
-
 def _make_barplot_recordings():
     """Minimal recordings DataFrame for barplot tests."""
     return pd.DataFrame({
