@@ -1714,6 +1714,41 @@ def _process_worker(eid, row_dict, h5_dir, fn, kwargs):
     return result
 
 
+def _resolve_ps_variable(ps, entry):
+    """Resolve a fixed/swapped entry against a PhotometrySession.
+
+    A callable is called as ``entry(ps)``; a str is read as a ``ps.trials``
+    column when present, else as a PS attribute. Returns a 1-D numpy array.
+    """
+    if callable(entry):
+        value = entry(ps)
+    elif isinstance(ps.trials, pd.DataFrame) and entry in ps.trials.columns:
+        value = ps.trials[entry]
+    else:
+        value = getattr(ps, entry)
+    return np.asarray(value).ravel()
+
+
+def _apply_statistic(statistic, arrays):
+    """Truncate every array to their common minimum length (from index 0),
+    then call ``statistic(*truncated)``."""
+    min_len = min(len(a) for a in arrays)
+    return statistic(*[a[:min_len] for a in arrays])
+
+
+def _donor_positions(view, pos, group_by):
+    """Integer positions in ``view`` eligible as donors for unit ``pos``.
+
+    Donors share the target's ``group_by`` value (all other units when
+    ``group_by`` is None); the target's own position is always excluded.
+    """
+    positions = np.arange(len(view))
+    if group_by is None:
+        return positions[positions != pos]
+    same_group = view[group_by].values == view.iloc[pos][group_by]
+    return positions[same_group & (positions != pos)]
+
+
 class PhotometrySessionGroup:
     """Collection of recordings spanning multiple sessions.
 
@@ -2081,6 +2116,115 @@ class PhotometrySessionGroup:
                     print(f"\n  FATAL: {eid}: {type(e).__name__}: {e}")
 
         return results
+
+    def _load_unit_session(self, row):
+        """Build a PhotometrySession for a unit row (recording or session).
+
+        Mirrors ``process()``: load from ``{h5_dir}/{eid}.h5`` when the file
+        exists, else construct from the row with ``load_data=False``. For a
+        recordings row, ``__init__`` normalizes the scalar region columns to
+        length-1 lists, yielding a region-scoped PS (read via
+        ``ps.brain_region[0]``).
+        """
+        h5_path = Path(self.h5_dir) / f"{row['eid']}.h5"
+        if h5_path.exists():
+            return PhotometrySession.from_h5(h5_path, one=self.one)
+        return PhotometrySession(row, one=self.one, load_data=False)
+
+    def _permutation_test_unit(self, view, pos, statistic, fixed, swapped,
+                               group_by, n_iter, alternative, rng):
+        """Run the session-swap test for one unit; return (observed, p_value,
+        null).
+
+        ``fixed`` is resolved on the target PS; ``swapped`` on the target (for
+        ``observed``) or a random donor (for each null draw). Raises when the
+        donor pool is empty. Re-loads the donor PS every iteration — no caching,
+        so this is the dominant cost of the test (acceptable per spec).
+        """
+        target_ps = self._load_unit_session(view.iloc[pos])
+        fixed_arrays = [_resolve_ps_variable(target_ps, e) for e in fixed]
+        observed_swapped = [_resolve_ps_variable(target_ps, e) for e in swapped]
+        observed = _apply_statistic(statistic, fixed_arrays + observed_swapped)
+
+        donors = _donor_positions(view, pos, group_by)
+        if len(donors) == 0:
+            raise ValueError(f"Empty donor pool for unit at position {pos}")
+
+        null = np.empty(n_iter)
+        for i in range(n_iter):
+            donor_ps = self._load_unit_session(
+                view.iloc[donors[rng.integers(len(donors))]])
+            donor_swapped = [_resolve_ps_variable(donor_ps, e) for e in swapped]
+            null[i] = _apply_statistic(statistic, fixed_arrays + donor_swapped)
+
+        p_value = analysis.permutation_pvalue(observed, null, alternative)
+        return observed, p_value, null
+
+    def session_permutation_test(self, statistic, fixed, swapped,
+                                 group_by='target_NM', unit='recordings',
+                                 n_iter=1000, alternative='two-sided', seed=42):
+        """Session-swap permutation test of a statistic, per unit.
+
+        For each unit (a recording or session), computes the observed statistic
+        from its own data, then builds an ``n_iter`` null by holding ``fixed``
+        with the target and swapping ``swapped`` in from random donor units in
+        the same ``group_by`` group, breaking the within-unit correspondence.
+
+        Parameters
+        ----------
+        statistic : callable
+            ``statistic(*fixed_arrays, *swapped_arrays) -> scalar``. Receives
+            the resolved ``fixed`` arrays followed by the resolved ``swapped``
+            arrays, in list order, each truncated to their common length.
+        fixed : list
+            Entries resolved on the target PS in both the observed run and every
+            null iteration. Each is a str (a ``ps.trials`` column or a PS
+            attribute) or a callable ``ps -> 1-D array``.
+        swapped : list
+            Same element types as ``fixed``; resolved on the target PS for the
+            observed run and on a donor PS for each null draw.
+        group_by : str or None, default 'target_NM'
+            Column of the unit view defining the donor pool (donors share the
+            target's value). ``None`` pools all other units.
+        unit : {'recordings', 'sessions'}, default 'recordings'
+            View to iterate: ``self.recordings`` (one row per region) or
+            ``self.sessions``.
+        n_iter : int, default 1000
+            Null iterations per unit.
+        alternative : {'two-sided', 'greater', 'less'}, default 'two-sided'
+            Passed to ``analysis.permutation_pvalue``.
+        seed : int, default 42
+            Seeds ``np.random.default_rng`` for the donor draws.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per unit, not written to disk. Identifier columns ``eid``
+            (and ``brain_region``, ``hemisphere``, ``target_NM``, ``fiber_idx``
+            for ``unit='recordings'``) plus ``observed`` (float), ``p_value``
+            (float), and ``null`` (object column of 1-D arrays). A unit whose
+            run raises (including an empty donor pool) yields ``observed`` and
+            ``p_value`` NaN and an empty ``null``.
+        """
+        from tqdm import tqdm
+
+        view = self.recordings if unit == 'recordings' else self.sessions
+        id_cols = (['eid', 'brain_region', 'hemisphere', 'target_NM',
+                    'fiber_idx'] if unit == 'recordings' else ['eid'])
+        rng = np.random.default_rng(seed)
+
+        rows = []
+        for pos in tqdm(range(len(view)), desc="Permutation test"):
+            try:
+                observed, p_value, null = self._permutation_test_unit(
+                    view, pos, statistic, fixed, swapped, group_by,
+                    n_iter, alternative, rng)
+            except Exception:
+                observed, p_value, null = np.nan, np.nan, np.array([])
+            row = {col: view.iloc[pos][col] for col in id_cols}
+            row.update(observed=observed, p_value=p_value, null=null)
+            rows.append(row)
+        return pd.DataFrame(rows)
 
     # -----------------------------------------------------------------
     # Parquet loaders — populate group attributes from saved files
