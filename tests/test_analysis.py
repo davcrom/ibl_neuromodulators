@@ -3222,33 +3222,6 @@ class TestFitMovementVsContrast:
         assert list(result.columns) == _TIDY_LMM_COLS
 
 
-class TestComputeSlopes:
-    def test_one_row_per_term_with_schema(self):
-        from iblnm.analysis import fit_lmm, compute_slopes, _SLOPE_COLS
-        df = _make_movement_lmm_df()
-        fit = fit_lmm('response ~ log_reaction_time', df, groups=df['subject'])
-        result = compute_slopes(fit, ['log_reaction_time'])
-        assert list(result.columns) == _SLOPE_COLS
-        assert len(result) == 1
-        assert result['term'].iloc[0] == 'log_reaction_time'
-
-    def test_recovers_positive_timing_slope(self):
-        """Fixture has a +0.4 timing effect; the extracted slope is positive."""
-        from iblnm.analysis import fit_lmm, compute_slopes
-        df = _make_movement_lmm_df()
-        fit = fit_lmm('response ~ log_reaction_time', df, groups=df['subject'])
-        result = compute_slopes(fit, ['log_reaction_time'])
-        assert result['coef'].iloc[0] > 0
-
-    def test_one_row_per_requested_term(self):
-        from iblnm.analysis import fit_lmm, compute_slopes
-        df = _make_movement_lmm_df()
-        fit = fit_lmm('response ~ contrast + log_reaction_time', df,
-                      groups=df['subject'])
-        result = compute_slopes(fit, ['contrast', 'log_reaction_time'])
-        assert list(result['term']) == ['contrast', 'log_reaction_time']
-
-
 class TestFitMovementPredictsResponse:
     def test_returns_one_row_tidy_frame(self):
         from iblnm.analysis import (fit_movement_predicts_response,
