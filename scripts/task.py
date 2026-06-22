@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 
 from iblnm.config import (
-    SESSIONS_FPATH, PERFORMANCE_FPATH, TASK_LOG_FPATH,
+    SESSIONS_FPATH, PERFORMANCE_FPATH,
     SESSIONS_H5_DIR, SESSION_TYPES,
 )
 from iblnm.data import PhotometrySessionGroup
@@ -114,11 +114,11 @@ if __name__ == '__main__':
     df_performance.to_parquet(PERFORMANCE_FPATH)
     print(f"Saved {len(df_performance)} sessions to {PERFORMANCE_FPATH}")
 
-    # Collect errors from H5 files
+    # Summarize errors logged to the H5 files (the errors themselves live in
+    # each session's H5 /errors group; no separate log file is written)
     df_errors = collect_errors(SESSIONS_H5_DIR)
     if len(df_errors) > 0:
-        df_errors.to_parquet(TASK_LOG_FPATH)
-        print(f"Saved {len(df_errors)} error entries to {TASK_LOG_FPATH}")
+        print(f"Logged {len(df_errors)} error entries across sessions")
         print(f"Error types:\n{df_errors['error_type'].value_counts().to_string()}")
     else:
         print("No errors logged.")

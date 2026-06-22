@@ -18,7 +18,6 @@ from one.api import ONE
 
 from iblnm.config import (
     SESSION_SCHEMA, SESSIONS_FPATH, SESSIONS_QC_FPATH, SESSIONS_H5_DIR,
-    QUERY_DATABASE_LOG_FPATH,
 )
 from iblnm.data import PhotometrySession
 from iblnm.io import get_extended_qc
@@ -148,14 +147,12 @@ if __name__ == '__main__':
     if df_qc is not None:
         df2pqt(df_qc, SESSIONS_QC_FPATH)
 
-    # Save aggregated error log
+    # Summarize errors logged to the H5 files (errors live in each session's
+    # H5 /errors group; no separate log file is written). Extended-QC errors
+    # are absorbed by error_log to keep the run going but are not persisted.
     df_errors = collect_errors(SESSIONS_H5_DIR)
-    if error_log:
-        extra = pd.DataFrame(error_log)
-        df_errors = pd.concat([df_errors, extra], ignore_index=True)
     if len(df_errors) > 0:
-        df_errors.to_parquet(QUERY_DATABASE_LOG_FPATH, index=False)
-        print(f"Saved {len(df_errors)} error entries to {QUERY_DATABASE_LOG_FPATH}")
+        print(f"Logged {len(df_errors)} error entries across sessions")
         print(f"Error types:\n{df_errors['error_type'].value_counts().to_string()}")
     else:
         print("No errors logged.")

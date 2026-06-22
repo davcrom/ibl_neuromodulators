@@ -1785,7 +1785,7 @@ class PhotometrySessionGroup:
                   "(this may take a moment)...")
             df = df.merge(collect_session_errors(df['eid'], h5_dir),
                           on='eid', how='left')
-        else:
+        elif 'logged_errors' not in df.columns:
             df['logged_errors'] = [[] for _ in range(len(df))]
 
         return cls(df, one=one, h5_dir=h5_dir)

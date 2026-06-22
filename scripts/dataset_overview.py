@@ -23,8 +23,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, FIGURE_DPI,
-    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, FIGURE_DPI,
     PERFORMANCE_FPATH, ERRORS_FPATH,
     SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
     TARGETNMS_TO_ANALYZE, POSE_FPATH,
@@ -33,7 +32,7 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.util import (
-    concat_logs, deduplicate_log, collect_session_errors,
+    concat_logs, deduplicate_log, collect_errors, collect_session_errors,
 )
 from iblnm.vis import (
     session_overview_matrix, target_overview_barplot, mouse_overview_barplot, set_plotsize,
@@ -68,8 +67,6 @@ VIDEO_QC_BLOCKERS = QC_BLOCKERS | {'VideoQCFail'}
 PROJECTION_DEADLINE = date(2026, 7, 31)
 PROJECTION_CAPACITY_PER_DAY = 16
 PROJECTION_TARGET_N = 3  # proficient sessions per mouse
-
-LOG_FPATHS = [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH]
 
 
 # ---- Helper functions ----
@@ -145,7 +142,7 @@ if not SESSIONS_FPATH.exists():
     sys.exit(1)
 
 df = pd.read_parquet(SESSIONS_FPATH)
-df = collect_session_errors(df, LOG_FPATHS)
+df = df.merge(collect_session_errors(df['eid'], SESSIONS_H5_DIR), on='eid', how='left')
 if PERFORMANCE_FPATH.exists():
     perf = pd.read_parquet(PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
     df = df.merge(perf, on='eid', how='left')
@@ -357,7 +354,7 @@ print(f"Projected mice reaching target: {n_mice_projected}")
 # Save unified error log
 # =============================================================================
 
-upstream_logs = [pd.read_parquet(p) for p in LOG_FPATHS if p.exists()] + [dedup_errors]
+upstream_logs = [collect_errors(SESSIONS_H5_DIR), dedup_errors]
 df_errors = deduplicate_log(concat_logs(upstream_logs))
 ERRORS_FPATH.parent.mkdir(parents=True, exist_ok=True)
 df_errors.to_parquet(ERRORS_FPATH)

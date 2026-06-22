@@ -25,12 +25,11 @@ from sklearn.preprocessing import QuantileTransformer
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, FIGURE_DPI,
-    N_UNIQUE_SAMPLES_THRESHOLD, QUERY_DATABASE_LOG_FPATH,
-    PHOTOMETRY_LOG_FPATH, QC_SLIDING_METRICS, QC_PREPROCESSING,
+    N_UNIQUE_SAMPLES_THRESHOLD, QC_SLIDING_METRICS, QC_PREPROCESSING,
     SESSIONTYPE2COLOR, VALID_TARGETNMS, TARGETNM_COLORS,
 )
 from iblnm.data import PhotometrySessionGroup
-from iblnm.util import collect_qc, collect_session_errors
+from iblnm.util import collect_qc
 from iblnm.vis import violinplot, plot_joint_distributions
 
 plt.ion()
@@ -60,11 +59,8 @@ if not SESSIONS_FPATH.exists():
 print(f"Loading session catalog from {SESSIONS_FPATH}")
 df_sessions = pd.read_parquet(SESSIONS_FPATH)
 
-log_fpaths = [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH]
-log_fpaths = [p for p in log_fpaths if p.exists()]
-if log_fpaths:
-    df_sessions = collect_session_errors(df_sessions, log_fpaths)
-
+# This script filters on QC metrics (qc_blockers=False), not logged errors,
+# so the group is built without scanning H5 /errors groups.
 group = PhotometrySessionGroup.from_catalog(df_sessions, one=None)
 group.filter_sessions(
     session_types=False, targetnms=VALID_TARGETNMS,

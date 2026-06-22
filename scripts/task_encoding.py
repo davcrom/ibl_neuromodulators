@@ -27,15 +27,13 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, PERFORMANCE_FPATH,
-    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
     RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH, TASK_ENCODING_DIR,
     RESPONSE_EVENTS, FIGURE_DPI, TARGETNM_COLORS,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.util import collect_session_errors
 from iblnm.analysis import pca_score_stats
 from iblnm.vis import plot_glm_pca_summary, plot_cohort_cca_summary
 
@@ -440,15 +438,13 @@ if __name__ == '__main__':
     # =====================================================================
     print(f"Loading sessions from {SESSIONS_FPATH}")
     df = pd.read_parquet(SESSIONS_FPATH)
-    df = collect_session_errors(
-        df, [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH])
     if PERFORMANCE_FPATH.exists():
         perf = pd.read_parquet(
             PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
         df = df.merge(perf, on='eid', how='left')
 
     one = _get_default_connection()
-    group = PhotometrySessionGroup.from_catalog(df, one=one)
+    group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
     group.filter_sessions(
         session_types=SESSION_TYPES_TO_ANALYZE,
         qc_blockers=ANALYSIS_QC_BLOCKERS,

@@ -14,12 +14,10 @@ from tqdm import tqdm
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
-    QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.util import collect_session_errors
 
 OUTPUT_FPATH = PROJECT_ROOT / 'data' / 'trials.pqt'
 
@@ -28,14 +26,12 @@ if __name__ == '__main__':
     # Load sessions and create group (same pattern as task_encoding.py)
     print(f"Loading sessions from {SESSIONS_FPATH}")
     df = pd.read_parquet(SESSIONS_FPATH)
-    df = collect_session_errors(
-        df, [QUERY_DATABASE_LOG_FPATH, PHOTOMETRY_LOG_FPATH, TASK_LOG_FPATH])
     if PERFORMANCE_FPATH.exists():
         perf = pd.read_parquet(
             PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
         df = df.merge(perf, on='eid', how='left')
 
-    group = PhotometrySessionGroup.from_catalog(df, one=None)
+    group = PhotometrySessionGroup.from_catalog(df, one=None, h5_dir=SESSIONS_H5_DIR)
     group.filter_sessions(
         session_types=SESSION_TYPES_TO_ANALYZE,
         qc_blockers=ANALYSIS_QC_BLOCKERS,

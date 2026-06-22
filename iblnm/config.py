@@ -25,9 +25,6 @@ TASK_ENCODING_DIR = RESULTS_DIR / 'task_encoding'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 
 # Per-script error logs (unified schema: eid, error_type, error_message, traceback)
-QUERY_DATABASE_LOG_FPATH = PROJECT_ROOT / 'metadata/query_database_log.pqt'
-PHOTOMETRY_LOG_FPATH = PROJECT_ROOT / 'metadata/photometry_log.pqt'
-TASK_LOG_FPATH = PROJECT_ROOT / 'metadata/task_log.pqt'
 EVENTS_LOG_FPATH = PROJECT_ROOT / 'metadata/events_log.pqt'
 ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
 POSE_FPATH = PROJECT_ROOT / 'metadata/pose.pqt'

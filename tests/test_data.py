@@ -2578,6 +2578,15 @@ class TestFromCatalog:
         group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
         assert group._catalog['logged_errors'].apply(lambda x: x == []).all()
 
+    def test_no_h5_dir_preserves_existing_logged_errors(self):
+        """Without h5_dir, a logged_errors column already on the catalog is kept."""
+        from iblnm.data import PhotometrySessionGroup
+        catalog = self._make_catalog()
+        catalog['logged_errors'] = [['VideoQCFail'], [], ['X']]
+        group = PhotometrySessionGroup.from_catalog(catalog, one=MagicMock())
+        kept = group._catalog.set_index('eid')['logged_errors']
+        assert kept['eid-1'] == ['VideoQCFail']
+
 
 class TestDeduplicate:
     """Tests for PhotometrySessionGroup.deduplicate."""
