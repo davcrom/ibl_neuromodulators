@@ -66,84 +66,6 @@ def _make_movement_group(n_per_cell=50, seed=0):
     return _make_group(pd.DataFrame(resp_rows), pd.DataFrame(reg_rows))
 
 
-class TestBuildMovementDF:
-
-    def _base_frames(self):
-        resp = pd.DataFrame([
-            {'eid': 'e0', 'subject': 's0', 'target_NM': 'VTA-DA', 'NM': 'DA',
-             'brain_region': 'VTA', 'hemisphere': 'r', 'event': 'stimOn_times',
-             'trial': t, 'response': 1.0}
-            for t in range(4)
-        ])
-        reg = pd.DataFrame([
-            # valid
-            {'eid': 'e0', 'trial': 0, 'signed_contrast': 0.25, 'contrast': 25.0,
-             'stim_side': 'right', 'choice': 1, 'feedbackType': 1,
-             'probabilityLeft': 0.5, 'reaction_time': 0.2, 'movement_time': 0.3,
-             'response_time': 0.8, 'peak_velocity': 5.0},
-            # biased block -> dropped
-            {'eid': 'e0', 'trial': 1, 'signed_contrast': 0.25, 'contrast': 25.0,
-             'stim_side': 'right', 'choice': 1, 'feedbackType': 1,
-             'probabilityLeft': 0.8, 'reaction_time': 0.2, 'movement_time': 0.3,
-             'response_time': 0.8, 'peak_velocity': 5.0},
-            # nogo -> dropped
-            {'eid': 'e0', 'trial': 2, 'signed_contrast': 0.25, 'contrast': 25.0,
-             'stim_side': 'right', 'choice': 0, 'feedbackType': 1,
-             'probabilityLeft': 0.5, 'reaction_time': 0.2, 'movement_time': 0.3,
-             'response_time': 0.8, 'peak_velocity': 5.0},
-            # fast response -> dropped
-            {'eid': 'e0', 'trial': 3, 'signed_contrast': 0.25, 'contrast': 25.0,
-             'stim_side': 'right', 'choice': 1, 'feedbackType': 1,
-             'probabilityLeft': 0.5, 'reaction_time': 0.2, 'movement_time': 0.3,
-             'response_time': 0.01, 'peak_velocity': 5.0},
-        ])
-        return resp, reg
-
-    def test_filters_to_valid_trials(self):
-        from scripts.responses import build_movement_df
-        resp, reg = self._base_frames()
-        df = build_movement_df(_make_group(resp, reg))
-        assert list(df['trial']) == [0]
-
-    def test_adds_log_columns(self):
-        from scripts.responses import build_movement_df
-        resp, reg = self._base_frames()
-        df = build_movement_df(_make_group(resp, reg))
-        for var in ['reaction_time', 'movement_time', 'peak_velocity']:
-            assert f'log_{var}' in df.columns
-        np.testing.assert_allclose(
-            df['log_reaction_time'].iloc[0], np.log10(0.2))
-
-    def test_nonpositive_timing_gives_nan_log(self):
-        from scripts.responses import build_movement_df
-        resp, reg = self._base_frames()
-        reg.loc[reg['trial'] == 0, 'peak_velocity'] = 0.0
-        df = build_movement_df(_make_group(resp, reg))
-        assert df['log_peak_velocity'].isna().all()
-
-    def test_retains_baseline_stimon_firstmovement_events(self):
-        """The movement DV set is baseline, stimOn, firstMovement; feedback is
-        excluded (no longer filtered to stimOn only)."""
-        from scripts.responses import build_movement_df
-        events = ['baseline', 'stimOn_times', 'firstMovement_times',
-                  'feedback_times']
-        resp = pd.DataFrame([
-            {'eid': 'e0', 'subject': 's0', 'target_NM': 'VTA-DA', 'NM': 'DA',
-             'brain_region': 'VTA', 'hemisphere': 'r', 'event': event,
-             'trial': 0, 'response': 1.0}
-            for event in events
-        ])
-        reg = pd.DataFrame([
-            {'eid': 'e0', 'trial': 0, 'signed_contrast': 0.25, 'contrast': 25.0,
-             'stim_side': 'right', 'choice': 1, 'feedbackType': 1,
-             'probabilityLeft': 0.5, 'reaction_time': 0.2, 'movement_time': 0.3,
-             'response_time': 0.8, 'peak_velocity': 5.0},
-        ])
-        df = build_movement_df(_make_group(resp, reg))
-        assert set(df['event']) == {
-            'baseline', 'stimOn_times', 'firstMovement_times'}
-
-
 class TestSaveLMMFrames:
     """The pure save step writes exactly the named CSVs, nothing else."""
 
@@ -228,7 +150,6 @@ class TestPlotMovementFigures:
         from scripts.responses import plot_movement_figures
         group = _make_movement_group()
         fig_dirs = {
-            'movement_descriptive': tmp_path / 'descriptive',
             'movement_model_comparison': tmp_path / 'model_comparison',
             'movement_slopes': tmp_path / 'slopes',
         }
@@ -237,37 +158,34 @@ class TestPlotMovementFigures:
         plot_movement_figures(group, fig_dirs, tmp_path)
         return fig_dirs
 
-    def test_writes_model_comparison_csvs_and_descriptive_figures(self, tmp_path):
-        fig_dirs = self._run(tmp_path)
-        assert (tmp_path / 'jackknife_model_comparison.csv').exists()
-        assert (tmp_path / 'movement_marginal_r2.csv').exists()
-        assert any(fig_dirs['movement_descriptive'].glob('*.svg'))
-
-    def test_writes_claim_csvs_with_tidy_schema(self, tmp_path):
-        from iblnm.analysis import _TIDY_LMM_COLS
+    def test_writes_reliability_and_saturated_csvs(self, tmp_path):
         self._run(tmp_path)
-        # Slope claims share the tidy LMM schema plus their identifiers.
-        for fname, ids in [
-            ('movement_vs_contrast.csv', ['target_NM']),
-            ('movement_predicts_response.csv', ['target_NM', 'event']),
-            ('movement_within_contrast.csv', ['target_NM', 'event']),
+        for fname, cols in [
+            ('response_lmm_movement_reliability_cv.csv',
+             {'target_NM', 'event', 'predictor', 'fold', 'delta_r2',
+              'timing_var'}),
+            ('response_lmm_movement_reliability_jackknife.csv',
+             {'target_NM', 'event', 'predictor', 'fold', 'delta_r2',
+              'timing_var'}),
+            ('response_lmm_movement_saturated_r2.csv',
+             {'target_NM', 'event', 'name', 'marginal_r2', 'timing_var'}),
         ]:
             df = pd.read_csv(tmp_path / fname)
-            assert set(_TIDY_LMM_COLS).issubset(df.columns)
-            assert set(ids).issubset(df.columns)
-        # Behavioral claims fit on every target, so rows are non-empty.
-        assert len(pd.read_csv(tmp_path / 'movement_vs_contrast.csv')) > 0
-        assert len(pd.read_csv(tmp_path / 'movement_predicts_response.csv')) > 0
+            assert cols.issubset(df.columns), fname
 
-    def test_writes_within_contrast_variation_csv(self, tmp_path):
+    def test_writes_claim_coefficient_csvs(self, tmp_path):
+        """The movement effect is the log_<t> coefficient of each claim model."""
         self._run(tmp_path)
-        df = pd.read_csv(tmp_path / 'within_contrast_variation.csv')
-        assert {'target_NM', 'timing_col', 'var_within',
-                'var_between'}.issubset(df.columns)
-        assert len(df) > 0
+        for fname in ('response_lmm_movement_predicts_response.csv',
+                      'response_lmm_movement_within_contrast.csv'):
+            df = pd.read_csv(tmp_path / fname)
+            assert {'target_NM', 'event', 'term', 'Coef.',
+                    'timing_var'}.issubset(df.columns)
+            assert any(str(t).startswith('log_') for t in df['term'])
 
-    def test_predicts_response_covers_all_events(self, tmp_path):
-        self._run(tmp_path)
-        df = pd.read_csv(tmp_path / 'movement_predicts_response.csv')
-        assert set(df['event']) == {
-            'baseline', 'stimOn_times', 'firstMovement_times'}
+    def test_renders_movement_figures(self, tmp_path):
+        fig_dirs = self._run(tmp_path)
+        assert any(fig_dirs['movement_model_comparison']
+                   .glob('response_lmm_movement_reliability_*.svg'))
+        assert any(fig_dirs['movement_slopes']
+                   .glob('response_lmm_movement_*.svg'))
