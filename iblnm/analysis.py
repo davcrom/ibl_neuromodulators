@@ -2994,6 +2994,49 @@ def _tidy_lmm_row(lmm: 'LMMResult', term: str, df: pd.DataFrame,
     }], columns=_TIDY_LMM_COLS)
 
 
+_SLOPE_COLS = ['term', 'coef', 'se', 'z', 'p', 'ci_low', 'ci_high',
+               'marginal_r2', 'n_trials', 'n_subjects']
+
+
+def compute_slopes(lmm_result, terms):
+    """Tidy fixed-effect estimate ("slope") for each named term.
+
+    One row per term in ``terms``: its coefficient (the slope, for an additive
+    continuous predictor), standard error, z, p-value, 95% CI, the fit's
+    marginal R², and trial/subject counts. Names no variable itself — the
+    caller passes which terms to report. Generalizes the single-term
+    ``_tidy_lmm_row`` to an arbitrary set of terms.
+
+    Parameters
+    ----------
+    lmm_result : LMMResult
+    terms : sequence of str
+        Fixed-effect term names present in the fitted model.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per term, columns ``_SLOPE_COLS``.
+    """
+    res = lmm_result.result
+    ci = res.conf_int()
+    n_trials = int(res.nobs)
+    n_subjects = len(lmm_result.random_effects)
+    rows = [{
+        'term': term,
+        'coef': float(res.fe_params[term]),
+        'se': float(res.bse_fe[term]),
+        'z': float(res.tvalues[term]),
+        'p': float(res.pvalues[term]),
+        'ci_low': float(ci.loc[term].iloc[0]),
+        'ci_high': float(ci.loc[term].iloc[1]),
+        'marginal_r2': lmm_result.variance_explained['marginal'],
+        'n_trials': n_trials,
+        'n_subjects': n_subjects,
+    } for term in terms]
+    return pd.DataFrame(rows, columns=_SLOPE_COLS)
+
+
 def fit_movement_vs_contrast(df, timing_col, min_subjects=2):
     """Movement-vs-contrast claim: does the timing variable track contrast?
 
