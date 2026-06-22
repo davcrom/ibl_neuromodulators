@@ -17,7 +17,7 @@ def test_pose_qc_path_constants():
 
 
 def test_lp_qc_labels():
-    assert config.LP_QC_LABELS == ('qc_lp', 'qc_movement')
+    assert config.LP_QC_LABELS == ('qc_lp', 'qc_movement', 'qc_timing')
 
 
 def test_video_qc_cols():
