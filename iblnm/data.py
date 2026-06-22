@@ -1743,13 +1743,6 @@ class PhotometrySessionGroup:
         self.cohort_cca_data = None
         self.cohort_cca_cross_projections = None
         self.cohort_cca_weight_similarities = None
-        self.lmm_results = None
-        self.lmm_coefficients = None
-        self.lmm_ceiling = None
-        self.lmm_main_effects = None
-        self.lmm_loso = None
-        self.lmm_main_effects_loso = None
-        self.lmm_reliability = None
         self.lmm_fits = {}
         self._lmm_group_by = None
 
@@ -2569,24 +2562,26 @@ class PhotometrySessionGroup:
                 if any(f'log_{var}' in formula for formula in formulas.values())]
         return used[0] if used else None
 
-    def response_lmm_effects(self, name, kind, response_col='response'):
+    def response_lmm_effects(self, name, kind, variables=None,
+                             response_col='response'):
         """Extract a tidy effect frame from the cached fits of one named model.
 
         Reads the ``LMMResult``s cached by :meth:`response_lmm_fit` under
         ``(response_col, name, *group_values)``, computes the requested effect
-        kind per group, and tags each row with the group identity (the
-        ``group_by`` columns from the originating fit call).
+        per group, and tags each row with the group identity (the ``group_by``
+        columns from the originating fit call). Names no variable itself.
 
         Parameters
         ----------
         name : str
             Model name whose cached fits to read.
         kind : str
-            Effect to extract: ``'emm'`` (estimated marginal means per factor),
-            ``'slopes'`` (contrast slopes per reward), ``'interactions'``
-            (two-way interaction effects), ``'predictions'`` (fixed-effects
-            prediction grid), or ``'coefficients'`` (fixed-effects table with
-            ``ci_lower`` / ``ci_upper``).
+            ``'emm'`` (estimated marginal means for the ``variables`` factor
+            set — one factor → main-effect means, two → interaction grid) or
+            ``'coefficients'`` (fixed-effects table with ``ci_lower`` /
+            ``ci_upper``; ``variables`` ignored).
+        variables : sequence of str, optional
+            For ``'emm'``, the factor list to cross. Required for ``'emm'``.
         response_col : str
             Response-magnitude column; selects the registry entries.
 
@@ -2599,15 +2594,12 @@ class PhotometrySessionGroup:
         df = self._modeling_frame(response_col)
 
         frames = []
-        for keys, df_group in df.groupby(self._lmm_group_by):
+        for keys, _ in df.groupby(self._lmm_group_by):
             group_values = keys if isinstance(keys, tuple) else (keys,)
             fit = self.lmm_fits.get((response_col, name, *group_values))
             if fit is None:
                 continue
-            if kind in ('emm', 'predictions'):
-                fit.predictions = analysis.compute_predictions(
-                    fit, df_group['contrast'].unique())
-            effect = self._extract_lmm_effect(fit, kind)
+            effect = self._extract_lmm_effect(fit, kind, variables)
             for col, val in zip(self._lmm_group_by, group_values):
                 effect[col] = val
             frames.append(effect)
@@ -2616,38 +2608,24 @@ class PhotometrySessionGroup:
             else pd.DataFrame()
 
     @staticmethod
-    def _extract_lmm_effect(fit, kind):
+    def _extract_lmm_effect(fit, kind, variables=None):
         """Compute one tidy effect frame from a single cached ``LMMResult``.
 
-        Dispatches on ``kind`` to the matching downstream analysis function;
-        ``'emm'`` and ``'interactions'`` stack their sub-frames with a column
-        naming the factor(s). ``'coefficients'`` returns the fixed-effects
-        table with the term as a column and Wald CIs appended.
+        ``'emm'`` returns :func:`analysis.compute_marginal_means` over the
+        caller's ``variables`` factor list; ``'coefficients'`` returns the
+        fixed-effects table with the term as a column and Wald CIs appended.
         """
         if kind == 'emm':
-            return pd.concat(
-                [analysis.compute_marginal_means(fit, factor).assign(factor=factor)
-                 for factor in ('reward', 'side', 'contrast')],
-                ignore_index=True)
-        if kind == 'slopes':
-            return analysis.compute_contrast_slopes(fit)
-        if kind == 'interactions':
-            pairs = [('contrast', 'reward'), ('contrast', 'side'),
-                     ('reward', 'side')]
-            return pd.concat(
-                [analysis.compute_interaction_effects(fit, y, x)
-                 .assign(y_factor=y, x_factor=x) for y, x in pairs],
-                ignore_index=True)
-        if kind == 'predictions':
-            return fit.predictions.copy()
+            if not variables:
+                raise ValueError("kind='emm' requires a `variables` factor list")
+            return analysis.compute_marginal_means(fit, list(variables))
         if kind == 'coefficients':
             coef = fit.summary_df.copy()
             coef['ci_lower'] = coef['Coef.'] - 1.96 * coef['Std.Err.']
             coef['ci_upper'] = coef['Coef.'] + 1.96 * coef['Std.Err.']
             return coef.rename_axis('term').reset_index()
         raise ValueError(
-            f"kind must be 'emm', 'slopes', 'interactions', 'predictions', "
-            f"or 'coefficients', got {kind!r}")
+            f"kind must be 'emm' or 'coefficients', got {kind!r}")
 
     def get_mean_traces(self):
         """Compute trial-averaged traces from the trace cache.
@@ -3350,195 +3328,6 @@ class PhotometrySessionGroup:
         df = pd.DataFrame(rows)
         self.cohort_cca_weight_similarities = df
         return df
-
-    def fit_lmm(self, response_col='response',
-                 min_subjects=2, contrast_coding='log'):
-        """Fit the initial-LMM suite per (target_NM, event).
-
-        Per group, fits:
-
-        - **Base model** — ``response ~ contrast * side * reward``, random
-          intercept. The estimated marginal means, full interaction suite, and
-          contrast slopes are read from this fit (``self.lmm_results``,
-          ``self.lmm_coefficients``).
-        - **Ceiling** — saturated ``C(contrast) * side * reward``, random
-          intercept. Its marginal (and conditional) R² is stored in
-          ``self.lmm_ceiling``.
-        - **Three main-effect models** — ``contrast * side * reward`` fixed,
-          each with one random slope (``contrast``, ``side``, ``reward``). Each
-          model's own main effect (coef, SE, z, p, CI, marginal R²) is stored
-          in ``self.lmm_main_effects``.
-        - **LOSO-CV** — leave-one-subject-out cross-validation of the full
-          model vs the no-interaction model, testing whether the interaction
-          structure generalizes across animals. Per-held-out-subject and
-          aggregate out-of-sample R² (full, reduced, ΔR²) is stored in
-          ``self.lmm_loso``.
-
-        Requires ``self.response_magnitudes`` and ``self.trial_regressors`` to
-        be populated (via ``get_response_magnitudes()`` / direct assignment).
-
-        Parameters
-        ----------
-        response_col : str
-            Column name for the response magnitude.
-        min_subjects : int
-            Minimum subjects per group to attempt fitting.
-        contrast_coding : str
-            Continuous contrast coding for the base and main-effect models
-            (passed to ``fit_response_lmm``). The ceiling model is always
-            categorical.
-
-        Returns
-        -------
-        dict
-            Keys: (target_NM, event_label) tuples. Values: base-model
-            LMMResult objects with emm_reward, emm_side, emm_contrast,
-            contrast_slopes, and the interaction suite populated.
-        """
-        from tqdm import tqdm
-        from iblnm.analysis import (
-            fit_response_lmm, fit_ceiling_lmm, loso_cv_task_lmm,
-            loso_cv_main_effects_lmm,
-            compute_marginal_means, compute_contrast_slopes,
-            compute_interaction_effects,
-        )
-
-        df = self._modeling_frame(response_col)
-
-        groups = {}
-        for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
-            if df_group['subject'].nunique() < min_subjects:
-                continue
-            event_label = event.replace('_times', '')
-            groups[(target_nm, event_label)] = df_group
-
-        results = {}
-        all_summaries = []
-        ceiling_rows = []
-        main_effect_rows = []
-        loso_frames = []
-        main_effect_loso_frames = []
-
-        for (target_nm, event_label), df_g in tqdm(groups.items(),
-                                                    desc="Fitting LMMs"):
-            lmm = fit_response_lmm(df_g, response_col, re_formula='1',
-                                   contrast_coding=contrast_coding)
-            if lmm is None:
-                continue
-
-            lmm.emm_reward = compute_marginal_means(lmm, 'reward')
-            lmm.emm_side = compute_marginal_means(lmm, 'side')
-            lmm.emm_contrast = compute_marginal_means(lmm, 'contrast')
-            lmm.contrast_slopes = compute_contrast_slopes(lmm)
-            lmm.interaction_contrast_reward = compute_interaction_effects(
-                lmm, 'contrast', 'reward')
-            lmm.interaction_contrast_side = compute_interaction_effects(
-                lmm, 'contrast', 'side')
-            lmm.interaction_reward_side = compute_interaction_effects(
-                lmm, 'reward', 'side')
-            results[(target_nm, event_label)] = lmm
-
-            summary = lmm.summary_df.copy()
-            summary.insert(0, 'target_NM', target_nm)
-            summary.insert(1, 'event', event_label)
-            summary.index.name = 'term'
-            all_summaries.append(summary.reset_index())
-
-            ceiling = fit_ceiling_lmm(df_g, response_col)
-            if ceiling is not None:
-                ceiling_rows.append({
-                    'target_NM': target_nm,
-                    'event': event_label,
-                    'marginal': ceiling.variance_explained['marginal'],
-                    'conditional': ceiling.variance_explained['conditional'],
-                })
-
-            main_effect_rows.extend(
-                self._fit_main_effect_models(df_g, response_col, target_nm,
-                                             event_label, contrast_coding))
-
-            loso = loso_cv_task_lmm(df_g, response_col,
-                                    contrast_coding=contrast_coding)
-            if not loso.empty:
-                loso.insert(0, 'target_NM', target_nm)
-                loso.insert(1, 'event', event_label)
-                loso_frames.append(loso)
-
-            me_loso = loso_cv_main_effects_lmm(df_g, response_col,
-                                               contrast_coding=contrast_coding)
-            if not me_loso.empty:
-                me_loso.insert(0, 'target_NM', target_nm)
-                me_loso.insert(1, 'event', event_label)
-                main_effect_loso_frames.append(me_loso)
-
-        self.lmm_results = results
-        self.lmm_coefficients = (pd.concat(all_summaries, ignore_index=True)
-                                 if all_summaries else pd.DataFrame())
-        self.lmm_ceiling = pd.DataFrame(ceiling_rows)
-        self.lmm_main_effects = pd.DataFrame(main_effect_rows)
-        self.lmm_loso = (pd.concat(loso_frames, ignore_index=True)
-                         if loso_frames else pd.DataFrame())
-        self.lmm_main_effects_loso = (
-            pd.concat(main_effect_loso_frames, ignore_index=True)
-            if main_effect_loso_frames else pd.DataFrame())
-        self.lmm_reliability = self._build_lmm_reliability()
-
-        return results
-
-    def _build_lmm_reliability(self) -> pd.DataFrame:
-        """Stack the per-main-effect and omnibus-interaction LOSO ΔR² into one
-        tidy frame for the per-target generalization figure.
-
-        Columns: ``target_NM``, ``event``, ``predictor``, ``subject``,
-        ``delta_r2``. ``predictor`` is one of contrast/side/reward (the
-        main-effect rows from ``lmm_main_effects_loso``) or ``'interactions'``
-        (the omnibus full-vs-additive ΔR² from ``lmm_loso``), putting main
-        effects and interactions on one out-of-sample axis.
-        """
-        cols = ['target_NM', 'event', 'predictor', 'subject', 'delta_r2']
-        frames = []
-        if self.lmm_main_effects_loso is not None \
-                and not self.lmm_main_effects_loso.empty:
-            frames.append(self.lmm_main_effects_loso[cols])
-        if self.lmm_loso is not None and not self.lmm_loso.empty:
-            interactions = self.lmm_loso.assign(predictor='interactions')
-            frames.append(interactions[cols])
-        return (pd.concat(frames, ignore_index=True) if frames
-                else pd.DataFrame(columns=cols))
-
-    @staticmethod
-    def _fit_main_effect_models(df_g, response_col, target_nm, event_label,
-                                contrast_coding):
-        """Fit the three single-random-slope main-effect models for one group.
-
-        Each predictor's main effect is read only from the model carrying its
-        own random slope, giving honest per-effect inference without the
-        infeasible full random-effects structure. Returns one tidy row per
-        predictor (coef, SE, z, p, CI, marginal R²).
-        """
-        from iblnm.analysis import fit_response_lmm
-
-        rows = []
-        for predictor in ('contrast', 'side', 'reward'):
-            lmm = fit_response_lmm(df_g, response_col,
-                                   re_formula=f'1 + {predictor}',
-                                   contrast_coding=contrast_coding)
-            if lmm is None or predictor not in lmm.summary_df.index:
-                continue
-            coef = lmm.summary_df.loc[predictor]
-            rows.append({
-                'target_NM': target_nm,
-                'event': event_label,
-                'predictor': predictor,
-                'Coef.': coef['Coef.'],
-                'Std.Err.': coef['Std.Err.'],
-                'z': coef['z'],
-                'P>|z|': coef['P>|z|'],
-                'ci_lower': coef['Coef.'] - 1.96 * coef['Std.Err.'],
-                'ci_upper': coef['Coef.'] + 1.96 * coef['Std.Err.'],
-                'marginal_r2': lmm.variance_explained['marginal'],
-            })
-        return rows
 
     def response_anovaRM_fit(self, response_col='response',
                                     min_subjects=2, min_trials=10):

@@ -760,12 +760,11 @@ class TestPlotMarginalMeans:
 
     @staticmethod
     def _reward_emm_df():
-        """Long-form EMMs for the reward factor, two target-NMs."""
+        """New-schema main-effect EMMs for the reward factor (coded levels)."""
         return pd.DataFrame({
             'target_NM': ['VTA-DA', 'VTA-DA', 'DR-5HT', 'DR-5HT'],
-            'factor': 'reward',
-            'level': ['incorrect', 'correct', 'incorrect', 'correct'],
-            'mean': [0.5, 0.8, 0.2, 0.4],
+            'reward': [-0.5, 0.5, -0.5, 0.5],
+            'predicted': [0.5, 0.8, 0.2, 0.4],
             'ci_lower': [0.3, 0.6, 0.0, 0.2],
             'ci_upper': [0.7, 1.0, 0.4, 0.6],
         })
@@ -785,7 +784,7 @@ class TestPlotMarginalMeans:
         assert set(plt.get_fignums()) == existing
         plt.close(fig)
 
-    def test_marker_y_positions_match_means(self):
+    def test_marker_y_positions_match_predicted(self):
         from iblnm.vis import plot_marginal_means
         fig, ax = plt.subplots()
         plot_marginal_means(self._reward_emm_df(), ax=ax)
@@ -797,78 +796,12 @@ class TestPlotMarginalMeans:
         assert ys == sorted([0.5, 0.8, 0.2, 0.4])
         plt.close(fig)
 
-    def test_xticklabels_are_factor_levels(self):
+    def test_xticklabels_map_coded_levels_to_labels(self):
         from iblnm.vis import plot_marginal_means
         fig, ax = plt.subplots()
         plot_marginal_means(self._reward_emm_df(), ax=ax)
         labels = [t.get_text() for t in ax.get_xticklabels()]
         assert labels == ['incorrect', 'correct']
-        plt.close(fig)
-
-
-class TestPlotLMMInteraction:
-
-    @staticmethod
-    def _interaction_df(p_main_vta=0.01, p_int_vta=0.01):
-        """Contrast×reward interaction frame, two target-NMs.
-
-        VTA-DA: significant by default. DR-5HT: never significant.
-        """
-        return pd.DataFrame({
-            'target_NM': ['VTA-DA', 'VTA-DA', 'DR-5HT', 'DR-5HT'],
-            'x_level': ['incorrect', 'correct', 'incorrect', 'correct'],
-            'effect': [0.3, 0.5, 0.1, 0.2],
-            'ci_lower': [0.1, 0.3, -0.1, 0.0],
-            'ci_upper': [0.5, 0.7, 0.3, 0.4],
-            'p_interaction': [p_int_vta, p_int_vta, 0.6, 0.6],
-            'p_main': [p_main_vta, p_main_vta, 0.6, 0.6],
-        })
-
-    def test_returns_figure_when_ax_none(self):
-        from iblnm.vis import plot_lmm_interaction
-        fig = plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R')
-        assert isinstance(fig, plt.Figure)
-        plt.close(fig)
-
-    def test_draws_on_passed_ax_without_new_figure(self):
-        from iblnm.vis import plot_lmm_interaction
-        fig, ax = plt.subplots()
-        existing = set(plt.get_fignums())
-        plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R', ax=ax)
-        assert len(ax.containers) >= 2  # one errorbar series per level per target
-        assert len(ax.lines) >= 2  # connecting line per target
-        assert set(plt.get_fignums()) == existing
-        plt.close(fig)
-
-    def test_marker_y_positions_match_effects(self):
-        from iblnm.vis import plot_lmm_interaction
-        fig, ax = plt.subplots()
-        plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R', ax=ax)
-        ys = sorted(
-            round(y, 3)
-            for c in ax.containers
-            for y in c[0].get_ydata()
-        )
-        assert ys == sorted([0.3, 0.5, 0.1, 0.2])
-        plt.close(fig)
-
-    def test_main_effect_significance_sets_marker_fill(self):
-        """VTA-DA main effect significant → filled; DR-5HT n.s. → open."""
-        from iblnm.vis import plot_lmm_interaction
-        fig, ax = plt.subplots()
-        plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R', ax=ax)
-        fills = {c[0].get_fillstyle() for c in ax.containers}
-        assert fills == {'full', 'none'}
-        plt.close(fig)
-
-    def test_interaction_significance_sets_line_style(self):
-        """Significant interaction → solid line; n.s. → dashed."""
-        from iblnm.vis import plot_lmm_interaction
-        fig, ax = plt.subplots()
-        plot_lmm_interaction(self._interaction_df(), 'slope', 'C×R', ax=ax)
-        styles = {line.get_linestyle() for line in ax.lines
-                  if len(line.get_xdata()) == 2}
-        assert '-' in styles and '--' in styles
         plt.close(fig)
 
 
@@ -909,38 +842,24 @@ class TestPlotLMMSummary:
         return pd.DataFrame(rows)
 
     @staticmethod
-    def _interaction_df():
-        """``response_lmm_effects(..., 'interactions')``: three pairs × targets.
-
-        contrast×reward and reward×side significant for VTA-DA; contrast×side
-        non-significant for both.
-        """
-        pairs = [
-            ('contrast', 'reward', ['incorrect', 'correct'],
-             {'VTA-DA': 0.03, 'DR-5HT': 0.9}),
-            ('contrast', 'side', ['contra', 'ipsi'],
-             {'VTA-DA': 0.3, 'DR-5HT': 0.7}),
-            ('reward', 'side', ['contra', 'ipsi'],
-             {'VTA-DA': 0.001, 'DR-5HT': 0.5}),
-        ]
-        rows = []
-        for y_factor, x_factor, x_levels, p_int in pairs:
+    def _emm_frames():
+        """``response_lmm_effects(..., 'emm', [factor])`` frames per factor."""
+        def _frame(factor, levels):
+            rows = []
             for tnm in ('VTA-DA', 'DR-5HT'):
-                for i, x_level in enumerate(x_levels):
-                    eff = 0.3 + 0.1 * i
-                    rows.append({
-                        'target_NM': tnm, 'event': 'stimOn',
-                        'y_factor': y_factor, 'x_factor': x_factor,
-                        'x_level': x_level, 'effect': eff,
-                        'ci_lower': eff - 0.2, 'ci_upper': eff + 0.2,
-                        'p_interaction': p_int[tnm],
-                    })
-        return pd.DataFrame(rows)
+                for lvl in levels:
+                    rows.append({'target_NM': tnm, factor: lvl,
+                                 'event': 'stimOn', 'predicted': 0.3,
+                                 'ci_lower': 0.1, 'ci_upper': 0.5})
+            return pd.DataFrame(rows)
+        return {'reward': _frame('reward', [-0.5, 0.5]),
+                'side': _frame('side', [-0.5, 0.5]),
+                'contrast': _frame('contrast', [-1.0, 0.0, 1.0])}
 
     def _summary(self, **kwargs):
         from iblnm.vis import plot_lmm_summary
         return plot_lmm_summary(self._r2_df(), self._coef_df(),
-                                self._interaction_df(), 'stimOn', **kwargs)
+                                self._emm_frames(), 'stimOn', **kwargs)
 
     def test_returns_figure(self):
         fig = self._summary()
@@ -969,27 +888,11 @@ class TestPlotLMMSummary:
         assert len(fig.axes[1].images) > 0
         plt.close(fig)
 
-    def test_interaction_panels_have_errorbars(self):
-        """Bottom row (axes[2:5]) has errorbar containers."""
+    def test_emm_panels_have_errorbars(self):
+        """Bottom row (axes[2:5]) are EMM panels with errorbar containers."""
         fig = self._summary()
         for ax in fig.axes[2:5]:
             assert len(ax.containers) > 0
-        plt.close(fig)
-
-    def test_main_effect_significance_sets_marker_fill(self):
-        """Contrast×reward panel (axes[2]): VTA contrast sig (filled),
-        DR not (open) — p_main merged from the coefficient frame."""
-        fig = self._summary()
-        fills = {c[0].get_fillstyle() for c in fig.axes[2].containers}
-        assert fills == {'full', 'none'}
-        plt.close(fig)
-
-    def test_nonsig_interaction_line_is_dashed(self):
-        """Contrast×side panel (axes[3]): both interactions n.s. → dashed."""
-        fig = self._summary()
-        styles = {line.get_linestyle() for line in fig.axes[3].lines
-                  if len(line.get_xdata()) == 2}
-        assert styles == {'--'}
         plt.close(fig)
 
     def test_summary_annotates_formula(self):

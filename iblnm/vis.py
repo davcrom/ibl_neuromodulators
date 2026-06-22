@@ -1984,17 +1984,29 @@ def plot_lmm_variance_explained(r2_df, ax=None):
     return fig
 
 
-def plot_marginal_means(emm_df, ax=None):
-    """Estimated marginal means for one factor, per target-NM (one event).
+# Readable x-tick labels for deviation-coded categorical factors. Continuous
+# factors (contrast) fall through to their coded level value.
+_EMM_LEVEL_LABELS = {
+    'reward': {-0.5: 'incorrect', 0.5: 'correct'},
+    'side': {0.5: 'contra', -0.5: 'ipsi'},
+}
 
-    Single-panel, ax-injectable. Each target-NM is an errorbar series across
-    the factor's levels (mean ± 95% CI), slightly offset to avoid overlap.
+
+def plot_marginal_means(emm_df, ax=None):
+    """Main-effect estimated marginal means for one factor, per target-NM.
+
+    Single-panel, ax-injectable. The factor is the lone non-value column of
+    ``emm_df`` (every column except ``predicted``/``ci_lower``/``ci_upper`` and
+    the identity columns ``target_NM``/``event``). Each target-NM is an errorbar
+    series across the factor's levels (predicted mean ± 95% CI), slightly offset
+    to avoid overlap.
 
     Parameters
     ----------
     emm_df : pd.DataFrame
-        EMMs for a single factor and event, columns ``target_NM``, ``factor``,
-        ``level``, ``mean``, ``ci_lower``, ``ci_upper``.
+        :func:`iblnm.analysis.compute_marginal_means` output tagged with
+        ``target_NM`` for one event: a factor column (coded levels),
+        ``predicted``, ``ci_lower``, ``ci_upper``.
     ax : plt.Axes, optional
         Axis to draw into; a new figure is created when None.
 
@@ -2007,23 +2019,29 @@ def plot_marginal_means(emm_df, ax=None):
     else:
         fig = ax.figure
 
+    value_cols = {'predicted', 'ci_lower', 'ci_upper', 'target_NM', 'event'}
+    factor = next(c for c in emm_df.columns if c not in value_cols)
+    levels = sorted(emm_df[factor].unique())
+    label_map = _EMM_LEVEL_LABELS.get(factor, {})
+
     targets = sorted(emm_df['target_NM'].unique(),
                      key=lambda t: TARGETNM2POSITION.get(t, 999))
     for i, tnm in enumerate(targets):
-        emm = emm_df[emm_df['target_NM'] == tnm]
+        sub = (emm_df[emm_df['target_NM'] == tnm]
+               .set_index(factor).reindex(levels))
+        means = sub['predicted'].values
+        yerr = np.array([means - sub['ci_lower'].values,
+                         sub['ci_upper'].values - means])
+        x = np.arange(len(levels)) + i * 0.05 - 0.025 * len(targets)
         color = TARGETNM_COLORS.get(tnm, f'C{i}')
-        means = emm['mean'].values
-        yerr = np.array([means - emm['ci_lower'].values,
-                         emm['ci_upper'].values - means])
-        x = np.arange(len(means)) + i * 0.05 - 0.025 * len(targets)
         ax.errorbar(x, means, yerr=yerr, fmt='o', capsize=4, color=color,
                     label=tnm, markersize=5)
 
-    levels = emm_df[emm_df['target_NM'] == targets[0]]['level'].values
     ax.set_xticks(range(len(levels)))
-    ax.set_xticklabels([str(lvl) for lvl in levels])
+    ax.set_xticklabels([str(label_map.get(lvl, round(lvl, 2)))
+                        for lvl in levels])
     ax.set_ylabel('z-score (EMM)')
-    ax.set_title(f"Effect of {emm_df['factor'].iloc[0]}")
+    ax.set_title(f'Effect of {factor}')
     ax.axhline(0, ls='--', color='gray', lw=0.5)
     ax.legend(frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
               fontsize=TICKFONTSIZE)
@@ -2112,87 +2130,7 @@ def plot_lmm_coefficient_heatmap(coef_df, ax=None):
     return fig
 
 
-def plot_lmm_interaction(interaction_df, ylabel, title, ax=None):
-    """One interaction panel: a y-factor effect at each x-factor level, per target.
-
-    Single-panel, ax-injectable. Each target-NM occupies one x-position; the
-    two x-factor levels are offset left/right with errorbars (effect ± 95% CI)
-    joined by a line. Marker fill encodes the y-factor main-effect significance
-    (filled when p < 0.05); line style encodes the interaction significance
-    (solid p < 0.05, dashed otherwise).
-
-    Parameters
-    ----------
-    interaction_df : pd.DataFrame
-        One event, columns ``target_NM``, ``x_level``, ``effect``,
-        ``ci_lower``, ``ci_upper``, ``p_interaction`` (interaction-term p),
-        ``p_main`` (y-factor main-effect p).
-    ylabel, title : str
-        Axis y-label and panel title.
-    ax : plt.Axes, optional
-        Axis to draw into; a new figure is created when None.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(4, 4), layout='constrained')
-    else:
-        fig = ax.figure
-
-    targets = sorted(interaction_df['target_NM'].unique(),
-                     key=lambda t: TARGETNM2POSITION.get(t, 999))
-    dx = 0.15
-    for i, tnm in enumerate(targets):
-        idf = interaction_df[interaction_df['target_NM'] == tnm]
-        color = TARGETNM_COLORS.get(tnm, f'C{i}')
-        fs = 'full' if idf['p_main'].iloc[0] < 0.05 else 'none'
-        ls = '-' if idf['p_interaction'].iloc[0] < 0.05 else '--'
-        effects = idf['effect'].values
-        ci_lo = idf['ci_lower'].values
-        ci_hi = idf['ci_upper'].values
-        x_pos = [i - dx, i + dx]
-        for j in range(len(effects)):
-            ax.errorbar(
-                x_pos[j], effects[j],
-                yerr=[[effects[j] - ci_lo[j]], [ci_hi[j] - effects[j]]],
-                fmt='o', capsize=4, color=color, markersize=6,
-                zorder=3, fillstyle=fs)
-        ax.plot(x_pos, effects, color=color, ls=ls, lw=1.5, zorder=2)
-
-    ax.set_xticks(range(len(targets)))
-    ax.set_xticklabels(targets, rotation=45, ha='right', fontsize=TICKFONTSIZE)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.axhline(0, ls='--', color='gray', lw=0.5)
-
-    level_names = interaction_df[
-        interaction_df['target_NM'] == targets[0]]['x_level'].values
-    for j, name in enumerate(level_names):
-        ax.annotate(str(name), xy=(-dx if j == 0 else dx, 0.02),
-                    xycoords=('data', 'axes fraction'),
-                    fontsize=TICKFONTSIZE, ha='center', va='bottom',
-                    color='k', rotation=90)
-    return fig
-
-
-def _interaction_panel_frame(interaction_df, coef_df, y_factor, x_factor):
-    """One interaction-panel frame for ``plot_lmm_interaction``.
-
-    Selects the ``(y_factor, x_factor)`` rows from the long-form interaction
-    frame and attaches ``p_main`` per target — the y-factor main-effect
-    p-value from the coefficient table (term name equals ``y_factor``, since
-    ``contrast_col`` is ``'contrast'``).
-    """
-    panel = interaction_df[(interaction_df['y_factor'] == y_factor)
-                           & (interaction_df['x_factor'] == x_factor)]
-    p_main = (coef_df[coef_df['term'] == y_factor][['target_NM', 'P>|z|']]
-              .rename(columns={'P>|z|': 'p_main'}))
-    return panel.merge(p_main, on='target_NM', how='left')
-
-
-def plot_lmm_summary(r2_df, coef_df, interaction_df, event, formula=None,
+def plot_lmm_summary(r2_df, coef_df, emm_frames, event, formula=None,
                      fig=None):
     """5-panel LMM summary for one event, composed from the modular plotters.
 
@@ -2204,8 +2142,7 @@ def plot_lmm_summary(r2_df, coef_df, interaction_df, event, formula=None,
     Panels:
     1. Variance explained (R² bars), top-left.
     2. Coefficient heatmap, top-right.
-    3-5. Contrast × reward, contrast × side, reward × side interactions
-       (bottom row).
+    3-5. Main-effect EMM panels for reward, side, contrast (bottom row).
 
     Parameters
     ----------
@@ -2215,10 +2152,9 @@ def plot_lmm_summary(r2_df, coef_df, interaction_df, event, formula=None,
     coef_df : pd.DataFrame
         ``response_lmm_effects(name, 'coefficients')``: ``term``,
         ``target_NM``, ``event``, ``Coef.``, ``P>|z|``.
-    interaction_df : pd.DataFrame
-        ``response_lmm_effects(name, 'interactions')``: ``target_NM``,
-        ``event``, ``y_factor``, ``x_factor``, ``x_level``, ``effect``,
-        ``ci_lower``, ``ci_upper``, ``p_interaction``.
+    emm_frames : dict[str, pd.DataFrame]
+        Maps each bottom-row factor (``'reward'``, ``'side'``, ``'contrast'``)
+        to its ``response_lmm_effects(name, 'emm', [factor])`` frame.
     event : str
         Event to plot; selects rows from each frame.
     formula : str, optional
@@ -2234,26 +2170,19 @@ def plot_lmm_summary(r2_df, coef_df, interaction_df, event, formula=None,
     gs = fig.add_gridspec(2, 6)
     ax_r2 = fig.add_subplot(gs[0, :2])
     ax_hm = fig.add_subplot(gs[0, 2:])
-    ax_cr = fig.add_subplot(gs[1, :2])
-    ax_cs = fig.add_subplot(gs[1, 2:4])
-    ax_rs = fig.add_subplot(gs[1, 4:])
+    ax_a = fig.add_subplot(gs[1, :2])
+    ax_b = fig.add_subplot(gs[1, 2:4])
+    ax_c = fig.add_subplot(gs[1, 4:])
 
     r2_event = r2_df[r2_df['event'] == event]
     coef_event = coef_df[coef_df['event'] == event]
-    interaction_event = interaction_df[interaction_df['event'] == event]
 
     plot_lmm_variance_explained(r2_event, ax=ax_r2)
     plot_lmm_coefficient_heatmap(coef_event, ax=ax_hm)
 
-    panels = [
-        (ax_cr, 'contrast', 'reward', 'Contrast slope', 'Contrast × reward'),
-        (ax_cs, 'contrast', 'side', 'Contrast slope', 'Contrast × side'),
-        (ax_rs, 'reward', 'side', 'Reward effect', 'Reward × side'),
-    ]
-    for ax, y_factor, x_factor, ylabel, title in panels:
-        panel_df = _interaction_panel_frame(
-            interaction_event, coef_event, y_factor, x_factor)
-        plot_lmm_interaction(panel_df, ylabel, title, ax=ax)
+    for ax, factor in zip((ax_a, ax_b, ax_c), ('reward', 'side', 'contrast')):
+        emm = emm_frames[factor]
+        plot_marginal_means(emm[emm['event'] == event], ax=ax)
 
     suptitle = f'LMM summary — {event}'
     if formula is not None:

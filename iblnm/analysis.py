@@ -1883,436 +1883,57 @@ def fit_lmm(formula, df, groups, re_formula='1', reml=True,
     )
 
 
-def fit_response_lmm(df, response_col, formula=None, re_formula='1',
-                      contrast_coding='log'):
-    """Fit a linear mixed-effects model to trial-level response data.
+def compute_marginal_means(lmm_result, factors):
+    """Estimated marginal means for a set of factors from an LMM fit.
 
-    Uses deviation coding (±0.5) for side and reward so that every
-    coefficient is interpretable at the grand mean of all other factors.
-
-    Model: ``response ~ contrast * side * reward`` with subject
-    as random effect. The contrast predictor is mean-centered so that main
-    effects are evaluated at the average contrast level.
-
-    Coding:
-        side:   contra = +0.5, ipsi = −0.5
-        reward: correct = +0.5, incorrect = −0.5
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Trial-level data with columns: contrast, side, feedbackType,
-        subject, and ``response_col``.
-    response_col : str
-        Column name for the response magnitude.
-    formula : str, optional
-        Wilkinson formula for fixed effects. Default:
-        ``'{response_col} ~ contrast * side * reward'``.
-    re_formula : str
-        Random effects formula passed to ``statsmodels.MixedLM``.
-        Default ``'1'`` (random intercept only).
-
-    Returns
-    -------
-    LMMResult or None
-        None if the model fails to converge or data is degenerate.
-    """
-    _transform, _ = get_contrast_coding(contrast_coding)
-
-    df = df.copy()
-    original_contrasts = df['contrast'].copy()
-    coded = _transform(df['contrast'])
-    contrast_center = float(np.mean(coded))
-    df['contrast'] = coded - contrast_center
-    # Deviation coding: ±0.5
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-
-    # Check minimum requirements
-    if df['subject'].nunique() < 2:
-        return None
-    if df['side'].nunique() < 2 or df['reward'].nunique() < 2:
-        return None
-    if df[response_col].std() == 0:
-        return None
-
-    if formula is None:
-        formula = f'{response_col} ~ contrast * side * reward'
-
-    lmm_result = fit_lmm(formula, df, groups=df['subject'],
-                           re_formula=re_formula, reml=True,
-                           contrast_coding=contrast_coding,
-                           contrast_center=contrast_center)
-    if lmm_result is None:
-        return None
-
-    # Predictions on contrast grid (fixed effects only)
-    lmm_result.predictions = compute_predictions(
-        lmm_result, original_contrasts.unique())
-
-    return lmm_result
-
-
-def fit_ceiling_lmm(df: pd.DataFrame, response_col: str) -> 'LMMResult | None':
-    """Fit the saturated 'ceiling' model and return its variance partition.
-
-    Model: ``response ~ C(contrast) * side * reward`` with a random intercept
-    per subject. Coding contrast as a categorical factor saturates the
-    task-condition design, so the marginal R² is the upper bound on the
-    variance any task-condition model can explain for that target/event. This
-    is a standalone reference, not a decomposition.
-
-    Side and reward use the same deviation coding (±0.5) as
-    ``fit_response_lmm``; their coding does not change the fitted subspace
-    (and hence the R²) for two-level factors.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Trial-level data with columns ``contrast``, ``side``, ``feedbackType``,
-        ``subject``, and ``response_col``.
-    response_col : str
-        Column name for the response magnitude.
-
-    Returns
-    -------
-    LMMResult or None
-        None if the model fails to converge or data is degenerate.
-    """
-    df = df.copy()
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-
-    if df['subject'].nunique() < 2:
-        return None
-    if df['side'].nunique() < 2 or df['reward'].nunique() < 2:
-        return None
-    if df[response_col].std() == 0:
-        return None
-
-    formula = f'{response_col} ~ C(contrast) * side * reward'
-    return fit_lmm(formula, df, groups=df['subject'], re_formula='1',
-                    reml=True)
-
-
-def compute_predictions(lmm_result, contrast_levels):
-    """Compute fixed-effects predictions on a contrast grid from an LMM fit.
-
-    For each (side, reward) cell of the deviation-coded design, predicts the
-    fixed-effects mean at every contrast level and its 95% CI from the
-    fixed-effects covariance. Mirrors the grid ``fit_response_lmm`` used to
-    build internally, lifted into a standalone downstream function.
+    For each combination of the listed factors' levels — taken from the values
+    present in the fitted design — predicts the fixed-effects mean response
+    (± 95% CI), holding every other predictor at its sample mean (0 under the
+    deviation/centered coding). One factor yields main-effect EMMs; two yield the
+    interaction grid whose non-parallel pattern is the interaction. Builds its
+    own design row via the model's patsy design info and predicts, subsuming the
+    old ``compute_predictions`` grid. Names no variable: the caller passes which
+    factors, and the output carries each factor's coded level (label mapping is
+    the plotting layer's job).
 
     Parameters
     ----------
     lmm_result : LMMResult
-        Output from ``fit_response_lmm`` (deviation-coded model).
-    contrast_levels : sequence of float
-        Original (untransformed) contrast levels from the data. Transformed and
-        centered with the model's contrast coding before prediction.
+    factors : sequence of str
+        Predictor columns (as named in the fitted formula) to cross.
 
     Returns
     -------
     pd.DataFrame
-        Columns: contrast, side, reward, predicted, ci_lower, ci_upper.
+        One row per factor-level combination: a column per factor (its coded
+        level value), plus ``predicted``, ``ci_lower``, ``ci_upper``.
     """
+    from itertools import product
     from patsy import dmatrix
 
     result = lmm_result.result
     fe_names = list(result.fe_params.index)
     fe_params = result.fe_params.values
     fe_cov = result.cov_params().loc[fe_names, fe_names].values
-
-    _transform, _ = get_contrast_coding(lmm_result.contrast_coding)
-    cc = lmm_result.contrast_col
-    contrast_center = lmm_result.contrast_center
     design_info = result.model.data.orig_exog.design_info
+    frame = result.model.data.frame
 
-    contrast_levels = sorted(contrast_levels)
-    rows = []
-    for side_label, side_val in [('contra', 0.5), ('ipsi', -0.5)]:
-        for reward_label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
-            grid = pd.DataFrame({
-                cc: _transform(contrast_levels) - contrast_center,
-                'side': side_val,
-                'reward': reward_val,
-            })
-            X_grid = np.asarray(dmatrix(design_info, grid))
-            pred = X_grid @ fe_params
-            se_pred = np.sqrt(np.maximum(np.diag(X_grid @ fe_cov @ X_grid.T), 0))
-            rows.extend(
-                {
-                    'contrast': c,
-                    'side': side_label,
-                    'reward': reward_label,
-                    'predicted': float(pred[i]),
-                    'ci_lower': float(pred[i] - 1.96 * se_pred[i]),
-                    'ci_upper': float(pred[i] + 1.96 * se_pred[i]),
-                }
-                for i, c in enumerate(contrast_levels)
-            )
-    return pd.DataFrame(rows)
-
-
-def compute_marginal_means(lmm_result, factor):
-    """Compute estimated marginal means for a factor from an LMM fit.
-
-    Averages model predictions over the levels of all other factors in the
-    design, yielding the marginal mean response at each level of ``factor``.
-    With deviation coding (±0.5), averaged factors are set to 0.
-
-    Parameters
-    ----------
-    lmm_result : LMMResult
-        Output from ``fit_response_lmm`` (deviation-coded model).
-    factor : str
-        Factor to compute EMMs for: 'reward', 'side', or 'contrast'.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: level, mean, ci_lower, ci_upper.
-    """
-    result = lmm_result.result
-    fe_names = list(result.fe_params.index)
-    fe_params = result.fe_params.values
-    fe_cov = result.cov_params().loc[fe_names, fe_names].values
-
-    _transform, _ = get_contrast_coding(lmm_result.contrast_coding)
-    cc = lmm_result.contrast_col
-    contrast_center = lmm_result.contrast_center
-
-    predictions = lmm_result.predictions
-    contrast_levels = sorted(predictions['contrast'].unique())
-
-    # Factor level specs: (label, {column: value})
-    if factor == 'reward':
-        level_specs = [
-            ('incorrect', {'reward': -0.5}),
-            ('correct', {'reward': 0.5}),
-        ]
-    elif factor == 'side':
-        level_specs = [
-            ('contra', {'side': 0.5}),
-            ('ipsi', {'side': -0.5}),
-        ]
-    elif factor == 'contrast':
-        level_specs = [
-            (c, {cc: _transform(c) - contrast_center})
-            for c in contrast_levels
-        ]
-    else:
-        raise ValueError(f"factor must be 'reward', 'side', or 'contrast', got {factor}")
-
-    # Build name→index map for the 8 deviation-coded coefficients
-    idx = {name: i for i, name in enumerate(fe_names)}
+    predictors = [fi.name() for fi in design_info.factor_infos]
+    means = {p: float(frame[p].mean()) for p in predictors}
+    grids = {f: sorted(frame[f].unique()) for f in factors}
 
     rows = []
-    for label, factor_vals in level_specs:
-        # Set factor to its level value, all other factors to 0 (grand mean)
-        # Centered contrast at grand mean = 0
-        lc = factor_vals.get(cc, 0.0)
-        side = factor_vals.get('side', 0.0)
-        reward = factor_vals.get('reward', 0.0)
-
-        # Construct the design vector manually
-        c = np.zeros(len(fe_names))
-        c[idx['Intercept']] = 1.0
-        if cc in idx:
-            c[idx[cc]] = lc
-        if 'side' in idx:
-            c[idx['side']] = side
-        if 'reward' in idx:
-            c[idx['reward']] = reward
-        if f'{cc}:side' in idx:
-            c[idx[f'{cc}:side']] = lc * side
-        if f'{cc}:reward' in idx:
-            c[idx[f'{cc}:reward']] = lc * reward
-        if 'side:reward' in idx:
-            c[idx['side:reward']] = side * reward
-        if f'{cc}:side:reward' in idx:
-            c[idx[f'{cc}:side:reward']] = lc * side * reward
-
-        mean_pred = float(c @ fe_params)
-        se = float(np.sqrt(max(c @ fe_cov @ c, 0)))
-
-        rows.append({
-            'level': label,
-            'mean': mean_pred,
-            'ci_lower': mean_pred - 1.96 * se,
-            'ci_upper': mean_pred + 1.96 * se,
-        })
-
-    return pd.DataFrame(rows)
-
-
-def compute_contrast_slopes(lmm_result):
-    """Compute contrast slopes per reward condition from an LMM fit.
-
-    With deviation coding (±0.5):
-        incorrect (reward=-0.5): β_c - 0.5 × β_c:reward
-        correct   (reward=+0.5): β_c + 0.5 × β_c:reward
-
-    When the model includes random slopes for the contrast predictor,
-    subject-level slopes (population + BLUP deviation) are also returned.
-
-    Parameters
-    ----------
-    lmm_result : LMMResult
-        Output from ``fit_response_lmm`` (deviation-coded model).
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: reward, slope, ci_lower, ci_upper, type, subject.
-        type is 'population' or 'subject'.
-    """
-    cc = lmm_result.contrast_col
-    result = lmm_result.result
-    fe_params = result.fe_params
-    fe_names = list(fe_params.index)
-    fe_cov = result.cov_params().loc[fe_names, fe_names].values
-
-    beta_lc = fe_params[cc]
-    idx_lc = fe_names.index(cc)
-
-    interaction_name = f'{cc}:reward'
-    has_interaction = interaction_name in fe_names
-    if has_interaction:
-        beta_int = fe_params[interaction_name]
-        idx_int = fe_names.index(interaction_name)
-    else:
-        beta_int = 0.0
-
-    rows = []
-    for label, reward_val in [('incorrect', -0.5), ('correct', 0.5)]:
-        slope = beta_lc + reward_val * beta_int
-        # Var(β_c + r × β_c:r) = Var(β_c) + r²Var(β_c:r) + 2r·Cov
-        if has_interaction:
-            var = (fe_cov[idx_lc, idx_lc]
-                   + reward_val**2 * fe_cov[idx_int, idx_int]
-                   + 2 * reward_val * fe_cov[idx_lc, idx_int])
-            se = np.sqrt(max(var, 0))
-        else:
-            se = np.sqrt(fe_cov[idx_lc, idx_lc])
-
-        rows.append({
-            'reward': label,
-            'slope': float(slope),
-            'ci_lower': float(slope - 1.96 * se),
-            'ci_upper': float(slope + 1.96 * se),
-            'type': 'population',
-            'subject': None,
-        })
-
-    # Subject-level slopes (population + BLUP)
-    re_dict = lmm_result.random_effects
-    has_random_slope = any(
-        cc in effects.index for effects in re_dict.values()
-    )
-    if has_random_slope:
-        for subj, effects in re_dict.items():
-            u_slope = effects.get(cc, 0.0)
-            for i, (label, _) in enumerate(
-                    [('incorrect', -0.5), ('correct', 0.5)]):
-                pop_slope = rows[i]['slope']
-                rows.append({
-                    'reward': label,
-                    'slope': float(pop_slope + u_slope),
-                    'ci_lower': np.nan,
-                    'ci_upper': np.nan,
-                    'type': 'subject',
-                    'subject': subj,
-                })
-
-    return pd.DataFrame(rows)
-
-
-def compute_interaction_effects(lmm_result, y_factor, x_factor):
-    """Compute the effect of y_factor at each level of x_factor.
-
-    Uses deviation coding (±0.5). For each level of x_factor, computes
-    the y_factor effect while the remaining factor is set to 0 (its grand
-    mean under deviation coding).
-
-    Parameters
-    ----------
-    lmm_result : LMMResult
-        Output from ``fit_response_lmm`` (deviation-coded model).
-    y_factor : str
-        Factor whose effect to compute: 'contrast', 'reward', or 'side'.
-    x_factor : str
-        Factor to condition on: 'reward' or 'side'.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: x_level, effect, ci_lower, ci_upper, p_interaction.
-        ``p_interaction`` is the p-value of the two-way interaction
-        coefficient (same for both rows).
-    """
-    result = lmm_result.result
-    fe_params = result.fe_params
-    fe_names = list(fe_params.index)
-    fe_cov = result.cov_params().loc[fe_names, fe_names].values
-
-    def _idx(name):
-        return fe_names.index(name) if name in fe_names else None
-
-    # Deviation-coded coefficient names
-    cc = lmm_result.contrast_col
-    _coef = {
-        'contrast': cc,
-        'reward': 'reward',
-        'side': 'side',
-        'contrast:reward': f'{cc}:reward',
-        'contrast:side': f'{cc}:side',
-        'reward:side': 'side:reward',
-    }
-
-    # X-factor levels: (label, deviation-coded value)
-    if x_factor == 'reward':
-        x_levels = [('incorrect', -0.5), ('correct', 0.5)]
-    elif x_factor == 'side':
-        x_levels = [('contra', 0.5), ('ipsi', -0.5)]
-    else:
-        raise ValueError(f"x_factor must be 'reward' or 'side', got {x_factor}")
-
-    # Two-way interaction coefficient name
-    yx_key = f'{min(y_factor, x_factor)}:{max(y_factor, x_factor)}'
-    int_name = _coef.get(yx_key)
-    if int_name and int_name in fe_names:
-        p_interaction = float(result.pvalues[int_name])
-    else:
-        p_interaction = 1.0
-
-    rows = []
-    for x_label, x_val in x_levels:
-        # Build contrast vector for the y_factor effect at this x_level.
-        # Third factor is set to 0 (grand mean under deviation coding).
-        c = np.zeros(len(fe_names))
-
-        # y_factor main effect (slope for contrast, difference for categorical)
-        y_name = _coef[y_factor]
-        if _idx(y_name) is not None:
-            c[_idx(y_name)] = 1.0
-
-        # y_factor × x_factor interaction, weighted by x_val
-        if int_name and _idx(int_name) is not None:
-            c[_idx(int_name)] = x_val
-
-        # Third factor = 0, so y×third and y×x×third terms vanish.
-
-        effect = float(c @ fe_params.values)
-        se = float(np.sqrt(max(c @ fe_cov @ c, 0)))
-
-        rows.append({
-            'x_level': x_label,
-            'effect': effect,
-            'ci_lower': effect - 1.96 * se,
-            'ci_upper': effect + 1.96 * se,
-            'p_interaction': p_interaction,
-        })
+    for combo in product(*(grids[f] for f in factors)):
+        row_vals = dict(means)
+        row_vals.update(dict(zip(factors, combo)))
+        X = np.asarray(dmatrix(design_info, pd.DataFrame([row_vals])))
+        pred = float((X @ fe_params)[0])
+        se = float(np.sqrt(max((X @ fe_cov @ X.T)[0, 0], 0.0)))
+        row = dict(zip(factors, combo))
+        row['predicted'] = pred
+        row['ci_lower'] = pred - 1.96 * se
+        row['ci_upper'] = pred + 1.96 * se
+        rows.append(row)
 
     return pd.DataFrame(rows)
 

@@ -168,7 +168,9 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
         print("  No LMM results.")
         return
     coefficients = group.response_lmm_effects('task_full', 'coefficients')
-    interactions = group.response_lmm_effects('task_full', 'interactions')
+    # Bottom-row panels: main-effect EMMs (predicted mean ± CI) per factor.
+    emm_frames = {f: group.response_lmm_effects('task_full', 'emm', [f])
+                  for f in ('reward', 'side', 'contrast')}
 
     # Ceiling: one saturated reporting model. plot_lmm_ceiling reads
     # marginal/conditional R², so rename the fit frame's R² columns.
@@ -207,7 +209,7 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
 
     # Per-event base-model summary, annotated with its formula.
     for event in sorted(r2_base['event'].unique()):
-        fig = plot_lmm_summary(r2_base, coefficients, interactions, event,
+        fig = plot_lmm_summary(r2_base, coefficients, emm_frames, event,
                                formula=base_formula.format(response=response_col))
         fig.savefig(figures_dir / f'response_lmm_task_summary_{event}.svg',
                     dpi=FIGURE_DPI, bbox_inches='tight')
