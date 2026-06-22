@@ -6,7 +6,7 @@ from datetime import datetime
 from iblnm.config import (
     N_UNIQUE_SAMPLES_THRESHOLD, VALID_TARGETNMS, DATASET_CATEGORIES,
     EXCLUDE_SESSION_TYPES, PROTOCOL_RED_FLAGS, SESSION_TYPES,
-    SUBJECTS_TO_EXCLUDE,
+    SUBJECTS_TO_EXCLUDE, SESSIONS_H5_DIR,
 )
 from iblnm.validation import (
     exception_logger,
@@ -37,51 +37,36 @@ def deduplicate_log(df):
     return df.drop_duplicates(subset=['eid', 'error_type', 'error_message']).reset_index(drop=True)
 
 
-def collect_session_errors(df_sessions: pd.DataFrame, log_sources) -> pd.DataFrame:
-    """Merge error logs onto df_sessions, adding a 'logged_errors' column.
+def collect_session_errors(eids, h5_dir=SESSIONS_H5_DIR) -> pd.DataFrame:
+    """Read each session's logged error types from its H5 ``/errors`` group.
+
+    Scans the H5 files in ``h5_dir`` (via ``collect_errors``) and groups the
+    logged errors by eid. Duplicate (eid, error_type, error_message) rows are
+    removed before grouping.
 
     Parameters
     ----------
-    df_sessions : pd.DataFrame
-        Must contain an 'eid' column.
-    log_sources : list of Path, str, or pd.DataFrame
-        Paths to parquet error logs or pre-loaded DataFrames (schema: eid, error_type, ...).
-        Missing files and empty DataFrames are silently ignored.
-        Duplicate (eid, error_type, error_message) rows are removed before grouping.
+    eids : iterable of str
+        Session eids to report on. The result has one row per eid, in this
+        order; eids without an H5 file (or with no errors) get an empty list.
+    h5_dir : Path or str, optional
+        Directory containing {eid}.h5 files. Defaults to ``SESSIONS_H5_DIR``.
 
     Returns
     -------
     pd.DataFrame
-        df_sessions with a new 'logged_errors' column: list of error_type strings
-        per session (empty list if no errors logged).
+        Columns ['eid', 'logged_errors']; 'logged_errors' is the list of
+        error_type strings logged for that session (empty list if none).
     """
-    dfs = []
-    for source in log_sources:
-        if isinstance(source, pd.DataFrame):
-            if len(source) > 0:
-                dfs.append(source)
-        else:
-            p = Path(source)
-            if p.exists():
-                dfs.append(pd.read_parquet(p))
-
-    if dfs:
-        all_errors = deduplicate_log(pd.concat(dfs, ignore_index=True))
-        errors_by_eid = (
-            all_errors.groupby('eid')['error_type']
-            .apply(list)
-            .reset_index()
-            .rename(columns={'error_type': 'logged_errors'})
-        )
-        df_sessions = df_sessions.merge(errors_by_eid, on='eid', how='left')
-        df_sessions['logged_errors'] = df_sessions['logged_errors'].apply(
-            lambda x: x if isinstance(x, list) else []
-        )
+    errors = collect_errors(h5_dir)
+    if len(errors) > 0:
+        errors_by_eid = deduplicate_log(errors).groupby('eid')['error_type'].apply(list)
     else:
-        df_sessions = df_sessions.copy()
-        df_sessions['logged_errors'] = [[] for _ in range(len(df_sessions))]
-
-    return df_sessions
+        errors_by_eid = pd.Series(dtype=object)
+    return pd.DataFrame({
+        'eid': list(eids),
+        'logged_errors': [errors_by_eid.get(eid, []) for eid in eids],
+    })
 
 
 def collect_catalog(h5_dir):

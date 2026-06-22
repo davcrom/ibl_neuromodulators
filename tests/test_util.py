@@ -572,76 +572,29 @@ class TestGetTargetNM:
 
 
 class TestCollectSessionErrors:
-    @pytest.fixture
-    def df_sessions(self):
-        return pd.DataFrame({'eid': ['eid-1', 'eid-2', 'eid-3']})
-
-    def test_adds_logged_errors_column(self, df_sessions, tmp_path):
-        log = pd.DataFrame([
-            {'eid': 'eid-1', 'error_type': 'InvalidNM', 'error_message': 'x', 'traceback': None},
-        ])
-        fpath = tmp_path / 'log.pqt'
-        log.to_parquet(fpath)
-        result = collect_session_errors(df_sessions, [fpath])
-        assert 'logged_errors' in result.columns
-
-    def test_errors_attached_to_correct_eid(self, df_sessions, tmp_path):
-        log = pd.DataFrame([
-            {'eid': 'eid-1', 'error_type': 'InvalidNM', 'error_message': 'x', 'traceback': None},
-            {'eid': 'eid-1', 'error_type': 'InvalidStrain', 'error_message': 'y', 'traceback': None},
-        ])
-        fpath = tmp_path / 'log.pqt'
-        log.to_parquet(fpath)
-        result = collect_session_errors(df_sessions, [fpath])
+    def test_logged_errors_per_eid_from_h5(self, tmp_path):
+        from iblnm.validation import MissingRawData, InvalidStrain
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[MissingRawData('x'), InvalidStrain('y')])
+        _write_session_h5(tmp_path, 'eid-2', 'mouse_B')
+        result = collect_session_errors(['eid-1', 'eid-2'], tmp_path)
         row = result[result['eid'] == 'eid-1'].iloc[0]
-        assert set(row['logged_errors']) == {'InvalidNM', 'InvalidStrain'}
-
-    def test_no_errors_gives_empty_list(self, df_sessions, tmp_path):
-        log = pd.DataFrame(columns=['eid', 'error_type', 'error_message', 'traceback'])
-        fpath = tmp_path / 'log.pqt'
-        log.to_parquet(fpath)
-        result = collect_session_errors(df_sessions, [fpath])
-        assert result['logged_errors'].apply(lambda x: x == []).all()
-
-    def test_missing_log_file_ignored(self, df_sessions, tmp_path):
-        missing = tmp_path / 'nonexistent.pqt'
-        result = collect_session_errors(df_sessions, [missing])
-        assert 'logged_errors' in result.columns
-        assert result['logged_errors'].apply(lambda x: x == []).all()
-
-    def test_merges_multiple_log_files(self, df_sessions, tmp_path):
-        log1 = pd.DataFrame([
-            {'eid': 'eid-1', 'error_type': 'TypeA', 'error_message': '', 'traceback': None},
-        ])
-        log2 = pd.DataFrame([
-            {'eid': 'eid-2', 'error_type': 'TypeB', 'error_message': '', 'traceback': None},
-        ])
-        p1, p2 = tmp_path / 'a.pqt', tmp_path / 'b.pqt'
-        log1.to_parquet(p1)
-        log2.to_parquet(p2)
-        result = collect_session_errors(df_sessions, [p1, p2])
-        assert 'TypeA' in result[result['eid'] == 'eid-1'].iloc[0]['logged_errors']
-        assert 'TypeB' in result[result['eid'] == 'eid-2'].iloc[0]['logged_errors']
-        assert result[result['eid'] == 'eid-3'].iloc[0]['logged_errors'] == []
-
-    def test_accepts_dataframe_sources(self, df_sessions):
-        log = pd.DataFrame([
-            {'eid': 'eid-1', 'error_type': 'TypeError', 'error_message': 'msg', 'traceback': None},
-        ])
-        result = collect_session_errors(df_sessions, [log])
-        assert 'TypeError' in result[result['eid'] == 'eid-1'].iloc[0]['logged_errors']
+        assert set(row['logged_errors']) == {'MissingRawData', 'InvalidStrain'}
         assert result[result['eid'] == 'eid-2'].iloc[0]['logged_errors'] == []
 
-    def test_deduplicates_across_sources(self, df_sessions):
-        """Same (eid, error_type, error_message) from two sources → counted once."""
-        log1 = pd.DataFrame([
-            {'eid': 'eid-1', 'error_type': 'TypeError', 'error_message': 'msg', 'traceback': None},
-        ])
-        log2 = pd.DataFrame([
-            {'eid': 'eid-1', 'error_type': 'TypeError', 'error_message': 'msg', 'traceback': None},
-        ])
-        result = collect_session_errors(df_sessions, [log1, log2])
-        assert result[result['eid'] == 'eid-1'].iloc[0]['logged_errors'].count('TypeError') == 1
+    def test_row_per_input_eid_including_missing(self, tmp_path):
+        from iblnm.validation import MissingRawData
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', errors=[MissingRawData('x')])
+        result = collect_session_errors(['eid-1', 'eid-absent'], tmp_path)
+        assert list(result['eid']) == ['eid-1', 'eid-absent']
+        assert result[result['eid'] == 'eid-absent'].iloc[0]['logged_errors'] == []
+
+    def test_duplicate_errors_deduplicated(self, tmp_path):
+        from iblnm.validation import MissingRawData
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[MissingRawData('x'), MissingRawData('x')])
+        result = collect_session_errors(['eid-1'], tmp_path)
+        assert result.iloc[0]['logged_errors'] == ['MissingRawData']
 
 
 class TestDeduplicateLog:

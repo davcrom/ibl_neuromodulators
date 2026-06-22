@@ -1754,27 +1754,39 @@ class PhotometrySessionGroup:
     def from_catalog(cls, catalog, one, h5_dir=None):
         """Build a group from a session catalog DataFrame.
 
-        Validates parallel list columns. Call ``filter_sessions`` separately.
+        Validates parallel list columns and populates ``logged_errors`` from
+        each session's H5 ``/errors`` group when ``h5_dir`` is given (scans all
+        files, so it can take a moment). Call ``filter_sessions`` separately.
 
         Parameters
         ----------
         catalog : pd.DataFrame
             Session catalog (one row per session, with list columns for
-            brain_region, hemisphere, target_NM). Enrich with
-            ``collect_session_errors`` before passing if you need error-based
-            filtering.
+            brain_region, hemisphere, target_NM).
         one : one.api.One
             ONE connection instance.
         h5_dir : Path, optional
-            Directory containing {eid}.h5 files.
+            Directory containing {eid}.h5 files. When provided, the H5 ``/errors``
+            groups are scanned to populate ``logged_errors`` for error-based
+            filtering. When ``None``, ``logged_errors`` is left empty (no scan).
         """
         from iblnm.config import SESSION_SCHEMA
-        from iblnm.util import enforce_schema, validate_parallel_lists
+        from iblnm.util import (
+            enforce_schema, validate_parallel_lists, collect_session_errors,
+        )
 
         df = enforce_schema(catalog.copy(), SESSION_SCHEMA)
 
         parallel_cols = ['brain_region', 'hemisphere', 'target_NM']
         df = validate_parallel_lists(df, parallel_cols)
+
+        if h5_dir is not None:
+            print(f"Scanning H5 files in {h5_dir} for logged errors "
+                  "(this may take a moment)...")
+            df = df.merge(collect_session_errors(df['eid'], h5_dir),
+                          on='eid', how='left')
+        else:
+            df['logged_errors'] = [[] for _ in range(len(df))]
 
         return cls(df, one=one, h5_dir=h5_dir)
 

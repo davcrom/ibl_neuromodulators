@@ -2550,6 +2550,34 @@ class TestFromCatalog:
                               min_performance=False, required_contrasts=False)
         assert all(group.recordings['session_type'] == 'training')
 
+    def test_logged_errors_scanned_from_h5(self, tmp_path):
+        """from_catalog(h5_dir=...) scans /errors groups; a qc_blocker drops the session."""
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.validation import MissingRawData
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', 'biased',
+                          brain_region=['VTA'], errors=[MissingRawData('x')])
+        _write_session_h5(tmp_path, 'eid-2', 'mouse_B', 'biased', brain_region=['DR'])
+        catalog = pd.DataFrame([
+            {'eid': 'eid-1', 'subject': 'mouse_A', 'session_type': 'biased',
+             'start_time': '2024-01-01T10:00:00', 'number': 1, 'brain_region': ['VTA'],
+             'hemisphere': ['l'], 'target_NM': ['VTA-DA'], 'NM': 'DA'},
+            {'eid': 'eid-2', 'subject': 'mouse_B', 'session_type': 'biased',
+             'start_time': '2024-01-02T10:00:00', 'number': 1, 'brain_region': ['DR'],
+             'hemisphere': ['l'], 'target_NM': ['DR-5HT'], 'NM': '5HT'},
+        ])
+        group = PhotometrySessionGroup.from_catalog(catalog, one=MagicMock(), h5_dir=tmp_path)
+        group.filter_sessions(session_types=False, targetnms=False,
+                              qc_blockers={'MissingRawData'},
+                              min_performance=False, required_contrasts=False)
+        assert set(group.sessions['eid']) == {'eid-2'}
+
+    def test_no_h5_dir_leaves_logged_errors_empty(self):
+        """Without h5_dir, from_catalog skips the scan and logged_errors are all empty."""
+        from iblnm.data import PhotometrySessionGroup
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        assert group._catalog['logged_errors'].apply(lambda x: x == []).all()
+
 
 class TestDeduplicate:
     """Tests for PhotometrySessionGroup.deduplicate."""
@@ -3234,15 +3262,8 @@ class TestFilterSessions:
 
     def test_filters_qc_blockers(self):
         from iblnm.data import PhotometrySessionGroup
-        from iblnm.util import collect_session_errors
         df = _make_sessions_df(n_eids=2, regions_per=1)
-        error_log = pd.DataFrame([{
-            'eid': 'eid-0',
-            'error_type': 'MissingExtractedData',
-            'error_message': 'test',
-            'traceback': '',
-        }])
-        df = collect_session_errors(df, [error_log])
+        df['logged_errors'] = [['MissingExtractedData'], []]
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             targetnms=False,
