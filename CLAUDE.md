@@ -60,7 +60,7 @@ tests/               # pytest suite, synthetic fixtures (tracked)
 metadata/fibers.csv  # Fiber insertion coordinates (tracked)
 
 # Generated outputs (gitignored)
-metadata/            # sessions.pqt, error logs (*.pqt)
+metadata/            # sessions.pqt, errors.pqt
 data/                # qc_photometry.pqt, performance.pqt, sessions/*.h5
 results/             # Analysis CSVs (responses/, task_encoding/)
 figures/             # Output plots
@@ -129,18 +129,26 @@ processing, decorate them with `@exception_logger` and accept `exlog=None`.
 
 ### 2. Error-Log-Driven Filtering
 
-Scripts do not re-validate upstream results. Instead, they read parquet error
-logs from previous stages and derive boolean flags from error type strings:
+Scripts do not re-validate upstream results. Each session's errors are the
+single source of truth in its H5 `/errors` group (written by every pipeline
+stage via `ps.log_error` / the `process` wrapper). There are no per-stage error
+log parquets to keep in sync.
+
+`PhotometrySessionGroup.from_catalog(catalog, one, h5_dir=SESSIONS_H5_DIR)`
+scans those `/errors` groups and adds a `logged_errors` column (list of
+error_type strings per eid). `filter_sessions(qc_blockers=...)` then drops
+sessions carrying a blocking error type. Pass `h5_dir=None` (the default, e.g.
+in tests) to skip the scan and leave `logged_errors` empty.
 
 ```python
-df_sessions = collect_session_errors(df_sessions, [QUERY_DB_LOG, PHOTOMETRY_LOG])
-# Adds 'logged_errors' column: list of error_type strings per eid
-
-df_sessions['has_photometry'] = df_sessions['logged_errors'].apply(
-    lambda e: 'MissingExtractedData' not in e)
+group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
+group.filter_sessions(qc_blockers=ANALYSIS_QC_BLOCKERS)
 ```
 
-Each script decides which error types are fatal for its purpose.
+The standalone helper `collect_session_errors(eids, h5_dir)` returns the
+`['eid', 'logged_errors']` table directly when a script needs it (e.g. to
+augment with synthetic blockers before constructing the group). Each script
+decides which error types are fatal for its purpose.
 
 ### 3. PhotometrySession Lifecycle
 

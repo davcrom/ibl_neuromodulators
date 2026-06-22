@@ -47,7 +47,8 @@ ruff check .               # lint
 
 ## Pipeline
 
-Scripts run in order. Each produces a parquet error log alongside its outputs.
+Scripts run in order. Each session's errors are written into its H5 `/errors`
+group; stages print an error summary rather than writing a separate log file.
 
 ```
 query_database.py → photometry.py → task.py → wheel.py → dataset_overview.py
@@ -75,7 +76,7 @@ python scripts/query_database.py --redownload    # re-download everything
 python scripts/query_database.py --extended-qc   # also fetch Alyx extended QC
 ```
 
-**Output**: `metadata/sessions.pqt`, `metadata/query_database_log.pqt`
+**Output**: `metadata/sessions.pqt` (errors written to each session's H5 `/errors` group)
 
 ### Stage 2: `photometry.py` — QC, preprocessing, response extraction
 
@@ -89,23 +90,23 @@ Processes each session through a tiered pipeline:
 6. Extract peri-event responses for `stimOn_times`, `firstMovement_times`, `feedback_times`
 7. Save signal and responses to HDF5
 
-**Output**: `data/sessions/{eid}.h5`, `data/qc_photometry.pqt`, `metadata/photometry_log.pqt`
+**Output**: `data/sessions/{eid}.h5` (signals, responses, and `/errors`), `data/qc_photometry.pqt`
 
 ### Stage 3: `task.py` — Task performance
 
 Computes per-session metrics: fraction correct, no-go fraction, psychometric function parameters (bias, threshold, lapses) for the 50/50 block, and per-block psychometrics and bias shift for biased/ephys sessions.
 
-**Output**: `data/performance.pqt`, `metadata/task_log.pqt`
+**Output**: `data/performance.pqt`
 
 ### Stage 4: `wheel.py` — Per-trial wheel velocity
 
 Extracts wheel velocity for each trial (stimOn → feedback), NaN-padded to the longest trial. Appends a `wheel/` group to existing HDF5 files.
 
-**Output**: appended `data/sessions/{eid}.h5`, `metadata/wheel_log.pqt`
+**Output**: appended `data/sessions/{eid}.h5` (wheel velocity and `/errors`)
 
 ### Stage 5: `dataset_overview.py` — Session coverage figures
 
-Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and all error logs. Produces session-by-session overview matrices at each processing stage, plus barplots of complete recordings per brain target and per mouse.
+Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and the errors scanned from the H5 `/errors` groups. Produces session-by-session overview matrices at each processing stage, plus barplots of complete recordings per brain target and per mouse. Writes the unified `metadata/errors.pqt`.
 
 **Output**: `figures/dataset_overview/`
 
@@ -330,7 +331,10 @@ with pytest.raises(InvalidBrainRegion):
 
 Error log entries follow the schema: `['eid', 'error_type', 'error_message', 'traceback']`.
 
-Downstream scripts read upstream error logs via `collect_session_errors()` and filter sessions based on which error types are present, rather than re-validating.
+Downstream scripts read each session's errors from its H5 `/errors` group —
+`from_catalog(..., h5_dir=...)` scans them into a `logged_errors` column (via
+`collect_session_errors(eids, h5_dir)`) — and filter sessions based on which
+error types are present, rather than re-validating.
 
 ---
 
@@ -517,7 +521,7 @@ scripts/                    # Pipeline stages and analysis scripts
 tests/                      # pytest (synthetic fixtures, no Alyx calls)
 
 # Generated outputs (gitignored)
-metadata/                   # sessions.pqt, error logs (fibers.csv is tracked)
+metadata/                   # sessions.pqt, errors.pqt (fibers.csv is tracked)
 data/                       # qc_photometry.pqt, performance.pqt, sessions/*.h5
 results/                    # Analysis outputs (responses/, task_encoding/)
 figures/                    # Output plots
