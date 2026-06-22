@@ -30,7 +30,7 @@ from iblnm.config import (
     RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
-    TIMING_VARS, MIN_SUBJECTS_MOVEMENT,
+    TIMING_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -288,11 +288,11 @@ def _movement_reliability(group, group_by):
     for t in TIMING_VARS:
         formulas = LMM_FORMULAS[f'movement_additive_{t}']
         cv.append(group.response_lmm_crossval(
-            formulas, group_by, min_subjects=MIN_SUBJECTS_MOVEMENT).assign(
-                timing_var=t))
+            formulas, group_by, min_subjects=MIN_SUBJECTS_MOVEMENT,
+            min_trials=MIN_TRIALS_MOVEMENT).assign(timing_var=t))
         jk.append(group.response_lmm_jackknife(
-            formulas, group_by, min_subjects=MIN_SUBJECTS_MOVEMENT).assign(
-                timing_var=t))
+            formulas, group_by, min_subjects=MIN_SUBJECTS_MOVEMENT,
+            min_trials=MIN_TRIALS_MOVEMENT).assign(timing_var=t))
     return (pd.concat(cv, ignore_index=True),
             pd.concat(jk, ignore_index=True))
 

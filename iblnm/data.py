@@ -18,7 +18,7 @@ from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_RESPONSE_WINDOW, BASELINE_WINDOW, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
     LP_QC_LABELS,
-    MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_MOVEMENT, MOTION_ENERGY_EVENT,
+    MIN_NTRIALS, MIN_PERFORMANCE, MOTION_ENERGY_EVENT,
     N_UNIQUE_SAMPLES_THRESHOLD,
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
@@ -2286,9 +2286,9 @@ class PhotometrySessionGroup:
         (``probabilityLeft == 0.5``, ``choice != 0``) with a real response
         (``response_time > 0.05`` and non-null ``response_col``). Adds a
         ``log_<var>`` column (base-10 log, NaN where the value is ≤ 0) for each
-        ``config.TIMING_VARS`` entry present, so movement models and the
-        inclusion gate can reference them. Every model and plot derives from
-        this frame so they share identical trials.
+        ``config.TIMING_VARS`` entry present, so movement models can reference
+        them; the NaN rows are dropped per family at fit time. Every model and
+        plot derives from this frame so they share identical trials.
 
         Parameters
         ----------
@@ -2378,19 +2378,19 @@ class PhotometrySessionGroup:
         self._lmm_group_by = list(group_by)
         formulas = {name: template.format(response=response_col)
                     for name, template in formulas.items()}
-        timing_col = self._movement_timing_col(formulas)
+        model_cols = analysis.formula_union_columns(
+            formulas.values(), df.columns)
 
         rows = []
         for keys, df_group in df.groupby(group_by):
             group_values = keys if isinstance(keys, tuple) else (keys,)
             df_coded = self._code_lmm_predictors(df_group)
-            # Drop NaN timing rows once for the whole family so every model
-            # fits the same trials (a timing-free member must not include the
-            # NaN rows the timing models drop, else statsmodels misaligns
+            # Complete cases across the whole family, so every model fits the
+            # same rows: a member whose formula omits a column must still drop
+            # the rows where that column is NaN, else statsmodels misaligns
             # ``groups`` against the design matrix and the ΔR² denominators
-            # diverge).
-            if timing_col is not None:
-                df_coded = df_coded.dropna(subset=[timing_col])
+            # diverge.
+            df_coded = df_coded.dropna(subset=model_cols)
             if df_coded['subject'].nunique() < min_subjects:
                 continue
             for name, formula in formulas.items():
@@ -2414,7 +2414,7 @@ class PhotometrySessionGroup:
 
     def response_lmm_crossval(self, formulas, group_by, response_col='response',
                               reference='full', fold_col='subject',
-                              min_subjects=3, min_test=5):
+                              min_subjects=3, min_test=5, min_trials=0):
         """Out-of-sample ΔR² by leave-one-fold-out cross-validation per group.
 
         See :meth:`_response_lmm_resample` for the orchestration; this binds the
@@ -2439,6 +2439,9 @@ class PhotometrySessionGroup:
             Minimum number of folds required to score a group.
         min_test : int
             Minimum held-out trials for a fold to be scored.
+        min_trials : int
+            Minimum complete-case rows for a group to be scored (see
+            :meth:`_response_lmm_resample`).
         """
         def procedure(coded_formulas, df_coded):
             return analysis.crossval_lmm(
@@ -2447,11 +2450,11 @@ class PhotometrySessionGroup:
                 min_test=min_test)
 
         return self._response_lmm_resample(procedure, formulas, group_by,
-                                           response_col)
+                                           response_col, min_trials=min_trials)
 
     def response_lmm_jackknife(self, formulas, group_by, response_col='response',
                                reference='full', fold_col='subject',
-                               min_subjects=3):
+                               min_subjects=3, min_trials=0):
         """In-sample-influence ΔR² by leave-one-fold-out jackknife per group.
 
         See :meth:`_response_lmm_resample` for the orchestration; this binds the
@@ -2474,6 +2477,9 @@ class PhotometrySessionGroup:
             Column whose unique values define the leave-one-out folds.
         min_subjects : int
             Minimum number of folds required to score a group.
+        min_trials : int
+            Minimum complete-case rows for a group to be scored (see
+            :meth:`_response_lmm_resample`).
         """
         def procedure(coded_formulas, df_coded):
             return analysis.jackknife_lmm(
@@ -2481,20 +2487,21 @@ class PhotometrySessionGroup:
                 fold_col=fold_col, min_subjects=min_subjects)
 
         return self._response_lmm_resample(procedure, formulas, group_by,
-                                           response_col)
+                                           response_col, min_trials=min_trials)
 
     def _response_lmm_resample(self, procedure, formulas, group_by,
-                               response_col):
+                               response_col, min_trials=0):
         """Run a resampling ``procedure`` per ``group_by`` group.
 
         Shared orchestration for :meth:`response_lmm_crossval` and
         :meth:`response_lmm_jackknife`. Formats the caller's flat
         ``{name: formula}`` dict with ``response_col``, then for each
-        ``group_by`` group codes the trials, applies the movement inclusion gate
-        (drop null ``log_<timing>`` rows and skip a group below
-        ``MIN_TRIALS_MOVEMENT`` when the dict uses a timing column), calls
-        ``procedure(formulas, df_coded)``, tags the long-form result with the
-        group columns, and concatenates. Reads no ``config.LMM_FORMULAS``.
+        ``group_by`` group codes the trials, reduces them to the complete cases
+        across the whole family (drop rows null in any referenced column, so
+        every model fits the same rows), skips a group with fewer than
+        ``min_trials`` such rows, calls ``procedure(formulas, df_coded)``, tags
+        the long-form result with the group columns, and concatenates. Reads no
+        ``config.LMM_FORMULAS``.
 
         Parameters
         ----------
@@ -2507,6 +2514,10 @@ class PhotometrySessionGroup:
             Columns whose unique combinations each get an independent run.
         response_col : str
             Response-magnitude column; also the formula's ``{response}``.
+        min_trials : int
+            Minimum complete-case rows for a group to be scored. The default 0
+            scores every group; callers raise it for high-parameter families
+            (e.g. saturated movement models) that need more data to fit stably.
 
         Returns
         -------
@@ -2518,16 +2529,16 @@ class PhotometrySessionGroup:
         cols = [*group_by, 'predictor', 'fold', 'n_trials', 'r2', 'delta_r2']
         formulas = {name: template.format(response=response_col)
                     for name, template in formulas.items()}
-        timing_col = self._movement_timing_col(formulas)
+        model_cols = analysis.formula_union_columns(
+            formulas.values(), df.columns)
 
         frames = []
         for keys, df_group in df.groupby(group_by):
             group_values = keys if isinstance(keys, tuple) else (keys,)
-            df_coded = self._code_lmm_predictors(df_group)
-            if timing_col is not None:
-                df_coded = df_coded.dropna(subset=[timing_col])
-                if len(df_coded) < MIN_TRIALS_MOVEMENT:
-                    continue
+            df_coded = self._code_lmm_predictors(df_group).dropna(
+                subset=model_cols)
+            if len(df_coded) < min_trials:
+                continue
             result = procedure(formulas, df_coded)
             for col, val in zip(group_by, group_values):
                 result[col] = val
@@ -2535,18 +2546,6 @@ class PhotometrySessionGroup:
 
         return pd.concat(frames, ignore_index=True)[cols] if frames \
             else pd.DataFrame(columns=cols)
-
-    @staticmethod
-    def _movement_timing_col(formulas: dict) -> str | None:
-        """Return the ``log_<timing>`` column a formula set uses, or ``None``.
-
-        Detects whether any formula in ``formulas`` references a movement
-        timing predictor (``log_<var>`` for ``var in config.TIMING_VARS``); a
-        set uses at most one. ``None`` marks a non-movement (task) set.
-        """
-        used = [f'log_{var}' for var in TIMING_VARS
-                if any(f'log_{var}' in formula for formula in formulas.values())]
-        return used[0] if used else None
 
     def response_lmm_effects(self, name, kind, variables=None,
                              response_col='response'):

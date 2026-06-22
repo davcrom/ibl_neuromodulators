@@ -4258,21 +4258,21 @@ class TestResponseLMMResampling:
         assert (result['target_NM'] == 'DR-5HT').sum() > 0
         assert (result['target_NM'] == 'VTA-DA').sum() > 0
 
-    def test_movement_set_below_min_trials_contributes_no_rows(self):
-        from iblnm.config import MIN_SUBJECTS_MOVEMENT
+    def test_below_min_trials_contributes_no_rows(self):
+        from iblnm.config import MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT
         # Null out all but a handful of one target's timing values so its
-        # per-group valid-trial count falls below MIN_TRIALS_MOVEMENT (20).
+        # per-group complete-case count falls below the min_trials floor.
         group = self._movement_group()
         reg = group.trial_regressors
         starved = reg['eid'].str.contains('DR-5HT')
         idx = reg[starved].index
         # ``_modeling_frame`` derives ``log_reaction_time`` from the raw column,
-        # so starve the raw ``reaction_time`` to push the group below the gate.
+        # so starve the raw ``reaction_time`` to push the group below the floor.
         reg.loc[idx[5:], 'reaction_time'] = np.nan
 
         result = group.response_lmm_crossval(
             self._MOVEMENT_FORMULAS, group_by=['target_NM', 'event'],
-            min_subjects=MIN_SUBJECTS_MOVEMENT)
+            min_subjects=MIN_SUBJECTS_MOVEMENT, min_trials=MIN_TRIALS_MOVEMENT)
         assert (result['target_NM'] == 'DR-5HT').sum() == 0
         assert (result['target_NM'] == 'VTA-DA').sum() > 0
 
