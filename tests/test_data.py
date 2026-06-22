@@ -4384,7 +4384,9 @@ class TestResponseLMMResampling:
         reg = group.trial_regressors
         starved = reg['eid'].str.contains('DR-5HT')
         idx = reg[starved].index
-        reg.loc[idx[5:], 'log_reaction_time'] = np.nan
+        # ``_modeling_frame`` derives ``log_reaction_time`` from the raw column,
+        # so starve the raw ``reaction_time`` to push the group below the gate.
+        reg.loc[idx[5:], 'reaction_time'] = np.nan
 
         result = group.response_lmm_crossval(
             self._MOVEMENT_FORMULAS, group_by=['target_NM', 'event'],

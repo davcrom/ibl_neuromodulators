@@ -2287,8 +2287,11 @@ class PhotometrySessionGroup:
         Merges ``response_magnitudes`` with ``trial_regressors``, adds
         hemisphere-relative contrast/side, then keeps unbiased-block go trials
         (``probabilityLeft == 0.5``, ``choice != 0``) with a real response
-        (``response_time > 0.05`` and non-null ``response_col``). Every model
-        and plot derives from this frame so they share identical trials.
+        (``response_time > 0.05`` and non-null ``response_col``). Adds a
+        ``log_<var>`` column (base-10 log, NaN where the value is ≤ 0) for each
+        ``config.TIMING_VARS`` entry present, so movement models and the
+        inclusion gate can reference them. Every model and plot derives from
+        this frame so they share identical trials.
 
         Parameters
         ----------
@@ -2300,7 +2303,12 @@ class PhotometrySessionGroup:
         df = add_relative_contrast(self._merge_trial_regressors())
         df = df.query('probabilityLeft == 0.5')
         df = df.dropna(subset=[response_col])
-        return df.query('choice != 0 and response_time > 0.05')
+        df = df.query('choice != 0 and response_time > 0.05').copy()
+        for var in TIMING_VARS:
+            if var in df.columns:
+                df[f'log_{var}'] = np.where(
+                    df[var] > 0, np.log10(df[var]), np.nan)
+        return df
 
     def _code_lmm_predictors(
         self, df: pd.DataFrame, contrast_coding: str = 'log2'
