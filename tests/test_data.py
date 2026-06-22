@@ -1827,8 +1827,9 @@ class TestPoseMethods:
         rng = np.random.default_rng(0)
         freqs = rng.uniform(1.0, 10.0, 40)
         phases = rng.uniform(0, 2 * np.pi, 40)
-        base = lambda tt: np.sin(2 * np.pi * freqs[:, None] * tt[None, :]
-                                 + phases[:, None]).sum(0)
+        def base(tt):
+            return np.sin(2 * np.pi * freqs[:, None] * tt[None, :]
+                          + phases[:, None]).sum(0)
         # Wheel speed used by the method is |velocity|, so build both signals
         # from the same non-negative pattern for a lag-0 match in aligned thirds.
         wheel_velocity = base(t)
