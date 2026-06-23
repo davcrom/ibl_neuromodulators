@@ -911,18 +911,18 @@ class TestPlotLMMSummary:
 class TestSortEvents:
 
     def test_orders_events_chronologically(self):
-        """Events sort baseline → stimOn → firstMovement → feedback regardless
-        of input order, not alphabetically."""
+        """Events sort stimOn → firstMovement → feedback regardless of input
+        order, not alphabetically. Operates on the real ``_times`` event names."""
         from iblnm.vis import _sort_events
-        shuffled = ['feedback', 'baseline', 'firstMovement', 'stimOn']
+        shuffled = ['feedback_times', 'firstMovement_times', 'stimOn_times']
         assert _sort_events(shuffled) == [
-            'baseline', 'stimOn', 'firstMovement', 'feedback']
+            'stimOn_times', 'firstMovement_times', 'feedback_times']
 
     def test_unknown_events_sort_last_alphabetically(self):
         """Events outside the chronology fall after known ones, in name order."""
         from iblnm.vis import _sort_events
-        assert _sort_events(['zzz', 'stimOn', 'aaa']) == [
-            'stimOn', 'aaa', 'zzz']
+        assert _sort_events(['zzz', 'stimOn_times', 'aaa']) == [
+            'stimOn_times', 'aaa', 'zzz']
 
 
 # =============================================================================
@@ -995,14 +995,14 @@ class TestPlotLMMSuiteFigures:
         """Events span the x-axis in trial chronology, not alphabetical."""
         from iblnm.vis import plot_lmm_main_effects
         df = pd.DataFrame([
-            {'target_NM': 'VTA-DA', 'event': 'feedback', 'predictor': 'contrast',
+            {'target_NM': 'VTA-DA', 'event': 'feedback_times', 'predictor': 'contrast',
              'Coef.': 0.2, 'ci_lower': 0.1, 'ci_upper': 0.3, 'P>|z|': 0.01},
-            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'predictor': 'contrast',
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'predictor': 'contrast',
              'Coef.': 0.3, 'ci_lower': 0.2, 'ci_upper': 0.4, 'P>|z|': 0.001},
         ])
         fig = plot_lmm_main_effects(df)
         labels = [t.get_text() for t in fig.axes[0].get_xticklabels()]
-        assert labels == ['stimOn', 'feedback']
+        assert labels == ['stimOn_times', 'feedback_times']
         plt.close(fig)
 
     def test_suite_plots_handle_empty_frames(self):
@@ -1053,7 +1053,8 @@ class TestScatterFolds:
 class TestPlotLmmReliability:
     """Grid of target-NM (rows) × event (cols), x = predictor terms."""
 
-    def _rel(self, targets=('VTA-DA', 'DR-5HT'), events=('feedback', 'stimOn'),
+    def _rel(self, targets=('VTA-DA', 'DR-5HT'),
+             events=('feedback_times', 'stimOn_times'),
              predictors=('contrast', 'side', 'reward', 'interactions')):
         rows = []
         for tnm in targets:
@@ -1076,7 +1077,8 @@ class TestPlotLmmReliability:
         """Top-row panel titles are the events in trial chronology."""
         from iblnm.vis import plot_lmm_reliability
         fig = plot_lmm_reliability(self._rel(), 'Task reliability')
-        assert [ax.get_title() for ax in fig.axes[:2]] == ['stimOn', 'feedback']
+        assert [ax.get_title() for ax in fig.axes[:2]] == [
+            'stimOn_times', 'feedback_times']
         plt.close(fig)
 
     def test_xticklabels_are_terms_in_order(self):

@@ -11,7 +11,7 @@ from scipy.stats import sem as scipy_sem
 from sklearn.preprocessing import quantile_transform
 
 from iblnm.config import (
-    ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP, RESPONSE_WINDOWS,
+    ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP, RESPONSE_EVENTS, RESPONSE_WINDOWS,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
@@ -1682,14 +1682,10 @@ _SIDE_ORDER = {'contra': 0, 'ipsi': 1}
 _EVENT_ORDER = {'stimOn': 0, 'firstMovement': 1, 'feedback': 2}
 _FB_ORDER = {'correct': 0, 'incorrect': 1}
 
-# Chronological trial-event order for LMM/response plots; baseline precedes the
-# task events. Used to keep event axes consistent across figures.
-_EVENT_CHRONOLOGY = ('baseline', 'stimOn', 'firstMovement', 'feedback')
-
-
 def _sort_events(events: Iterable[str]) -> list[str]:
-    """Sort event labels into trial chronology; unknowns sort last by name."""
-    order = {e: i for i, e in enumerate(_EVENT_CHRONOLOGY)}
+    """Sort ``_times`` event names into trial chronology (``RESPONSE_EVENTS``);
+    unknowns sort last by name."""
+    order = {e: i for i, e in enumerate(RESPONSE_EVENTS)}
     return sorted(events, key=lambda e: (order.get(e, len(order)), e))
 
 
@@ -2590,12 +2586,11 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
     -------
     plt.Figure
     """
-    _EVENT_ORDER = ['stimOn_times', 'firstMovement_times', 'feedback_times']
     df = traces_df[traces_df['target_NM'] == target_nm].copy()
     present = set(df['event'].unique())
-    events = [e for e in _EVENT_ORDER if e in present]
+    events = [e for e in RESPONSE_EVENTS if e in present]
     # Append any events not in the canonical order
-    events += sorted(present - set(_EVENT_ORDER))
+    events += sorted(present - set(RESPONSE_EVENTS))
     n_events = max(len(events), 1)
     feedback_types = [1, -1]
     fb_labels = {1: 'Reward', -1: 'Omission'}
