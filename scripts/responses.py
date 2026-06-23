@@ -133,14 +133,19 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
     each result as a CSV, and plot the labelled summaries.
 
     Reads model formulas from ``config.LMM_FORMULAS`` and passes flat
-    ``{name: formula}`` dicts to the data class — no LMM logic here. Produces:
+    ``{name: formula}`` dicts to the data class — no LMM logic here.
+    ``task_reliability`` is keyed by event (reward only enters at feedback), so
+    the base fit and reliability comparison run once per event with that event's
+    set, scoped via ``events=[event]``. Produces:
 
-    - per-event base-model summary (``task_reliability['full']``, cached under
-      the unique key ``task_full``), annotated with its formula;
+    - per-event base-model summary (each event's ``task_reliability[event]
+      ['full']``, cached under the shared key ``task_full``), annotated with its
+      formula;
     - ceiling R² (``task_ceiling``);
     - out-of-sample (CV) and in-sample (jackknife) reliability ΔR² from the
-      single ``task_reliability`` comparison set: per-variable total contribution
-      (main effect plus its interactions) and the interaction block.
+      per-event ``task_reliability`` comparison sets: per-variable total
+      contribution (main effect plus its interactions) and the interaction
+      block.
 
     Parameters
     ----------
@@ -154,16 +159,28 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
         Column name for the response magnitude.
     """
     group_by = ['target_NM', 'event']
-    base_formula = LMM_FORMULAS['task_reliability']['full']
+    event_formulas = LMM_FORMULAS['task_reliability']
 
-    # Base reporting model: rename the recurring 'full' key to a unique registry
-    # key so its cached fits never collide with task_reliability's 'full'.
-    r2_base = group.response_lmm_fit({'task_full': base_formula}, group_by)
+    # Base reporting model + reliability comparison run per event, because the
+    # formula set is event-specific (reward only at feedback). Each event is
+    # restricted via ``events=[event]`` so its per-event 'full' base fit caches
+    # under the shared 'task_full' name without later events overwriting it.
+    base_frames, cv_frames, jk_frames = [], [], []
+    for event, formulas in event_formulas.items():
+        base_frames.append(group.response_lmm_fit(
+            {'task_full': formulas['full']}, group_by, events=[event]))
+        cv_frames.append(group.response_lmm_crossval(
+            formulas, group_by, events=[event]))
+        jk_frames.append(group.response_lmm_jackknife(
+            formulas, group_by, events=[event]))
+    r2_base = pd.concat(base_frames, ignore_index=True)
     if r2_base.empty:
         print("  No LMM results.")
         return
     coefficients = group.response_lmm_effects('task_full', 'coefficients')
     # Bottom-row panels: main-effect EMMs (predicted mean ± CI) per factor.
+    # Events whose model omits reward yield flat reward EMMs (the panel is
+    # blank, not an error).
     emm_frames = {f: group.response_lmm_effects('task_full', 'emm', [f])
                   for f in ('reward', 'side', 'contrast')}
 
@@ -174,13 +191,11 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
     ceiling = ceiling.rename(
         columns={'marginal_r2': 'marginal', 'conditional_r2': 'conditional'})
 
-    # Reliability: one comparison set against the full interaction model. The
+    # Reliability: per-event comparison against that event's full model. The
     # contrast/side/reward predictors are each variable's total ΔR² (main effect
     # plus every interaction it joins); `interactions` is the interaction block.
-    reliability_cv = group.response_lmm_crossval(
-        LMM_FORMULAS['task_reliability'], group_by)
-    reliability_jackknife = group.response_lmm_jackknife(
-        LMM_FORMULAS['task_reliability'], group_by)
+    reliability_cv = pd.concat(cv_frames, ignore_index=True)
+    reliability_jackknife = pd.concat(jk_frames, ignore_index=True)
 
     _save_lmm_frames({
         'response_lmm_task_coefficients': coefficients,
@@ -190,10 +205,11 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
     }, data_dir)
     print(f"  LMM suite CSVs saved to {data_dir}")
 
-    # Per-event base-model summary, annotated with its formula.
+    # Per-event base-model summary, annotated with that event's formula.
     for event in sorted(r2_base['event'].unique()):
+        base_formula = event_formulas[event]['full'].format(response=response_col)
         fig = plot_lmm_summary(r2_base, coefficients, emm_frames, event,
-                               formula=base_formula.format(response=response_col))
+                               formula=base_formula)
         fig.savefig(figures_dir / f'response_lmm_task_summary_{event}.svg',
                     dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)

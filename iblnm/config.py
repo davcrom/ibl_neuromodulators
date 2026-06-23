@@ -460,13 +460,30 @@ LMM_FORMULAS = {
     # Task reliability: full interaction model is the reference. Each predictor's
     # ΔR² drops it and every interaction it participates in (so the two-way `*`
     # of the remaining pair); `interactions` drops the whole interaction block
-    # (additive model), testing whether the coding is interactive at all.
+    # (additive model), testing whether the coding is interactive at all. Keyed
+    # by event because the reward outcome is only known at feedback, so stimOn
+    # and firstMovement drop the reward predictor entirely (identical sets); the
+    # feedback set keeps it.
     'task_reliability': {
-        'full': '{response} ~ contrast * side * reward',
-        'contrast': '{response} ~ side * reward',
-        'side': '{response} ~ contrast * reward',
-        'reward': '{response} ~ contrast * side',
-        'interactions': '{response} ~ contrast + side + reward',
+        'stimOn_times': {
+            'full': '{response} ~ contrast * side',
+            'contrast': '{response} ~ side',
+            'side': '{response} ~ contrast',
+            'interactions': '{response} ~ contrast + side',
+        },
+        'firstMovement_times': {
+            'full': '{response} ~ contrast * side',
+            'contrast': '{response} ~ side',
+            'side': '{response} ~ contrast',
+            'interactions': '{response} ~ contrast + side',
+        },
+        'feedback_times': {
+            'full': '{response} ~ contrast * side * reward',
+            'contrast': '{response} ~ side * reward',
+            'side': '{response} ~ contrast * reward',
+            'reward': '{response} ~ contrast * side',
+            'interactions': '{response} ~ contrast + side + reward',
+        },
     },
     # Task ceiling: saturated single reporting model.
     'task_ceiling': {

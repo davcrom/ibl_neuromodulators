@@ -128,6 +128,19 @@ class TestPlotLMMFigures:
         assert 'interactions' in set(df['predictor'])
         assert {'contrast', 'side', 'reward'} & set(df['predictor'])
 
+    def test_reward_predictor_only_at_feedback(self, tmp_path):
+        """Reward is only known at feedback, so the reliability frame carries a
+        reward drop-one predictor for ``feedback_times`` alone; stimOn and
+        firstMovement carry only contrast, side, and interactions."""
+        self._run(tmp_path)
+        df = pd.read_csv(tmp_path / 'response_lmm_task_reliability_cv.csv')
+        reward_events = set(df[df['predictor'] == 'reward']['event'])
+        assert reward_events == {'feedback_times'}
+        for event in ['stimOn_times', 'firstMovement_times']:
+            preds = set(df[df['event'] == event]['predictor'])
+            assert 'reward' not in preds
+            assert {'contrast', 'side', 'interactions'} <= preds
+
     def test_renders_labelled_summary_figures(self, tmp_path):
         fig_dir = self._run(tmp_path)
         assert any(fig_dir.glob('response_lmm_task_summary_*.svg'))

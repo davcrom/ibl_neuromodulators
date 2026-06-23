@@ -2718,7 +2718,8 @@ class PhotometrySessionGroup:
         return analysis.code_predictors(df, contrast_coding)
 
     def response_lmm_fit(self, formulas, group_by, response_col='response',
-                         reml=True, re_formula='1', min_subjects=2):
+                         reml=True, re_formula='1', min_subjects=2,
+                         events=None):
         """Fit caller-supplied LMMs per ``group_by`` group and cache each fit.
 
         For every group with at least ``min_subjects`` subjects, codes the
@@ -2748,6 +2749,11 @@ class PhotometrySessionGroup:
             (dict). Defaults to a random intercept (``'1'``).
         min_subjects : int
             Minimum subjects per group to attempt fitting.
+        events : list[str], optional
+            Restrict to these ``event`` values before grouping; ``None`` (the
+            default) fits every event. Lets the caller fit a per-event model
+            under one cached ``name`` without later events overwriting earlier
+            ones.
 
         Returns
         -------
@@ -2756,6 +2762,8 @@ class PhotometrySessionGroup:
             ``name``, ``marginal_r2``, and ``conditional_r2``.
         """
         df = self._modeling_frame(response_col)
+        if events is not None:
+            df = df[df['event'].isin(events)]
         self._lmm_group_by = list(group_by)
         formulas = {name: template.format(response=response_col)
                     for name, template in formulas.items()}
@@ -2795,7 +2803,8 @@ class PhotometrySessionGroup:
 
     def response_lmm_crossval(self, formulas, group_by, response_col='response',
                               reference='full', fold_col='subject',
-                              min_subjects=3, min_test=5, min_trials=0):
+                              min_subjects=3, min_test=5, min_trials=0,
+                              events=None):
         """Out-of-sample ΔR² by leave-one-fold-out cross-validation per group.
 
         See :meth:`_response_lmm_resample` for the orchestration; this binds the
@@ -2823,6 +2832,10 @@ class PhotometrySessionGroup:
         min_trials : int
             Minimum complete-case rows for a group to be scored (see
             :meth:`_response_lmm_resample`).
+        events : list[str], optional
+            Restrict to these ``event`` values before grouping; ``None`` (the
+            default) uses every event. Lets the caller run a per-event formula
+            set without refitting the others.
         """
         def procedure(coded_formulas, df_coded):
             return analysis.crossval_lmm(
@@ -2831,11 +2844,12 @@ class PhotometrySessionGroup:
                 min_test=min_test)
 
         return self._response_lmm_resample(procedure, formulas, group_by,
-                                           response_col, min_trials=min_trials)
+                                           response_col, min_trials=min_trials,
+                                           events=events)
 
     def response_lmm_jackknife(self, formulas, group_by, response_col='response',
                                reference='full', fold_col='subject',
-                               min_subjects=3, min_trials=0):
+                               min_subjects=3, min_trials=0, events=None):
         """In-sample-influence ΔR² by leave-one-fold-out jackknife per group.
 
         See :meth:`_response_lmm_resample` for the orchestration; this binds the
@@ -2861,6 +2875,10 @@ class PhotometrySessionGroup:
         min_trials : int
             Minimum complete-case rows for a group to be scored (see
             :meth:`_response_lmm_resample`).
+        events : list[str], optional
+            Restrict to these ``event`` values before grouping; ``None`` (the
+            default) uses every event. Lets the caller run a per-event formula
+            set without refitting the others.
         """
         def procedure(coded_formulas, df_coded):
             return analysis.jackknife_lmm(
@@ -2868,10 +2886,11 @@ class PhotometrySessionGroup:
                 fold_col=fold_col, min_subjects=min_subjects)
 
         return self._response_lmm_resample(procedure, formulas, group_by,
-                                           response_col, min_trials=min_trials)
+                                           response_col, min_trials=min_trials,
+                                           events=events)
 
     def _response_lmm_resample(self, procedure, formulas, group_by,
-                               response_col, min_trials=0):
+                               response_col, min_trials=0, events=None):
         """Run a resampling ``procedure`` per ``group_by`` group.
 
         Shared orchestration for :meth:`response_lmm_crossval` and
@@ -2899,6 +2918,9 @@ class PhotometrySessionGroup:
             Minimum complete-case rows for a group to be scored. The default 0
             scores every group; callers raise it for high-parameter families
             (e.g. saturated movement models) that need more data to fit stably.
+        events : list[str], optional
+            Restrict the modeling frame to these ``event`` values before
+            grouping; ``None`` (the default) keeps every event.
 
         Returns
         -------
@@ -2907,6 +2929,8 @@ class PhotometrySessionGroup:
             'n_trials', 'r2', 'delta_r2']``.
         """
         df = self._modeling_frame(response_col)
+        if events is not None:
+            df = df[df['event'].isin(events)]
         cols = [*group_by, 'predictor', 'fold', 'n_trials', 'r2', 'delta_r2']
         formulas = {name: template.format(response=response_col)
                     for name, template in formulas.items()}

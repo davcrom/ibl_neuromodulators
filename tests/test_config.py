@@ -54,8 +54,18 @@ def _format(family):
 
 
 def test_task_reliability_formulas():
-    formulas = _format(LMM_FORMULAS['task_reliability'])
-    assert formulas == {
+    # Per-event sets: reward is only known at feedback, so stimOn and
+    # firstMovement drop it (identical, contrast*side only); feedback keeps it.
+    event_sets = LMM_FORMULAS['task_reliability']
+    no_reward = {
+        'full': 'response ~ contrast * side',
+        'contrast': 'response ~ side',
+        'side': 'response ~ contrast',
+        'interactions': 'response ~ contrast + side',
+    }
+    assert _format(event_sets['stimOn_times']) == no_reward
+    assert _format(event_sets['firstMovement_times']) == no_reward
+    assert _format(event_sets['feedback_times']) == {
         'full': 'response ~ contrast * side * reward',
         'contrast': 'response ~ side * reward',
         'side': 'response ~ contrast * reward',
@@ -96,10 +106,11 @@ def test_movement_families_expand_per_timing_var():
 
 
 def test_nested_sets_have_reference_key():
-    nested = ['task_reliability']
-    nested += [f'movement_{t}' for t in TIMING_VARS]
-    for family in nested:
-        assert 'full' in LMM_FORMULAS[family]
+    # task_reliability is keyed by event; each event's set has the reference.
+    for event_set in LMM_FORMULAS['task_reliability'].values():
+        assert 'full' in event_set
+    for t in TIMING_VARS:
+        assert 'full' in LMM_FORMULAS[f'movement_{t}']
 
 
 def test_persession_formulas():

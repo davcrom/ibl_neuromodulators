@@ -4508,6 +4508,17 @@ class TestResponseLMMResampling:
         assert (result['target_NM'] == 'DR-5HT').sum() > 0
         assert (result['target_NM'] == 'VTA-DA').sum() > 0
 
+    def test_events_filter_restricts_to_named_events(self):
+        # The ``events`` filter scopes the modeling frame to the named events
+        # before grouping, so the script can run a per-event formula set.
+        group = _make_group_for_response_lmm()
+        formulas = {'full': '{response} ~ contrast * side',
+                    'contrast': '{response} ~ side'}
+        result = group.response_lmm_crossval(
+            formulas, group_by=['target_NM', 'event'],
+            events=['feedback_times'])
+        assert set(result['event']) == {'feedback_times'}
+
     def test_below_min_trials_contributes_no_rows(self):
         from iblnm.config import MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT
         # Null out all but a handful of one target's timing values so its
