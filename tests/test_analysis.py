@@ -2430,6 +2430,66 @@ class TestFormulaColumns:
                        'log_reaction_time']
 
 
+class TestBuildTrialRegressors:
+    def _trials(self):
+        return pd.DataFrame({
+            'signed_contrast': [-0.25, 0.0, 0.0625],
+            'contrast': [0.25, 0.0, 0.0625],
+            'stim_side': ['left', 'right', 'right'],
+            'choice': [-1, 1, 1],
+            'feedbackType': [1, -1, 1],
+            'probabilityLeft': [0.5, 0.5, 0.5],
+            'stimOn_times': [1.0, 2.0, 3.0],
+            'firstMovement_times': [1.3, 2.4, 3.2],
+            'feedback_times': [1.8, 2.9, 3.7],
+        })
+
+    def test_column_set_and_derived_timings(self):
+        from iblnm.analysis import build_trial_regressors
+        trials = self._trials()
+        df = build_trial_regressors(trials, wheel_velocity=None)
+        expected_cols = {
+            'trial', 'signed_contrast', 'contrast', 'stim_side', 'choice',
+            'feedbackType', 'probabilityLeft', 'reaction_time',
+            'movement_time', 'response_time', 'peak_velocity',
+        }
+        assert set(df.columns) == expected_cols
+        assert df['trial'].tolist() == [0, 1, 2]
+        np.testing.assert_allclose(
+            df['reaction_time'].values,
+            trials['firstMovement_times'] - trials['stimOn_times'])
+        np.testing.assert_allclose(
+            df['movement_time'].values,
+            trials['feedback_times'] - trials['firstMovement_times'])
+        np.testing.assert_allclose(
+            df['response_time'].values,
+            trials['feedback_times'] - trials['stimOn_times'])
+
+    def test_peak_velocity_nan_when_no_wheel(self):
+        from iblnm.analysis import build_trial_regressors
+        df = build_trial_regressors(self._trials(), wheel_velocity=None)
+        assert df['peak_velocity'].isna().all()
+
+    def test_peak_velocity_finite_when_wheel_supplied(self):
+        from iblnm.analysis import build_trial_regressors
+        velocity = np.array([[0.0, 1.0, -3.0],
+                             [np.nan, np.nan, np.nan],
+                             [2.0, -5.0, 1.0]])
+        df = build_trial_regressors(self._trials(), wheel_velocity=velocity)
+        np.testing.assert_array_equal(
+            df['peak_velocity'].values, np.array([3.0, np.nan, 5.0]))
+
+    def test_missing_event_columns_give_nan_timings(self):
+        from iblnm.analysis import build_trial_regressors
+        trials = self._trials().drop(columns=['firstMovement_times'])
+        df = build_trial_regressors(trials, wheel_velocity=None)
+        assert df['reaction_time'].isna().all()
+        assert df['movement_time'].isna().all()
+        np.testing.assert_allclose(
+            df['response_time'].values,
+            trials['feedback_times'] - trials['stimOn_times'])
+
+
 class TestSelectModelingTrials:
     def _merged_frame(self):
         # Trial 0 passes; 1 false-start, 2 no-go, 3 biased block, 4 NaN response.

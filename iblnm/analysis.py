@@ -1828,6 +1828,68 @@ def _warn_dropped_fit(formula: str, groups: pd.Series, exc: Exception) -> None:
     )
 
 
+def _event_diff(trials, end_col, start_col):
+    """Per-trial `end_col - start_col`, or all-NaN if either column is absent."""
+    if end_col in trials.columns and start_col in trials.columns:
+        return trials[end_col].values - trials[start_col].values
+    return np.full(len(trials), np.nan)
+
+
+def _peak_velocity(wheel_vel, n_trials):
+    """Per-trial max |velocity| over finite samples; NaN where unavailable."""
+    if wheel_vel is None:
+        return np.full(n_trials, np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN rows
+        return np.nanmax(np.abs(wheel_vel), axis=1)
+
+
+def build_trial_regressors(
+    trials: pd.DataFrame, wheel_velocity: np.ndarray | None
+) -> pd.DataFrame:
+    """Assemble one session's one-row-per-trial regressor frame.
+
+    Copies the categorical/behavioral trial columns, derives the three
+    event-timing differences, and reduces the wheel velocity matrix to a
+    per-trial peak. Does not set ``eid`` — the caller tags it.
+
+    Parameters
+    ----------
+    trials : pd.DataFrame
+        One session's trials table. Must carry ``signed_contrast, contrast,
+        stim_side, choice, feedbackType, probabilityLeft``; the event-time
+        columns (``stimOn_times, firstMovement_times, feedback_times``) are
+        optional and yield NaN timing columns when absent.
+    wheel_velocity : np.ndarray or None
+        ``(n_trials, n_samples)`` wheel velocity, or ``None`` when the wheel
+        group is missing. ``None`` yields all-NaN ``peak_velocity``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``trial, signed_contrast, contrast, stim_side, choice,
+        feedbackType, probabilityLeft, reaction_time, movement_time,
+        response_time, peak_velocity``. ``reaction_time`` is
+        ``firstMovement_times - stimOn_times``, ``movement_time`` is
+        ``feedback_times - firstMovement_times``, ``response_time`` is
+        ``feedback_times - stimOn_times`` (seconds).
+    """
+    copy_cols = ['signed_contrast', 'contrast', 'stim_side', 'choice',
+                 'feedbackType', 'probabilityLeft']
+    n_trials = len(trials)
+    df = pd.DataFrame({'trial': range(n_trials)})
+    for col in copy_cols:
+        df[col] = trials[col].values
+    df['reaction_time'] = _event_diff(
+        trials, 'firstMovement_times', 'stimOn_times')
+    df['movement_time'] = _event_diff(
+        trials, 'feedback_times', 'firstMovement_times')
+    df['response_time'] = _event_diff(
+        trials, 'feedback_times', 'stimOn_times')
+    df['peak_velocity'] = _peak_velocity(wheel_velocity, n_trials)
+    return df
+
+
 def select_modeling_trials(
     df: pd.DataFrame, response_col: str = 'response'
 ) -> pd.DataFrame:

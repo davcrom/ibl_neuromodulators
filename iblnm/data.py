@@ -89,22 +89,6 @@ def _read_dataframe(h5_group):
     return pd.DataFrame(data)
 
 
-def _event_diff(trials, end_col, start_col):
-    """Per-trial `end_col - start_col`, or all-NaN if either column is absent."""
-    if end_col in trials.columns and start_col in trials.columns:
-        return trials[end_col].values - trials[start_col].values
-    return np.full(len(trials), np.nan)
-
-
-def _peak_velocity(wheel_vel, n_trials):
-    """Per-trial max |velocity| over finite samples; NaN where unavailable."""
-    if wheel_vel is None:
-        return np.full(n_trials, np.nan)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN rows
-        return np.nanmax(np.abs(wheel_vel), axis=1)
-
-
 _METADATA_NONE_SENTINEL = '__none__'
 _ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback')
 _RESPONSES_RESERVED_KEYS = {'times', 'trials'}
@@ -3577,8 +3561,6 @@ class PhotometrySessionGroup:
         """
         from tqdm import tqdm
 
-        copy_cols = ['signed_contrast', 'contrast', 'stim_side', 'choice',
-                     'feedbackType', 'probabilityLeft']
         frames = []
         for eid in tqdm(self.recordings['eid'].unique(),
                         desc="Collecting trial regressors"):
@@ -3588,17 +3570,8 @@ class PhotometrySessionGroup:
                 wheel_vel = (f['wheel/responses/velocity'][:]
                              if 'wheel/responses/velocity' in f else None)
 
-            n_trials = len(trials)
-            df = pd.DataFrame({'eid': eid, 'trial': range(n_trials)})
-            for col in copy_cols:
-                df[col] = trials[col].values
-            df['reaction_time'] = _event_diff(
-                trials, 'firstMovement_times', 'stimOn_times')
-            df['movement_time'] = _event_diff(
-                trials, 'feedback_times', 'firstMovement_times')
-            df['response_time'] = _event_diff(
-                trials, 'feedback_times', 'stimOn_times')
-            df['peak_velocity'] = _peak_velocity(wheel_vel, n_trials)
+            df = analysis.build_trial_regressors(trials, wheel_vel)
+            df.insert(0, 'eid', eid)
             frames.append(df)
 
         self.trial_regressors = pd.concat(frames, ignore_index=True)
