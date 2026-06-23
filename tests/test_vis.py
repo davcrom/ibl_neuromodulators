@@ -926,7 +926,7 @@ class TestSortEvents:
 
 
 # =============================================================================
-# plot_lmm_ceiling / plot_lmm_main_effects / plot_lmm_loso Tests
+# plot_lmm_ceiling / plot_lmm_loso Tests
 # =============================================================================
 
 
@@ -938,14 +938,6 @@ class TestPlotLMMSuiteFigures:
              'marginal': 0.12, 'conditional': 0.30},
             {'target_NM': 'DR-5HT', 'event': 'stimOn',
              'marginal': 0.05, 'conditional': 0.18},
-        ])
-
-    def _main_effects(self):
-        return pd.DataFrame([
-            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'predictor': 'contrast',
-             'Coef.': 0.3, 'ci_lower': 0.2, 'ci_upper': 0.4, 'P>|z|': 0.001},
-            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'predictor': 'side',
-             'Coef.': 0.05, 'ci_lower': -0.1, 'ci_upper': 0.2, 'P>|z|': 0.4},
         ])
 
     def test_ceiling_paired_bars_per_target(self):
@@ -963,57 +955,13 @@ class TestPlotLMMSuiteFigures:
         assert 'response ~ C(contrast) * side * reward' in fig._suptitle.get_text()
         plt.close(fig)
 
-    def test_main_effects_fill_encodes_significance(self):
-        """Filled marker for p<0.05, open for non-significant."""
-        from iblnm.vis import plot_lmm_main_effects
-        fig = plot_lmm_main_effects(self._main_effects())
-        contrast_ax, side_ax = fig.axes[0], fig.axes[1]
-        contrast_fs = {c[0].get_fillstyle() for c in contrast_ax.containers}
-        side_fs = {c[0].get_fillstyle() for c in side_ax.containers}
-        assert 'full' in contrast_fs  # contrast p=0.001
-        assert 'none' in side_fs      # side p=0.4
-        plt.close(fig)
-
-    def test_main_effects_colored_by_target(self):
-        """Marker color encodes target-NM (TARGETNM_COLORS), not event."""
-        from iblnm.vis import plot_lmm_main_effects
-        from iblnm.config import TARGETNM_COLORS
-        from matplotlib.colors import to_rgba
-        df = pd.DataFrame([
-            {'target_NM': 'VTA-DA', 'event': 'stimOn', 'predictor': 'contrast',
-             'Coef.': 0.3, 'ci_lower': 0.2, 'ci_upper': 0.4, 'P>|z|': 0.001},
-            {'target_NM': 'DR-5HT', 'event': 'stimOn', 'predictor': 'contrast',
-             'Coef.': 0.1, 'ci_lower': 0.0, 'ci_upper': 0.2, 'P>|z|': 0.2},
-        ])
-        fig = plot_lmm_main_effects(df)
-        colors = {to_rgba(c[0].get_color()) for c in fig.axes[0].containers}
-        assert to_rgba(TARGETNM_COLORS['VTA-DA']) in colors
-        assert to_rgba(TARGETNM_COLORS['DR-5HT']) in colors
-        plt.close(fig)
-
-    def test_main_effects_event_axis_chronological(self):
-        """Events span the x-axis in trial chronology, not alphabetical."""
-        from iblnm.vis import plot_lmm_main_effects
-        df = pd.DataFrame([
-            {'target_NM': 'VTA-DA', 'event': 'feedback_times', 'predictor': 'contrast',
-             'Coef.': 0.2, 'ci_lower': 0.1, 'ci_upper': 0.3, 'P>|z|': 0.01},
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'predictor': 'contrast',
-             'Coef.': 0.3, 'ci_lower': 0.2, 'ci_upper': 0.4, 'P>|z|': 0.001},
-        ])
-        fig = plot_lmm_main_effects(df)
-        labels = [t.get_text() for t in fig.axes[0].get_xticklabels()]
-        assert labels == ['stimOn_times', 'feedback_times']
-        plt.close(fig)
-
     def test_suite_plots_handle_empty_frames(self):
-        """Each suite plot returns a labelled figure on an empty frame."""
-        from iblnm.vis import plot_lmm_ceiling, plot_lmm_main_effects
-        for fn, df in [(plot_lmm_ceiling, self._ceiling()),
-                       (plot_lmm_main_effects, self._main_effects())]:
-            fig = fn(df.iloc[0:0])
-            assert isinstance(fig, plt.Figure)
-            assert fig._suptitle is not None
-            plt.close(fig)
+        """The ceiling plot returns a labelled figure on an empty frame."""
+        from iblnm.vis import plot_lmm_ceiling
+        fig = plot_lmm_ceiling(self._ceiling().iloc[0:0])
+        assert isinstance(fig, plt.Figure)
+        assert fig._suptitle is not None
+        plt.close(fig)
 
     def test_plot_lmm_loso_removed(self):
         """plot_lmm_loso is deleted (subsumed by the interactions predictor)."""

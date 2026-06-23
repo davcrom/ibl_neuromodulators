@@ -1689,12 +1689,6 @@ def _sort_events(events: Iterable[str]) -> list[str]:
     return sorted(events, key=lambda e: (order.get(e, len(order)), e))
 
 
-def _target_legend_handles(targets: Iterable[str]) -> list[Line2D]:
-    """Round colored legend markers, one per target-NM (``TARGETNM_COLORS``)."""
-    return [Line2D([0], [0], marker='o', ls='none', markersize=6,
-                   color=TARGETNM_COLORS.get(t, 'gray')) for t in targets]
-
-
 def _scatter_folds(ax, x, df_group, color):
     """Plot one group at x-position ``x``: per-fold ΔR² as small faint markers
     and the across-fold aggregate as a large black-edged marker."""
@@ -2234,79 +2228,6 @@ def plot_lmm_ceiling(ceiling_df):
     axes[0].set_ylabel('Ceiling R²')
     axes[0].legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
     fig.suptitle('Ceiling R²\nresponse ~ C(contrast) * side * reward',
-                 fontsize=LABELFONTSIZE)
-    return fig
-
-
-def plot_lmm_main_effects(main_effects_df):
-    """Main-effect estimates (coef ± 95% CI), one panel per predictor.
-
-    Each estimate is read from the model carrying that predictor's own random
-    slope (``response ~ contrast * side * reward`` with one random slope).
-    Events span the x-axis in trial chronology; target-NMs are offset within
-    each event and distinguished by color (``TARGETNM_COLORS``). Filled markers
-    are significant (p < 0.05), open markers not.
-
-    Parameters
-    ----------
-    main_effects_df : pd.DataFrame
-        ``fit_lmm`` main-effect rows: ``target_NM``, ``event``, ``predictor``,
-        ``Coef.``, ``ci_lower``, ``ci_upper``, ``P>|z|``.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    predictors = (['contrast', 'side', 'reward'] if len(main_effects_df)
-                  else ['contrast'])
-    fig, axes = plt.subplots(1, len(predictors),
-                             figsize=(4 * len(predictors) + 1, 4),
-                             sharey=True, layout='constrained')
-    axes = np.atleast_1d(axes)
-    if len(main_effects_df) == 0:
-        fig.suptitle('Main-effect estimates\nresponse ~ contrast * side * reward',
-                     fontsize=LABELFONTSIZE)
-        return fig
-
-    targets = sorted(main_effects_df['target_NM'].unique(),
-                     key=lambda x: TARGETNM2POSITION.get(x, 999))
-    events = _sort_events(main_effects_df['event'].unique())
-    offsets = np.linspace(-0.3, 0.3, len(targets)) if len(targets) > 1 else [0.0]
-
-    for ax, predictor in zip(axes, predictors):
-        df_p = main_effects_df[main_effects_df['predictor'] == predictor]
-        for tnm, dx in zip(targets, offsets):
-            color = TARGETNM_COLORS.get(tnm, 'gray')
-            for x, ev in enumerate(events):
-                row = df_p[(df_p['target_NM'] == tnm) & (df_p['event'] == ev)]
-                if len(row) == 0:
-                    continue
-                row = row.iloc[0]
-                fs = 'full' if row['P>|z|'] < 0.05 else 'none'
-                yerr = [[row['Coef.'] - row['ci_lower']],
-                        [row['ci_upper'] - row['Coef.']]]
-                ax.errorbar(x + dx, row['Coef.'], yerr=yerr, fmt='o',
-                            color=color, markersize=6, capsize=3, fillstyle=fs)
-        ax.set_title(predictor)
-        ax.set_xticks(range(len(events)))
-        ax.set_xticklabels(events, rotation=30, ha='right',
-                           fontsize=TICKFONTSIZE)
-        ax.axhline(0, ls='--', color='gray', lw=0.5)
-    axes[0].set_ylabel('Main effect (coef ± 95% CI)')
-
-    target_handles = _target_legend_handles(targets)
-    sig_handles = [
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6,
-               fillstyle='full'),
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6,
-               fillstyle='none'),
-    ]
-    axes[-1].legend(
-        target_handles + sig_handles,
-        targets + ['p < 0.05', 'n.s.'],
-        frameon=False, loc='upper left', bbox_to_anchor=(1, 1),
-        fontsize=TICKFONTSIZE)
-    fig.suptitle('Main-effect estimates\nresponse ~ contrast * side * reward',
                  fontsize=LABELFONTSIZE)
     return fig
 

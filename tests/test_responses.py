@@ -75,16 +75,15 @@ class TestSaveLMMFrames:
             'response_lmm_task_ceiling': pd.DataFrame({
                 'target_NM': ['VTA-DA'], 'event': ['stimOn_times'],
                 'marginal': [0.1], 'conditional': [0.3]}),
-            'response_lmm_task_main_effects': pd.DataFrame({
+            'response_lmm_task_reliability_cv': pd.DataFrame({
                 'target_NM': ['VTA-DA'], 'event': ['stimOn_times'],
-                'predictor': ['contrast'], 'Coef.': [0.2],
-                'ci_lower': [0.1], 'ci_upper': [0.3], 'P>|z|': [0.01]}),
+                'predictor': ['contrast'], 'fold': ['s0'], 'delta_r2': [0.02]}),
         }
         _save_lmm_frames(frames, tmp_path)
 
         written = {p.name for p in tmp_path.glob('*.csv')}
         assert written == {'response_lmm_task_ceiling.csv',
-                           'response_lmm_task_main_effects.csv'}
+                           'response_lmm_task_reliability_cv.csv'}
         ceiling = pd.read_csv(tmp_path / 'response_lmm_task_ceiling.csv')
         assert list(ceiling.columns) == [
             'target_NM', 'event', 'marginal', 'conditional']
@@ -102,8 +101,8 @@ class TestPlotLMMFigures:
         return fig_dir
 
     def test_writes_suite_csvs_with_consistent_identifiers(self, tmp_path):
-        """The orchestration saves the coefficients, ceiling, main-effects, and
-        both reliability frames under the response_lmm naming convention, each
+        """The orchestration saves the coefficients, ceiling, and both
+        reliability frames under the response_lmm naming convention, each
         carrying the (target_NM, event) identifiers and reported quantities."""
         self._run(tmp_path)
         expected = {
@@ -111,9 +110,6 @@ class TestPlotLMMFigures:
                                                    'Coef.', 'P>|z|'},
             'response_lmm_task_ceiling.csv': {'target_NM', 'event',
                                               'marginal', 'conditional'},
-            'response_lmm_task_main_effects.csv': {
-                'target_NM', 'event', 'predictor', 'Coef.',
-                'ci_lower', 'ci_upper', 'P>|z|'},
             'response_lmm_task_reliability_cv.csv': {
                 'target_NM', 'event', 'predictor', 'fold', 'delta_r2'},
             'response_lmm_task_reliability_jackknife.csv': {
@@ -123,13 +119,6 @@ class TestPlotLMMFigures:
             df = pd.read_csv(tmp_path / fname)
             assert cols.issubset(df.columns), fname
             assert len(df) > 0, fname
-
-    def test_main_effects_predictors_are_main_terms(self, tmp_path):
-        """Main-effects CSV holds only the contrast/side/reward terms, not the
-        intercept or interaction terms."""
-        self._run(tmp_path)
-        df = pd.read_csv(tmp_path / 'response_lmm_task_main_effects.csv')
-        assert set(df['predictor']) <= {'contrast', 'side', 'reward'}
 
     def test_reliability_predictors_span_main_and_interactions(self, tmp_path):
         """The combined reliability frame carries the drop-one main-effect

@@ -53,21 +53,14 @@ def _format(family):
     return {name: tpl.format(response='response') for name, tpl in family.items()}
 
 
-def test_task_interactions_formulas():
-    formulas = _format(LMM_FORMULAS['task_interactions'])
+def test_task_reliability_formulas():
+    formulas = _format(LMM_FORMULAS['task_reliability'])
     assert formulas == {
         'full': 'response ~ contrast * side * reward',
+        'contrast': 'response ~ side * reward',
+        'side': 'response ~ contrast * reward',
+        'reward': 'response ~ contrast * side',
         'interactions': 'response ~ contrast + side + reward',
-    }
-
-
-def test_task_main_effects_formulas():
-    formulas = _format(LMM_FORMULAS['task_main_effects'])
-    assert formulas == {
-        'full': 'response ~ contrast + side + reward',
-        'contrast': 'response ~ side + reward',
-        'side': 'response ~ contrast + reward',
-        'reward': 'response ~ contrast + side',
     }
 
 
@@ -95,7 +88,7 @@ def test_movement_families_expand_per_timing_var():
 
 
 def test_nested_sets_have_reference_key():
-    nested = ['task_interactions', 'task_main_effects']
+    nested = ['task_reliability']
     nested += [f'movement_additive_{t}' for t in TIMING_VARS]
     nested += [f'movement_saturated_{t}' for t in TIMING_VARS]
     for family in nested:

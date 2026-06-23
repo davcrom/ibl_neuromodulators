@@ -447,17 +447,16 @@ MOTION_ENERGY_EVENT = 'stimOn_times'
 # concrete model per `TIMING_VARS` entry, the formula naming the real
 # `log_<timing>` column (no timing placeholder at fit time).
 LMM_FORMULAS = {
-    # Task interactions: full (with interactions) vs additive main-effects model.
-    'task_interactions': {
+    # Task reliability: full interaction model is the reference. Each predictor's
+    # ΔR² drops it and every interaction it participates in (so the two-way `*`
+    # of the remaining pair); `interactions` drops the whole interaction block
+    # (additive model), testing whether the coding is interactive at all.
+    'task_reliability': {
         'full': '{response} ~ contrast * side * reward',
+        'contrast': '{response} ~ side * reward',
+        'side': '{response} ~ contrast * reward',
+        'reward': '{response} ~ contrast * side',
         'interactions': '{response} ~ contrast + side + reward',
-    },
-    # Task main effects: additive reference, drop-one for each predictor.
-    'task_main_effects': {
-        'full': '{response} ~ contrast + side + reward',
-        'contrast': '{response} ~ side + reward',
-        'side': '{response} ~ contrast + reward',
-        'reward': '{response} ~ contrast + side',
     },
     # Task ceiling: saturated single reporting model.
     'task_ceiling': {
