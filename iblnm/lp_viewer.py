@@ -314,54 +314,54 @@ def apply_label(
     return updated
 
 
-def persist_labels(h5_path: str | Path, qc_lp: str, qc_movement: str) -> None:
-    """Write the two manual QC labels into a session's `video` H5 group.
+def persist_labels(h5_path: str | Path, labels: dict[str, str]) -> None:
+    """Write the manual QC labels into a session's `video` H5 group.
 
-    Sets the `qc_lp` / `qc_movement` group attrs in place, leaving the
-    automatically-extracted traces and cross-correlation subgroups untouched.
+    Sets each ``labels`` group attr (keyed by `LP_QC_LABELS`) in place, leaving
+    the automatically-extracted traces and cross-correlation subgroups untouched.
     """
     with h5py.File(h5_path, 'a') as f:
         attrs = f['video'].attrs
-        for label, value in zip(LP_QC_LABELS, (qc_lp, qc_movement)):
+        for label, value in labels.items():
             attrs[label] = value
 
 
 def update_pose_qc(
-    pose_path: str | Path, eid: str, qc_lp: str, qc_movement: str
+    pose_path: str | Path, eid: str, labels: dict[str, str]
 ) -> None:
-    """Mirror the two manual QC labels for `eid` into the pose roll-up parquet.
+    """Mirror the manual QC labels for `eid` into the pose roll-up parquet.
 
-    Read-modify-write of `pose_path`: updates only the `qc_lp`/`qc_movement`
-    cells for `eid`, leaving every other row and column untouched, so the
-    derived roll-up stays in sync with the per-session H5 without re-running
-    `scripts/pose.py --rollup`.
+    Read-modify-write of `pose_path`: updates only the `labels` cells (keyed by
+    `LP_QC_LABELS`) for `eid`, leaving every other row and column untouched, so
+    the derived roll-up stays in sync with the per-session H5 without re-running
+    `scripts/pose.py --collect`.
     """
     df = pd.read_parquet(pose_path)
     mask = df['eid'] == eid
-    for label, value in zip(LP_QC_LABELS, (qc_lp, qc_movement)):
+    for label, value in labels.items():
         df.loc[mask, label] = value
     df.to_parquet(pose_path)
 
 
 def save_label(
     h5_path: str | Path, pose_path: str | Path, eid: str,
-    qc_lp: str, qc_movement: str,
+    labels: dict[str, str],
 ) -> str:
-    """Persist both manual QC labels for `eid` and return a status line.
+    """Persist the manual QC labels for `eid` and return a status line.
 
-    Writes the values to the per-session `video` H5 attrs (the canonical
-    store) and mirrors them into the pose roll-up parquet. Catches write
-    failures (missing file/`video` group, unwritable path) so a bad session
-    surfaces in the GUI status bar instead of crashing the viewer. Returns a
-    confirmation naming the H5 file on success, or an error description.
+    Writes the `labels` (keyed by `LP_QC_LABELS`) to the per-session `video` H5
+    attrs (the canonical store) and mirrors them into the pose roll-up parquet.
+    Catches write failures (missing file/`video` group, unwritable path) so a
+    bad session surfaces in the GUI status bar instead of crashing the viewer.
+    Returns a confirmation naming the H5 file on success, or an error description.
     """
     try:
-        persist_labels(h5_path, qc_lp, qc_movement)
-        update_pose_qc(pose_path, eid, qc_lp, qc_movement)
+        persist_labels(h5_path, labels)
+        update_pose_qc(pose_path, eid, labels)
     except (OSError, KeyError) as error:
         return f'Save failed for {eid}: {error}'
-    return (f'Saved qc_lp={qc_lp}, qc_movement={qc_movement} '
-            f'→ {Path(h5_path).name} + pose.pqt')
+    summary = ', '.join(f'{label}={value}' for label, value in labels.items())
+    return f'Saved {summary} → {Path(h5_path).name} + pose.pqt'
 
 
 @dataclass
@@ -933,7 +933,7 @@ class LPViewer(QtWidgets.QMainWindow):
             self.model.df_cohort['eid'] == eid].iloc[0]
         status = save_label(self.model.h5_dir / f'{eid}.h5',
                             self.model.pose_path, eid,
-                            row['qc_lp'], row['qc_movement'])
+                            {label: row[label] for label in LP_QC_LABELS})
         self.statusBar().showMessage(status)
 
     # -- frame viewer ---------------------------------------------------------

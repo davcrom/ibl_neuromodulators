@@ -7,6 +7,7 @@ import xarray as xr
 from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
 
+from iblnm.config import LP_QC_LABELS
 from iblnm.data import _save_pose_traces, _save_pose_xcorr
 from iblnm.lp_viewer import (
     HISTOGRAM_MEASURES,
@@ -480,24 +481,27 @@ def video_h5(tmp_path):
     paw = np.arange(12, dtype=np.float64).reshape(3, 4)
     with h5py.File(fpath, 'w') as f:
         grp = f.create_group('video')
-        grp.attrs['qc_lp'] = 'NOT_SET'
-        grp.attrs['qc_movement'] = 'NOT_SET'
+        for label in LP_QC_LABELS:
+            grp.attrs[label] = 'NOT_SET'
         grp.create_group('traces').create_dataset('paw', data=paw)
     return fpath, paw
 
 
 def test_persist_labels_round_trips(video_h5):
     fpath, _ = video_h5
-    persist_labels(fpath, 'CRITICAL', 'PASS')
+    persist_labels(fpath, {'qc_lp': 'CRITICAL', 'qc_movement': 'PASS',
+                           'qc_timing': 'WARNING'})
     with h5py.File(fpath, 'r') as f:
         attrs = f['video'].attrs
         assert _decode(attrs['qc_lp']) == 'CRITICAL'
         assert _decode(attrs['qc_movement']) == 'PASS'
+        assert _decode(attrs['qc_timing']) == 'WARNING'
 
 
 def test_persist_labels_leaves_traces_untouched(video_h5):
     fpath, paw = video_h5
-    persist_labels(fpath, 'WARNING', 'FAIL')
+    persist_labels(fpath, {'qc_lp': 'WARNING', 'qc_movement': 'FAIL',
+                           'qc_timing': 'PASS'})
     with h5py.File(fpath, 'r') as f:
         np.testing.assert_array_equal(f['video']['traces']['paw'][:], paw)
 
@@ -516,39 +520,45 @@ def pose_pqt(tmp_path):
     fpath = tmp_path / 'pose.pqt'
     pd.DataFrame({
         'eid': ['eid0', 'eid1'],
-        'qc_lp': ['NOT_SET', 'NOT_SET'],
-        'qc_movement': ['NOT_SET', 'NOT_SET'],
+        **{label: ['NOT_SET', 'NOT_SET'] for label in LP_QC_LABELS},
     }).to_parquet(fpath)
     return fpath
 
 
 def test_update_pose_qc_sets_only_target_eid(pose_pqt):
-    update_pose_qc(pose_pqt, 'eid1', 'FAIL', 'PASS')
+    update_pose_qc(pose_pqt, 'eid1', {'qc_lp': 'FAIL', 'qc_movement': 'PASS',
+                                      'qc_timing': 'WARNING'})
     df = pd.read_parquet(pose_pqt)
     target = df.loc[df['eid'] == 'eid1'].iloc[0]
     assert target['qc_lp'] == 'FAIL'
     assert target['qc_movement'] == 'PASS'
+    assert target['qc_timing'] == 'WARNING'
     other = df.loc[df['eid'] == 'eid0'].iloc[0]
     assert other['qc_lp'] == 'NOT_SET'
-    assert other['qc_movement'] == 'NOT_SET'
+    assert other['qc_timing'] == 'NOT_SET'
 
 
 def test_save_label_writes_both_stores(video_h5, pose_pqt):
     h5_path, _ = video_h5
-    msg = save_label(h5_path, pose_pqt, 'eid1', 'FAIL', 'PASS')
+    labels = {'qc_lp': 'FAIL', 'qc_movement': 'PASS', 'qc_timing': 'WARNING'}
+    msg = save_label(h5_path, pose_pqt, 'eid1', labels)
     with h5py.File(h5_path, 'r') as f:
         assert _decode(f['video'].attrs['qc_lp']) == 'FAIL'
         assert _decode(f['video'].attrs['qc_movement']) == 'PASS'
+        assert _decode(f['video'].attrs['qc_timing']) == 'WARNING'
     row = pd.read_parquet(pose_pqt).set_index('eid').loc['eid1']
     assert row['qc_lp'] == 'FAIL'
     assert row['qc_movement'] == 'PASS'
+    assert row['qc_timing'] == 'WARNING'
     assert h5_path.name in msg
 
 
 def test_save_label_reports_failure_without_raising(tmp_path, pose_pqt):
     # 'a'-mode opens/creates the file but it has no 'video' group -> KeyError.
     missing = tmp_path / 'absent.h5'
-    msg = save_label(missing, pose_pqt, 'eid1', 'FAIL', 'PASS')
+    msg = save_label(missing, pose_pqt, 'eid1',
+                     {'qc_lp': 'FAIL', 'qc_movement': 'PASS',
+                      'qc_timing': 'WARNING'})
     assert 'eid1' in msg
     unchanged = pd.read_parquet(pose_pqt).set_index('eid').loc['eid1']
     assert unchanged['qc_lp'] == 'NOT_SET'

@@ -26,6 +26,7 @@ import pandas as pd
 from iblnm.analysis import movement_delta
 from iblnm.config import (
     BASELINE_WINDOW,
+    LP_QC_LABELS,
     MOVEMENT_RESPONSE_WINDOW,
     PERFORMANCE_FPATH,
     POSE_FPATH,
@@ -143,6 +144,13 @@ def _decode(value):
     return value.decode() if isinstance(value, bytes) else value
 
 
+def _read_session_type(f: h5py.File) -> str | None:
+    """Session type from the H5 ``metadata`` group; None when the group is absent."""
+    if 'metadata' not in f:
+        return None
+    return _decode(f['metadata'].attrs.get('session_type'))
+
+
 def _collect_error_types(h5_dir) -> dict[str, set[str]]:
     """Map each eid to the set of error types in its H5 ``errors`` group."""
     df_errors = collect_errors(h5_dir)
@@ -215,7 +223,7 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
     whose ``errors`` group holds ``MissingVideoTimestamps`` but has no ``video``
     group. For each ``video`` group: recompute the per-bodypart movement deltas
     (post-minus-pre, see ``_add_trace_deltas``), read the cross-correlation
-    scalars, the two manual QC labels (``qc_lp``, ``qc_movement``), the eight
+    scalars, the manual QC labels (``LP_QC_LABELS``), the eight
     ``VIDEO_QC_COLS`` and the basic-video measures (``length_discrepancy``,
     ``framerate_from_tpts``) from the group attrs, and derive ``lp_exists`` and
     ``video_qc_score`` (``_score_video_qc``). Recomputing the deltas here keeps
@@ -233,11 +241,14 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        One row per session: ``eid``, ``lp_exists``, one column per bodypart
-        scalar, ``drift``, ``peak_lag_early/mid/late``, ``peak_val_early/mid/late``,
-        ``qc_lp``, ``qc_movement``, ``mean_rt``, the 8 ``VIDEO_QC_COLS``,
-        ``length_discrepancy``, ``framerate_from_tpts``, ``video_qc_score``, and
-        ``fraction_correct``.
+        One row per session: ``eid``, ``session_type`` (read from the
+        ``metadata`` group for both video-group and bare error-stub rows, None
+        only when that group is absent), ``lp_exists``, one column per bodypart
+        scalar, ``drift``, ``peak_lag_early/mid/late``,
+        ``peak_val_early/mid/late``, the ``LP_QC_LABELS`` manual QC labels,
+        ``mean_rt``, the
+        8 ``VIDEO_QC_COLS``, ``length_discrepancy``, ``framerate_from_tpts``,
+        ``video_qc_score``, and ``fraction_correct``.
     """
     errors_by_eid = _collect_error_types(h5_dir)
     rows = []
@@ -256,6 +267,7 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
             qc = _read_video_qc(f)
             row = {
                 'eid': eid,
+                'session_type': _read_session_type(f),
                 'lp_exists': _has_lp_traces(traces),
                 'mean_rt': _read_mean_rt(f),
                 'length_discrepancy': video.attrs.get('length_discrepancy', np.nan),
@@ -267,13 +279,16 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
             _add_trace_deltas(row, traces, baseline_traces)
             _add_xcorr_scalars(row, xcorr)
         row.update({label: _decode(qc.get(label, LP_QC_NOT_SET))
-                    for label in ('qc_lp', 'qc_movement')})
+                    for label in LP_QC_LABELS})
         rows.append(row)
 
-    rows += [{'eid': eid, 'lp_exists': False, 'video_qc_score': -1.0}
-             for eid, error_types in errors_by_eid.items()
-             if eid not in eids_with_video
-             and 'MissingVideoTimestamps' in error_types]
+    for eid, error_types in errors_by_eid.items():
+        if eid in eids_with_video or 'MissingVideoTimestamps' not in error_types:
+            continue
+        with h5py.File(Path(h5_dir) / f'{eid}.h5', 'r') as f:
+            session_type = _read_session_type(f)
+        rows.append({'eid': eid, 'session_type': session_type,
+                     'lp_exists': False, 'video_qc_score': -1.0})
 
     df_pose = pd.DataFrame(rows)
     for col in POSE_TRACE_COLUMNS:
@@ -324,45 +339,64 @@ if __name__ == '__main__':
                              '(default: all types)')
     args = parser.parse_args()
 
-    if args.collect:
-        df_pose = collect_pose(SESSIONS_H5_DIR)
-        df_pose.to_parquet(POSE_FPATH)
-        print(f"Wrote {len(df_pose)} session rows to {POSE_FPATH}")
-        raise SystemExit
+    if not args.collect:
 
-    one = _get_default_connection()
+        one = _get_default_connection()
 
-    print(f"Loading sessions from {SESSIONS_FPATH}")
-    catalog = pd.read_parquet(SESSIONS_FPATH)
-    eids = read_eids(args.eids_file) if args.eids_file else args.eids
-    if eids:
-        catalog = catalog[catalog['eid'].isin(eids)]
-        if catalog.empty:
-            raise SystemExit(f"None of the {len(eids)} requested eids are in "
-                             f"{SESSIONS_FPATH}")
-    group = PhotometrySessionGroup.from_catalog(catalog, one=one)
-    group.filter_sessions(
-        session_types=args.session_type or False, qc_blockers=set(),
-        targetnms=False, min_performance=False,
-        required_contrasts=False,
-    )
-    print(f"  {len(group.sessions)} sessions after filtering")
+        print(f"Loading sessions from {SESSIONS_FPATH}")
+        catalog = pd.read_parquet(SESSIONS_FPATH)
+        eids = read_eids(args.eids_file) if args.eids_file else args.eids
+        if eids:
+            catalog = catalog[catalog['eid'].isin(eids)]
+            if catalog.empty:
+                raise SystemExit(f"None of the {len(eids)} requested eids are in "
+                                 f"{SESSIONS_FPATH}")
+        group = PhotometrySessionGroup.from_catalog(catalog, one=one)
+        group.filter_sessions(
+            session_types=args.session_type or False, qc_blockers=set(),
+            targetnms=False, min_performance=False,
+            required_contrasts=False,
+        )
+        print(f"  {len(group.sessions)} sessions after filtering")
 
-    results = group.process(process_pose, workers=args.workers,
-                            reprocess=args.reprocess)
+        results = group.process(process_pose, workers=args.workers,
+                                reprocess=args.reprocess)
 
-    n_processed = sum(1 for r in results if r == 'processed')
-    n_skipped = sum(1 for r in results if r == 'skipped')
-    n_failed = sum(1 for r in results if r is None)
-    print(f"\nResults: {n_processed} processed, {n_skipped} skipped, {n_failed} failed")
+        n_processed = sum(1 for r in results if r == 'processed')
+        n_skipped = sum(1 for r in results if r == 'skipped')
+        n_failed = sum(1 for r in results if r is None)
+        print(f"\nResults: {n_processed} processed, {n_skipped} skipped, {n_failed} failed")
 
-    # Collect errors from H5 files
-    df_errors = collect_errors(SESSIONS_H5_DIR)
-    if len(df_errors) > 0:
-        print(f"\nError summary ({len(df_errors)} entries):")
-        print(df_errors['error_type'].value_counts().to_string())
 
     # Roll up the video H5 groups into the pose table
     df_pose = collect_pose(SESSIONS_H5_DIR)
     df_pose.to_parquet(POSE_FPATH)
     print(f"\nWrote {len(df_pose)} session rows to {POSE_FPATH}")
+
+    # Post-hoc analysis-ready CSV: drop rows whose eid is excluded by the
+    # cohort filters (subject/eid exclusions, QC blockers, target NMs). Session
+    # type, performance and contrast filters are skipped so every type is kept.
+    group = PhotometrySessionGroup.from_catalog(catalog, one=one, h5_dir=SESSIONS_H5_DIR)
+    group.filter_sessions(
+        session_types=False,
+        min_performance=False,
+        required_contrasts=False
+        )
+    _ = group.deduplicate()
+    df_csv = df_pose[df_pose['eid'].isin(group.sessions['eid'])]
+    type2val = {
+            'ephys': 3,
+            'biased': 2,
+            'training': 1,
+            'habituation': 0,
+        }
+    df_csv['session_type_val'] = df_csv['session_type'].apply(
+        lambda x: type2val.get(x, -1)
+        )
+    df_csv = df_csv.sort_values(
+        ['lp_exists', 'session_type_val', 'video_qc_score'],
+        ascending=[False, False, False]
+        )
+    csv_fpath = 'metadata/LightningPoseSessions.csv'
+    df_csv.to_csv(csv_fpath, index=False)
+    print(f"Wrote {len(df_csv)} analysis-ready session to {csv_fpath}")

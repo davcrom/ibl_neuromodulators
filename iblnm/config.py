@@ -430,7 +430,7 @@ CROSSCORR_LAG_WINDOW = 5.0          # paw/wheel cross-correlation lag half-width
 CROSSCORR_FS = WHEEL_FS             # common resample rate for paw/wheel cross-correlation (Hz)
 LP_QC_LABELS = ('qc_lp', 'qc_movement', 'qc_timing')  # manual QC fields; IBL vocab, default 'NOT_SET'
 
-# Bodypart trace label -> (event column, keypoints, reduction). Read by tickets 02, 05.
+# Bodypart trace label -> (event column, keypoints, reduction)
 POSE_MEASURES = {
     'paw': ('firstMovement_times', ['paw_l', 'paw_r'], 'sum_speed'),
     'nose': ('stimOn_times', ['nose_tip'], 'speed'),

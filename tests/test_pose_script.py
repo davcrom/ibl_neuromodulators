@@ -322,6 +322,41 @@ class TestCollectPose:
         assert np.isnan(df.loc['eid-nort', 'mean_rt'])
         assert np.isfinite(df.loc['eid-nort', 'paw'])
 
+    def test_session_type_from_metadata(self, tmp_path, mock_session_series,
+                                        perf_fpath):
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5}
+        biased = mock_session_series.copy()
+        biased['session_type'] = 'biased'
+        training = mock_session_series.copy()
+        training['session_type'] = 'training'
+        _write_pose_session(tmp_path, 'eid-bi', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=biased)
+        _write_pose_session(tmp_path, 'eid-tr', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=training)
+
+        df = pose.collect_pose(
+            tmp_path, performance_fpath=perf_fpath).set_index('eid')
+
+        assert df.loc['eid-bi', 'session_type'] == 'biased'
+        assert df.loc['eid-tr', 'session_type'] == 'training'
+
+    def test_collects_qc_timing(self, tmp_path, mock_session_series,
+                                perf_fpath):
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5}
+        _write_pose_session(tmp_path, 'eid-t', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=mock_session_series)
+        with h5py.File(tmp_path / 'eid-t.h5', 'a') as f:
+            f['video'].attrs['qc_timing'] = 'WARNING'
+
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+
+        assert df.loc['eid-t', 'qc_timing'] == 'WARNING'
+
     def test_performance_join(self, tmp_path, mock_session_series):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5}
@@ -423,3 +458,16 @@ class TestCollectPose:
         assert df.loc['eid-bare', 'video_qc_score'] == -1
         assert np.isnan(df.loc['eid-bare', 'paw'])
         assert not df.loc['eid-bare', 'lp_exists']
+
+    def test_bare_row_session_type_from_metadata(
+            self, tmp_path, mock_session_series, perf_fpath):
+        series = mock_session_series.copy()
+        series['eid'] = 'eid-bare'
+        series['session_type'] = 'habituation'
+        ps = PhotometrySession(series, one=MagicMock(), load_data=False)
+        ps.save_h5(tmp_path / 'eid-bare.h5', groups=['metadata'])
+        _write_errors(tmp_path, 'eid-bare', ['MissingVideoTimestamps'])
+
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+
+        assert df.loc['eid-bare', 'session_type'] == 'habituation'
