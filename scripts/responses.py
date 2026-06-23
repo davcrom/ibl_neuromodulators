@@ -275,9 +275,9 @@ def plot_similarity_figures(group, similarity_dir, data_dir):
 # Movement encoding
 # =========================================================================
 
-# Response DV set for the movement claims: pre-stimulus baseline, stimulus
-# onset, and first-movement aligned magnitudes (feedback excluded).
-MOVEMENT_EVENTS = ('baseline', 'stimOn_times', 'firstMovement_times')
+# Response DV set for the movement claims: stimulus onset, first-movement, and
+# feedback aligned magnitudes.
+MOVEMENT_EVENTS = ('stimOn_times', 'firstMovement_times', 'feedback_times')
 
 
 def _movement_reliability(group, group_by):
@@ -334,8 +334,8 @@ def _movement_effect_coefficients(group, group_by):
 
 
 def plot_movement_figures(group, fig_dirs, data_dir):
-    """Movement-encoding analyses, restricted to the pre-feedback movement
-    events: the movement effect via coefficient heatmaps, the three-bar in-sample
+    """Movement-encoding analyses over the response events (``MOVEMENT_EVENTS``):
+    the movement effect via coefficient heatmaps, the three-bar in-sample
     R² comparison, and cv/jackknife reliability ΔR² per timing variable."""
     group_by = ['target_NM', 'event']
 

@@ -40,7 +40,7 @@ def _make_movement_group(n_per_cell=50, seed=0):
                             response = (0.3 * (contrast / 100)
                                         + subj_slope * log_rt
                                         + rng.normal(0, 0.5))
-                            for event in ['baseline', 'stimOn_times',
+                            for event in ['stimOn_times',
                                           'firstMovement_times',
                                           'feedback_times']:
                                 resp_rows.append({

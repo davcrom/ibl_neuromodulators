@@ -15,7 +15,7 @@ from iblphotometry.qc import qc_signals
 from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
-    ANALYSIS_QC_BLOCKERS, BASELINE_RESPONSE_WINDOW, BASELINE_WINDOW, EIDS_TO_DROP,
+    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
     LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MOTION_ENERGY_EVENT,
@@ -528,6 +528,7 @@ class PhotometrySession(PhotometrySessionLoader):
                 All other fields are optional and default to safe empty values.
         """
         self.eid = session_series['eid']
+        self.filepath = SESSIONS_H5_DIR / f'{self.eid}.h5'
         self.subject = session_series['subject']
 
         start_time = session_series['start_time']
@@ -724,8 +725,9 @@ class PhotometrySession(PhotometrySessionLoader):
             raw_tnm = series.get('target_NM', [])
             ps.target_NM = list(raw_tnm) if isinstance(raw_tnm, (list, np.ndarray)) else []
 
-        # Load remaining groups
-        ps.load_h5(fpath, groups=['errors', 'photometry', 'trials', 'wheel'])
+        # Load remaining groups from the same file
+        ps.filepath = Path(fpath)
+        ps.load_h5(groups=['errors', 'photometry', 'trials', 'wheel'])
         return ps
 
     def from_alyx(self):
@@ -1083,7 +1085,7 @@ class PhotometrySession(PhotometrySessionLoader):
         Parameters
         ----------
         fpath : Path or str, optional
-            Output path. Defaults to SESSIONS_H5_DIR / {eid}.h5.
+            Output path. Defaults to ``self.filepath``.
         groups : sequence of str, optional
             Which data groups to write. Any subset of:
             'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video'.
@@ -1092,7 +1094,7 @@ class PhotometrySession(PhotometrySessionLoader):
             HDF5 file open mode ('a' creates/appends, 'w' truncates).
         """
         if fpath is None:
-            fpath = SESSIONS_H5_DIR / f'{self.eid}.h5'
+            fpath = self.filepath
         fpath = Path(fpath)
         fpath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1120,13 +1122,13 @@ class PhotometrySession(PhotometrySessionLoader):
             ('video',      has_video),
         ) if available]
 
-    def load_h5(self, fpath, groups=None, band='GCaMP_preprocessed'):
+    def load_h5(self, fpath=None, groups=None, band='GCaMP_preprocessed'):
         """Load session data from HDF5 file.
 
         Parameters
         ----------
-        fpath : Path or str
-            Path to the HDF5 file.
+        fpath : Path or str, optional
+            Path to the HDF5 file. Defaults to ``self.filepath``.
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
             'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video'.
@@ -1135,6 +1137,8 @@ class PhotometrySession(PhotometrySessionLoader):
             Preprocessed band name used as the key in `self.photometry`
             when loading photometry.
         """
+        if fpath is None:
+            fpath = self.filepath
         group_names = list(_LOAD_HANDLERS) if groups is None else list(groups)
         with h5py.File(fpath, 'r') as h5_file:
             for group_name in group_names:
@@ -1736,7 +1740,7 @@ def _apply_statistic(statistic, arrays):
     return statistic(*[a[:min_len] for a in arrays])
 
 
-def _donor_positions(view, pos, group_by):
+def _get_donor_sessions(view, pos, group_by):
     """Integer positions in ``view`` eligible as donors for unit ``pos``.
 
     Donors share the target's ``group_by`` value (all other units when
@@ -1744,9 +1748,9 @@ def _donor_positions(view, pos, group_by):
     """
     positions = np.arange(len(view))
     if group_by is None:
-        return positions[positions != pos]
+        return view[positions != pos]
     same_group = view[group_by].values == view.iloc[pos][group_by]
-    return positions[same_group & (positions != pos)]
+    return view[same_group & (positions != pos)]
 
 
 class PhotometrySessionGroup:
@@ -1790,7 +1794,7 @@ class PhotometrySessionGroup:
         self._lmm_group_by = None
 
     @classmethod
-    def from_catalog(cls, catalog, one, h5_dir=None):
+    def from_catalog(cls, catalog, one, h5_dir=SESSIONS_H5_DIR):
         """Build a group from a session catalog DataFrame.
 
         Validates parallel list columns and populates ``logged_errors`` from
@@ -2131,8 +2135,8 @@ class PhotometrySessionGroup:
             return PhotometrySession.from_h5(h5_path, one=self.one)
         return PhotometrySession(row, one=self.one, load_data=False)
 
-    def _permutation_test_unit(self, view, pos, statistic, fixed, swapped,
-                               group_by, n_iter, alternative, rng):
+    def _permutation_test_unit(self, target, donors, prep_fn, stat_fn,
+                               fixed_var, swapped_var, n_iter, rng):
         """Run the session-swap test for one unit; return (observed, p_value,
         null).
 
@@ -2141,26 +2145,31 @@ class PhotometrySessionGroup:
         donor pool is empty. Re-loads the donor PS every iteration — no caching,
         so this is the dominant cost of the test (acceptable per spec).
         """
-        target_ps = self._load_unit_session(view.iloc[pos])
-        fixed_arrays = [_resolve_ps_variable(target_ps, e) for e in fixed]
-        observed_swapped = [_resolve_ps_variable(target_ps, e) for e in swapped]
-        observed = _apply_statistic(statistic, fixed_arrays + observed_swapped)
+        # Prepare the photometry session
+        target_ps = PhotometrySession(target, one=self.one, load_data=False)
+        target_ps = prep_fn(target_ps)
 
-        donors = _donor_positions(view, pos, group_by)
-        if len(donors) == 0:
-            raise ValueError(f"Empty donor pool for unit at position {pos}")
+        # Extract data arrays to be used in stat_fn
+        fixed_arrays = [getattr(target_ps, e) for e in fixed_var]
+        swapped_arrays = [getattr(target_ps, e) for e in swapped_var]
 
-        null = np.empty(n_iter)
+        # Compute the abserved test statistic
+        observed = _apply_statistic(stat_fn, fixed_arrays + swapped_arrays)
+
+        null = np.full(n_iter, np.nan)
         for i in range(n_iter):
-            donor_ps = self._load_unit_session(
-                view.iloc[donors[rng.integers(len(donors))]])
-            donor_swapped = [_resolve_ps_variable(donor_ps, e) for e in swapped]
-            null[i] = _apply_statistic(statistic, fixed_arrays + donor_swapped)
+            donor = donors.iloc[rng.integers(len(donors))]
+            try:
+                donor_ps = PhotometrySession(donor, one=self.one, load_data=False)
+                donor_ps = prep_fn(donor_ps)
+                donated_arrays = [getattr(donor_ps, e) for e in swapped_var]
+                null[i] = _apply_statistic(stat_fn, fixed_arrays + donated_arrays)
+            except:
+                continue
 
-        p_value = analysis.permutation_pvalue(observed, null, alternative)
-        return observed, p_value, null
+        return observed, null
 
-    def session_permutation_test(self, statistic, fixed, swapped,
+    def session_permutation_test(self, prep_fn, stat_fn, fixed_var, swapped_var,
                                  group_by='target_NM', unit='recordings',
                                  n_iter=1000, alternative='two-sided', seed=42):
         """Session-swap permutation test of a statistic, per unit.
@@ -2172,15 +2181,15 @@ class PhotometrySessionGroup:
 
         Parameters
         ----------
-        statistic : callable
+        stat_fn : callable
             ``statistic(*fixed_arrays, *swapped_arrays) -> scalar``. Receives
             the resolved ``fixed`` arrays followed by the resolved ``swapped``
             arrays, in list order, each truncated to their common length.
-        fixed : list
+        fixed_var : list
             Entries resolved on the target PS in both the observed run and every
             null iteration. Each is a str (a ``ps.trials`` column or a PS
             attribute) or a callable ``ps -> 1-D array``.
-        swapped : list
+        swapped_var : list
             Same element types as ``fixed``; resolved on the target PS for the
             observed run and on a donor PS for each null draw.
         group_by : str or None, default 'target_NM'
@@ -2209,19 +2218,24 @@ class PhotometrySessionGroup:
         from tqdm import tqdm
 
         view = self.recordings if unit == 'recordings' else self.sessions
-        id_cols = (['eid', 'brain_region', 'hemisphere', 'target_NM',
-                    'fiber_idx'] if unit == 'recordings' else ['eid'])
         rng = np.random.default_rng(seed)
 
         rows = []
         for pos in tqdm(range(len(view)), desc="Permutation test"):
+            session = view.iloc[pos]
+            donors = _get_donor_sessions(view, pos, group_by)
+            if len(donors) == 0:
+                raise ValueError(f"Empty donor pool for unit at position {pos}")
             try:
-                observed, p_value, null = self._permutation_test_unit(
-                    view, pos, statistic, fixed, swapped, group_by,
-                    n_iter, alternative, rng)
+                observed, null = self._permutation_test_unit(
+                    session, donors, prep_fn, stat_fn, fixed_var, swapped_var,
+                    n_iter, rng
+                    )
+                p_value = analysis.permutation_pvalue(observed, null, alternative)
             except Exception:
+                import traceback as _tb; _tb.print_exc()  # DEBUG: remove
                 observed, p_value, null = np.nan, np.nan, np.array([])
-            row = {col: view.iloc[pos][col] for col in id_cols}
+            row = session.to_dict()
             row.update(observed=observed, p_value=p_value, null=null)
             rows.append(row)
         return pd.DataFrame(rows)
@@ -2282,9 +2296,7 @@ class PhotometrySessionGroup:
 
         For each recording and event, loads the response xarray from H5,
         applies ``mask_subsequent_events`` and ``subtract_baseline``, and
-        stores the per-trial traces in ``self.response_traces``. A
-        ``baseline`` pseudo-event holds the masked but **un-subtracted**
-        stimOn trace, so its magnitude reports the raw pre-stimulus level.
+        stores the per-trial traces in ``self.response_traces``.
 
         The cache is keyed by ``(eid, brain_region, event)`` with values
         containing ``traces``, ``tpts``, ``meta``, and ``trials``.
@@ -2346,15 +2358,6 @@ class PhotometrySessionGroup:
                     'trials': ps.trials.copy(),
                 }
 
-            # Pre-stimulus baseline from the raw (pre-subtraction) stimOn trace.
-            if 'stimOn_times' in masked.coords['event'].values:
-                cache[(eid, brain_region, 'baseline')] = {
-                    'traces': masked.sel(event='stimOn_times').values,
-                    'tpts': sample_times,
-                    'meta': {**meta, 'event': 'baseline'},
-                    'trials': ps.trials.copy(),
-                }
-
         self.response_traces = cache
         return self
 
@@ -2368,10 +2371,7 @@ class PhotometrySessionGroup:
 
         Calls :meth:`load_response_traces` if traces are not yet cached.
         For each cached (recording × event), computes the scalar magnitude
-        in the early response window. The ``baseline`` pseudo-event uses
-        ``BASELINE_RESPONSE_WINDOW`` (the pre-event mirror of the early window)
-        on the raw (pre-subtraction) stimOn trace, giving the per-trial
-        pre-stimulus level over a window matched to the early response. Trial-level task/movement predictors
+        in the early response window. Trial-level task/movement predictors
         are not included here — they live in ``trial_regressors`` (populated
         by :meth:`get_trial_regressors`).
 
@@ -2380,8 +2380,7 @@ class PhotometrySessionGroup:
         pd.DataFrame
             One row per (recording × event × trial) with columns
             ``eid, subject, session_type, NM, target_NM, brain_region,
-            hemisphere, event, trial, response``. ``event`` includes a
-            ``baseline`` pseudo-event row per trial.
+            hemisphere, event, trial, response``.
         """
         from tqdm import tqdm
 
@@ -2393,10 +2392,8 @@ class PhotometrySessionGroup:
                 self.response_traces.items(),
                 desc="Computing response magnitudes"):
             meta = entry['meta']
-            window = (BASELINE_RESPONSE_WINDOW if event == 'baseline'
-                      else RESPONSE_WINDOWS['early'])
             magnitude = compute_response_magnitude(
-                entry['traces'], entry['tpts'], window,
+                entry['traces'], entry['tpts'], RESPONSE_WINDOWS['early'],
             )
             frames.append(pd.DataFrame({
                 'eid': meta['eid'],
@@ -2790,8 +2787,6 @@ class PhotometrySessionGroup:
 
         rows = []
         for (_eid, _region, _event), entry in self.response_traces.items():
-            if _event == 'baseline':  # pseudo-event, magnitude-only
-                continue
             traces = entry['traces']  # (n_trials, n_time)
             tpts = entry['tpts']
             meta = entry['meta']

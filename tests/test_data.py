@@ -184,6 +184,14 @@ class TestInit:
         assert ps.day_n is None
         assert ps.errors == []
 
+    def test_init_sets_default_filepath(self, minimal_session_series):
+        """filepath defaults to SESSIONS_H5_DIR / {eid}.h5 on init."""
+        from iblnm.data import PhotometrySession
+        from iblnm.config import SESSIONS_H5_DIR
+        mock_one = MagicMock()
+        ps = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        assert ps.filepath == SESSIONS_H5_DIR / 'test-eid-minimal.h5'
+
     def test_full_init(self, full_session_series):
         """Init with all fields populated."""
         from iblnm.data import PhotometrySession
@@ -275,6 +283,21 @@ class TestToDict:
 
 class TestH5Metadata:
     """Tests for metadata save/load in H5."""
+
+    def test_save_load_default_to_filepath(self, full_session_series, tmp_path):
+        """save_h5/load_h5 with no fpath use self.filepath."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
+
+        ps.save_h5(groups=['metadata'])
+        ps2 = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        ps2.filepath = ps.filepath
+        ps2.strain = None
+        ps2.load_h5(groups=['metadata'])
+
+        assert ps2.strain == ps.strain
 
     def test_save_load_metadata_roundtrip(self, full_session_series, tmp_path):
         """Metadata survives H5 roundtrip with all field types."""
@@ -693,6 +716,17 @@ class TestFromH5:
         assert ps2.target_NM == ['VTA-DA', 'SNc-DA']
         assert ps2.session_type == 'biased'
         assert ps2.number == 1
+
+    def test_from_h5_sets_filepath(self, full_session_series, tmp_path):
+        """from_h5 sets filepath to the file it loaded from."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession.from_h5(fpath)
+        assert ps2.filepath == fpath
 
     def test_from_h5_restores_errors(self, mock_session_series, tmp_path):
         """from_h5 loads errors from H5."""
@@ -2977,8 +3011,7 @@ class TestGetResponseVector:
 # =============================================================================
 
 def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
-              all_biased=False, all_nogo=False, fast_response=False,
-              baseline_value=0.0, pre_event_ramp=False):
+              all_biased=False, all_nogo=False, fast_response=False):
     """Write a minimal H5 file with trials and responses.
 
     Parameters
@@ -2989,12 +3022,6 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
         If True, set all choice to 0 (no-go).
     fast_response : bool
         If True, set feedback_times = stimOn_times + 0.01 (response_time < 0.05).
-    baseline_value : float
-        Pre-event (t < 0) signal level. Defaults to 0; set non-zero to give
-        the raw pre-stimulus baseline a known magnitude.
-    pre_event_ramp : bool
-        If True, set each pre-event sample to its own time value (a ramp in t),
-        so a magnitude depends on which pre-event window is used.
     """
     import h5py
 
@@ -3004,9 +3031,8 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
     events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
     contrasts = np.array([0.0, 0.0625, 0.125, 0.25, 1.0])
 
-    # Pre-event = baseline_value, post-event = 1.0
+    # Pre-event = 0, post-event = 1.0
     post_mask = tpts >= 0
-    pre_mask = tpts < 0
 
     stim_on = np.linspace(10, 10 + n_trials, n_trials)
     feedback = stim_on + 0.01 if fast_response else np.linspace(11, 11 + n_trials, n_trials)
@@ -3042,7 +3068,6 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
             for event in events:
                 data = np.zeros((n_trials, n_time))
                 data[:, post_mask] = 1.0
-                data[:, pre_mask] = tpts[pre_mask] if pre_event_ramp else baseline_value
                 resp_grp.create_dataset(event, data=data)
 
 
@@ -3697,63 +3722,8 @@ class TestGetResponseMagnitudes:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         df_events = group.get_response_magnitudes()
         # After baseline subtraction, post-event signal = 1.0.
-        # The 'baseline' pseudo-event carries the raw pre-stimulus level (0
-        # here), so exclude it from the post-event magnitude check.
-        magnitudes = df_events.loc[
-            df_events['event'] != 'baseline', 'response'].dropna()
+        magnitudes = df_events['response'].dropna()
         np.testing.assert_allclose(magnitudes.values, 1.0, atol=0.1)
-
-    def test_includes_baseline_event_with_raw_premagnitude(self, tmp_path):
-        """A 'baseline' pseudo-event row carries the raw pre-stimulus mean,
-        one per trial, not the ~0 left by baseline subtraction."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        n_trials = 50
-        baseline_value = 3.0
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=n_trials,
-                  baseline_value=baseline_value)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-
-        df = group.get_response_magnitudes()
-
-        baseline = df[df['event'] == 'baseline']
-        assert len(baseline) == n_trials
-        np.testing.assert_allclose(baseline['response'].values, baseline_value)
-        # Subtracted stimOn rows are NOT the raw baseline level.
-        stim = df[df['event'] == 'stimOn_times']
-        assert not np.allclose(stim['response'].values, baseline_value)
-
-    def test_baseline_event_uses_mirror_of_early_window(self, tmp_path):
-        """The 'baseline' pseudo-event magnitude is the raw pre-event mean over
-        the time-mirror of RESPONSE_WINDOWS['early'] (i.e. (-hi, -lo)), not the
-        subtraction window."""
-        from iblnm.data import PhotometrySessionGroup
-        from iblnm.config import RESPONSE_WINDOWS
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=10, pre_event_ramp=True)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-
-        df = group.get_response_magnitudes()
-
-        tpts = np.linspace(-1, 1, 61)
-        lo, hi = RESPONSE_WINDOWS['early']
-        i0, i1 = np.searchsorted(tpts, [-hi, -lo])
-        expected = tpts[i0:i1].mean()
-        baseline = df[df['event'] == 'baseline']
-        np.testing.assert_allclose(baseline['response'].values, expected)
-
-    def test_baseline_rows_share_recording_columns(self, tmp_path):
-        """Baseline rows carry the same recording-key columns as event rows."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=30, baseline_value=2.0)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-
-        df = group.get_response_magnitudes()
-        baseline = df[df['event'] == 'baseline'].iloc[0]
-        assert baseline['eid'] == 'eid-0'
-        assert baseline['brain_region'] == 'VTA-r'
-        assert baseline['target_NM'] == 'target-0'
 
     def test_skips_missing_h5(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
@@ -4718,8 +4688,7 @@ class TestLoadResponseTraces:
         assert 'eid-1' not in eids
 
     def test_multiple_events_per_recording(self, tmp_path):
-        """Each recording produces one cache entry per response event plus
-        the pre-stimulus baseline pseudo-event."""
+        """Each recording produces one cache entry per response event."""
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
         _write_h5(tmp_path / 'eid-0.h5', n_trials=50, seed=0)
@@ -4727,7 +4696,7 @@ class TestLoadResponseTraces:
         group.load_response_traces()
         events = {k[2] for k in group.response_traces.keys()}
         assert events == {'stimOn_times', 'firstMovement_times',
-                          'feedback_times', 'baseline'}
+                          'feedback_times'}
 
 
 class TestGetResponseMagnitudesFromCache:

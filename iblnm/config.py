@@ -413,10 +413,6 @@ RESPONSE_WINDOWS = {
     'early': (0.1, 0.35),
     'late': (0.35, 0.6)
 }
-# Window for the 'baseline' pseudo-event magnitude: the pre-event time-mirror of
-# the early response window, so it sits clear of stimulus onset and matches the
-# early window's width/offset for a like-for-like contrast comparison.
-BASELINE_RESPONSE_WINDOW = (-RESPONSE_WINDOWS['early'][1], -RESPONSE_WINDOWS['early'][0])
 
 # Movement encoding analyses
 TIMING_VARS = ['reaction_time', 'movement_time', 'peak_velocity']
