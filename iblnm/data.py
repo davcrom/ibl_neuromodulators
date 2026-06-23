@@ -2121,20 +2121,6 @@ class PhotometrySessionGroup:
 
         return results
 
-    def _load_unit_session(self, row):
-        """Build a PhotometrySession for a unit row (recording or session).
-
-        Mirrors ``process()``: load from ``{h5_dir}/{eid}.h5`` when the file
-        exists, else construct from the row with ``load_data=False``. For a
-        recordings row, ``__init__`` normalizes the scalar region columns to
-        length-1 lists, yielding a region-scoped PS (read via
-        ``ps.brain_region[0]``).
-        """
-        h5_path = Path(self.h5_dir) / f"{row['eid']}.h5"
-        if h5_path.exists():
-            return PhotometrySession.from_h5(h5_path, one=self.one)
-        return PhotometrySession(row, one=self.one, load_data=False)
-
     def _permutation_test_unit(self, target, donors, prep_fn, stat_fn,
                                fixed_var, swapped_var, n_iter, rng):
         """Run the session-swap test for one unit; return (observed, p_value,
@@ -2185,13 +2171,13 @@ class PhotometrySessionGroup:
             ``statistic(*fixed_arrays, *swapped_arrays) -> scalar``. Receives
             the resolved ``fixed`` arrays followed by the resolved ``swapped``
             arrays, in list order, each truncated to their common length.
-        fixed_var : list
-            Entries resolved on the target PS in both the observed run and every
-            null iteration. Each is a str (a ``ps.trials`` column or a PS
-            attribute) or a callable ``ps -> 1-D array``.
-        swapped_var : list
-            Same element types as ``fixed``; resolved on the target PS for the
-            observed run and on a donor PS for each null draw.
+        fixed_var : list of str
+            Attribute names resolved via ``getattr`` on the target PS (after
+            ``prep_fn`` has run) in both the observed run and every null
+            iteration. ``prep_fn`` is responsible for setting these attributes.
+        swapped_var : list of str
+            Same as ``fixed_var``; resolved on the target PS for the observed
+            run and on a donor PS for each null draw.
         group_by : str or None, default 'target_NM'
             Column of the unit view defining the donor pool (donors share the
             target's value). ``None`` pools all other units.
@@ -2233,7 +2219,6 @@ class PhotometrySessionGroup:
                     )
                 p_value = analysis.permutation_pvalue(observed, null, alternative)
             except Exception:
-                import traceback as _tb; _tb.print_exc()  # DEBUG: remove
                 observed, p_value, null = np.nan, np.nan, np.array([])
             row = session.to_dict()
             row.update(observed=observed, p_value=p_value, null=null)

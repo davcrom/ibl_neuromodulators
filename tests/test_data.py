@@ -5079,59 +5079,62 @@ class TestGetTrialRegressors:
 # PhotometrySessionGroup.session_permutation_test Tests
 # =============================================================================
 
-def _make_perm_group(monkeypatch, trial_data, target_nm='VTA-DA'):
-    """Build a group whose ``_load_unit_session`` returns synthetic PS objects.
+def _make_perm_group(trial_data, target_nm='VTA-DA'):
+    """Build a synthetic group of single-region recordings, one per eid.
 
     Parameters
     ----------
-    monkeypatch : pytest.MonkeyPatch
-        Used to replace ``_load_unit_session`` so no H5/network is needed.
     trial_data : dict[str, dict]
-        Maps eid -> column dict for that unit's synthetic ``ps.trials``.
+        Maps eid -> column dict of synthetic arrays for that unit. The keys
+        become PS attribute names when paired with ``_attr_prep``.
     target_nm : str
         Shared ``target_NM`` for all recordings (one donor pool).
 
     Returns
     -------
     PhotometrySessionGroup
+        Built directly from session rows; ``session_permutation_test``
+        constructs each unit's PS inline (no H5/network), and ``_attr_prep``
+        supplies its data.
     """
-    from iblnm.data import PhotometrySession, PhotometrySessionGroup
+    from iblnm.data import PhotometrySessionGroup
 
-    rows = []
-    sessions = {}
-    for i, (eid, cols) in enumerate(trial_data.items()):
-        rows.append({
-            'eid': eid, 'subject': f'subj-{i}', 'brain_region': 'VTA',
-            'hemisphere': 'l', 'target_NM': target_nm, 'NM': 'DA',
-            'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
-            'number': 1, 'task_protocol': 'biased_protocol',
-        })
-        ps = PhotometrySession(pd.Series(rows[-1]), one=MagicMock(),
-                               load_data=False)
-        ps.trials = pd.DataFrame(cols) if cols is not None else None
-        sessions[eid] = ps
+    rows = [{
+        'eid': eid, 'subject': f'subj-{i}', 'brain_region': 'VTA',
+        'hemisphere': 'l', 'target_NM': target_nm, 'NM': 'DA',
+        'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
+        'number': 1, 'task_protocol': 'biased_protocol',
+    } for i, eid in enumerate(trial_data)]
+    return PhotometrySessionGroup(pd.DataFrame(rows), one=MagicMock())
 
-    group = PhotometrySessionGroup(pd.DataFrame(rows), one=MagicMock())
-    monkeypatch.setattr(
-        PhotometrySessionGroup, '_load_unit_session',
-        lambda self, row: sessions[row['eid']],
-    )
-    return group
+
+def _attr_prep(trial_data):
+    """Build a ``prep_fn`` that attaches each eid's arrays as PS attributes.
+
+    Keys absent from a unit's dict are left unset, so resolving a
+    ``fixed_var``/``swapped_var`` naming them raises (the failure path).
+    """
+    def prep(ps):
+        for name, values in trial_data[ps.eid].items():
+            setattr(ps, name, np.asarray(values))
+        return ps
+    return prep
 
 
 class TestSessionPermutationTest:
     """Tests for PhotometrySessionGroup.session_permutation_test."""
 
-    def test_observed_matches_hand_computation(self, monkeypatch):
+    def test_observed_matches_hand_computation(self):
         rng = np.random.default_rng(0)
         trial_data = {
             f'eid-{i}': {'rt': rng.random(10), 'signal': rng.random(10)}
             for i in range(3)
         }
-        group = _make_perm_group(monkeypatch, trial_data)
+        group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
-            statistic=lambda a, b: np.corrcoef(a, b)[0, 1],
-            fixed=['rt'], swapped=[lambda ps: ps.trials['signal']],
+            _attr_prep(trial_data),
+            lambda a, b: np.corrcoef(a, b)[0, 1],
+            fixed_var=['rt'], swapped_var=['signal'],
             n_iter=10,
         )
         row = result[result['eid'] == 'eid-0'].iloc[0]
@@ -5139,96 +5142,101 @@ class TestSessionPermutationTest:
                                trial_data['eid-0']['signal'])[0, 1]
         assert row['observed'] == pytest.approx(expected)
 
-    def test_null_uses_common_min_length(self, monkeypatch):
+    def test_null_uses_common_min_length(self):
         trial_data = {
             'eid-0': {'rt': np.arange(10), 'signal': np.arange(10)},
             'eid-1': {'rt': np.arange(6), 'signal': np.arange(6)},
         }
-        group = _make_perm_group(monkeypatch, trial_data)
+        group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
-            statistic=lambda *arrays: len(arrays[0]),
-            fixed=['rt'], swapped=[lambda ps: ps.trials['signal']],
+            _attr_prep(trial_data),
+            lambda *arrays: len(arrays[0]),
+            fixed_var=['rt'], swapped_var=['signal'],
             n_iter=20,
         )
         row = result[result['eid'] == 'eid-0'].iloc[0]
         # target has 10 trials, only donor (eid-1) has 6 → min length 6
         assert np.all(row['null'] == 6)
 
-    def test_null_has_n_iter_length(self, monkeypatch):
+    def test_null_has_n_iter_length(self):
         rng = np.random.default_rng(0)
         trial_data = {
             f'eid-{i}': {'rt': rng.random(8), 'signal': rng.random(8)}
             for i in range(3)
         }
-        group = _make_perm_group(monkeypatch, trial_data)
+        group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
-            statistic=lambda a, b: np.corrcoef(a, b)[0, 1],
-            fixed=['rt'], swapped=[lambda ps: ps.trials['signal']],
+            _attr_prep(trial_data),
+            lambda a, b: np.corrcoef(a, b)[0, 1],
+            fixed_var=['rt'], swapped_var=['signal'],
             n_iter=37,
         )
         assert all(len(null) == 37 for null in result['null'])
 
-    def test_reproducible_with_seed(self, monkeypatch):
+    def test_reproducible_with_seed(self):
         # each unit's signal is a constant marker = its index, so the null
         # sequence is the sequence of drawn donor markers
         trial_data = {
             f'eid-{i}': {'rt': np.zeros(5), 'signal': np.full(5, i)}
             for i in range(3)
         }
-        kwargs = dict(statistic=lambda a, b: b[0], fixed=['rt'],
-                      swapped=[lambda ps: ps.trials['signal']], n_iter=50)
-        group = _make_perm_group(monkeypatch, trial_data)
+        kwargs = dict(fixed_var=['rt'], swapped_var=['signal'], n_iter=50)
+        group = _make_perm_group(trial_data)
+        prep, stat = _attr_prep(trial_data), lambda a, b: b[0]
         def target_null(result):
             return result[result['eid'] == 'eid-0'].iloc[0]['null']
 
-        null_a = group.session_permutation_test(seed=42, **kwargs)
-        null_b = group.session_permutation_test(seed=42, **kwargs)
-        null_c = group.session_permutation_test(seed=7, **kwargs)
+        null_a = group.session_permutation_test(prep, stat, seed=42, **kwargs)
+        null_b = group.session_permutation_test(prep, stat, seed=42, **kwargs)
+        null_c = group.session_permutation_test(prep, stat, seed=7, **kwargs)
         assert np.array_equal(target_null(null_a), target_null(null_b))
         assert not np.array_equal(target_null(null_a), target_null(null_c))
 
-    def test_donor_never_self(self, monkeypatch):
+    def test_donor_never_self(self):
         # 2-unit pool: the only valid donor for eid-0 is eid-1
         trial_data = {
             'eid-0': {'rt': np.zeros(5), 'signal': np.zeros(5)},
             'eid-1': {'rt': np.zeros(5), 'signal': np.ones(5)},
         }
-        group = _make_perm_group(monkeypatch, trial_data)
+        group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
-            statistic=lambda a, b: b[0], fixed=['rt'],
-            swapped=[lambda ps: ps.trials['signal']], n_iter=30,
+            _attr_prep(trial_data),
+            lambda a, b: b[0],
+            fixed_var=['rt'], swapped_var=['signal'], n_iter=30,
         )
         row = result[result['eid'] == 'eid-0'].iloc[0]
         # self (eid-0) marker is 0; donor (eid-1) marker is 1
         assert np.all(row['null'] == 1)
 
-    def test_p_value_matches_helper(self, monkeypatch):
+    def test_p_value_matches_helper(self):
         from iblnm.analysis import permutation_pvalue
         rng = np.random.default_rng(0)
         trial_data = {
             f'eid-{i}': {'rt': rng.random(8), 'signal': rng.random(8)}
             for i in range(3)
         }
-        group = _make_perm_group(monkeypatch, trial_data)
+        group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
-            statistic=lambda a, b: np.corrcoef(a, b)[0, 1],
-            fixed=['rt'], swapped=[lambda ps: ps.trials['signal']],
+            _attr_prep(trial_data),
+            lambda a, b: np.corrcoef(a, b)[0, 1],
+            fixed_var=['rt'], swapped_var=['signal'],
             n_iter=40, alternative='greater',
         )
         row = result[result['eid'] == 'eid-0'].iloc[0]
         assert row['p_value'] == pytest.approx(
             permutation_pvalue(row['observed'], row['null'], 'greater'))
 
-    def test_extractor_error_yields_nan_row(self, monkeypatch):
+    def test_extractor_error_yields_nan_row(self):
         trial_data = {
             'eid-0': {'rt': np.arange(6), 'signal': np.arange(6)},
             'eid-1': {'rt': np.arange(6), 'signal': np.arange(6)},
             'eid-2': {'signal': np.arange(6)},  # no 'rt' → fixed resolve fails
         }
-        group = _make_perm_group(monkeypatch, trial_data)
+        group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
-            statistic=lambda a, b: np.corrcoef(a, b)[0, 1],
-            fixed=['rt'], swapped=[lambda ps: ps.trials['signal']],
+            _attr_prep(trial_data),
+            lambda a, b: np.corrcoef(a, b)[0, 1],
+            fixed_var=['rt'], swapped_var=['signal'],
             n_iter=10,
         )
         assert len(result) == 3
@@ -5238,19 +5246,20 @@ class TestSessionPermutationTest:
         good = result[result['eid'] == 'eid-0'].iloc[0]
         assert not np.isnan(good['observed'])
 
-    def test_output_columns_for_recordings(self, monkeypatch):
+    def test_output_columns_for_recordings(self):
         rng = np.random.default_rng(0)
         trial_data = {
             f'eid-{i}': {'rt': rng.random(8), 'signal': rng.random(8)}
             for i in range(3)
         }
-        group = _make_perm_group(monkeypatch, trial_data)
+        group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
-            statistic=lambda a, b: np.corrcoef(a, b)[0, 1],
-            fixed=['rt'], swapped=[lambda ps: ps.trials['signal']],
+            _attr_prep(trial_data),
+            lambda a, b: np.corrcoef(a, b)[0, 1],
+            fixed_var=['rt'], swapped_var=['signal'],
             n_iter=5,
         )
-        assert list(result.columns) == [
-            'eid', 'brain_region', 'hemisphere', 'target_NM', 'fiber_idx',
+        expected = list(group.recordings.columns) + [
             'observed', 'p_value', 'null']
+        assert list(result.columns) == expected
         assert len(result) == 3
