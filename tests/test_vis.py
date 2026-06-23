@@ -1086,6 +1086,90 @@ class TestPlotLmmReliability:
         plt.close(fig)
 
 
+class TestPlotOlsDropone:
+    """Per-mouse median ± IQR grid of per-recording ΔR² (target_NM × event)."""
+
+    def _df(self, targets=('VTA-DA', 'DR-5HT'),
+            events=('feedback_times', 'stimOn_times'),
+            predictors=('contrast', 'side', 'reward', 'log_reaction_time',
+                        'peak_velocity')):
+        """Long-form ΔR²: subject 's_few' has 2 recordings, 's_many' has 4."""
+        rows = []
+        for tnm in targets:
+            for event in events:
+                for pred in predictors:
+                    for subject, n_rec in [('s_few', 2), ('s_many', 4)]:
+                        for i in range(n_rec):
+                            rows.append({
+                                'target_NM': tnm, 'event': event,
+                                'subject': subject, 'predictor': pred,
+                                'delta_r2': 0.01 * (i + 1)})
+        return pd.DataFrame(rows)
+
+    def test_mouse_stats_median_and_iqr(self):
+        """Helper returns (median, 25th pct, 75th pct) of a mouse's ΔR²."""
+        from iblnm.vis import _mouse_dropone_stats
+        values = np.array([0.01, 0.02, 0.03, 0.04])
+        med, q25, q75 = _mouse_dropone_stats(values)
+        assert med == np.median(values)
+        assert q25 == np.percentile(values, 25)
+        assert q75 == np.percentile(values, 75)
+
+    def test_grid_shape_targets_by_events(self):
+        from iblnm.vis import plot_ols_dropone
+        fig = plot_ols_dropone(self._df(), 'Per-recording ΔR²')
+        assert isinstance(fig, plt.Figure)
+        assert len(fig.axes) == 2 * 2  # 2 targets × 2 events
+        plt.close(fig)
+
+    def _one_cell(self):
+        """Single target/event/predictor cell: s_few (2 recs), s_many (4 recs)."""
+        rows = []
+        for subject, deltas in [('s_few', [0.05, 0.07]),
+                                ('s_many', [0.01, 0.02, 0.03, 0.04])]:
+            for d in deltas:
+                rows.append({'target_NM': 'VTA-DA', 'event': 'feedback_times',
+                             'subject': subject, 'predictor': 'contrast',
+                             'delta_r2': d})
+        return pd.DataFrame(rows)
+
+    def test_sub_threshold_mouse_excluded(self):
+        """Only the ≥ MIN_RECORDINGS_PERMOUSE subject draws a marker."""
+        from iblnm.vis import plot_ols_dropone
+        from iblnm.config import MIN_RECORDINGS_PERMOUSE
+        from matplotlib.collections import PathCollection
+        assert MIN_RECORDINGS_PERMOUSE == 3  # fixture assumes this threshold
+        fig = plot_ols_dropone(self._one_cell(), 'cell')
+        markers = [c for c in fig.axes[0].collections
+                   if isinstance(c, PathCollection) and len(c.get_offsets())]
+        assert len(markers) == 1  # s_many drawn, s_few excluded
+        plt.close(fig)
+
+    def test_marker_at_median_whisker_at_iqr(self):
+        """Drawn marker y = median; whisker endpoints = 25th/75th percentiles."""
+        from iblnm.vis import plot_ols_dropone
+        from matplotlib.collections import PathCollection, LineCollection
+        deltas = np.array([0.01, 0.02, 0.03, 0.04])  # s_many
+        fig = plot_ols_dropone(self._one_cell(), 'cell')
+        ax = fig.axes[0]
+        marker = next(c for c in ax.collections
+                      if isinstance(c, PathCollection) and len(c.get_offsets()))
+        assert marker.get_offsets()[0, 1] == np.median(deltas)
+        whisker = next(c for c in ax.collections
+                       if isinstance(c, LineCollection))
+        ys = whisker.get_segments()[0][:, 1]
+        assert {ys.min(), ys.max()} == {np.percentile(deltas, 25),
+                                        np.percentile(deltas, 75)}
+        plt.close(fig)
+
+    def test_empty_frame_returns_titled_figure(self):
+        from iblnm.vis import plot_ols_dropone
+        fig = plot_ols_dropone(self._df().iloc[0:0], 'Empty')
+        assert isinstance(fig, plt.Figure)
+        assert fig._suptitle.get_text() == 'Empty'
+        plt.close(fig)
+
+
 # =============================================================================
 # plot_within_target_similarity Tests
 # =============================================================================

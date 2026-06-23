@@ -11,7 +11,8 @@ from scipy.stats import sem as scipy_sem
 from sklearn.preprocessing import quantile_transform
 
 from iblnm.config import (
-    ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP, RESPONSE_EVENTS, RESPONSE_WINDOWS,
+    ANALYSIS_CONTRASTS, MIN_RECORDINGS_PERMOUSE, NM_CMAPS, QCCMAP,
+    RESPONSE_EVENTS, RESPONSE_WINDOWS,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
@@ -2312,6 +2313,150 @@ def plot_lmm_reliability(reliability_df, title):
     ]
     fig.legend(role_handles, ['per-fold', 'across-fold aggregate'],
                frameon=False, fontsize=TICKFONTSIZE, loc='upper right')
+    fig.suptitle(title, fontsize=LABELFONTSIZE)
+    return fig
+
+
+# Dropped regressors on the per-recording OLS x-axis, in fixed order: the
+# `persession` model family keys minus `full`.
+_PERSESSION_DROPONE_PREDICTORS = ['contrast', 'side', 'reward',
+                                  'log_reaction_time', 'peak_velocity']
+
+
+def _mouse_dropone_stats(delta_r2):
+    """Return ``(median, q25, q75)`` of one mouse's per-recording ΔR².
+
+    Parameters
+    ----------
+    delta_r2 : array-like
+        Per-recording ΔR² values for one subject in one cell.
+
+    Returns
+    -------
+    tuple of float
+        Median, 25th and 75th percentiles — the marker height and IQR whisker
+        endpoints.
+    """
+    return (float(np.median(delta_r2)),
+            float(np.percentile(delta_r2, 25)),
+            float(np.percentile(delta_r2, 75)))
+
+
+def _slot_jitter(subjects):
+    """Map subjects to small deterministic x-offsets centred on 0.
+
+    Subjects are spread evenly within a fixed slot width so their markers do
+    not overlap. Sorting by name makes the offsets reproducible.
+
+    Parameters
+    ----------
+    subjects : sequence of str
+        Subject identifiers drawn in one x-slot.
+
+    Returns
+    -------
+    dict of {str: float}
+        Per-subject horizontal offset in ``[-0.15, 0.15]``.
+    """
+    ordered = sorted(subjects)
+    if len(ordered) == 1:
+        return {ordered[0]: 0.0}
+    offsets = np.linspace(-0.15, 0.15, len(ordered))
+    return dict(zip(ordered, offsets))
+
+
+def _scatter_mice(ax, x, df_group, color):
+    """Draw one regressor slot: a median marker + IQR whisker per qualifying mouse.
+
+    Each subject with at least ``MIN_RECORDINGS_PERMOUSE`` recordings in
+    ``df_group`` gets a vertical whisker (25th–75th percentile) and a marker at
+    its median ΔR², jittered horizontally about ``x`` so mice do not overlap.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    x : int
+        Regressor x-slot centre.
+    df_group : pd.DataFrame
+        Rows for one ``(target_NM, event, predictor)`` cell; needs ``subject``
+        and ``delta_r2`` columns.
+    color : color
+        Marker and whisker color (the row's target-NM color).
+    """
+    counts = df_group.groupby('subject').size()
+    qualifying = counts.index[counts >= MIN_RECORDINGS_PERMOUSE]
+    jitter = _slot_jitter(qualifying)
+    for subject in qualifying:
+        median, q25, q75 = _mouse_dropone_stats(
+            df_group.loc[df_group['subject'] == subject, 'delta_r2'])
+        x_jit = x + jitter[subject]
+        ax.vlines(x_jit, q25, q75, color=color, lw=1.5, zorder=2)
+        ax.scatter(x_jit, median, color=color, s=30, zorder=3)
+
+
+def plot_ols_dropone(df, title):
+    """Per-recording ΔR² per dropped regressor — grid of target-NM × event.
+
+    Each mouse is one marker at its across-recording median ΔR² with a vertical
+    whisker spanning the 25th–75th percentile (IQR), per dropped regressor.
+    Only mice with at least ``MIN_RECORDINGS_PERMOUSE`` recordings in a cell are
+    drawn; there is no across-mice aggregate. Markers are jittered horizontally
+    within each regressor's x-slot and colored by ``target_NM``. Each target-NM
+    row shares a y-axis so regressors and events are comparable within an NM.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-form per-recording ΔR²: ``target_NM``, ``event``, ``subject``,
+        ``predictor``, ``delta_r2`` (one row per recording × dropped predictor).
+    title : str
+        Figure suptitle.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    has_data = len(df) > 0
+    targets = (sorted(df['target_NM'].unique(),
+                      key=lambda x: TARGETNM2POSITION.get(x, 999))
+               if has_data else [])
+    events = _sort_events(df['event'].unique()) if has_data else []
+    n_rows, n_cols = max(len(targets), 1), max(len(events), 1)
+    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, sharex=True,
+                             sharey='row', layout='constrained',
+                             figsize=(2.6 * n_cols + 1, 2.0 * n_rows + 1))
+
+    if not has_data:
+        fig.suptitle(title, fontsize=LABELFONTSIZE)
+        return fig
+
+    predictors = _PERSESSION_DROPONE_PREDICTORS
+    for r, target_nm in enumerate(targets):
+        color = TARGETNM_COLORS.get(target_nm, 'gray')
+        df_t = df[df['target_NM'] == target_nm]
+        for c, event in enumerate(events):
+            ax = axes[r, c]
+            df_ev = df_t[df_t['event'] == event]
+            for x, predictor in enumerate(predictors):
+                _scatter_mice(ax, x, df_ev[df_ev['predictor'] == predictor],
+                              color)
+            ax.axhline(0, ls='--', color='gray', lw=0.5)
+            if r == 0:
+                ax.set_title(event)
+        axes[r, 0].set_ylabel(target_nm, fontsize=TICKFONTSIZE)
+
+    for c in range(n_cols):
+        axes[-1, c].set_xticks(range(len(predictors)))
+        axes[-1, c].set_xticklabels(predictors, rotation=30, ha='right',
+                                    fontsize=TICKFONTSIZE)
+    fig.supylabel('ΔR² (per-recording, in-sample)')
+
+    role_handles = [
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6),
+        Line2D([0], [0], color='gray', lw=1.5),
+    ]
+    fig.legend(role_handles, ['mouse median', 'IQR'], frameon=False,
+               fontsize=TICKFONTSIZE, loc='upper right')
     fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
