@@ -2732,3 +2732,63 @@ class TestPermutationPvalue:
         from iblnm.analysis import permutation_pvalue
         with pytest.raises(ValueError):
             permutation_pvalue(1.0, np.zeros(10), 'bogus')
+
+
+class TestFitOls:
+    def test_recovers_high_r2_on_linear_signal(self):
+        """y = 2x + small noise: the fit's R² is high and params are exposed."""
+        from iblnm.analysis import fit_ols
+        rng = np.random.default_rng(0)
+        x = rng.normal(0, 1, 200)
+        df = pd.DataFrame({'x': x, 'y': 2 * x + rng.normal(0, 0.1, 200)})
+        fit = fit_ols('y ~ x', df)
+        assert fit.rsquared > 0.95
+        assert fit.params['x'] == pytest.approx(2.0, abs=0.1)
+
+    def test_singular_design_returns_none(self):
+        """A rank-deficient design (a duplicated column) returns None rather
+        than raising, matching fit_lmm's None-on-failure contract."""
+        from iblnm.analysis import fit_ols
+        rng = np.random.default_rng(1)
+        x = rng.normal(0, 1, 50)
+        df = pd.DataFrame({'x': x, 'x2': x, 'y': x + rng.normal(0, 0.1, 50)})
+        # Drop the intercept so the two identical columns alias exactly.
+        assert fit_ols('y ~ x + x2 - 1', df) is None
+
+
+class TestDroponeDeltaR2:
+    def test_difference_against_reference(self):
+        """One row per non-reference name; delta_r2 = ref − reduced; the r2
+        column carries the reference R² on every row."""
+        from iblnm.analysis import dropone_delta_r2
+        out = dropone_delta_r2({'full': 0.5, 'contrast': 0.3, 'side': 0.45})
+        assert list(out.columns) == ['predictor', 'r2', 'delta_r2']
+        assert set(out['predictor']) == {'contrast', 'side'}
+        assert 'full' not in out['predictor'].values
+        out = out.set_index('predictor')
+        assert out.loc['contrast', 'delta_r2'] == pytest.approx(0.2)
+        assert out.loc['side', 'delta_r2'] == pytest.approx(0.05)
+        assert (out['r2'] == 0.5).all()
+
+    def test_reference_only_gives_empty_frame(self):
+        """No reduced models → an empty frame that still carries the columns."""
+        from iblnm.analysis import dropone_delta_r2
+        out = dropone_delta_r2({'full': 0.4})
+        assert len(out) == 0
+        assert list(out.columns) == ['predictor', 'r2', 'delta_r2']
+
+    def test_nested_ols_fits_give_nonnegative_delta(self):
+        """For genuinely nested OLS fits, the reduced model's R² cannot exceed
+        the full model's, so every drop-one delta_r2 is >= 0."""
+        from iblnm.analysis import dropone_delta_r2, fit_ols
+        rng = np.random.default_rng(2)
+        x1 = rng.normal(0, 1, 200)
+        x2 = rng.normal(0, 1, 200)
+        df = pd.DataFrame(
+            {'x1': x1, 'x2': x2,
+             'y': 0.7 * x1 + 0.4 * x2 + rng.normal(0, 0.5, 200)})
+        r2 = {'full': fit_ols('y ~ x1 + x2', df).rsquared,
+              'x1': fit_ols('y ~ x2', df).rsquared,
+              'x2': fit_ols('y ~ x1', df).rsquared}
+        out = dropone_delta_r2(r2)
+        assert (out['delta_r2'] >= 0).all()

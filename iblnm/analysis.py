@@ -2105,6 +2105,74 @@ def fit_lmm(formula, df, groups, re_formula='1', reml=True,
     )
 
 
+def fit_ols(formula: str, df: pd.DataFrame):
+    """Fit one ordinary-least-squares model from a Wilkinson formula.
+
+    Formula-agnostic single-model fit: no predictor coding or column logic
+    happens here, so the caller owns the design. Returns ``None`` on a
+    degenerate design rather than raising, mirroring ``fit_lmm``'s
+    None-on-failure contract so a comparison loop can skip the unit cleanly.
+    statsmodels' OLS solves rank-deficient designs through a pseudo-inverse
+    instead of raising, so a singular design is caught by comparing the fitted
+    design's rank to its column count, not by an exception.
+
+    Parameters
+    ----------
+    formula : str
+        Wilkinson formula, e.g. ``'response ~ contrast + side'``.
+    df : pd.DataFrame
+        Trial-level data carrying every column the formula references.
+
+    Returns
+    -------
+    statsmodels RegressionResults or None
+        The fitted results (exposes ``.rsquared``, ``.params``), or ``None`` if
+        the design is empty or rank-deficient.
+    """
+    import statsmodels.formula.api as smf
+
+    try:
+        result = smf.ols(formula, df).fit()
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+    if result.model.rank < result.model.exog.shape[1]:
+        return None
+    return result
+
+
+def dropone_delta_r2(r2_by_name, reference: str = 'full') -> pd.DataFrame:
+    """Drop-one ΔR² for one unit, differencing each reduced model off a baseline.
+
+    Pure, in-sample, single-unit counterpart to ``crossval_lmm``'s differencing:
+    ``r2_by_name`` maps model name → R² for one recording×event, where one key is
+    the full ``reference`` model and each other key is a reduced model with one
+    regressor dropped. Each reduced model's ΔR² is the R² the reference gains over
+    it — the dropped regressor's unique in-sample contribution.
+
+    Parameters
+    ----------
+    r2_by_name : dict or pd.Series
+        Mapping of model name → R² for one unit. Must contain ``reference``.
+    reference : str
+        Key naming the full model each reduced model's ΔR² is measured against.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per non-``reference`` name, columns ``predictor, r2, delta_r2``
+        where ``r2`` is the reference R² (same on every row) and ``delta_r2`` is
+        ``r2[reference] − r2[name]``. Empty frame with those columns if only the
+        reference is present.
+    """
+    r2_ref = r2_by_name[reference]
+    rows = [
+        {'predictor': name, 'r2': r2_ref, 'delta_r2': r2_ref - r2}
+        for name, r2 in r2_by_name.items()
+        if name != reference
+    ]
+    return pd.DataFrame(rows, columns=['predictor', 'r2', 'delta_r2'])
+
+
 def compute_marginal_means(lmm_result, factors):
     """Estimated marginal means for a set of factors from an LMM fit.
 
