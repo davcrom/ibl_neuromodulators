@@ -2123,13 +2123,17 @@ class PhotometrySessionGroup:
 
     def _permutation_test_unit(self, target, donors, prep_fn, stat_fn,
                                fixed_var, swapped_var, n_iter, rng):
-        """Run the session-swap test for one unit; return (observed, p_value,
-        null).
+        """Run the session-swap test for one unit; return ``(observed, null)``.
 
-        ``fixed`` is resolved on the target PS; ``swapped`` on the target (for
-        ``observed``) or a random donor (for each null draw). Raises when the
-        donor pool is empty. Re-loads the donor PS every iteration — no caching,
-        so this is the dominant cost of the test (acceptable per spec).
+        ``stat_fn`` returns a dict ``{name: value}`` of one or more scalar
+        quantities. ``observed`` is that dict computed from the target's own
+        data; ``null`` is a dict with the same keys, each a length-``n_iter``
+        array of the quantity recomputed with ``swapped`` drawn from a random
+        donor. ``fixed`` is always resolved on the target PS; ``swapped`` on
+        the target (for ``observed``) or the donor (for each null draw). A
+        donor iteration that raises leaves NaN at that index for every key.
+        Re-loads the donor PS every iteration — no caching, so this is the
+        dominant cost of the test (acceptable per spec).
         """
         # Prepare the photometry session
         target_ps = PhotometrySession(target, one=self.one, load_data=False)
@@ -2139,38 +2143,46 @@ class PhotometrySessionGroup:
         fixed_arrays = [getattr(target_ps, e) for e in fixed_var]
         swapped_arrays = [getattr(target_ps, e) for e in swapped_var]
 
-        # Compute the abserved test statistic
+        # Compute the observed quantities (dict keyed by quantity name)
         observed = _apply_statistic(stat_fn, fixed_arrays + swapped_arrays)
 
-        null = np.full(n_iter, np.nan)
+        null = {key: np.full(n_iter, np.nan) for key in observed}
         for i in range(n_iter):
             donor = donors.iloc[rng.integers(len(donors))]
             try:
                 donor_ps = PhotometrySession(donor, one=self.one, load_data=False)
                 donor_ps = prep_fn(donor_ps)
                 donated_arrays = [getattr(donor_ps, e) for e in swapped_var]
-                null[i] = _apply_statistic(stat_fn, fixed_arrays + donated_arrays)
-            except:
+                drawn = _apply_statistic(stat_fn, fixed_arrays + donated_arrays)
+                for key in null:
+                    null[key][i] = drawn[key]
+            except Exception:
                 continue
 
         return observed, null
 
     def session_permutation_test(self, prep_fn, stat_fn, fixed_var, swapped_var,
-                                 group_by='target_NM', unit='recordings',
-                                 n_iter=1000, alternative='two-sided', seed=42):
+                                 statistic_key, group_by='target_NM',
+                                 unit='recordings', n_iter=1000,
+                                 alternative='two-sided', seed=42):
         """Session-swap permutation test of a statistic, per unit.
 
-        For each unit (a recording or session), computes the observed statistic
-        from its own data, then builds an ``n_iter`` null by holding ``fixed``
-        with the target and swapping ``swapped`` in from random donor units in
-        the same ``group_by`` group, breaking the within-unit correspondence.
+        For each unit (a recording or session), computes the observed
+        quantities from its own data, then builds an ``n_iter`` null by holding
+        ``fixed`` with the target and swapping ``swapped`` in from random donor
+        units in the same ``group_by`` group, breaking the within-unit
+        correspondence. ``stat_fn`` may return several quantities at once
+        (e.g. a regression slope and its R²); the p-value is computed for the
+        one named by ``statistic_key``, while every quantity's observed value
+        and null distribution are recorded.
 
         Parameters
         ----------
         stat_fn : callable
-            ``statistic(*fixed_arrays, *swapped_arrays) -> scalar``. Receives
-            the resolved ``fixed`` arrays followed by the resolved ``swapped``
-            arrays, in list order, each truncated to their common length.
+            ``statistic(*fixed_arrays, *swapped_arrays) -> dict[str, float]``.
+            Receives the resolved ``fixed`` arrays followed by the resolved
+            ``swapped`` arrays, in list order, each truncated to their common
+            length, and returns a dict mapping quantity names to scalars.
         fixed_var : list of str
             Attribute names resolved via ``getattr`` on the target PS (after
             ``prep_fn`` has run) in both the observed run and every null
@@ -2178,6 +2190,11 @@ class PhotometrySessionGroup:
         swapped_var : list of str
             Same as ``fixed_var``; resolved on the target PS for the observed
             run and on a donor PS for each null draw.
+        statistic_key : str
+            Which key of the ``stat_fn`` dict is the test statistic; its
+            observed value and null drive ``p_value``. A successful unit whose
+            ``stat_fn`` output lacks this key raises ``KeyError`` (loud
+            misconfiguration, not a silent NaN run).
         group_by : str or None, default 'target_NM'
             Column of the unit view defining the donor pool (donors share the
             target's value). ``None`` pools all other units.
@@ -2196,10 +2213,11 @@ class PhotometrySessionGroup:
         pandas.DataFrame
             One row per unit, not written to disk. Identifier columns ``eid``
             (and ``brain_region``, ``hemisphere``, ``target_NM``, ``fiber_idx``
-            for ``unit='recordings'``) plus ``observed`` (float), ``p_value``
-            (float), and ``null`` (object column of 1-D arrays). A unit whose
-            run raises (including an empty donor pool) yields ``observed`` and
-            ``p_value`` NaN and an empty ``null``.
+            for ``unit='recordings'``) plus ``p_value`` (float, for
+            ``statistic_key``) and, for every key ``k`` returned by ``stat_fn``,
+            ``observed_<k>`` (float) and ``null_<k>`` (object column of 1-D
+            arrays). A unit whose run raises (including an empty donor pool)
+            yields ``p_value`` NaN and NaN ``observed_*``/``null_*`` entries.
         """
         from tqdm import tqdm
 
@@ -2217,11 +2235,21 @@ class PhotometrySessionGroup:
                     session, donors, prep_fn, stat_fn, fixed_var, swapped_var,
                     n_iter, rng
                     )
-                p_value = analysis.permutation_pvalue(observed, null, alternative)
             except Exception:
-                observed, p_value, null = np.nan, np.nan, np.array([])
+                observed, null = None, None
             row = session.to_dict()
-            row.update(observed=observed, p_value=p_value, null=null)
+            if observed is None:
+                row['p_value'] = np.nan
+            else:
+                if statistic_key not in observed:
+                    raise KeyError(
+                        f"statistic_key {statistic_key!r} not in stat_fn output "
+                        f"keys {list(observed)}")
+                row['p_value'] = analysis.permutation_pvalue(
+                    observed[statistic_key], null[statistic_key], alternative)
+                for key in observed:
+                    row[f'observed_{key}'] = observed[key]
+                    row[f'null_{key}'] = null[key]
             rows.append(row)
         return pd.DataFrame(rows)
 

@@ -5133,14 +5133,14 @@ class TestSessionPermutationTest:
         group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
             _attr_prep(trial_data),
-            lambda a, b: np.corrcoef(a, b)[0, 1],
+            lambda a, b: {'corr': np.corrcoef(a, b)[0, 1]},
             fixed_var=['rt'], swapped_var=['signal'],
-            n_iter=10,
+            statistic_key='corr', n_iter=10,
         )
         row = result[result['eid'] == 'eid-0'].iloc[0]
         expected = np.corrcoef(trial_data['eid-0']['rt'],
                                trial_data['eid-0']['signal'])[0, 1]
-        assert row['observed'] == pytest.approx(expected)
+        assert row['observed_corr'] == pytest.approx(expected)
 
     def test_null_uses_common_min_length(self):
         trial_data = {
@@ -5150,13 +5150,13 @@ class TestSessionPermutationTest:
         group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
             _attr_prep(trial_data),
-            lambda *arrays: len(arrays[0]),
+            lambda *arrays: {'len': len(arrays[0])},
             fixed_var=['rt'], swapped_var=['signal'],
-            n_iter=20,
+            statistic_key='len', n_iter=20,
         )
         row = result[result['eid'] == 'eid-0'].iloc[0]
         # target has 10 trials, only donor (eid-1) has 6 → min length 6
-        assert np.all(row['null'] == 6)
+        assert np.all(row['null_len'] == 6)
 
     def test_null_has_n_iter_length(self):
         rng = np.random.default_rng(0)
@@ -5167,11 +5167,11 @@ class TestSessionPermutationTest:
         group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
             _attr_prep(trial_data),
-            lambda a, b: np.corrcoef(a, b)[0, 1],
+            lambda a, b: {'corr': np.corrcoef(a, b)[0, 1]},
             fixed_var=['rt'], swapped_var=['signal'],
-            n_iter=37,
+            statistic_key='corr', n_iter=37,
         )
-        assert all(len(null) == 37 for null in result['null'])
+        assert all(len(null) == 37 for null in result['null_corr'])
 
     def test_reproducible_with_seed(self):
         # each unit's signal is a constant marker = its index, so the null
@@ -5180,11 +5180,12 @@ class TestSessionPermutationTest:
             f'eid-{i}': {'rt': np.zeros(5), 'signal': np.full(5, i)}
             for i in range(3)
         }
-        kwargs = dict(fixed_var=['rt'], swapped_var=['signal'], n_iter=50)
+        kwargs = dict(fixed_var=['rt'], swapped_var=['signal'],
+                      statistic_key='marker', n_iter=50)
         group = _make_perm_group(trial_data)
-        prep, stat = _attr_prep(trial_data), lambda a, b: b[0]
+        prep, stat = _attr_prep(trial_data), lambda a, b: {'marker': b[0]}
         def target_null(result):
-            return result[result['eid'] == 'eid-0'].iloc[0]['null']
+            return result[result['eid'] == 'eid-0'].iloc[0]['null_marker']
 
         null_a = group.session_permutation_test(prep, stat, seed=42, **kwargs)
         null_b = group.session_permutation_test(prep, stat, seed=42, **kwargs)
@@ -5201,12 +5202,13 @@ class TestSessionPermutationTest:
         group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
             _attr_prep(trial_data),
-            lambda a, b: b[0],
-            fixed_var=['rt'], swapped_var=['signal'], n_iter=30,
+            lambda a, b: {'marker': b[0]},
+            fixed_var=['rt'], swapped_var=['signal'],
+            statistic_key='marker', n_iter=30,
         )
         row = result[result['eid'] == 'eid-0'].iloc[0]
         # self (eid-0) marker is 0; donor (eid-1) marker is 1
-        assert np.all(row['null'] == 1)
+        assert np.all(row['null_marker'] == 1)
 
     def test_p_value_matches_helper(self):
         from iblnm.analysis import permutation_pvalue
@@ -5218,13 +5220,13 @@ class TestSessionPermutationTest:
         group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
             _attr_prep(trial_data),
-            lambda a, b: np.corrcoef(a, b)[0, 1],
+            lambda a, b: {'corr': np.corrcoef(a, b)[0, 1]},
             fixed_var=['rt'], swapped_var=['signal'],
-            n_iter=40, alternative='greater',
+            statistic_key='corr', n_iter=40, alternative='greater',
         )
         row = result[result['eid'] == 'eid-0'].iloc[0]
         assert row['p_value'] == pytest.approx(
-            permutation_pvalue(row['observed'], row['null'], 'greater'))
+            permutation_pvalue(row['observed_corr'], row['null_corr'], 'greater'))
 
     def test_extractor_error_yields_nan_row(self):
         trial_data = {
@@ -5235,16 +5237,17 @@ class TestSessionPermutationTest:
         group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
             _attr_prep(trial_data),
-            lambda a, b: np.corrcoef(a, b)[0, 1],
+            lambda a, b: {'corr': np.corrcoef(a, b)[0, 1]},
             fixed_var=['rt'], swapped_var=['signal'],
-            n_iter=10,
+            statistic_key='corr', n_iter=10,
         )
         assert len(result) == 3
         bad = result[result['eid'] == 'eid-2'].iloc[0]
-        assert np.isnan(bad['observed']) and np.isnan(bad['p_value'])
-        assert len(bad['null']) == 0
+        # failed unit: p_value NaN and the observed/null columns filled NaN
+        assert np.isnan(bad['p_value'])
+        assert pd.isna(bad['observed_corr']) and pd.isna(bad['null_corr'])
         good = result[result['eid'] == 'eid-0'].iloc[0]
-        assert not np.isnan(good['observed'])
+        assert not np.isnan(good['observed_corr'])
 
     def test_output_columns_for_recordings(self):
         rng = np.random.default_rng(0)
@@ -5255,11 +5258,50 @@ class TestSessionPermutationTest:
         group = _make_perm_group(trial_data)
         result = group.session_permutation_test(
             _attr_prep(trial_data),
-            lambda a, b: np.corrcoef(a, b)[0, 1],
+            lambda a, b: {'corr': np.corrcoef(a, b)[0, 1]},
             fixed_var=['rt'], swapped_var=['signal'],
-            n_iter=5,
+            statistic_key='corr', n_iter=5,
         )
         expected = list(group.recordings.columns) + [
-            'observed', 'p_value', 'null']
+            'p_value', 'observed_corr', 'null_corr']
         assert list(result.columns) == expected
         assert len(result) == 3
+
+    def test_multi_output_records_every_key(self):
+        rng = np.random.default_rng(0)
+        trial_data = {
+            f'eid-{i}': {'rt': rng.random(8), 'signal': rng.random(8)}
+            for i in range(3)
+        }
+        group = _make_perm_group(trial_data)
+        result = group.session_permutation_test(
+            _attr_prep(trial_data),
+            lambda a, b: {'corr': np.corrcoef(a, b)[0, 1], 'n': len(a)},
+            fixed_var=['rt'], swapped_var=['signal'],
+            statistic_key='corr', n_iter=5,
+        )
+        row = result[result['eid'] == 'eid-0'].iloc[0]
+        expected = np.corrcoef(trial_data['eid-0']['rt'],
+                               trial_data['eid-0']['signal'])[0, 1]
+        # both returned keys carry observed + null; only 'corr' gets a p_value
+        assert row['observed_corr'] == pytest.approx(expected)
+        assert row['observed_n'] == 8
+        assert len(row['null_corr']) == 5 and len(row['null_n']) == 5
+        assert 'p_value' in result.columns
+        assert {'observed_corr', 'null_corr',
+                'observed_n', 'null_n'} <= set(result.columns)
+
+    def test_missing_statistic_key_raises(self):
+        rng = np.random.default_rng(0)
+        trial_data = {
+            f'eid-{i}': {'rt': rng.random(8), 'signal': rng.random(8)}
+            for i in range(3)
+        }
+        group = _make_perm_group(trial_data)
+        with pytest.raises(KeyError):
+            group.session_permutation_test(
+                _attr_prep(trial_data),
+                lambda a, b: {'corr': np.corrcoef(a, b)[0, 1]},
+                fixed_var=['rt'], swapped_var=['signal'],
+                statistic_key='slope', n_iter=5,
+            )
