@@ -4146,6 +4146,127 @@ class TestFitResponseModel:
         assert ps.ols_fits == {}
 
 
+def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0):
+    """PhotometrySession with contrast-driven responses for one recording.
+
+    The early-window magnitude of every event is ``contrast_gain * contrast``
+    plus small noise, so the ``contrast`` predictor carries real variance.
+    Wheel velocity is finite so ``peak_velocity`` survives complete-case
+    filtering. Trials are all unbiased-block go trials with a real response.
+    """
+    import xarray as xr
+    from iblnm.data import PhotometrySession
+
+    series = pd.Series({
+        'eid': 'test-eid', 'subject': 'mouse1',
+        'start_time': '2024-01-01T10:00:00', 'number': 1,
+        'task_protocol': 'biased', 'session_type': 'biased',
+        'brain_region': ['VTA-r'], 'hemisphere': ['r'],
+        'target_NM': ['VTA-DA'],
+    })
+    ps = PhotometrySession(series, one=MagicMock(), load_data=False)
+
+    rng = np.random.default_rng(seed)
+    n_time = 61
+    tpts = np.linspace(-1, 1, n_time)
+    events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+
+    # Percent units, as the real `contrast` column is stored (log2 coding
+    # expects nonzero values >= 1).
+    contrasts = np.array([0.0, 6.25, 12.5, 25.0, 100.0])
+    contrast_vals = rng.choice(contrasts, n_trials)
+    sides = rng.choice(['left', 'right'], n_trials)
+    signed = np.where(sides == 'left', -1, 1) * contrast_vals
+
+    # Magnitude per (event, trial) driven by unsigned contrast; broadcast it
+    # across the whole post-event window so the window mean recovers it.
+    magnitude = contrast_gain * (contrast_vals / 100) + rng.normal(0, 0.05,
+                                                                   n_trials)
+    data = np.zeros((len(events), n_trials, n_time))
+    data[:, :, tpts >= 0] = magnitude[None, :, None]
+    ps.responses = {
+        'VTA-r': xr.DataArray(
+            data, dims=['event', 'trial', 'time'],
+            coords={'event': events,
+                    'trial': np.arange(n_trials), 'time': tpts},
+        )
+    }
+
+    # Vary the inter-event gaps so reaction/movement times are not constant
+    # (a constant log predictor collinear with the intercept fails the fit).
+    stim_on = np.linspace(10, 10 + n_trials, n_trials)
+    reaction = rng.uniform(0.1, 0.5, n_trials)
+    movement = rng.uniform(0.2, 1.0, n_trials)
+    ps.trials = pd.DataFrame({
+        'stimOn_times': stim_on,
+        'firstMovement_times': stim_on + reaction,
+        'feedback_times': stim_on + reaction + movement,
+        'signed_contrast': signed,
+        'contrast': contrast_vals,
+        'stim_side': sides,
+        'feedbackType': rng.choice([1, -1], n_trials),
+        'choice': rng.choice([-1, 1], n_trials),
+        'probabilityLeft': np.full(n_trials, 0.5),
+    })
+    ps.wheel_velocity = rng.normal(0, 1, (n_trials, 50))
+    return ps
+
+
+class TestCompareResponseModels:
+    """Tests for PhotometrySession.compare_response_models (drop-one family)."""
+
+    @property
+    def formulas(self):
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']
+
+    def test_absent_region_returns_empty_frame(self):
+        ps = _make_session_for_persession()
+        out = ps.compare_response_models('NOT-A-REGION', self.formulas)
+        assert out.empty
+        assert list(out.columns) == [
+            'brain_region', 'target_NM', 'event', 'predictor', 'r2',
+            'delta_r2', 'n_trials',
+        ]
+
+    def test_informative_contrast_has_positive_delta_r2(self):
+        ps = _make_session_for_persession()
+        out = ps.compare_response_models('VTA-r', self.formulas)
+        contrast_rows = out[out['predictor'] == 'contrast']
+        assert not contrast_rows.empty
+        assert (contrast_rows['delta_r2'] > 0).all()
+
+    def test_rows_tagged_with_region_and_target_nm(self):
+        ps = _make_session_for_persession()
+        out = ps.compare_response_models('VTA-r', self.formulas)
+        assert (out['brain_region'] == 'VTA-r').all()
+        assert (out['target_NM'] == 'VTA-DA').all()
+        # No `full` reference row; one row per dropped predictor per event.
+        assert 'full' not in set(out['predictor'])
+
+    def test_identical_trial_count_across_models_per_event(self):
+        ps = _make_session_for_persession()
+        ps.compare_response_models('VTA-r', self.formulas)
+        events = {event for _, event in ps.ols_fits}
+        assert events
+        for event in events:
+            nobs = {len(ps.ols_fits[(name, event)].model.endog)
+                    for name in self.formulas}
+            assert len(nobs) == 1
+
+    def test_ols_fits_cached_per_name_event(self):
+        ps = _make_session_for_persession()
+        out = ps.compare_response_models('VTA-r', self.formulas)
+        for event in set(out['event']):
+            for name in self.formulas:
+                assert (name, event) in ps.ols_fits
+
+    def test_event_below_min_trials_is_skipped(self):
+        ps = _make_session_for_persession(n_trials=120)
+        out = ps.compare_response_models('VTA-r', self.formulas, min_trials=200)
+        assert out.empty
+
+
 class TestResponseLMMEffects:
 
     def test_coefficients_carry_terms_and_ci(self):

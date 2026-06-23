@@ -19,7 +19,7 @@ from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
     LP_QC_LABELS,
-    MIN_NTRIALS, MIN_PERFORMANCE, MOTION_ENERGY_EVENT,
+    MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION, MOTION_ENERGY_EVENT,
     N_UNIQUE_SAMPLES_THRESHOLD,
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
@@ -42,6 +42,13 @@ from iblnm.validation import (
     IncompleteEventTimes, TrialsNotInPhotometryTime, FewUniqueSamples,
     QCValidationError, AmbiguousRegionMapping,
 )
+
+# Long-form schema returned by per-recording drop-one OLS ΔR² (one row per
+# event × dropped predictor for a single recording).
+PERSESSION_DROPONE_COLUMNS = [
+    'brain_region', 'target_NM', 'event', 'predictor', 'r2', 'delta_r2',
+    'n_trials',
+]
 
 
 # =============================================================================
@@ -1703,6 +1710,115 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         formula = formula.format(response=response_col)
         return analysis.fit_ols(formula, df)
+
+    def compare_response_models(self, brain_region, formulas,
+                                response_col='response', reference='full',
+                                min_trials=MIN_TRIALS_PERSESSION,
+                                contrast_coding='log2'):
+        """Fit a drop-one OLS family per event for one recording, return ΔR².
+
+        Builds this recording's per-trial response frame for ``brain_region``,
+        then for each event fits every formula in ``formulas`` on the event's
+        complete-case trials and differences each reduced model against the
+        ``reference`` model. Every model in an event is fit on the same rows
+        (complete cases over the family's column union), so their R² are
+        directly comparable. Each fit is cached in ``self.ols_fits`` keyed by
+        ``(name, event)``.
+
+        Parameters
+        ----------
+        brain_region : str
+            Recording region; must be a key of ``self.responses``.
+        formulas : dict[str, str]
+            Drop-one family ``{name: formula_template}``; ``{response}`` is
+            filled with ``response_col``. One key equals ``reference``.
+        response_col : str
+            Name of the per-trial response magnitude column.
+        reference : str
+            Key of the full model each reduced model's ΔR² is measured against.
+        min_trials : int
+            An event with fewer complete-case rows is omitted.
+        contrast_coding : str
+            Passed to :func:`iblnm.analysis.code_predictors`.
+
+        Returns
+        -------
+        pd.DataFrame
+            Long-form rows ``brain_region, target_NM, event, predictor, r2,
+            delta_r2, n_trials``. Empty (those columns) if ``brain_region`` is
+            absent or no event is scorable.
+        """
+        if brain_region not in self.responses:
+            return pd.DataFrame(columns=PERSESSION_DROPONE_COLUMNS)
+
+        target_NM = self.target_NM[self.brain_region.index(brain_region)]
+        df = self._response_modeling_frame(brain_region, response_col)
+
+        frames = []
+        for event, df_event in df.groupby('event'):
+            df_event = analysis.code_predictors(df_event, contrast_coding)
+            union_cols = analysis.formula_union_columns(
+                formulas.values(), df_event.columns)
+            df_event = df_event.dropna(subset=union_cols)
+            if len(df_event) < min_trials:
+                continue
+            fits = {name: self.fit_response_model(df_event, formula,
+                                                  response_col)
+                    for name, formula in formulas.items()}
+            if any(fit is None for fit in fits.values()):
+                continue
+            for name, fit in fits.items():
+                self.ols_fits[(name, event)] = fit
+            r2_by_name = {name: fit.rsquared for name, fit in fits.items()}
+            rows = analysis.dropone_delta_r2(r2_by_name, reference)
+            rows.insert(0, 'brain_region', brain_region)
+            rows.insert(1, 'target_NM', target_NM)
+            rows.insert(2, 'event', event)
+            rows['n_trials'] = len(df_event)
+            frames.append(rows)
+
+        if not frames:
+            return pd.DataFrame(columns=PERSESSION_DROPONE_COLUMNS)
+        return pd.concat(frames, ignore_index=True)[PERSESSION_DROPONE_COLUMNS]
+
+    def _response_modeling_frame(self, brain_region: str,
+                                 response_col: str) -> pd.DataFrame:
+        """Per-trial response magnitudes for one region merged with regressors.
+
+        For each event in ``self.responses[brain_region]`` computes the
+        early-window magnitude per trial (named ``response_col``), stacks the
+        events into one long frame, and merges on ``trial`` with this session's
+        :func:`iblnm.analysis.build_trial_regressors`. Adds the recording's
+        ``hemisphere`` so :func:`iblnm.task.add_relative_contrast` can resolve
+        contra/ipsi, then selects the modeling trials.
+
+        Returns
+        -------
+        pd.DataFrame
+            Long-form ``event, trial, response_col`` plus the coded-ready
+            regressor columns, restricted to unbiased-block go trials.
+        """
+        responses = self.responses[brain_region]
+        tpts = responses.coords['time'].values
+        magnitude_frames = [
+            pd.DataFrame({
+                'event': event,
+                'trial': responses.coords['trial'].values,
+                response_col: compute_response_magnitude(
+                    responses.sel(event=event).values, tpts,
+                    RESPONSE_WINDOWS['early']),
+            })
+            for event in responses.coords['event'].values
+        ]
+        long = pd.concat(magnitude_frames, ignore_index=True)
+
+        regressors = analysis.build_trial_regressors(
+            self.trials, getattr(self, 'wheel_velocity', None))
+        df = long.merge(regressors, on='trial', how='left')
+        df['hemisphere'] = self.hemisphere[
+            self.brain_region.index(brain_region)]
+        df = task.add_relative_contrast(df)
+        return analysis.select_modeling_trials(df, response_col)
 
 
 def _process_worker(eid, row_dict, h5_dir, fn, kwargs):
