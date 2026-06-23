@@ -4108,6 +4108,44 @@ class TestResponseLMMFit:
         assert checked > 0
 
 
+class TestFitResponseModel:
+    """Tests for PhotometrySession.fit_response_model (single OLS fit)."""
+
+    def _coded_frame(self, n=60, seed=0):
+        """Synthetic coded trial frame with a `response` driven by `contrast`."""
+        rng = np.random.default_rng(seed)
+        contrast = rng.uniform(-1, 1, n)
+        response = 2.0 * contrast + rng.normal(0, 0.1, n)
+        return pd.DataFrame({'contrast': contrast, 'response': response})
+
+    def test_rsquared_matches_direct_fit_ols(self, mock_photometry_session):
+        from iblnm.analysis import fit_ols
+        df = self._coded_frame()
+        fit = mock_photometry_session.fit_response_model(df, '{response} ~ contrast')
+        direct = fit_ols('response ~ contrast', df)
+        assert fit.rsquared == direct.rsquared
+
+    def test_response_col_substituted_into_formula(self, mock_photometry_session):
+        from iblnm.analysis import fit_ols
+        df = self._coded_frame().rename(columns={'response': 'magnitude'})
+        fit = mock_photometry_session.fit_response_model(
+            df, '{response} ~ contrast', response_col='magnitude')
+        direct = fit_ols('magnitude ~ contrast', df)
+        assert fit.rsquared == direct.rsquared
+
+    def test_returns_none_on_singular_design(self, mock_photometry_session):
+        df = self._coded_frame()
+        df['contrast'] = 1.0  # constant predictor -> collinear with intercept
+        assert mock_photometry_session.fit_response_model(
+            df, '{response} ~ contrast') is None
+
+    def test_ols_fits_empty_after_construction(self, minimal_session_series):
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(minimal_session_series, one=MagicMock(),
+                               load_data=False)
+        assert ps.ols_fits == {}
+
+
 class TestResponseLMMEffects:
 
     def test_coefficients_carry_terms_and_ci(self):

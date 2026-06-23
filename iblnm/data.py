@@ -557,6 +557,7 @@ class PhotometrySession(PhotometrySessionLoader):
         if not isinstance(self.photometry, dict):
             self.photometry = {}
         self.responses = {}
+        self.ols_fits = {}
         self.qc = pd.DataFrame()
         self.pose = None
         self.pose_times = None
@@ -1670,6 +1671,38 @@ class PhotometrySession(PhotometrySessionLoader):
                 vec = (vec - vmin) / (vmax - vmin)
 
         return vec
+
+
+    def fit_response_model(self, df: pd.DataFrame, formula: str,
+                           response_col: str = 'response'):
+        """Fit one OLS response model on a prepared trial frame.
+
+        Thin, event/region-agnostic wrapper over ``analysis.fit_ols``: the
+        ``{response}`` placeholder in ``formula`` is filled with ``response_col``
+        before fitting, so the caller owns which magnitude column is the
+        response. This method does not touch ``self.ols_fits`` — the comparison
+        caller keys that cache by ``(name, event)``, context this single fit
+        does not have.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Coded trial frame carrying ``response_col`` and every predictor the
+            formula references.
+        formula : str
+            Wilkinson formula whose ``{response}`` placeholder (if present) is
+            replaced by ``response_col``; passed through unchanged otherwise.
+        response_col : str
+            Name of the response column substituted into ``formula``.
+
+        Returns
+        -------
+        statsmodels RegressionResults or None
+            The fitted model (exposes ``.rsquared``, ``.params``), or ``None``
+            if the design is degenerate (mirrors ``analysis.fit_ols``).
+        """
+        formula = formula.format(response=response_col)
+        return analysis.fit_ols(formula, df)
 
 
 def _process_worker(eid, row_dict, h5_dir, fn, kwargs):
