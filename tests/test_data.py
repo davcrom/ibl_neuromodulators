@@ -5249,6 +5249,48 @@ class TestSessionPermutationTest:
         good = result[result['eid'] == 'eid-0'].iloc[0]
         assert not np.isnan(good['observed_corr'])
 
+    def test_error_column_reports_failing_stage(self):
+        trial_data = {
+            f'eid-{i}': {'rt': np.arange(6), 'signal': np.arange(6)}
+            for i in range(3)
+        }
+        group = _make_perm_group(trial_data)
+
+        def prep(ps):
+            if ps.eid == 'eid-2':
+                raise RuntimeError("boom")
+            for name, values in trial_data[ps.eid].items():
+                setattr(ps, name, np.asarray(values))
+            return ps
+
+        result = group.session_permutation_test(
+            prep,
+            lambda a, b: {'corr': np.corrcoef(a, b)[0, 1]},
+            fixed_var=['rt'], swapped_var=['signal'],
+            statistic_key='corr', n_iter=5,
+        )
+        bad = result[result['eid'] == 'eid-2'].iloc[0]
+        good = result[result['eid'] == 'eid-0'].iloc[0]
+        assert 'prep' in bad['error']
+        assert good['error'] is None
+
+    def test_error_column_reports_stat_stage(self):
+        trial_data = {
+            f'eid-{i}': {'rt': np.arange(6), 'signal': np.arange(6)}
+            for i in range(3)
+        }
+        group = _make_perm_group(trial_data)
+
+        def stat(a, b):
+            raise ValueError("nope")
+
+        result = group.session_permutation_test(
+            _attr_prep(trial_data), stat,
+            fixed_var=['rt'], swapped_var=['signal'],
+            statistic_key='corr', n_iter=5,
+        )
+        assert all('stat' in err for err in result['error'])
+
     def test_output_columns_for_recordings(self):
         rng = np.random.default_rng(0)
         trial_data = {
@@ -5263,7 +5305,7 @@ class TestSessionPermutationTest:
             statistic_key='corr', n_iter=5,
         )
         expected = list(group.recordings.columns) + [
-            'p_value', 'observed_corr', 'null_corr']
+            'error', 'p_value', 'observed_corr', 'null_corr']
         assert list(result.columns) == expected
         assert len(result) == 3
 

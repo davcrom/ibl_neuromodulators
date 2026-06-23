@@ -1,4 +1,5 @@
 import warnings
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -1733,6 +1734,29 @@ def _resolve_ps_variable(ps, entry):
     return np.asarray(value).ravel()
 
 
+class _PermutationStageError(Exception):
+    """A failure in one target-path stage of the session permutation test.
+
+    Carries the ``stage`` label ('prep', 'resolve', or 'stat') so the per-unit
+    loop can report which component raised. Its string form prefixes the
+    original exception's type and message with that stage.
+    """
+
+    def __init__(self, stage, original):
+        self.stage = stage
+        self.original = original
+        super().__init__(f"{stage}: {type(original).__name__}: {original}")
+
+
+@contextmanager
+def _permutation_stage(stage):
+    """Re-raise any exception from the block as ``_PermutationStageError(stage)``."""
+    try:
+        yield
+    except Exception as exc:
+        raise _PermutationStageError(stage, exc)
+
+
 def _apply_statistic(statistic, arrays):
     """Truncate every array to their common minimum length (from index 0),
     then call ``statistic(*truncated)``."""
@@ -2136,15 +2160,18 @@ class PhotometrySessionGroup:
         dominant cost of the test (acceptable per spec).
         """
         # Prepare the photometry session
-        target_ps = PhotometrySession(target, one=self.one, load_data=False)
-        target_ps = prep_fn(target_ps)
+        with _permutation_stage('prep'):
+            target_ps = PhotometrySession(target, one=self.one, load_data=False)
+            target_ps = prep_fn(target_ps)
 
         # Extract data arrays to be used in stat_fn
-        fixed_arrays = [getattr(target_ps, e) for e in fixed_var]
-        swapped_arrays = [getattr(target_ps, e) for e in swapped_var]
+        with _permutation_stage('resolve'):
+            fixed_arrays = [getattr(target_ps, e) for e in fixed_var]
+            swapped_arrays = [getattr(target_ps, e) for e in swapped_var]
 
         # Compute the observed quantities (dict keyed by quantity name)
-        observed = _apply_statistic(stat_fn, fixed_arrays + swapped_arrays)
+        with _permutation_stage('stat'):
+            observed = _apply_statistic(stat_fn, fixed_arrays + swapped_arrays)
 
         null = {key: np.full(n_iter, np.nan) for key in observed}
         for i in range(n_iter):
@@ -2213,11 +2240,13 @@ class PhotometrySessionGroup:
         pandas.DataFrame
             One row per unit, not written to disk. Identifier columns ``eid``
             (and ``brain_region``, ``hemisphere``, ``target_NM``, ``fiber_idx``
-            for ``unit='recordings'``) plus ``p_value`` (float, for
+            for ``unit='recordings'``) plus ``error`` (None on success, else a
+            ``"<stage>: <ExcType>: <msg>"`` string naming the failing target
+            stage — ``prep``, ``resolve``, or ``stat``), ``p_value`` (float, for
             ``statistic_key``) and, for every key ``k`` returned by ``stat_fn``,
             ``observed_<k>`` (float) and ``null_<k>`` (object column of 1-D
-            arrays). A unit whose run raises (including an empty donor pool)
-            yields ``p_value`` NaN and NaN ``observed_*``/``null_*`` entries.
+            arrays). A unit whose run raises yields a non-null ``error``,
+            ``p_value`` NaN, and NaN ``observed_*``/``null_*`` entries.
         """
         from tqdm import tqdm
 
@@ -2235,9 +2264,11 @@ class PhotometrySessionGroup:
                     session, donors, prep_fn, stat_fn, fixed_var, swapped_var,
                     n_iter, rng
                     )
-            except Exception:
-                observed, null = None, None
+                error = None
+            except _PermutationStageError as exc:
+                observed, null, error = None, None, str(exc)
             row = session.to_dict()
+            row['error'] = error
             if observed is None:
                 row['p_value'] = np.nan
             else:
