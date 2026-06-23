@@ -175,3 +175,41 @@ class TestPlotMovementFigures:
                    .glob('response_lmm_movement_reliability_*.svg'))
         assert any(fig_dirs['movement_model_comparison']
                    .glob('response_lmm_movement_r2_*.svg'))
+
+
+class TestPlotPersessionFigures:
+    """The persession orchestration writes the long-form CSV to the config path
+    and the drop-one grid SVG to the figures dir."""
+
+    def _stub_frame(self):
+        predictors = ['contrast', 'side', 'reward',
+                      'log_reaction_time', 'peak_velocity']
+        rows = []
+        for s in range(3):
+            for p in predictors:
+                rows.append({
+                    'eid': f'e{s}', 'subject': f's{s}', 'target_NM': 'VTA-DA',
+                    'brain_region': 'VTA', 'event': 'stimOn_times',
+                    'predictor': p, 'r2': 0.5, 'delta_r2': 0.05,
+                    'n_trials': 100})
+        return pd.DataFrame(rows)
+
+    def test_writes_csv_to_config_path_and_figure(self, tmp_path, monkeypatch):
+        from scripts import responses
+        csv_path = tmp_path / 'response_ols_persession_dropone.csv'
+        monkeypatch.setattr(responses, 'RESPONSE_OLS_PERSESSION_FPATH', csv_path)
+
+        frame = self._stub_frame()
+        group = MagicMock()
+        group.response_ols_dropone.return_value = frame
+
+        fig_dir = tmp_path / 'persession'
+        fig_dir.mkdir()
+        responses.plot_persession_figures(group, fig_dir, tmp_path)
+
+        group.response_ols_dropone.assert_called_once()
+        written = pd.read_csv(csv_path)
+        assert set(written['predictor']) == set(frame['predictor'])
+        assert len(written) == len(frame)
+        svg = fig_dir / 'response_ols_persession_dropone.svg'
+        assert svg.exists() and svg.stat().st_size > 0

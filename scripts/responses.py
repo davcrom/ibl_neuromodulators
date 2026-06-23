@@ -27,6 +27,7 @@ from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
+    RESPONSE_OLS_PERSESSION_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
     TIMING_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
@@ -40,6 +41,7 @@ from iblnm.vis import (
     plot_lmm_reliability,
     plot_mean_response_traces,
     plot_movement_r2_bars,
+    plot_ols_dropone,
 )
 from iblnm.analysis import (
     split_features_by_event,
@@ -261,11 +263,6 @@ def plot_similarity_figures(group, similarity_dir, data_dir):
 # Movement encoding
 # =========================================================================
 
-# Response DV set for the movement claims: stimulus onset, first-movement, and
-# feedback aligned magnitudes.
-MOVEMENT_EVENTS = ('stimOn_times', 'firstMovement_times', 'feedback_times')
-
-
 def _movement_reliability(group, group_by):
     """Stack cv and jackknife ΔR² across the per-timing-variable ``movement_<t>``
     families (full interaction model, analogous to ``task_reliability``)."""
@@ -301,7 +298,7 @@ def _movement_r2(group, group_by):
 
 
 def plot_movement_figures(group, fig_dirs, data_dir):
-    """Movement-encoding analyses over the response events (``MOVEMENT_EVENTS``):
+    """Movement-encoding analyses over the response events (``RESPONSE_EVENTS``):
     cv/jackknife reliability ΔR² per timing variable (analogous to the task
     reliability plots) and the three-bar in-sample R² comparison."""
     group_by = ['target_NM', 'event']
@@ -333,7 +330,7 @@ def plot_movement_figures(group, fig_dirs, data_dir):
             plt.close(fig)
 
     # Three-bar in-sample R² comparison: one figure per movement event.
-    r2_mv = r2[r2['event'].isin(MOVEMENT_EVENTS)]
+    r2_mv = r2[r2['event'].isin(RESPONSE_EVENTS)]
     for event, df_ev in r2_mv.groupby('event'):
         fig = plot_movement_r2_bars(df_ev)
         fig.savefig(
@@ -341,6 +338,44 @@ def plot_movement_figures(group, fig_dirs, data_dir):
             / f'response_lmm_movement_r2_{event}.svg',
             dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
+
+
+# =========================================================================
+# Per-recording OLS drop-one
+# =========================================================================
+
+def plot_persession_figures(group, figures_dir, data_dir, response_col='response'):
+    """Per-recording drop-one OLS ΔR²: save the long-form CSV and the grid figure.
+
+    Runs ``group.response_ols_dropone`` with the ``persession`` formula family,
+    writes the returned long-form frame to ``RESPONSE_OLS_PERSESSION_FPATH``, and
+    saves the ``plot_ols_dropone`` grid (target-NM × event, mice as markers).
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        Must have ``recordings`` populated (H5-backed per-recording fits).
+    figures_dir : Path
+        Output directory for the SVG figure.
+    data_dir : Path
+        Output directory for sibling CSVs; the per-recording frame itself is
+        written to the ``RESPONSE_OLS_PERSESSION_FPATH`` config path.
+    response_col : str
+        Per-trial response magnitude column the formulas model.
+    """
+    df = group.response_ols_dropone(LMM_FORMULAS['persession'],
+                                    response_col=response_col)
+    df.to_csv(RESPONSE_OLS_PERSESSION_FPATH, index=False)
+    print(f"  Per-recording OLS drop-one CSV saved to "
+          f"{RESPONSE_OLS_PERSESSION_FPATH}")
+
+    fig = plot_ols_dropone(
+        df, title='Per-recording OLS drop-one ΔR²\n'
+                  'mice are markers (median ± IQR)')
+    fig.savefig(figures_dir / 'response_ols_persession_dropone.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+    print("  Per-recording OLS drop-one figure saved")
 
 
 if __name__ == '__main__':
@@ -365,6 +400,7 @@ if __name__ == '__main__':
         'traces': fig_base / 'traces',
         'movement_descriptive': fig_base / 'movement/descriptive',
         'movement_model_comparison': fig_base / 'movement/model_comparison',
+        'persession': fig_base / 'persession',
     }
     for d in fig_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
@@ -515,6 +551,13 @@ if __name__ == '__main__':
     print("\nRunning movement-variable encoding analyses...")
     plot_movement_figures(group, fig_dirs, data_dir)
     print(f"Movement figures saved under {fig_base / 'movement'}")
+
+    # =====================================================================
+    # Per-recording OLS drop-one
+    # =====================================================================
+    print("\nRunning per-recording OLS drop-one analysis...")
+    plot_persession_figures(group, fig_dirs['persession'], data_dir)
+    print(f"Per-recording OLS figures saved to {fig_dirs['persession']}")
 
     # =====================================================================
     # Response vectors: per-event similarity
