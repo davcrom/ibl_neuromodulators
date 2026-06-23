@@ -24,7 +24,6 @@ from iblnm.config import (
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
-    TIMING_VARS,
     RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
@@ -2499,14 +2498,7 @@ class PhotometrySessionGroup:
         from iblnm.task import add_relative_contrast
 
         df = add_relative_contrast(self._merge_trial_regressors())
-        df = df.query('probabilityLeft == 0.5')
-        df = df.dropna(subset=[response_col])
-        df = df.query('choice != 0 and response_time > 0.05').copy()
-        for var in TIMING_VARS:
-            if var in df.columns:
-                df[f'log_{var}'] = np.where(
-                    df[var] > 0, np.log10(df[var]), np.nan)
-        return df
+        return analysis.select_modeling_trials(df, response_col)
 
     def _code_lmm_predictors(
         self, df: pd.DataFrame, contrast_coding: str = 'log2'
@@ -2527,15 +2519,7 @@ class PhotometrySessionGroup:
         contrast_coding : str
             Coding passed to :func:`iblnm.util.get_contrast_coding`.
         """
-        from iblnm.util import get_contrast_coding
-
-        transform, _ = get_contrast_coding(contrast_coding)
-        df = df.copy()
-        coded = transform(df['contrast'])
-        df['contrast'] = coded - float(np.mean(coded))
-        df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-        df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-        return df
+        return analysis.code_predictors(df, contrast_coding)
 
     def response_lmm_fit(self, formulas, group_by, response_col='response',
                          reml=True, re_formula='1', min_subjects=2):
