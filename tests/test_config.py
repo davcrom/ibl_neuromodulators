@@ -65,9 +65,10 @@ def test_task_reliability_formulas():
     }
     assert _format(event_sets['stimOn_times']) == no_reward
     assert _format(event_sets['firstMovement_times']) == no_reward
+    # 2nd-order only, no side:reward (that interaction encodes choice).
     assert _format(event_sets['feedback_times']) == {
-        'full': 'response ~ contrast * side * reward',
-        'contrast': 'response ~ side * reward',
+        'full': 'response ~ contrast * side + contrast * reward',
+        'contrast': 'response ~ side + reward',
         'side': 'response ~ contrast * reward',
         'reward': 'response ~ contrast * side',
         'interactions': 'response ~ contrast + side + reward',

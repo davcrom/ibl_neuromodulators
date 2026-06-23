@@ -477,9 +477,13 @@ LMM_FORMULAS = {
             'side': '{response} ~ contrast',
             'interactions': '{response} ~ contrast + side',
         },
+        # 2nd-order only and no side:reward — that interaction encodes choice,
+        # which moves to the movement set. `full` is the two-way model minus
+        # side:reward; each drop-one removes a predictor and its surviving
+        # interactions; `interactions` is the additive model.
         'feedback_times': {
-            'full': '{response} ~ contrast * side * reward',
-            'contrast': '{response} ~ side * reward',
+            'full': '{response} ~ contrast * side + contrast * reward',
+            'contrast': '{response} ~ side + reward',
             'side': '{response} ~ contrast * reward',
             'reward': '{response} ~ contrast * side',
             'interactions': '{response} ~ contrast + side + reward',
