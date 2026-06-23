@@ -50,6 +50,13 @@ PERSESSION_DROPONE_COLUMNS = [
     'n_trials',
 ]
 
+# Group-level long-form drop-one frame: per-recording rows tagged with their
+# eid/subject. target_NM precedes brain_region (the recording identity order).
+RESPONSE_OLS_DROPONE_COLUMNS = [
+    'eid', 'subject', 'target_NM', 'brain_region', 'event', 'predictor', 'r2',
+    'delta_r2', 'n_trials',
+]
+
 
 # =============================================================================
 # HDF5 save/load helpers
@@ -2415,6 +2422,62 @@ class PhotometrySessionGroup:
                     row[f'null_{key}'] = null[key]
             rows.append(row)
         return pd.DataFrame(rows)
+
+    def response_ols_dropone(self, formulas, response_col='response',
+                             reference='full', min_trials=MIN_TRIALS_PERSESSION,
+                             contrast_coding='log2'):
+        """Per-recording drop-one OLS ΔR² over the whole group.
+
+        Loops ``self.recordings``; for each row instantiates its
+        ``PhotometrySession`` from H5 and runs
+        :meth:`PhotometrySession.compare_response_models` for that recording's
+        ``brain_region``. Each recording's long-form rows are tagged with the
+        row's ``eid`` and ``subject`` (``target_NM`` already comes back from the
+        PS method) and concatenated. A recording whose region is absent or whose
+        events are all below ``min_trials`` contributes no rows. No disk write.
+
+        Parameters
+        ----------
+        formulas : dict[str, str]
+            Drop-one family ``{name: formula_template}`` passed through to
+            ``compare_response_models``; one key equals ``reference``.
+        response_col : str
+            Per-trial response magnitude column the formulas model.
+        reference : str
+            Full-model key each reduced model's ΔR² is measured against.
+        min_trials : int
+            An event with fewer complete-case rows is omitted (per recording).
+        contrast_coding : str
+            Passed to :func:`iblnm.analysis.code_predictors`.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Long-form ``eid, subject, target_NM, brain_region, event,
+            predictor, r2, delta_r2, n_trials``; empty (those columns) when no
+            recording is scorable.
+        """
+        from tqdm import tqdm
+
+        frames = []
+        for _, row in tqdm(self.recordings.iterrows(),
+                           total=len(self.recordings),
+                           desc="Per-recording OLS drop-one"):
+            ps = PhotometrySession.from_h5(
+                Path(self.h5_dir) / f"{row['eid']}.h5", one=self.one)
+            rows = ps.compare_response_models(
+                brain_region=row['brain_region'], formulas=formulas,
+                response_col=response_col, reference=reference,
+                min_trials=min_trials, contrast_coding=contrast_coding)
+            if rows.empty:
+                continue
+            rows.insert(0, 'eid', row['eid'])
+            rows.insert(1, 'subject', row['subject'])
+            frames.append(rows)
+
+        if not frames:
+            return pd.DataFrame(columns=RESPONSE_OLS_DROPONE_COLUMNS)
+        return pd.concat(frames, ignore_index=True)[RESPONSE_OLS_DROPONE_COLUMNS]
 
     # -----------------------------------------------------------------
     # Parquet loaders — populate group attributes from saved files

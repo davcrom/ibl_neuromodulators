@@ -4146,23 +4146,29 @@ class TestFitResponseModel:
         assert ps.ols_fits == {}
 
 
-def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0):
+def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
+                                 eid='test-eid', subject='mouse1',
+                                 region='VTA-r', hemisphere='r',
+                                 target_nm='VTA-DA'):
     """PhotometrySession with contrast-driven responses for one recording.
 
     The early-window magnitude of every event is ``contrast_gain * contrast``
     plus small noise, so the ``contrast`` predictor carries real variance.
     Wheel velocity is finite so ``peak_velocity`` survives complete-case
     filtering. Trials are all unbiased-block go trials with a real response.
+    The identity arguments (``eid``/``subject``/``region``/``hemisphere``/
+    ``target_nm``) let callers build a multi-recording group; ``wheel_fs`` is
+    set so the session round-trips through ``save_h5``.
     """
     import xarray as xr
     from iblnm.data import PhotometrySession
 
     series = pd.Series({
-        'eid': 'test-eid', 'subject': 'mouse1',
+        'eid': eid, 'subject': subject,
         'start_time': '2024-01-01T10:00:00', 'number': 1,
         'task_protocol': 'biased', 'session_type': 'biased',
-        'brain_region': ['VTA-r'], 'hemisphere': ['r'],
-        'target_NM': ['VTA-DA'],
+        'brain_region': [region], 'hemisphere': [hemisphere],
+        'target_NM': [target_nm],
     })
     ps = PhotometrySession(series, one=MagicMock(), load_data=False)
 
@@ -4185,7 +4191,7 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0):
     data = np.zeros((len(events), n_trials, n_time))
     data[:, :, tpts >= 0] = magnitude[None, :, None]
     ps.responses = {
-        'VTA-r': xr.DataArray(
+        region: xr.DataArray(
             data, dims=['event', 'trial', 'time'],
             coords={'event': events,
                     'trial': np.arange(n_trials), 'time': tpts},
@@ -4209,6 +4215,7 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0):
         'probabilityLeft': np.full(n_trials, 0.5),
     })
     ps.wheel_velocity = rng.normal(0, 1, (n_trials, 50))
+    ps.wheel_fs = 30.0
     return ps
 
 
@@ -4265,6 +4272,81 @@ class TestCompareResponseModels:
         ps = _make_session_for_persession(n_trials=120)
         out = ps.compare_response_models('VTA-r', self.formulas, min_trials=200)
         assert out.empty
+
+
+class TestResponseOlsDropone:
+    """Tests for PhotometrySessionGroup.response_ols_dropone (orchestration)."""
+
+    @property
+    def formulas(self):
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']
+
+    def _write_recording(self, h5_dir, eid, subject, region, hemisphere,
+                         target_nm, n_trials=120, seed=0):
+        """Save a persession PhotometrySession to ``h5_dir/{eid}.h5``."""
+        ps = _make_session_for_persession(
+            n_trials=n_trials, seed=seed, eid=eid, subject=subject,
+            region=region, hemisphere=hemisphere, target_nm=target_nm)
+        ps.save_h5(h5_dir / f'{eid}.h5',
+                   groups=['metadata', 'trials', 'photometry', 'wheel'])
+
+    def _recordings(self, rows):
+        """Build a recordings DataFrame from (eid, subject, region, hemi) tuples."""
+        return pd.DataFrame([
+            {'eid': eid, 'subject': subject, 'brain_region': region,
+             'hemisphere': hemi, 'target_NM': 'ignored',
+             'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
+             'number': 1, 'task_protocol': 'biased'}
+            for eid, subject, region, hemi in rows
+        ])
+
+    def test_concatenates_per_recording_rows_with_tags(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        self._write_recording(tmp_path, 'eid-0', 'subj-0', 'VTA-r', 'r',
+                              'VTA-DA', seed=0)
+        self._write_recording(tmp_path, 'eid-1', 'subj-1', 'DR-l', 'l',
+                              'DR-5HT', seed=1)
+        recs = self._recordings([
+            ('eid-0', 'subj-0', 'VTA-r', 'r'),
+            ('eid-1', 'subj-1', 'DR-l', 'l'),
+        ])
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        out = group.response_ols_dropone(self.formulas)
+
+        assert list(out.columns) == [
+            'eid', 'subject', 'target_NM', 'brain_region', 'event',
+            'predictor', 'r2', 'delta_r2', 'n_trials',
+        ]
+        # Both recordings contribute; eid/subject tags come from the row.
+        assert set(out['eid']) == {'eid-0', 'eid-1'}
+        assert dict(out.groupby('eid')['subject'].first()) == {
+            'eid-0': 'subj-0', 'eid-1': 'subj-1'}
+        # target_NM comes back from the PS metadata, not the recordings row.
+        assert dict(out.groupby('eid')['target_NM'].first()) == {
+            'eid-0': 'VTA-DA', 'eid-1': 'DR-5HT'}
+        # One row per dropped regressor per (recording, event); no reference row.
+        assert 'full' not in set(out['predictor'])
+        dropped = set(self.formulas) - {'full'}
+        per_event = out.groupby(['eid', 'event'])['predictor'].agg(set)
+        assert (per_event == dropped).all()
+
+    def test_insufficient_recording_is_absent(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        self._write_recording(tmp_path, 'eid-0', 'subj-0', 'VTA-r', 'r',
+                              'VTA-DA', n_trials=120, seed=0)
+        # Too few trials to score any event -> contributes no rows.
+        self._write_recording(tmp_path, 'eid-1', 'subj-1', 'DR-l', 'l',
+                              'DR-5HT', n_trials=20, seed=1)
+        recs = self._recordings([
+            ('eid-0', 'subj-0', 'VTA-r', 'r'),
+            ('eid-1', 'subj-1', 'DR-l', 'l'),
+        ])
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        out = group.response_ols_dropone(self.formulas)
+
+        assert set(out['eid']) == {'eid-0'}
+        assert 'eid-1' not in set(out['eid'])
 
 
 class TestResponseLMMEffects:
