@@ -100,3 +100,25 @@ def test_nested_sets_have_reference_key():
     nested += [f'movement_{t}' for t in TIMING_VARS]
     for family in nested:
         assert 'full' in LMM_FORMULAS[family]
+
+
+def test_persession_formulas():
+    formulas = _format(LMM_FORMULAS['persession'])
+    assert set(formulas) == {
+        'full', 'contrast', 'side', 'reward',
+        'log_reaction_time', 'peak_velocity',
+    }
+    assert formulas == {
+        'full': 'response ~ (contrast + side + reward + log_reaction_time + peak_velocity)**2',
+        'contrast': 'response ~ (side + reward + log_reaction_time + peak_velocity)**2',
+        'side': 'response ~ (contrast + reward + log_reaction_time + peak_velocity)**2',
+        'reward': 'response ~ (contrast + side + log_reaction_time + peak_velocity)**2',
+        'log_reaction_time': 'response ~ (contrast + side + reward + peak_velocity)**2',
+        'peak_velocity': 'response ~ (contrast + side + reward + log_reaction_time)**2',
+    }
+
+
+def test_persession_thresholds_and_path():
+    assert config.MIN_TRIALS_PERSESSION == 50
+    assert config.MIN_RECORDINGS_PERMOUSE == 3
+    assert config.RESPONSE_OLS_PERSESSION_FPATH.name == 'response_ols_persession_dropone.csv'

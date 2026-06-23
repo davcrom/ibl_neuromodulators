@@ -21,6 +21,7 @@ TRIAL_REGRESSORS_FPATH = RESPONSES_DIR / 'trial_regressors.pqt'
 RESPONSE_MATRIX_FPATH = RESPONSES_DIR / 'response_matrix.pqt'
 RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 MEAN_TRACES_FPATH = RESPONSES_DIR / 'mean_traces.pqt'
+RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.csv'
 TASK_ENCODING_DIR = RESULTS_DIR / 'task_encoding'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 
@@ -489,7 +490,23 @@ LMM_FORMULAS = {
         }
         for t, pred in MOVEMENT_PREDICTORS.items()
     },
+    # Per-session OLS drop-one: full two-way interaction model is the reference.
+    # Each non-`full` key drops one regressor and all of its 2-way interactions,
+    # expressed as the `**2` of the remaining four regressors.
+    'persession': {
+        'full': '{response} ~ (contrast + side + reward + log_reaction_time + peak_velocity)**2',
+        'contrast': '{response} ~ (side + reward + log_reaction_time + peak_velocity)**2',
+        'side': '{response} ~ (contrast + reward + log_reaction_time + peak_velocity)**2',
+        'reward': '{response} ~ (contrast + side + log_reaction_time + peak_velocity)**2',
+        'log_reaction_time': '{response} ~ (contrast + side + reward + peak_velocity)**2',
+        'peak_velocity': '{response} ~ (contrast + side + reward + log_reaction_time)**2',
+    },
 }
+
+# Per-session OLS drop-one thresholds: minimum trials for a recording to be fit,
+# and minimum recordings per mouse (per cell) for that mouse to be plotted.
+MIN_TRIALS_PERSESSION = 50
+MIN_RECORDINGS_PERMOUSE = 3
 
 
 # Plotting parameters
