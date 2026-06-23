@@ -138,16 +138,13 @@ class TestPlotMovementFigures:
     def _run(self, tmp_path):
         from scripts.responses import plot_movement_figures
         group = _make_movement_group()
-        fig_dirs = {
-            'movement_model_comparison': tmp_path / 'model_comparison',
-            'movement_slopes': tmp_path / 'slopes',
-        }
+        fig_dirs = {'movement_model_comparison': tmp_path / 'model_comparison'}
         for d in fig_dirs.values():
             d.mkdir(parents=True, exist_ok=True)
         plot_movement_figures(group, fig_dirs, tmp_path)
         return fig_dirs
 
-    def test_writes_reliability_and_saturated_csvs(self, tmp_path):
+    def test_writes_reliability_and_r2_csvs(self, tmp_path):
         self._run(tmp_path)
         for fname, cols in [
             ('response_lmm_movement_reliability_cv.csv',
@@ -156,25 +153,25 @@ class TestPlotMovementFigures:
             ('response_lmm_movement_reliability_jackknife.csv',
              {'target_NM', 'event', 'predictor', 'fold', 'delta_r2',
               'timing_var'}),
-            ('response_lmm_movement_saturated_r2.csv',
+            ('response_lmm_movement_r2.csv',
              {'target_NM', 'event', 'name', 'marginal_r2', 'timing_var'}),
         ]:
             df = pd.read_csv(tmp_path / fname)
             assert cols.issubset(df.columns), fname
 
-    def test_writes_claim_coefficient_csvs(self, tmp_path):
-        """The movement effect is the log_<t> coefficient of each claim model."""
+    def test_reliability_predictors_extend_task_set(self, tmp_path):
+        """The movement reliability axis carries the task drop-one predictors
+        plus the movement predictor on one axis."""
         self._run(tmp_path)
-        for fname in ('response_lmm_movement_predicts_response.csv',
-                      'response_lmm_movement_within_contrast.csv'):
-            df = pd.read_csv(tmp_path / fname)
-            assert {'target_NM', 'event', 'term', 'Coef.',
-                    'timing_var'}.issubset(df.columns)
-            assert any(str(t).startswith('log_') for t in df['term'])
+        df = pd.read_csv(tmp_path / 'response_lmm_movement_reliability_cv.csv')
+        preds = set(df['predictor'])
+        assert 'movement' in preds
+        assert 'interactions' in preds
+        assert {'contrast', 'side', 'reward'} & preds
 
     def test_renders_movement_figures(self, tmp_path):
         fig_dirs = self._run(tmp_path)
         assert any(fig_dirs['movement_model_comparison']
                    .glob('response_lmm_movement_reliability_*.svg'))
-        assert any(fig_dirs['movement_slopes']
-                   .glob('response_lmm_movement_*.svg'))
+        assert any(fig_dirs['movement_model_comparison']
+                   .glob('response_lmm_movement_r2_*.svg'))

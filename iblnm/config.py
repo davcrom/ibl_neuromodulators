@@ -416,6 +416,15 @@ RESPONSE_WINDOWS = {
 
 # Movement encoding analyses
 TIMING_VARS = ['reaction_time', 'movement_time', 'peak_velocity']
+# Predictor column each timing variable enters the LMM as. reaction_time and
+# movement_time are heavily right-skewed (raw skew 7.7 / 14.0), so they enter
+# log-transformed; peak_velocity is already roughly symmetric (raw skew 0.9) and
+# enters raw. _modeling_frame supplies the matching log_<var> columns.
+MOVEMENT_PREDICTORS = {
+    'reaction_time': 'log_reaction_time',
+    'movement_time': 'log_movement_time',
+    'peak_velocity': 'peak_velocity',
+}
 MIN_SUBJECTS_MOVEMENT = 2
 MIN_TRIALS_MOVEMENT = 20
 
@@ -462,30 +471,23 @@ LMM_FORMULAS = {
     'task_ceiling': {
         'ceiling': '{response} ~ C(contrast) * side * reward',
     },
-    # Movement families: one named family per timing variable (reward removed).
+    # Movement reliability: one consolidated family per timing variable,
+    # extending task_reliability with the movement predictor. `full` is the
+    # full interaction model; each main-effect key drops that predictor and all
+    # its interactions; `movement` drops the timing predictor entirely;
+    # `interactions` drops only the timing predictor's interaction terms (keeps
+    # the task interactions, makes the predictor additive). The three-bar r2
+    # plot reads the `full`/`contrast`/`movement` subset.
     **{
-        f'movement_additive_{t}': {
-            'full': f'{{response}} ~ contrast + log_{t}',
-            'contrast': f'{{response}} ~ log_{t}',
-            'movement': '{response} ~ contrast',
+        f'movement_{t}': {
+            'full': f'{{response}} ~ contrast * side * reward * {pred}',
+            'contrast': f'{{response}} ~ side * reward * {pred}',
+            'side': f'{{response}} ~ contrast * reward * {pred}',
+            'reward': f'{{response}} ~ contrast * side * {pred}',
+            'movement': '{response} ~ contrast * side * reward',
+            'interactions': f'{{response}} ~ contrast * side * reward + {pred}',
         }
-        for t in TIMING_VARS
-    },
-    **{
-        f'movement_saturated_{t}': {
-            'full': f'{{response}} ~ contrast * reward * side * log_{t}',
-            'contrast': f'{{response}} ~ reward * side * log_{t}',
-            'movement': '{response} ~ contrast * reward * side',
-        }
-        for t in TIMING_VARS
-    },
-    # Movement claims: standalone reporting models (not a nested r2 comparison).
-    **{
-        f'movement_claims_{t}': {
-            'predicts_response': f'{{response}} ~ log_{t}',
-            'within_contrast': f'{{response}} ~ C(contrast) + log_{t} + side + reward',
-        }
-        for t in TIMING_VARS
+        for t, pred in MOVEMENT_PREDICTORS.items()
     },
 }
 

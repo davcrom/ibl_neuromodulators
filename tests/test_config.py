@@ -69,27 +69,34 @@ def test_task_ceiling_formula():
     assert formulas == {'ceiling': 'response ~ C(contrast) * side * reward'}
 
 
+# Per-variable predictor: reaction_time and movement_time are log-transformed
+# (heavy right skew); peak_velocity is used raw (already ~symmetric).
+_EXPECTED_PREDICTORS = {
+    'reaction_time': 'log_reaction_time',
+    'movement_time': 'log_movement_time',
+    'peak_velocity': 'peak_velocity',
+}
+
+
+def test_movement_predictors_map_each_timing_var():
+    assert config.MOVEMENT_PREDICTORS == _EXPECTED_PREDICTORS
+
+
 def test_movement_families_expand_per_timing_var():
     for t in TIMING_VARS:
-        assert _format(LMM_FORMULAS[f'movement_additive_{t}']) == {
-            'full': f'response ~ contrast + log_{t}',
-            'contrast': f'response ~ log_{t}',
-            'movement': 'response ~ contrast',
-        }
-        assert _format(LMM_FORMULAS[f'movement_saturated_{t}']) == {
-            'full': f'response ~ contrast * reward * side * log_{t}',
-            'contrast': f'response ~ reward * side * log_{t}',
-            'movement': 'response ~ contrast * reward * side',
-        }
-        assert _format(LMM_FORMULAS[f'movement_claims_{t}']) == {
-            'predicts_response': f'response ~ log_{t}',
-            'within_contrast': f'response ~ C(contrast) + log_{t} + side + reward',
+        pred = _EXPECTED_PREDICTORS[t]
+        assert _format(LMM_FORMULAS[f'movement_{t}']) == {
+            'full': f'response ~ contrast * side * reward * {pred}',
+            'contrast': f'response ~ side * reward * {pred}',
+            'side': f'response ~ contrast * reward * {pred}',
+            'reward': f'response ~ contrast * side * {pred}',
+            'movement': 'response ~ contrast * side * reward',
+            'interactions': f'response ~ contrast * side * reward + {pred}',
         }
 
 
 def test_nested_sets_have_reference_key():
     nested = ['task_reliability']
-    nested += [f'movement_additive_{t}' for t in TIMING_VARS]
-    nested += [f'movement_saturated_{t}' for t in TIMING_VARS]
+    nested += [f'movement_{t}' for t in TIMING_VARS]
     for family in nested:
         assert 'full' in LMM_FORMULAS[family]

@@ -37,7 +37,7 @@ from iblnm.vis import (
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
     plot_lmm_ceiling,
-    plot_lmm_reliability, plot_lmm_coefficient_heatmap,
+    plot_lmm_reliability,
     plot_mean_response_traces,
     plot_movement_r2_bars,
 )
@@ -267,10 +267,11 @@ MOVEMENT_EVENTS = ('stimOn_times', 'firstMovement_times', 'feedback_times')
 
 
 def _movement_reliability(group, group_by):
-    """Stack cv and jackknife ΔR² across the per-timing-variable additive sets."""
+    """Stack cv and jackknife ΔR² across the per-timing-variable ``movement_<t>``
+    families (full interaction model, analogous to ``task_reliability``)."""
     cv, jk = [], []
     for t in TIMING_VARS:
-        formulas = LMM_FORMULAS[f'movement_additive_{t}']
+        formulas = LMM_FORMULAS[f'movement_{t}']
         cv.append(group.response_lmm_crossval(
             formulas, group_by, min_subjects=MIN_SUBJECTS_MOVEMENT,
             min_trials=MIN_TRIALS_MOVEMENT).assign(timing_var=t))
@@ -281,70 +282,50 @@ def _movement_reliability(group, group_by):
             pd.concat(jk, ignore_index=True))
 
 
-def _movement_saturated_r2(group, group_by):
-    """Per-model in-sample marginal R² of the saturated movement sets.
+def _movement_r2(group, group_by):
+    """Per-model in-sample marginal R² of the ``movement_<t>`` families.
 
     Keys are renamed ``<name>_<t>`` so cached fits don't collide across timing
-    variables, then stripped back to ``full``/``contrast``/``movement`` for
-    :func:`plot_movement_r2_bars`.
+    variables, then stripped back to the family keys; :func:`plot_movement_r2_bars`
+    reads the ``full``/``contrast``/``movement`` subset.
     """
     rows = []
     for t in TIMING_VARS:
         formulas = {f'{name}_{t}': formula for name, formula
-                    in LMM_FORMULAS[f'movement_saturated_{t}'].items()}
-        r2 = group.response_lmm_fit(formulas, group_by)
+                    in LMM_FORMULAS[f'movement_{t}'].items()}
+        r2 = group.response_lmm_fit(formulas, group_by,
+                                    min_subjects=MIN_SUBJECTS_MOVEMENT)
         r2['name'] = r2['name'].str.replace(f'_{t}$', '', regex=True)
         rows.append(r2.assign(timing_var=t))
     return pd.concat(rows, ignore_index=True)
 
 
-def _movement_effect_coefficients(group, group_by):
-    """Coefficients of the two movement-claim models per timing variable.
-
-    ``predicts_response`` = ``response ~ log_<t>`` (plain effect),
-    ``within_contrast`` = ``response ~ contrast + log_<t> + side + reward``
-    (effect after the stimulus). The ``log_<t>`` coefficient is the movement
-    effect, read off the coefficient heatmap.
-    """
-    out = {}
-    for claim in ('predicts_response', 'within_contrast'):
-        frames = []
-        for t in TIMING_VARS:
-            name = f'{claim}_{t}'
-            group.response_lmm_fit(
-                {name: LMM_FORMULAS[f'movement_claims_{t}'][claim]}, group_by)
-            frames.append(group.response_lmm_effects(name, 'coefficients')
-                          .assign(timing_var=t))
-        out[claim] = pd.concat(frames, ignore_index=True)
-    return out
-
-
 def plot_movement_figures(group, fig_dirs, data_dir):
     """Movement-encoding analyses over the response events (``MOVEMENT_EVENTS``):
-    the movement effect via coefficient heatmaps, the three-bar in-sample
-    R² comparison, and cv/jackknife reliability ΔR² per timing variable."""
+    cv/jackknife reliability ΔR² per timing variable (analogous to the task
+    reliability plots) and the three-bar in-sample R² comparison."""
     group_by = ['target_NM', 'event']
 
     reliability_cv, reliability_jk = _movement_reliability(group, group_by)
-    saturated_r2 = _movement_saturated_r2(group, group_by)
-    claims = _movement_effect_coefficients(group, group_by)
+    r2 = _movement_r2(group, group_by)
 
     _save_lmm_frames({
         'response_lmm_movement_reliability_cv': reliability_cv,
         'response_lmm_movement_reliability_jackknife': reliability_jk,
-        'response_lmm_movement_saturated_r2': saturated_r2,
-        'response_lmm_movement_predicts_response': claims['predicts_response'],
-        'response_lmm_movement_within_contrast': claims['within_contrast'],
+        'response_lmm_movement_r2': r2,
     }, data_dir)
     print(f"  Movement LMM CSVs saved to {data_dir}")
 
-    # Reliability ΔR²: one figure per (procedure, timing variable).
+    # Reliability ΔR²: one figure per (procedure, timing variable), mirroring
+    # the task reliability figure (target_NM × event grid).
     for proc, df_rel in (('cv', reliability_cv), ('jackknife', reliability_jk)):
         for t in TIMING_VARS:
             sub = df_rel[df_rel['timing_var'] == t]
             if sub.empty:
                 continue
-            fig = plot_lmm_reliability(sub, title=f'movement {proc} — {t}')
+            fig = plot_lmm_reliability(
+                sub, title=f'Movement LMM reliability ({t}) — {proc}\n'
+                           'folds are subjects')
             fig.savefig(
                 fig_dirs['movement_model_comparison']
                 / f'response_lmm_movement_reliability_{proc}_{t}.svg',
@@ -352,25 +333,14 @@ def plot_movement_figures(group, fig_dirs, data_dir):
             plt.close(fig)
 
     # Three-bar in-sample R² comparison: one figure per movement event.
-    sat_mv = saturated_r2[saturated_r2['event'].isin(MOVEMENT_EVENTS)]
-    for event, df_ev in sat_mv.groupby('event'):
+    r2_mv = r2[r2['event'].isin(MOVEMENT_EVENTS)]
+    for event, df_ev in r2_mv.groupby('event'):
         fig = plot_movement_r2_bars(df_ev)
         fig.savefig(
             fig_dirs['movement_model_comparison']
-            / f'response_lmm_movement_saturated_r2_{event}.svg',
+            / f'response_lmm_movement_r2_{event}.svg',
             dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
-
-    # Movement effect: coefficient heatmap per claim, timing variable, event.
-    for claim, coef in claims.items():
-        coef_mv = coef[coef['event'].isin(MOVEMENT_EVENTS)]
-        for (t, event), df_ce in coef_mv.groupby(['timing_var', 'event']):
-            fig = plot_lmm_coefficient_heatmap(df_ce)
-            fig.savefig(
-                fig_dirs['movement_slopes']
-                / f'response_lmm_movement_{claim}_{t}_{event}.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-            plt.close(fig)
 
 
 if __name__ == '__main__':
@@ -395,7 +365,6 @@ if __name__ == '__main__':
         'traces': fig_base / 'traces',
         'movement_descriptive': fig_base / 'movement/descriptive',
         'movement_model_comparison': fig_base / 'movement/model_comparison',
-        'movement_slopes': fig_base / 'movement/slopes',
     }
     for d in fig_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
@@ -473,16 +442,16 @@ if __name__ == '__main__':
         print(f"Saved mean traces to {MEAN_TRACES_FPATH}")
 
         # --- Response vectors ---
-        print("\nBuilding response features...")
-        group.get_response_features(nan_handling='drop_features')
+        # ~ print("\nBuilding response features...")
+        # ~ group.get_response_features(nan_handling='drop_features')
 
-        if len(group.response_features) == 0:
-            print("No response vectors extracted. Check H5 files.")
-            raise SystemExit(1)
+        # ~ if len(group.response_features) == 0:
+            # ~ print("No response vectors extracted. Check H5 files.")
+            # ~ raise SystemExit(1)
 
-        group.response_features.to_parquet(RESPONSE_MATRIX_FPATH)
-        print(f"Saved {len(group.response_features)} response vectors "
-              f"to {RESPONSE_MATRIX_FPATH}")
+        # ~ group.response_features.to_parquet(RESPONSE_MATRIX_FPATH)
+        # ~ print(f"Saved {len(group.response_features)} response vectors "
+              # ~ f"to {RESPONSE_MATRIX_FPATH}")
 
     # =====================================================================
     # Mean response traces per target-NM (first figures)
@@ -550,6 +519,6 @@ if __name__ == '__main__':
     # =====================================================================
     # Response vectors: per-event similarity
     # =====================================================================
-    print("\nComputing per-event response vector similarity...")
-    plot_similarity_figures(group, fig_dirs['similarity'], data_dir)
-    print(f"Similarity figures saved to {fig_dirs['similarity']}")
+    # ~ print("\nComputing per-event response vector similarity...")
+    # ~ plot_similarity_figures(group, fig_dirs['similarity'], data_dir)
+    # ~ print(f"Similarity figures saved to {fig_dirs['similarity']}")

@@ -2669,7 +2669,7 @@ _DV_LABELS = {
 # display label, and its colour. The config key names the *dropped* predictor,
 # so 'movement' (timing dropped) is the contrast-family model and 'contrast'
 # (contrast dropped) is the movement-family model.
-_SATURATED_MODEL_BARS = [
+_MOVEMENT_R2_BARS = [
     ('movement', 'contrast-family', '#888888'),
     ('contrast', 'movement-family', '#1f77b4'),
     ('full', 'full', '#d62728'),
@@ -2677,12 +2677,12 @@ _SATURATED_MODEL_BARS = [
 
 
 def plot_movement_r2_bars(summary_df):
-    """In-sample marginal R² of the three saturated models, per target-NM.
+    """In-sample marginal R² of the three nested movement models, per target-NM.
 
-    Reads the saturated in-sample R² frame from ``response_lmm_fit``: for each
-    timing variable, three nested models — the saturated ``full``
-    (``contrast * reward * side * log_<timing>``), ``contrast`` (contrast
-    dropped, the movement-family model), and ``movement`` (timing dropped, the
+    Reads the in-sample R² frame from ``response_lmm_fit``: for each timing
+    variable, three nested models from the ``movement_<t>`` family — ``full``
+    (``contrast * side * reward * <movement>``), ``contrast`` (contrast dropped,
+    the movement-family model), and ``movement`` (timing dropped, the
     contrast-family model). One panel per timing variable; each target-NM gets
     three bars. Heights read two ways: contrast-family vs. movement-family =
     which predictor explains more; full vs. either = added value.
@@ -2707,24 +2707,24 @@ def plot_movement_r2_bars(summary_df):
     if n_panels == 1:
         axes = [axes]
 
-    _title = ('In-sample marginal R² (saturated, full-data fit)\n'
-              'full: response ~ contrast * reward * side * log_<timing>')
+    _title = ('In-sample marginal R² (full-data fit)\n'
+              'full: response ~ contrast * side * reward * <movement>')
     if len(summary_df) == 0:
         fig.suptitle(_title, fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(summary_df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
-    bar_w = 0.8 / len(_SATURATED_MODEL_BARS)
+    bar_w = 0.8 / len(_MOVEMENT_R2_BARS)
 
     for ax, tvar in zip(axes, timing_vars):
         df_tv = summary_df[summary_df['timing_var'] == tvar]
         for i, tnm in enumerate(targets):
             df_tnm = df_tv[df_tv['target_NM'] == tnm].set_index('name')
-            for k, (name, label, color) in enumerate(_SATURATED_MODEL_BARS):
+            for k, (name, label, color) in enumerate(_MOVEMENT_R2_BARS):
                 if name not in df_tnm.index:
                     continue
-                offset = (k - (len(_SATURATED_MODEL_BARS) - 1) / 2) * bar_w
+                offset = (k - (len(_MOVEMENT_R2_BARS) - 1) / 2) * bar_w
                 ax.bar(i + offset, df_tnm.loc[name, 'marginal_r2'],
                        width=bar_w, color=color,
                        label=label if i == 0 else '')

@@ -2327,10 +2327,12 @@ class TestPlotMovementR2Bars:
         plt.close(fig)
 
     def test_formula_in_title(self):
-        """The saturated full model formula appears in the figure title."""
+        """The full model formula appears in the figure title, no 'saturated'."""
         from iblnm.vis import plot_movement_r2_bars
         fig = plot_movement_r2_bars(_make_movement_r2_bars())
-        assert 'response ~ contrast * reward * side' in fig._suptitle.get_text()
+        title = fig._suptitle.get_text()
+        assert 'response ~ contrast * side * reward' in title
+        assert 'saturated' not in title.lower()
         plt.close(fig)
 
 
