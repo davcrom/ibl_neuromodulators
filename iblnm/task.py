@@ -299,18 +299,27 @@ def compute_trial_contrasts(trials: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_relative_contrast(df):
-    """Add hemisphere-relative contrast and side columns.
+    """Add hemisphere-relative contrast, stimulus-side, and choice-side columns.
 
     Uses ``stim_side`` (from contrastLeft/contrastRight NaN pattern) to assign
-    contra/ipsi. Zero-contrast trials retain their true stimulus side.
+    the stimulus contra/ipsi, and the IBL ``choice`` code (−1 = chose right,
+    +1 = chose left) to assign the animal's chosen side contra/ipsi. Both are
+    relative to the recording fiber's hemisphere. Zero-contrast trials retain
+    their true stimulus side.
 
     Columns added:
       relative_contrast : signed_contrast * hemi_sign (positive = contra)
-      side              : 'contra' or 'ipsi'
+      side              : stimulus side, 'contra' or 'ipsi'
+      choice_side       : chosen side, 'contra' or 'ipsi' (only when the frame
+                          carries a ``choice`` column)
     """
     df = df.copy()
     contra_side = df['hemisphere'].map({'l': 'right', 'r': 'left'}).fillna('right')
     df['side'] = np.where(df['stim_side'] == contra_side, 'contra', 'ipsi')
+    if 'choice' in df.columns:
+        chosen_side = np.where(df['choice'] == -1, 'right', 'left')
+        df['choice_side'] = np.where(
+            chosen_side == contra_side.values, 'contra', 'ipsi')
     hemi_sign = df['hemisphere'].map({'l': 1, 'r': -1}).fillna(1)
     df['relative_contrast'] = df['signed_contrast'] * hemi_sign
     return df

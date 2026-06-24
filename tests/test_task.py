@@ -15,7 +15,27 @@ from iblnm.task import (
     fit_psychometric,
     fit_psychometric_by_block,
     compute_bias_shift,
+    add_relative_contrast,
 )
+
+
+class TestAddRelativeContrast:
+    """``add_relative_contrast`` lateralizes stimulus side and choice to the
+    recording fiber (contra/ipsi)."""
+
+    def test_choice_side_relative_to_fiber(self):
+        # IBL convention: choice == -1 chose right, choice == +1 chose left.
+        # 'r' fiber: contra = left, so choosing left is contra. 'l' fiber:
+        # contra = right, so choosing right is contra.
+        df = pd.DataFrame({
+            'hemisphere': ['r', 'r', 'l', 'l'],
+            'stim_side': ['left', 'right', 'left', 'right'],
+            'signed_contrast': [-25.0, 25.0, -25.0, 25.0],
+            'choice': [1, -1, -1, 1],
+        })
+        out = add_relative_contrast(df)
+        assert out['choice_side'].tolist() == [
+            'contra', 'ipsi', 'contra', 'ipsi']
 
 
 # =============================================================================

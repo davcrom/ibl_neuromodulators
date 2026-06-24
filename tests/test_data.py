@@ -3971,6 +3971,7 @@ class TestCodeLmmPredictors:
         return pd.DataFrame({
             'contrast': [0.0, 6.25, 100.0],
             'side': ['contra', 'ipsi', 'contra'],
+            'choice_side': ['contra', 'ipsi', 'ipsi'],
             'feedbackType': [1, -1, 1],
             'log_reaction_time': [-1.5, -0.5, -2.0],
         })
@@ -3982,6 +3983,12 @@ class TestCodeLmmPredictors:
         assert set(coded['reward']) <= {-0.5, 0.5}
         assert coded['side'].tolist() == [0.5, -0.5, 0.5]
         assert coded['reward'].tolist() == [0.5, -0.5, 0.5]
+
+    def test_choice_side_deviation_coded(self):
+        group = _make_group_with_planted_trials()
+        coded = group._code_lmm_predictors(self._frame())
+        # contra = +0.5, ipsi = −0.5, same scheme as stimulus side.
+        assert coded['choice_side'].tolist() == [0.5, -0.5, -0.5]
 
     def test_contrast_log2_coded_and_centered(self):
         group = _make_group_with_planted_trials()

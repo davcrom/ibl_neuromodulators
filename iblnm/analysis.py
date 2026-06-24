@@ -1932,16 +1932,17 @@ def code_predictors(
     """Code the trial frame for model fitting; do not mutate the input.
 
     Returns a copy with ``contrast`` transformed (``contrast_coding``) and
-    mean-centered, and ``side`` / ``reward`` deviation-coded to ±0.5
-    (``side``: contra = +0.5, ipsi = −0.5; ``reward``: ``feedbackType`` 1 =
-    +0.5, −1 = −0.5). ``log_<timing>`` columns are left untouched. Coding a
-    column a given formula does not use is harmless.
+    mean-centered, and ``side`` / ``choice_side`` / ``reward`` deviation-coded
+    to ±0.5 (``side`` and ``choice_side``: contra = +0.5, ipsi = −0.5;
+    ``reward``: ``feedbackType`` 1 = +0.5, −1 = −0.5). ``log_<timing>`` columns
+    are left untouched. Coding a column a given formula does not use, or one
+    absent from ``df``, is harmless.
 
     Parameters
     ----------
     df : pd.DataFrame
         Trial-level frame with columns ``contrast``, ``side``, and
-        ``feedbackType``.
+        ``feedbackType``; optionally ``choice_side``.
     contrast_coding : str
         Coding passed to :func:`iblnm.util.get_contrast_coding`.
 
@@ -1956,6 +1957,8 @@ def code_predictors(
     df['contrast'] = coded - float(np.mean(coded))
     df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
     df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+    if 'choice_side' in df.columns:
+        df['choice_side'] = np.where(df['choice_side'] == 'contra', 0.5, -0.5)
     return df
 
 
