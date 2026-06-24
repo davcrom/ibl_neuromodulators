@@ -1,3 +1,4 @@
+from itertools import combinations
 from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
@@ -506,6 +507,34 @@ def _movement_family(pred: str, reward: bool) -> dict:
             for name, terms in family.items()}
 
 
+# Per-recording OLS drop-one regressors. choice_side enters explicitly so its
+# own interactions are visible, but choice_side:side and choice_side:reward are
+# collinear with the reward and side mains (choice_side ≈ 2·side·reward), and
+# side:reward itself encodes choice — so all three two-ways are excluded.
+_PERSESSION_REGRESSORS = ['contrast', 'side', 'reward', 'choice_side',
+                          'log_reaction_time', 'peak_velocity']
+_PERSESSION_EXCLUDED = [frozenset(pair) for pair in
+                        (('side', 'reward'), ('choice_side', 'side'),
+                         ('choice_side', 'reward'))]
+
+
+def _persession_family() -> dict:
+    """Per-recording drop-one OLS family: every two-way interaction of
+    ``_PERSESSION_REGRESSORS`` except the collinear/choice-encoding pairs in
+    ``_PERSESSION_EXCLUDED``. Reference ``full``; each regressor key drops that
+    regressor and every term containing it.
+    """
+    mains = [(v,) for v in _PERSESSION_REGRESSORS]
+    pairs = [pair for pair in combinations(_PERSESSION_REGRESSORS, 2)
+             if frozenset(pair) not in _PERSESSION_EXCLUDED]
+    full = mains + pairs
+    family = {'full': full,
+              **{v: [t for t in full if v not in t]
+                 for v in _PERSESSION_REGRESSORS}}
+    return {name: '{response} ~ ' + _render_terms(terms)
+            for name, terms in family.items()}
+
+
 LMM_FORMULAS = {
     # Task reliability: full interaction model is the reference. Each predictor's
     # ΔR² drops it and every interaction it participates in (so the two-way `*`
@@ -569,17 +598,11 @@ LMM_FORMULAS = {
     'movement_ceiling': {
         'ceiling': '{response} ~ choice_side * log_reaction_time * peak_velocity',
     },
-    # Per-session OLS drop-one: full two-way interaction model is the reference.
-    # Each non-`full` key drops one regressor and all of its 2-way interactions,
-    # expressed as the `**2` of the remaining four regressors.
-    'persession': {
-        'full': '{response} ~ (contrast + side + reward + log_reaction_time + peak_velocity)**2',
-        'contrast': '{response} ~ (side + reward + log_reaction_time + peak_velocity)**2',
-        'side': '{response} ~ (contrast + reward + log_reaction_time + peak_velocity)**2',
-        'reward': '{response} ~ (contrast + side + log_reaction_time + peak_velocity)**2',
-        'log_reaction_time': '{response} ~ (contrast + side + reward + peak_velocity)**2',
-        'peak_velocity': '{response} ~ (contrast + side + reward + log_reaction_time)**2',
-    },
+    # Per-session OLS drop-one: full two-way interaction model is the reference
+    # (see `_persession_family`). Each non-`full` key drops one regressor and
+    # every term containing it. choice_side is an explicit regressor; the
+    # side:reward, choice_side:side, and choice_side:reward two-ways are excluded.
+    'persession': _persession_family(),
 }
 
 # Per-session OLS drop-one thresholds: minimum trials for a recording to be fit,

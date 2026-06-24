@@ -164,20 +164,30 @@ def test_nested_sets_have_reference_key():
             assert 'full' in event_set
 
 
+def _termsets(formula):
+    """Right-hand-side terms of a formula as a list of variable frozensets."""
+    rhs = formula.split('~')[1]
+    return [frozenset(t.strip().split(':')) for t in rhs.split('+')]
+
+
 def test_persession_formulas():
     formulas = _format(LMM_FORMULAS['persession'])
-    assert set(formulas) == {
-        'full', 'contrast', 'side', 'reward',
-        'log_reaction_time', 'peak_velocity',
-    }
-    assert formulas == {
-        'full': 'response ~ (contrast + side + reward + log_reaction_time + peak_velocity)**2',
-        'contrast': 'response ~ (side + reward + log_reaction_time + peak_velocity)**2',
-        'side': 'response ~ (contrast + reward + log_reaction_time + peak_velocity)**2',
-        'reward': 'response ~ (contrast + side + log_reaction_time + peak_velocity)**2',
-        'log_reaction_time': 'response ~ (contrast + side + reward + peak_velocity)**2',
-        'peak_velocity': 'response ~ (contrast + side + reward + log_reaction_time)**2',
-    }
+    regressors = ['contrast', 'side', 'reward', 'choice_side',
+                  'log_reaction_time', 'peak_velocity']
+    assert set(formulas) == {'full', *regressors}
+
+    full = _termsets(formulas['full'])
+    for r in regressors:                       # all six mains present
+        assert frozenset({r}) in full
+    for pair in ({'side', 'reward'}, {'choice_side', 'side'},
+                 {'choice_side', 'reward'}):   # collinear/choice two-ways out
+        assert frozenset(pair) not in full
+    for pair in ({'contrast', 'choice_side'},  # choice keeps non-task interactions
+                 {'choice_side', 'log_reaction_time'},
+                 {'choice_side', 'peak_velocity'}):
+        assert frozenset(pair) in full
+    for reg in regressors:                     # drop-one omits the regressor
+        assert all(reg not in tv for tv in _termsets(formulas[reg]))
 
 
 def test_persession_thresholds_and_path():

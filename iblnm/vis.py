@@ -2324,7 +2324,7 @@ def plot_lmm_reliability(reliability_df, title):
 
 # Dropped regressors on the per-recording OLS x-axis, in fixed order: the
 # `persession` model family keys minus `full`.
-_PERSESSION_DROPONE_PREDICTORS = ['contrast', 'side', 'reward',
+_PERSESSION_DROPONE_PREDICTORS = ['contrast', 'side', 'reward', 'choice_side',
                                   'log_reaction_time', 'peak_velocity']
 
 

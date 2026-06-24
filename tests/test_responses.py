@@ -199,7 +199,7 @@ class TestPlotPersessionFigures:
     and the drop-one grid SVG to the figures dir."""
 
     def _stub_frame(self):
-        predictors = ['contrast', 'side', 'reward',
+        predictors = ['contrast', 'side', 'reward', 'choice_side',
                       'log_reaction_time', 'peak_velocity']
         rows = []
         for s in range(3):
