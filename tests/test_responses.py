@@ -162,12 +162,12 @@ class TestPlotMovementFigures:
         for fname, cols in [
             ('response_lmm_movement_reliability_cv.csv',
              {'target_NM', 'event', 'predictor', 'fold', 'delta_r2',
-              'timing_var'}),
+              'movement_var'}),
             ('response_lmm_movement_reliability_jackknife.csv',
              {'target_NM', 'event', 'predictor', 'fold', 'delta_r2',
-              'timing_var'}),
+              'movement_var'}),
             ('response_lmm_movement_r2.csv',
-             {'target_NM', 'event', 'name', 'marginal_r2', 'timing_var'}),
+             {'target_NM', 'event', 'name', 'marginal_r2', 'movement_var'}),
         ]:
             df = pd.read_csv(tmp_path / fname)
             assert cols.issubset(df.columns), fname

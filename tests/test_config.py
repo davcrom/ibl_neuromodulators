@@ -1,6 +1,6 @@
 """Tests for config constants and static config structures."""
 from iblnm import config
-from iblnm.config import LMM_FORMULAS, TIMING_VARS
+from iblnm.config import LMM_FORMULAS, MOVEMENT_VARS
 
 
 def test_pose_qc_scalar_constants():
@@ -80,38 +80,65 @@ def test_task_ceiling_formula():
     assert formulas == {'ceiling': 'response ~ C(contrast) * side * reward'}
 
 
-# Per-variable predictor: reaction_time and movement_time are log-transformed
-# (heavy right skew); peak_velocity is used raw (already ~symmetric).
+# Per-variable predictor column: choice enters as the fiber-relative choice
+# side, reaction_time log-transformed (heavy right skew), peak_velocity raw.
 _EXPECTED_PREDICTORS = {
+    'choice': 'choice_side',
     'reaction_time': 'log_reaction_time',
-    'movement_time': 'log_movement_time',
     'peak_velocity': 'peak_velocity',
 }
 
 
-def test_movement_predictors_map_each_timing_var():
+def test_movement_vars_and_predictors():
+    assert config.MOVEMENT_VARS == ['choice', 'reaction_time', 'peak_velocity']
     assert config.MOVEMENT_PREDICTORS == _EXPECTED_PREDICTORS
 
 
-def test_movement_families_expand_per_timing_var():
-    for t in TIMING_VARS:
-        pred = _EXPECTED_PREDICTORS[t]
-        assert _format(LMM_FORMULAS[f'movement_{t}']) == {
-            'full': f'response ~ contrast * side * reward * {pred}',
-            'contrast': f'response ~ side * reward * {pred}',
-            'side': f'response ~ contrast * reward * {pred}',
-            'reward': f'response ~ contrast * side * {pred}',
-            'movement': 'response ~ contrast * side * reward',
-            'interactions': f'response ~ contrast * side * reward + {pred}',
-        }
+def test_movement_family_formulas_choice():
+    # One family in full: the revised per-event task base extended with the
+    # movement predictor at 2nd order. feedback carries reward (no side:reward),
+    # stimOn/firstMovement omit reward.
+    family = LMM_FORMULAS['movement_choice']
+    assert _format(family['feedback_times']) == {
+        'full': 'response ~ (contrast + side + reward + choice_side)**2 - side:reward',
+        'contrast': 'response ~ (side + reward + choice_side)**2 - side:reward',
+        'side': 'response ~ (contrast + reward + choice_side)**2',
+        'reward': 'response ~ (contrast + side + choice_side)**2',
+        'movement': 'response ~ contrast * side + contrast * reward',
+        'interactions': 'response ~ contrast * side + contrast * reward + choice_side',
+    }
+    no_reward = {
+        'full': 'response ~ (contrast + side + choice_side)**2',
+        'contrast': 'response ~ (side + choice_side)**2',
+        'side': 'response ~ (contrast + choice_side)**2',
+        'movement': 'response ~ contrast * side',
+        'interactions': 'response ~ contrast * side + choice_side',
+    }
+    assert _format(family['stimOn_times']) == no_reward
+    assert _format(family['firstMovement_times']) == no_reward
+
+
+def test_movement_families_per_event_reference_and_predictor():
+    # Every movement var has an event-keyed set; each event set has a reference
+    # `full` naming the predictor column. Pre-feedback events omit reward.
+    for var in MOVEMENT_VARS:
+        pred = _EXPECTED_PREDICTORS[var]
+        family = LMM_FORMULAS[f'movement_{var}']
+        assert set(family) == {
+            'stimOn_times', 'firstMovement_times', 'feedback_times'}
+        for event, event_set in family.items():
+            full = event_set['full'].format(response='response')
+            assert pred in full
+            assert ('reward' in full) == (event == 'feedback_times')
 
 
 def test_nested_sets_have_reference_key():
-    # task_reliability is keyed by event; each event's set has the reference.
-    for event_set in LMM_FORMULAS['task_reliability'].values():
-        assert 'full' in event_set
-    for t in TIMING_VARS:
-        assert 'full' in LMM_FORMULAS[f'movement_{t}']
+    # task_reliability and the movement families are keyed by event; each
+    # event's set has the reference.
+    families = ['task_reliability'] + [f'movement_{v}' for v in MOVEMENT_VARS]
+    for family in families:
+        for event_set in LMM_FORMULAS[family].values():
+            assert 'full' in event_set
 
 
 def test_persession_formulas():

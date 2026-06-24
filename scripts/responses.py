@@ -30,7 +30,7 @@ from iblnm.config import (
     RESPONSE_OLS_PERSESSION_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
-    TIMING_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
+    MOVEMENT_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -280,36 +280,42 @@ def plot_similarity_figures(group, similarity_dir, data_dir):
 # =========================================================================
 
 def _movement_reliability(group, group_by):
-    """Stack cv and jackknife ΔR² across the per-timing-variable ``movement_<t>``
-    families (full interaction model, analogous to ``task_reliability``)."""
+    """Stack cv and jackknife ΔR² across the per-movement-variable
+    ``movement_<var>`` families. Each family is keyed by event (the revised task
+    base is per-event), so each event runs its own set scoped via
+    ``events=[event]``, tagged with the movement variable."""
     cv, jk = [], []
-    for t in TIMING_VARS:
-        formulas = LMM_FORMULAS[f'movement_{t}']
-        cv.append(group.response_lmm_crossval(
-            formulas, group_by, min_subjects=MIN_SUBJECTS_MOVEMENT,
-            min_trials=MIN_TRIALS_MOVEMENT).assign(timing_var=t))
-        jk.append(group.response_lmm_jackknife(
-            formulas, group_by, min_subjects=MIN_SUBJECTS_MOVEMENT,
-            min_trials=MIN_TRIALS_MOVEMENT).assign(timing_var=t))
+    for var in MOVEMENT_VARS:
+        for event, formulas in LMM_FORMULAS[f'movement_{var}'].items():
+            cv.append(group.response_lmm_crossval(
+                formulas, group_by, events=[event],
+                min_subjects=MIN_SUBJECTS_MOVEMENT,
+                min_trials=MIN_TRIALS_MOVEMENT).assign(movement_var=var))
+            jk.append(group.response_lmm_jackknife(
+                formulas, group_by, events=[event],
+                min_subjects=MIN_SUBJECTS_MOVEMENT,
+                min_trials=MIN_TRIALS_MOVEMENT).assign(movement_var=var))
     return (pd.concat(cv, ignore_index=True),
             pd.concat(jk, ignore_index=True))
 
 
 def _movement_r2(group, group_by):
-    """Per-model in-sample marginal R² of the ``movement_<t>`` families.
+    """Per-model in-sample marginal R² of the ``movement_<var>`` families.
 
-    Keys are renamed ``<name>_<t>`` so cached fits don't collide across timing
-    variables, then stripped back to the family keys; :func:`plot_movement_r2_bars`
-    reads the ``full``/``contrast``/``movement`` subset.
+    Each family is keyed by event; keys are renamed ``<name>_<var>`` so cached
+    fits don't collide across movement variables, then stripped back to the
+    family keys; :func:`plot_movement_r2_bars` reads the
+    ``full``/``contrast``/``movement`` subset.
     """
     rows = []
-    for t in TIMING_VARS:
-        formulas = {f'{name}_{t}': formula for name, formula
-                    in LMM_FORMULAS[f'movement_{t}'].items()}
-        r2 = group.response_lmm_fit(formulas, group_by,
-                                    min_subjects=MIN_SUBJECTS_MOVEMENT)
-        r2['name'] = r2['name'].str.replace(f'_{t}$', '', regex=True)
-        rows.append(r2.assign(timing_var=t))
+    for var in MOVEMENT_VARS:
+        for event, family in LMM_FORMULAS[f'movement_{var}'].items():
+            formulas = {f'{name}_{var}': formula
+                        for name, formula in family.items()}
+            r2 = group.response_lmm_fit(formulas, group_by, events=[event],
+                                        min_subjects=MIN_SUBJECTS_MOVEMENT)
+            r2['name'] = r2['name'].str.replace(f'_{var}$', '', regex=True)
+            rows.append(r2.assign(movement_var=var))
     return pd.concat(rows, ignore_index=True)
 
 
@@ -329,19 +335,19 @@ def plot_movement_figures(group, fig_dirs, data_dir):
     }, data_dir)
     print(f"  Movement LMM CSVs saved to {data_dir}")
 
-    # Reliability ΔR²: one figure per (procedure, timing variable), mirroring
+    # Reliability ΔR²: one figure per (procedure, movement variable), mirroring
     # the task reliability figure (target_NM × event grid).
     for proc, df_rel in (('cv', reliability_cv), ('jackknife', reliability_jk)):
-        for t in TIMING_VARS:
-            sub = df_rel[df_rel['timing_var'] == t]
+        for var in MOVEMENT_VARS:
+            sub = df_rel[df_rel['movement_var'] == var]
             if sub.empty:
                 continue
             fig = plot_lmm_reliability(
-                sub, title=f'Movement LMM reliability ({t}) — {proc}\n'
+                sub, title=f'Movement LMM reliability ({var}) — {proc}\n'
                            'folds are subjects')
             fig.savefig(
                 fig_dirs['movement_model_comparison']
-                / f'response_lmm_movement_reliability_{proc}_{t}.svg',
+                / f'response_lmm_movement_reliability_{proc}_{var}.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
             plt.close(fig)
 

@@ -2824,28 +2824,29 @@ _MOVEMENT_R2_BARS = [
 def plot_movement_r2_bars(summary_df):
     """In-sample marginal R² of the three nested movement models, per target-NM.
 
-    Reads the in-sample R² frame from ``response_lmm_fit``: for each timing
-    variable, three nested models from the ``movement_<t>`` family — ``full``
-    (``contrast * side * reward * <movement>``), ``contrast`` (contrast dropped,
-    the movement-family model), and ``movement`` (timing dropped, the
-    contrast-family model). One panel per timing variable; each target-NM gets
-    three bars. Heights read two ways: contrast-family vs. movement-family =
-    which predictor explains more; full vs. either = added value.
+    Reads the in-sample R² frame from ``response_lmm_fit``: for each movement
+    variable, three nested models from the ``movement_<var>`` family — ``full``
+    (the revised per-event task base extended with the movement predictor at
+    2nd order), ``contrast`` (contrast dropped, the movement-family model), and
+    ``movement`` (the predictor dropped, the task base). One panel per movement
+    variable; each target-NM gets three bars. Heights read two ways:
+    contrast-family vs. movement-family = which predictor explains more; full
+    vs. either = added value.
 
     Parameters
     ----------
     summary_df : pd.DataFrame
-        Long-form, one row per (target_NM, timing var, model). Required columns:
-        ``target_NM``, ``timing_var``, ``name`` (``full``/``contrast``/
-        ``movement``), ``marginal_r2``. Any ``event`` column is ignored; the
-        script passes one event's rows per figure.
+        Long-form, one row per (target_NM, movement var, model). Required
+        columns: ``target_NM``, ``movement_var``, ``name`` (``full``/
+        ``contrast``/``movement``), ``marginal_r2``. Any ``event`` column is
+        ignored; the script passes one event's rows per figure.
 
     Returns
     -------
     plt.Figure
     """
-    timing_vars = sorted(summary_df['timing_var'].unique()) if len(summary_df) else []
-    n_panels = max(len(timing_vars), 1)
+    movement_vars = sorted(summary_df['movement_var'].unique()) if len(summary_df) else []
+    n_panels = max(len(movement_vars), 1)
 
     fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels + 1, 4),
                              sharey=True, layout='constrained')
@@ -2853,7 +2854,7 @@ def plot_movement_r2_bars(summary_df):
         axes = [axes]
 
     _title = ('In-sample marginal R² (full-data fit)\n'
-              'full: response ~ contrast * side * reward * <movement>')
+              'full: per-event task base + <movement> (2nd-order)')
     if len(summary_df) == 0:
         fig.suptitle(_title, fontsize=LABELFONTSIZE)
         return fig
@@ -2862,10 +2863,10 @@ def plot_movement_r2_bars(summary_df):
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
     bar_w = 0.8 / len(_MOVEMENT_R2_BARS)
 
-    for ax, tvar in zip(axes, timing_vars):
-        df_tv = summary_df[summary_df['timing_var'] == tvar]
+    for ax, mvar in zip(axes, movement_vars):
+        df_mv = summary_df[summary_df['movement_var'] == mvar]
         for i, tnm in enumerate(targets):
-            df_tnm = df_tv[df_tv['target_NM'] == tnm].set_index('name')
+            df_tnm = df_mv[df_mv['target_NM'] == tnm].set_index('name')
             for k, (name, label, color) in enumerate(_MOVEMENT_R2_BARS):
                 if name not in df_tnm.index:
                     continue
@@ -2876,7 +2877,7 @@ def plot_movement_r2_bars(summary_df):
         ax.set_xticks(range(len(targets)))
         ax.set_xticklabels(targets, rotation=30, ha='right', fontsize=TICKFONTSIZE)
         ax.axhline(0, ls='--', color='gray', lw=0.5)
-        ax.set_title(tvar.replace('log_', ''))
+        ax.set_title(mvar)
 
     axes[0].set_ylabel('Marginal R²')
     axes[-1].legend(frameon=False, fontsize=TICKFONTSIZE,

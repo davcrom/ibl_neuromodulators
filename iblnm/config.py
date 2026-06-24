@@ -416,14 +416,15 @@ RESPONSE_WINDOWS = {
 }
 
 # Movement encoding analyses
-TIMING_VARS = ['reaction_time', 'movement_time', 'peak_velocity']
-# Predictor column each timing variable enters the LMM as. reaction_time and
-# movement_time are heavily right-skewed (raw skew 7.7 / 14.0), so they enter
-# log-transformed; peak_velocity is already roughly symmetric (raw skew 0.9) and
-# enters raw. _modeling_frame supplies the matching log_<var> columns.
+MOVEMENT_VARS = ['choice', 'reaction_time', 'peak_velocity']
+# Predictor column each movement variable enters the LMM as. choice enters as
+# the deviation-coded fiber-relative choice side; reaction_time is heavily
+# right-skewed (raw skew 7.7) so it enters log-transformed; peak_velocity is
+# already roughly symmetric (raw skew 0.9) and enters raw. _modeling_frame
+# supplies the matching log_<var> columns.
 MOVEMENT_PREDICTORS = {
+    'choice': 'choice_side',
     'reaction_time': 'log_reaction_time',
-    'movement_time': 'log_movement_time',
     'peak_velocity': 'peak_velocity',
 }
 MIN_SUBJECTS_MOVEMENT = 2
@@ -454,8 +455,49 @@ MOTION_ENERGY_EVENT = 'stimOn_times'
 # comparison set, `full` is the reference model; every other key names the
 # predictor whose unique contribution is `r2(full) - r2(<key>)`, and its formula
 # is the full model with that predictor dropped. Movement families enumerate one
-# concrete model per `TIMING_VARS` entry, the formula naming the real
-# `log_<timing>` column (no timing placeholder at fit time).
+# per-event set per `MOVEMENT_VARS` entry, the formula naming the real predictor
+# column (`choice_side`, `log_reaction_time`, `peak_velocity`).
+
+
+def _movement_family(pred: str, reward: bool) -> dict:
+    """One movement reliability family: the revised per-event task base extended
+    with a movement predictor at 2nd order.
+
+    Mirrors the per-event ``task_reliability`` base (``contrast * side`` with
+    reward and its ``contrast:reward`` term added at feedback, ``side:reward``
+    always dropped) and adds ``pred`` plus its two-way interactions with each
+    task variable. Reference ``full``; each task key drops a task variable and
+    its surviving interactions; ``movement`` drops ``pred`` entirely (leaving the
+    task base); ``interactions`` makes ``pred`` additive (drops its interactions).
+
+    Parameters
+    ----------
+    pred : str
+        Movement predictor column (e.g. ``choice_side``, ``log_reaction_time``).
+    reward : bool
+        True at feedback (reward known): the base carries reward; False
+        pre-feedback (stimOn / firstMovement): no reward term or key.
+    """
+    if reward:
+        base = 'contrast * side + contrast * reward'
+        return {
+            'full': f'{{response}} ~ (contrast + side + reward + {pred})**2 - side:reward',
+            'contrast': f'{{response}} ~ (side + reward + {pred})**2 - side:reward',
+            'side': f'{{response}} ~ (contrast + reward + {pred})**2',
+            'reward': f'{{response}} ~ (contrast + side + {pred})**2',
+            'movement': f'{{response}} ~ {base}',
+            'interactions': f'{{response}} ~ {base} + {pred}',
+        }
+    base = 'contrast * side'
+    return {
+        'full': f'{{response}} ~ (contrast + side + {pred})**2',
+        'contrast': f'{{response}} ~ (side + {pred})**2',
+        'side': f'{{response}} ~ (contrast + {pred})**2',
+        'movement': f'{{response}} ~ {base}',
+        'interactions': f'{{response}} ~ {base} + {pred}',
+    }
+
+
 LMM_FORMULAS = {
     # Task reliability: full interaction model is the reference. Each predictor's
     # ΔR² drops it and every interaction it participates in (so the two-way `*`
@@ -493,23 +535,18 @@ LMM_FORMULAS = {
     'task_ceiling': {
         'ceiling': '{response} ~ C(contrast) * side * reward',
     },
-    # Movement reliability: one consolidated family per timing variable,
-    # extending task_reliability with the movement predictor. `full` is the
-    # full interaction model; each main-effect key drops that predictor and all
-    # its interactions; `movement` drops the timing predictor entirely;
-    # `interactions` drops only the timing predictor's interaction terms (keeps
-    # the task interactions, makes the predictor additive). The three-bar r2
-    # plot reads the `full`/`contrast`/`movement` subset.
+    # Movement reliability: one per-event set per movement variable, each
+    # extending that event's revised task base (reward only at feedback,
+    # 2nd-order, no side:reward) with the movement predictor at 2nd order. See
+    # `_movement_family`. The three-bar r2 plot reads the
+    # `full`/`contrast`/`movement` subset.
     **{
-        f'movement_{t}': {
-            'full': f'{{response}} ~ contrast * side * reward * {pred}',
-            'contrast': f'{{response}} ~ side * reward * {pred}',
-            'side': f'{{response}} ~ contrast * reward * {pred}',
-            'reward': f'{{response}} ~ contrast * side * {pred}',
-            'movement': '{response} ~ contrast * side * reward',
-            'interactions': f'{{response}} ~ contrast * side * reward + {pred}',
+        f'movement_{var}': {
+            'stimOn_times': _movement_family(pred, reward=False),
+            'firstMovement_times': _movement_family(pred, reward=False),
+            'feedback_times': _movement_family(pred, reward=True),
         }
-        for t, pred in MOVEMENT_PREDICTORS.items()
+        for var, pred in MOVEMENT_PREDICTORS.items()
     },
     # Per-session OLS drop-one: full two-way interaction model is the reference.
     # Each non-`full` key drops one regressor and all of its 2-way interactions,

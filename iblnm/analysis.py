@@ -13,7 +13,7 @@ from iblnm.config import (
     BASELINE_WINDOW,
     CROSSCORR_FS,
     CROSSCORR_LAG_WINDOW,
-    TIMING_VARS,
+    MOVEMENT_PREDICTORS,
 )
 from iblnm.util import get_contrast_coding
 
@@ -1897,16 +1897,16 @@ def select_modeling_trials(
 
     Drops biased-block trials (``probabilityLeft != 0.5``), no-go trials
     (``choice == 0``), false starts (``response_time <= 0.05``), and trials
-    with a null ``response_col``. Adds a ``log_<var>`` column (base-10,
-    NaN where the value is ≤ 0) for each ``config.TIMING_VARS`` entry present,
-    so movement models can reference them; the NaN rows are dropped per family
-    at fit time.
+    with a null ``response_col``. Adds a ``log_<var>`` column (base-10, NaN
+    where the value is ≤ 0) for each ``config.MOVEMENT_PREDICTORS`` entry coded
+    as ``log_<var>``, so movement models can reference them; the NaN rows are
+    dropped per family at fit time.
 
     Parameters
     ----------
     df : pd.DataFrame
         Merged trial frame carrying ``response_col``, ``probabilityLeft``,
-        ``choice``, ``response_time``, and the ``config.TIMING_VARS`` columns.
+        ``choice``, ``response_time``, and the log-transformed movement columns.
     response_col : str
         Column name for the response magnitude whose NaNs are dropped.
 
@@ -1919,10 +1919,9 @@ def select_modeling_trials(
     df = df.query('probabilityLeft == 0.5')
     df = df.dropna(subset=[response_col])
     df = df.query('choice != 0 and response_time > 0.05').copy()
-    for var in TIMING_VARS:
-        if var in df.columns:
-            df[f'log_{var}'] = np.where(
-                df[var] > 0, np.log10(df[var]), np.nan)
+    for var, pred in MOVEMENT_PREDICTORS.items():
+        if pred == f'log_{var}' and var in df.columns:
+            df[pred] = np.where(df[var] > 0, np.log10(df[var]), np.nan)
     return df
 
 
