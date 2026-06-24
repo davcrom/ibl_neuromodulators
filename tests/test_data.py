@@ -4299,13 +4299,16 @@ class TestResponseOlsDropone:
                    groups=['metadata', 'trials', 'photometry', 'wheel'])
 
     def _recordings(self, rows):
-        """Build a recordings DataFrame from (eid, subject, region, hemi) tuples."""
+        """Build a recordings DataFrame from (eid, subject, region, hemi,
+        target_nm) tuples. ``target_NM`` is filled in at query time and is the
+        authoritative source — ``response_ols_dropone`` builds each session from
+        this row, not the H5 ``/metadata`` (where the field may be missing)."""
         return pd.DataFrame([
             {'eid': eid, 'subject': subject, 'brain_region': region,
-             'hemisphere': hemi, 'target_NM': 'ignored',
+             'hemisphere': hemi, 'target_NM': target_nm,
              'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
              'number': 1, 'task_protocol': 'biased'}
-            for eid, subject, region, hemi in rows
+            for eid, subject, region, hemi, target_nm in rows
         ])
 
     def test_concatenates_per_recording_rows_with_tags(self, tmp_path):
@@ -4315,8 +4318,8 @@ class TestResponseOlsDropone:
         self._write_recording(tmp_path, 'eid-1', 'subj-1', 'DR-l', 'l',
                               'DR-5HT', seed=1)
         recs = self._recordings([
-            ('eid-0', 'subj-0', 'VTA-r', 'r'),
-            ('eid-1', 'subj-1', 'DR-l', 'l'),
+            ('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
+            ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT'),
         ])
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         out = group.response_ols_dropone(self.formulas)
@@ -4329,7 +4332,8 @@ class TestResponseOlsDropone:
         assert set(out['eid']) == {'eid-0', 'eid-1'}
         assert dict(out.groupby('eid')['subject'].first()) == {
             'eid-0': 'subj-0', 'eid-1': 'subj-1'}
-        # target_NM comes back from the PS metadata, not the recordings row.
+        # target_NM comes from the recordings row (query-time fill-in), not the
+        # H5 /metadata, which the per-recording session no longer loads.
         assert dict(out.groupby('eid')['target_NM'].first()) == {
             'eid-0': 'VTA-DA', 'eid-1': 'DR-5HT'}
         # One row per dropped regressor per (recording, event); no reference row.
@@ -4346,8 +4350,8 @@ class TestResponseOlsDropone:
         self._write_recording(tmp_path, 'eid-1', 'subj-1', 'DR-l', 'l',
                               'DR-5HT', n_trials=20, seed=1)
         recs = self._recordings([
-            ('eid-0', 'subj-0', 'VTA-r', 'r'),
-            ('eid-1', 'subj-1', 'DR-l', 'l'),
+            ('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
+            ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT'),
         ])
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         out = group.response_ols_dropone(self.formulas)

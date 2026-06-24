@@ -2463,8 +2463,14 @@ class PhotometrySessionGroup:
         for _, row in tqdm(self.recordings.iterrows(),
                            total=len(self.recordings),
                            desc="Per-recording OLS drop-one"):
-            ps = PhotometrySession.from_h5(
-                Path(self.h5_dir) / f"{row['eid']}.h5", one=self.one)
+            # Build the session from the authoritative recordings row, not the
+            # H5 /metadata: query_database fills brain_region/hemisphere/
+            # target_NM at the catalog level (TEMPFIX) but never writes them
+            # back to the H5, so the per-session /metadata can be empty. Load
+            # only the data groups compare_response_models needs.
+            ps = PhotometrySession(row, one=self.one, load_data=False)
+            ps.load_h5(Path(self.h5_dir) / f"{row['eid']}.h5",
+                       groups=['photometry', 'trials', 'wheel'])
             rows = ps.compare_response_models(
                 brain_region=row['brain_region'], formulas=formulas,
                 response_col=response_col, reference=reference,
