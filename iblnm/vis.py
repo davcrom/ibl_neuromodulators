@@ -2186,9 +2186,10 @@ def plot_lmm_ceiling(ceiling_df):
     """Saturated-model ceiling R² (marginal and conditional) per target-NM.
 
     One panel per event; within each, paired bars per target-NM give the
-    fixed-effects (marginal) and fixed+random (conditional) R² of the
-    saturated categorical model ``response ~ C(contrast) * side * reward`` —
-    the upper bound the parametric models are compared against.
+    fixed-effects (marginal) and fixed+random (conditional) R² of the per-event
+    saturated categorical model (``C(contrast) * side``, plus ``reward`` and the
+    ``C(contrast):side:reward`` three-way at feedback, never the ``side:reward``
+    two-way) — the upper bound the parametric models are compared against.
 
     Parameters
     ----------
@@ -2228,8 +2229,8 @@ def plot_lmm_ceiling(ceiling_df):
         ax.set_title(event)
     axes[0].set_ylabel('Ceiling R²')
     axes[0].legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
-    fig.suptitle('Ceiling R²\nresponse ~ C(contrast) * side * reward',
-                 fontsize=LABELFONTSIZE)
+    fig.suptitle('Ceiling R²\nsaturated C(contrast) × side (× reward at '
+                 'feedback), no side:reward', fontsize=LABELFONTSIZE)
     return fig
 
 

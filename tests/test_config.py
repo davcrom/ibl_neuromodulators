@@ -76,8 +76,13 @@ def test_task_reliability_formulas():
 
 
 def test_task_ceiling_formula():
-    formulas = _format(LMM_FORMULAS['task_ceiling'])
-    assert formulas == {'ceiling': 'response ~ C(contrast) * side * reward'}
+    # Per-event: reward only at feedback; side:reward dropped, 3-way kept.
+    ceiling = LMM_FORMULAS['task_ceiling']
+    no_reward = {'ceiling': 'response ~ C(contrast) * side'}
+    assert _format(ceiling['stimOn_times']) == no_reward
+    assert _format(ceiling['firstMovement_times']) == no_reward
+    assert _format(ceiling['feedback_times']) == {
+        'ceiling': 'response ~ C(contrast) * side * reward - side:reward'}
 
 
 # Per-variable predictor column: choice enters as the fiber-relative choice

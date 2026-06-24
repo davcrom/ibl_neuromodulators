@@ -184,10 +184,13 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
     emm_frames = {f: group.response_lmm_effects('task_full', 'emm', [f])
                   for f in ('reward', 'side', 'contrast')}
 
-    # Ceiling: one saturated reporting model. plot_lmm_ceiling reads
+    # Ceiling: per-event saturated reporting model (reward only at feedback),
+    # run per event like the reliability set. plot_lmm_ceiling reads
     # marginal/conditional R², so rename the fit frame's R² columns.
-    ceiling = group.response_lmm_fit(
-        {'ceiling': LMM_FORMULAS['task_ceiling']['ceiling']}, group_by)
+    ceiling = pd.concat(
+        [group.response_lmm_fit(cset, group_by, events=[event])
+         for event, cset in LMM_FORMULAS['task_ceiling'].items()],
+        ignore_index=True)
     ceiling = ceiling.rename(
         columns={'marginal_r2': 'marginal', 'conditional_r2': 'conditional'})
 

@@ -949,10 +949,12 @@ class TestPlotLMMSuiteFigures:
         plt.close(fig)
 
     def test_ceiling_formula_in_title(self):
-        """The saturated-model formula is shown in the title, not bottom text."""
+        """The saturated-model description is shown in the title, not bottom text."""
         from iblnm.vis import plot_lmm_ceiling
         fig = plot_lmm_ceiling(self._ceiling())
-        assert 'response ~ C(contrast) * side * reward' in fig._suptitle.get_text()
+        title = fig._suptitle.get_text()
+        assert 'C(contrast) × side' in title
+        assert 'no side:reward' in title
         plt.close(fig)
 
     def test_suite_plots_handle_empty_frames(self):

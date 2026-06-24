@@ -539,9 +539,16 @@ LMM_FORMULAS = {
             'interactions': '{response} ~ contrast + side + reward',
         },
     },
-    # Task ceiling: saturated single reporting model.
+    # Task ceiling: per-event saturated upper-bound reporting model. Keyed by
+    # event like task_reliability — reward enters only at feedback. The 2-way
+    # side:reward is dropped everywhere (it encodes choice, studied in the
+    # movement set); the feedback 3-way C(contrast):side:reward is kept, so the
+    # ceiling sits just below a fully saturated cell-means model.
     'task_ceiling': {
-        'ceiling': '{response} ~ C(contrast) * side * reward',
+        'stimOn_times': {'ceiling': '{response} ~ C(contrast) * side'},
+        'firstMovement_times': {'ceiling': '{response} ~ C(contrast) * side'},
+        'feedback_times': {
+            'ceiling': '{response} ~ C(contrast) * side * reward - side:reward'},
     },
     # Movement reliability: one per-event set per movement variable, each
     # extending that event's revised task base (reward only at feedback,
