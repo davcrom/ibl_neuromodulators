@@ -1690,15 +1690,15 @@ def _sort_events(events: Iterable[str]) -> list[str]:
     return sorted(events, key=lambda e: (order.get(e, len(order)), e))
 
 
-def _scatter_folds(ax, x, df_group, color):
-    """Plot one group at x-position ``x``: per-fold ΔR² as small faint markers
-    and the across-fold aggregate as a large black-edged marker."""
+def _scatter_folds(ax, x, df_group, color, value_col='delta_r2'):
+    """Plot one group at x-position ``x``: per-fold ``value_col`` as small faint
+    markers and the across-fold aggregate as a large black-edged marker."""
     folds = df_group[df_group['fold'] != 'aggregate']
-    ax.scatter(np.full(len(folds), x), folds['delta_r2'], color=color, s=20,
+    ax.scatter(np.full(len(folds), x), folds[value_col], color=color, s=20,
                alpha=0.5, zorder=2)
     agg = df_group[df_group['fold'] == 'aggregate']
     if len(agg):
-        ax.scatter(x, agg['delta_r2'].iloc[0], color=color, s=90,
+        ax.scatter(x, agg[value_col].iloc[0], color=color, s=90,
                    edgecolor='k', zorder=3)
 
 
@@ -2253,22 +2253,29 @@ def _reliability_predictor_order(predictors: Iterable[str]) -> list[str]:
     return known + others
 
 
-def plot_lmm_reliability(reliability_df, title):
-    """Out-of-sample ΔR² per predictor — grid of target-NM (rows) × event (cols).
+def plot_lmm_reliability(reliability_df, full_r2, title):
+    """Per-predictor ΔR² as a proportion of the full model's marginal R² — grid
+    of target-NM (rows) × event (cols).
 
-    Each cell shows the per-fold ΔR² for every predictor on a common x-axis.
-    Small faint markers are the per-fold values (e.g. leave-one-subject-out),
-    the large marker is the across-fold aggregate. Positive = the predictor
-    helps predict held-out data. Each target-NM row is drawn in its own color
-    and shares a y-axis so predictors and events are comparable within an NM.
-    Predictor order keeps the recognized task terms (``_RELIABILITY_TERMS``)
-    first and appends any others (e.g. ``log_<var>``) in encounter order.
+    For every predictor, the per-fold ΔR² (small faint markers) and the
+    across-fold aggregate (large black-edged marker) are each divided by the full
+    model's in-sample marginal R² for that ``(target_NM, event)`` panel, so the
+    y-axis is the fraction of the full model's explained variance attributable to
+    the predictor. That marginal R² is annotated top-left as the absolute
+    reference. All panels share one y-scale so magnitudes are comparable across
+    target-NMs and events. Predictor order keeps the recognized task terms
+    (``_RELIABILITY_TERMS``) first and appends any others (e.g. ``log_<var>``) in
+    encounter order.
 
     Parameters
     ----------
     reliability_df : pd.DataFrame
         Long-form ΔR² rows: ``target_NM``, ``event``, ``predictor``, ``fold``,
         ``delta_r2`` (with a per-group ``fold == 'aggregate'`` row).
+    full_r2 : pd.DataFrame
+        Full model's in-sample marginal R² per panel: columns ``target_NM``,
+        ``event``, ``marginal_r2``. Both the scaling denominator and the
+        annotated absolute reference.
     title : str
         Figure suptitle.
 
@@ -2283,23 +2290,35 @@ def plot_lmm_reliability(reliability_df, title):
     events = _sort_events(reliability_df['event'].unique()) if has_data else []
     n_rows, n_cols = max(len(targets), 1), max(len(events), 1)
     fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, sharex=True,
-                             sharey='row', layout='constrained',
+                             sharey=True, layout='constrained',
                              figsize=(2.6 * n_cols + 1, 2.0 * n_rows + 1))
 
     if not has_data:
         fig.suptitle(title, fontsize=LABELFONTSIZE)
         return fig
 
-    terms = _reliability_predictor_order(reliability_df['predictor'])
+    # Scale each ΔR² to a proportion of its panel's full-model marginal R².
+    marginal = full_r2.set_index(['target_NM', 'event'])['marginal_r2']
+    df = reliability_df.merge(full_r2[['target_NM', 'event', 'marginal_r2']],
+                              on=['target_NM', 'event'], how='left')
+    df['proportion'] = np.where(df['marginal_r2'] > 0,
+                                df['delta_r2'] / df['marginal_r2'], np.nan)
+
+    terms = _reliability_predictor_order(df['predictor'])
     for r, target_nm in enumerate(targets):
         color = TARGETNM_COLORS.get(target_nm, 'gray')
-        df_t = reliability_df[reliability_df['target_NM'] == target_nm]
+        df_t = df[df['target_NM'] == target_nm]
         for c, event in enumerate(events):
             ax = axes[r, c]
             df_ev = df_t[df_t['event'] == event]
             for x, term in enumerate(terms):
-                _scatter_folds(ax, x, df_ev[df_ev['predictor'] == term], color)
+                _scatter_folds(ax, x, df_ev[df_ev['predictor'] == term], color,
+                               value_col='proportion')
             ax.axhline(0, ls='--', color='gray', lw=0.5)
+            m = marginal.get((target_nm, event), np.nan)
+            if np.isfinite(m):
+                ax.text(0.03, 0.97, f'R²ₘ={m:.2f}', transform=ax.transAxes,
+                        va='top', ha='left', fontsize=TICKFONTSIZE)
             if r == 0:
                 ax.set_title(event)
         axes[r, 0].set_ylabel(target_nm, fontsize=TICKFONTSIZE)
@@ -2308,16 +2327,7 @@ def plot_lmm_reliability(reliability_df, title):
         axes[-1, c].set_xticks(range(len(terms)))
         axes[-1, c].set_xticklabels(terms, rotation=30, ha='right',
                                     fontsize=TICKFONTSIZE)
-    fig.supylabel('Out-of-sample ΔR²')
-
-    role_handles = [
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=5,
-               alpha=0.5),
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=9,
-               markeredgecolor='k'),
-    ]
-    fig.legend(role_handles, ['per-fold', 'across-fold aggregate'],
-               frameon=False, fontsize=TICKFONTSIZE, loc='upper right')
+    fig.supylabel('ΔR² (proportion of full-model marginal R²)')
     fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 

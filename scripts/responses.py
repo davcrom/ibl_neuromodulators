@@ -224,6 +224,9 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
 
     # Reliability grids: out-of-sample (CV) and in-sample (jackknife) ΔR² per
     # predictor; both are leave-one-subject-out, named by procedure not "loso".
+    # ΔR² is scaled to a proportion of the full model's in-sample marginal R²
+    # (the base reporting fit), which is also annotated on each panel.
+    full_r2 = r2_base[['target_NM', 'event', 'marginal_r2']]
     for df_reliability, qualifier, label in [
         (reliability_cv, 'cv', 'out-of-sample (cross-validated)'),
         (reliability_jackknife, 'jackknife', 'in-sample (jackknife)'),
@@ -231,13 +234,12 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
         if df_reliability.empty:
             continue
         fig = plot_lmm_reliability(
-            df_reliability,
+            df_reliability, full_r2,
             title=f'Task LMM reliability — {label}\nfolds are subjects')
         fig.savefig(
             figures_dir / f'response_lmm_task_reliability_{qualifier}.svg',
             dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
-    print("  LMM summary plots saved")
     print("  LMM summary plots saved")
 
 
@@ -348,15 +350,20 @@ def plot_movement_figures(group, fig_dirs, data_dir):
     print(f"  Movement LMM CSVs saved to {data_dir}")
 
     # Reliability ΔR²: one figure per (procedure, movement variable), mirroring
-    # the task reliability figure (target_NM × event grid).
+    # the task reliability figure (target_NM × event grid). ΔR² is scaled to a
+    # proportion of that variable's full-model in-sample marginal R² (the
+    # `full` rows of the r2 frame), which is also annotated on each panel.
     for proc, df_rel in (('cv', reliability_cv), ('jackknife', reliability_jk)):
         for var in MOVEMENT_VARS:
             sub = df_rel[df_rel['movement_var'] == var]
             if sub.empty:
                 continue
+            full_r2 = r2[(r2['name'] == 'full') & (r2['movement_var'] == var)][
+                ['target_NM', 'event', 'marginal_r2']]
             fig = plot_lmm_reliability(
-                sub, title=f'Movement LMM reliability ({var}) — {proc}\n'
-                           'folds are subjects')
+                sub, full_r2,
+                title=f'Movement LMM reliability ({var}) — {proc}\n'
+                      'folds are subjects')
             fig.savefig(
                 fig_dirs['movement_model_comparison']
                 / f'response_lmm_movement_reliability_{proc}_{var}.svg',

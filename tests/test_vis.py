@@ -1017,16 +1017,25 @@ class TestPlotLmmReliability:
                             'delta_r2': 0.03 if fold == 'aggregate' else 0.01})
         return pd.DataFrame(rows)
 
+    def _full_r2(self, targets=('VTA-DA', 'DR-5HT'),
+                 events=('feedback_times', 'stimOn_times'), marginal=0.1):
+        """Full-model marginal R² per (target_NM, event) panel."""
+        return pd.DataFrame([
+            {'target_NM': tnm, 'event': event, 'marginal_r2': marginal}
+            for tnm in targets for event in events])
+
     def test_grid_rows_targets_cols_events(self):
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(),
+                                   'Task reliability')
         assert len(fig.axes) == 2 * 2  # 2 targets × 2 events
         plt.close(fig)
 
     def test_event_columns_chronological(self):
         """Top-row panel titles are the events in trial chronology."""
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(),
+                                   'Task reliability')
         assert [ax.get_title() for ax in fig.axes[:2]] == [
             'stimOn_times', 'feedback_times']
         plt.close(fig)
@@ -1034,7 +1043,8 @@ class TestPlotLmmReliability:
     def test_xticklabels_are_terms_in_order(self):
         """Bottom-row x-axis lists the task terms, main effects then interactions."""
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(),
+                                   'Task reliability')
         labels = [t.get_text() for t in fig.axes[2].get_xticklabels()]
         assert labels == ['contrast', 'side', 'reward', 'interactions']
         plt.close(fig)
@@ -1042,7 +1052,8 @@ class TestPlotLmmReliability:
     def test_rows_labeled_by_target(self):
         """Each row's leftmost panel is labelled with its target-NM, ordered."""
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(),
+                                   'Task reliability')
         assert [fig.axes[0].get_ylabel(), fig.axes[2].get_ylabel()] == \
             ['VTA-DA', 'DR-5HT']
         plt.close(fig)
@@ -1051,7 +1062,8 @@ class TestPlotLmmReliability:
         from iblnm.vis import plot_lmm_reliability
         from iblnm.config import TARGETNM_COLORS
         from matplotlib.colors import to_rgba
-        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(),
+                                   'Task reliability')
         colors = {tuple(np.round(c.get_facecolor()[0], 5))
                   for c in fig.axes[0].collections if len(c.get_offsets())}
         assert tuple(np.round(to_rgba(TARGETNM_COLORS['VTA-DA']), 5)) in colors
@@ -1059,7 +1071,8 @@ class TestPlotLmmReliability:
 
     def test_aggregate_marker_larger_than_folds(self):
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'Task reliability')
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(),
+                                   'Task reliability')
         sizes = [c.get_sizes()[0] for c in fig.axes[0].collections
                  if len(c.get_sizes())]
         assert max(sizes) > min(sizes)
@@ -1067,13 +1080,14 @@ class TestPlotLmmReliability:
 
     def test_title_is_suptitle(self):
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel(), 'My ΔR² title')
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(), 'My ΔR² title')
         assert fig._suptitle.get_text() == 'My ΔR² title'
         plt.close(fig)
 
     def test_empty_frame_returns_titled_figure(self):
         from iblnm.vis import plot_lmm_reliability
-        fig = plot_lmm_reliability(self._rel().iloc[0:0], 'Empty title')
+        fig = plot_lmm_reliability(self._rel().iloc[0:0], self._full_r2(),
+                                   'Empty title')
         assert isinstance(fig, plt.Figure)
         assert fig._suptitle.get_text() == 'Empty title'
         plt.close(fig)
@@ -1082,9 +1096,54 @@ class TestPlotLmmReliability:
         """A movement-shaped frame renders and maps its predictors to the x-axis."""
         from iblnm.vis import plot_lmm_reliability
         df = self._rel(predictors=('contrast', 'log_reaction_time'))
-        fig = plot_lmm_reliability(df, 'Movement reliability')
+        fig = plot_lmm_reliability(df, self._full_r2(), 'Movement reliability')
         labels = [t.get_text() for t in fig.axes[2].get_xticklabels()]
         assert labels == ['contrast', 'log_reaction_time']
+        plt.close(fig)
+
+    def test_delta_scaled_to_proportion_of_marginal_r2(self):
+        """Each marker's height is delta_r2 / full-model marginal R²."""
+        from iblnm.vis import plot_lmm_reliability
+        # aggregate delta_r2 = 0.03, marginal_r2 = 0.1 -> proportion 0.3.
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(marginal=0.1),
+                                   'Task reliability')
+        heights = {round(float(off[1]), 4)
+                   for c in fig.axes[0].collections
+                   for off in c.get_offsets()}
+        assert 0.3 in heights   # 0.03 / 0.1
+        assert 0.1 in heights   # 0.01 / 0.1
+        plt.close(fig)
+
+    def test_marginal_r2_annotated_per_panel(self):
+        """Each panel carries a text annotation of its full-model marginal R²."""
+        from iblnm.vis import plot_lmm_reliability
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(marginal=0.1),
+                                   'Task reliability')
+        for ax in fig.axes:
+            assert any('0.10' in t.get_text() for t in ax.texts)
+        plt.close(fig)
+
+    def test_no_legend(self):
+        from iblnm.vis import plot_lmm_reliability
+        fig = plot_lmm_reliability(self._rel(), self._full_r2(),
+                                   'Task reliability')
+        assert len(fig.legends) == 0
+        plt.close(fig)
+
+    def test_all_panels_share_one_yscale(self):
+        """Panels in different rows share one y-axis (not per-row)."""
+        from iblnm.vis import plot_lmm_reliability
+        # Give the two target rows very different marginal R² so unshared
+        # y-axes would differ; shared axes force one common range.
+        rel = self._rel()
+        full = pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': e, 'marginal_r2': 0.1}
+            for e in ('feedback_times', 'stimOn_times')] + [
+            {'target_NM': 'DR-5HT', 'event': e, 'marginal_r2': 0.5}
+            for e in ('feedback_times', 'stimOn_times')])
+        fig = plot_lmm_reliability(rel, full, 'Task reliability')
+        ylims = {ax.get_ylim() for ax in fig.axes}
+        assert len(ylims) == 1
         plt.close(fig)
 
 
