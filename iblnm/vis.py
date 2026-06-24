@@ -2182,20 +2182,26 @@ def plot_lmm_summary(r2_df, coef_df, emm_frames, event, formula=None,
     return fig
 
 
-def plot_lmm_ceiling(ceiling_df):
+_TASK_CEILING_TITLE = ('Ceiling R²\nsaturated C(contrast) × side (× reward at '
+                       'feedback), no side:reward')
+
+
+def plot_lmm_ceiling(ceiling_df, title=_TASK_CEILING_TITLE):
     """Saturated-model ceiling R² (marginal and conditional) per target-NM.
 
     One panel per event; within each, paired bars per target-NM give the
     fixed-effects (marginal) and fixed+random (conditional) R² of the per-event
-    saturated categorical model (``C(contrast) * side``, plus ``reward`` and the
-    ``C(contrast):side:reward`` three-way at feedback, never the ``side:reward``
-    two-way) — the upper bound the parametric models are compared against.
+    saturated model — the upper bound the parametric models are compared
+    against. The default ``title`` describes the task ceiling; the movement
+    ceiling passes its own.
 
     Parameters
     ----------
     ceiling_df : pd.DataFrame
         ``fit_lmm`` ceiling rows: ``target_NM``, ``event``, ``marginal``,
         ``conditional``.
+    title : str
+        Figure suptitle (the saturated model it depicts).
 
     Returns
     -------
@@ -2207,8 +2213,7 @@ def plot_lmm_ceiling(ceiling_df):
                              sharey=True, layout='constrained')
     axes = np.atleast_1d(axes)
     if len(ceiling_df) == 0:
-        fig.suptitle('Ceiling R²\nresponse ~ C(contrast) * side * reward',
-                     fontsize=LABELFONTSIZE)
+        fig.suptitle(title, fontsize=LABELFONTSIZE)
         return fig
 
     bar_w = 0.35
@@ -2229,8 +2234,7 @@ def plot_lmm_ceiling(ceiling_df):
         ax.set_title(event)
     axes[0].set_ylabel('Ceiling R²')
     axes[0].legend(frameon=False, fontsize=TICKFONTSIZE, loc='upper left')
-    fig.suptitle('Ceiling R²\nsaturated C(contrast) × side (× reward at '
-                 'feedback), no side:reward', fontsize=LABELFONTSIZE)
+    fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
 

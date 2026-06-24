@@ -563,6 +563,12 @@ LMM_FORMULAS = {
         }
         for var, pred in MOVEMENT_PREDICTORS.items()
     },
+    # Movement ceiling: saturated upper bound for movement encoding — the full
+    # 3-way interaction of the movement predictors. No task variables and no
+    # reward, so a single model fit per event (the analog of task_ceiling).
+    'movement_ceiling': {
+        'ceiling': '{response} ~ choice_side * log_reaction_time * peak_velocity',
+    },
     # Per-session OLS drop-one: full two-way interaction model is the reference.
     # Each non-`full` key drops one regressor and all of its 2-way interactions,
     # expressed as the `**2` of the remaining four regressors.

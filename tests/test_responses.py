@@ -168,6 +168,8 @@ class TestPlotMovementFigures:
               'movement_var'}),
             ('response_lmm_movement_r2.csv',
              {'target_NM', 'event', 'name', 'marginal_r2', 'movement_var'}),
+            ('response_lmm_movement_ceiling.csv',
+             {'target_NM', 'event', 'marginal', 'conditional'}),
         ]:
             df = pd.read_csv(tmp_path / fname)
             assert cols.issubset(df.columns), fname
@@ -188,6 +190,8 @@ class TestPlotMovementFigures:
                    .glob('response_lmm_movement_reliability_*.svg'))
         assert any(fig_dirs['movement_model_comparison']
                    .glob('response_lmm_movement_r2_*.svg'))
+        assert (fig_dirs['movement_model_comparison']
+                / 'response_lmm_movement_ceiling.svg').exists()
 
 
 class TestPlotPersessionFigures:

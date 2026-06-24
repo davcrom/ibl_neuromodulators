@@ -75,6 +75,12 @@ def test_task_reliability_formulas():
     }
 
 
+def test_movement_ceiling_formula():
+    # Saturated 3-way of the movement predictors; no task vars, no reward.
+    assert _format(LMM_FORMULAS['movement_ceiling']) == {
+        'ceiling': 'response ~ choice_side * log_reaction_time * peak_velocity'}
+
+
 def test_task_ceiling_formula():
     # Per-event: reward only at feedback; side:reward dropped, 3-way kept.
     ceiling = LMM_FORMULAS['task_ceiling']

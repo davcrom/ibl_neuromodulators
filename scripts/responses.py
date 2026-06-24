@@ -324,17 +324,26 @@ def _movement_r2(group, group_by):
 
 def plot_movement_figures(group, fig_dirs, data_dir):
     """Movement-encoding analyses over the response events (``RESPONSE_EVENTS``):
-    cv/jackknife reliability ΔR² per timing variable (analogous to the task
-    reliability plots) and the three-bar in-sample R² comparison."""
+    cv/jackknife reliability ΔR² per movement variable (analogous to the task
+    reliability plots), the three-bar in-sample R² comparison, and the movement
+    ceiling (saturated 3-way of the movement predictors, per event)."""
     group_by = ['target_NM', 'event']
 
     reliability_cv, reliability_jk = _movement_reliability(group, group_by)
     r2 = _movement_r2(group, group_by)
 
+    # Movement ceiling: saturated 3-way of the movement predictors, fit per
+    # (target_NM, event). Renamed to marginal/conditional for plot_lmm_ceiling.
+    ceiling = group.response_lmm_fit(
+        LMM_FORMULAS['movement_ceiling'], group_by,
+        min_subjects=MIN_SUBJECTS_MOVEMENT).rename(
+        columns={'marginal_r2': 'marginal', 'conditional_r2': 'conditional'})
+
     _save_lmm_frames({
         'response_lmm_movement_reliability_cv': reliability_cv,
         'response_lmm_movement_reliability_jackknife': reliability_jk,
         'response_lmm_movement_r2': r2,
+        'response_lmm_movement_ceiling': ceiling,
     }, data_dir)
     print(f"  Movement LMM CSVs saved to {data_dir}")
 
@@ -363,6 +372,16 @@ def plot_movement_figures(group, fig_dirs, data_dir):
             / f'response_lmm_movement_r2_{event}.svg',
             dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close(fig)
+
+    # Movement ceiling figure (per-event panels), mirroring the task ceiling.
+    fig = plot_lmm_ceiling(
+        ceiling, title='Movement ceiling R²\n'
+                       'choice × reaction_time × peak_velocity')
+    fig.savefig(
+        fig_dirs['movement_model_comparison']
+        / 'response_lmm_movement_ceiling.svg',
+        dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
 
 
 # =========================================================================
