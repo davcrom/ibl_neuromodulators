@@ -1101,17 +1101,16 @@ class TestPlotLmmReliability:
         assert labels == ['contrast', 'log_reaction_time']
         plt.close(fig)
 
-    def test_delta_scaled_to_proportion_of_marginal_r2(self):
-        """Each marker's height is delta_r2 / full-model marginal R²."""
+    def test_marker_height_is_raw_delta_r2(self):
+        """Each marker's height is the raw delta_r2, not scaled by marginal R²."""
         from iblnm.vis import plot_lmm_reliability
-        # aggregate delta_r2 = 0.03, marginal_r2 = 0.1 -> proportion 0.3.
         fig = plot_lmm_reliability(self._rel(), self._full_r2(marginal=0.1),
                                    'Task reliability')
         heights = {round(float(off[1]), 4)
                    for c in fig.axes[0].collections
                    for off in c.get_offsets()}
-        assert 0.3 in heights   # 0.03 / 0.1
-        assert 0.1 in heights   # 0.01 / 0.1
+        assert 0.03 in heights   # aggregate delta_r2
+        assert 0.01 in heights   # per-fold delta_r2
         plt.close(fig)
 
     def test_marginal_r2_annotated_per_panel(self):
@@ -1130,20 +1129,25 @@ class TestPlotLmmReliability:
         assert len(fig.legends) == 0
         plt.close(fig)
 
-    def test_all_panels_share_one_yscale(self):
-        """Panels in different rows share one y-axis (not per-row)."""
+    def test_each_row_has_own_yscale(self):
+        """Panels share a y-axis within a target row, not across rows."""
         from iblnm.vis import plot_lmm_reliability
-        # Give the two target rows very different marginal R² so unshared
-        # y-axes would differ; shared axes force one common range.
-        rel = self._rel()
-        full = pd.DataFrame([
-            {'target_NM': 'VTA-DA', 'event': e, 'marginal_r2': 0.1}
-            for e in ('feedback_times', 'stimOn_times')] + [
-            {'target_NM': 'DR-5HT', 'event': e, 'marginal_r2': 0.5}
-            for e in ('feedback_times', 'stimOn_times')])
-        fig = plot_lmm_reliability(rel, full, 'Task reliability')
-        ylims = {ax.get_ylim() for ax in fig.axes}
-        assert len(ylims) == 1
+        # Give the two target rows very different ΔR² magnitudes: per-row
+        # scaling makes the rows' y-ranges differ while columns within a row
+        # share.
+        rows = []
+        for tnm, delta in [('VTA-DA', 0.02), ('DR-5HT', 0.5)]:
+            for event in ('feedback_times', 'stimOn_times'):
+                for fold in ['s0', 'aggregate']:
+                    rows.append({'target_NM': tnm, 'event': event,
+                                 'predictor': 'contrast', 'fold': fold,
+                                 'delta_r2': delta})
+        fig = plot_lmm_reliability(pd.DataFrame(rows), self._full_r2(),
+                                   'Task reliability')
+        # fig.axes ordered row-major: [r0c0, r0c1, r1c0, r1c1].
+        assert fig.axes[0].get_ylim() == fig.axes[1].get_ylim()  # row shares
+        assert fig.axes[2].get_ylim() == fig.axes[3].get_ylim()
+        assert fig.axes[0].get_ylim() != fig.axes[2].get_ylim()  # rows differ
         plt.close(fig)
 
 

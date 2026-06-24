@@ -2254,18 +2254,17 @@ def _reliability_predictor_order(predictors: Iterable[str]) -> list[str]:
 
 
 def plot_lmm_reliability(reliability_df, full_r2, title):
-    """Per-predictor ΔR² as a proportion of the full model's marginal R² — grid
-    of target-NM (rows) × event (cols).
+    """Out-of-sample ΔR² per predictor — grid of target-NM (rows) × event (cols).
 
-    For every predictor, the per-fold ΔR² (small faint markers) and the
-    across-fold aggregate (large black-edged marker) are each divided by the full
-    model's in-sample marginal R² for that ``(target_NM, event)`` panel, so the
-    y-axis is the fraction of the full model's explained variance attributable to
-    the predictor. That marginal R² is annotated top-left as the absolute
-    reference. All panels share one y-scale so magnitudes are comparable across
-    target-NMs and events. Predictor order keeps the recognized task terms
-    (``_RELIABILITY_TERMS``) first and appends any others (e.g. ``log_<var>``) in
-    encounter order.
+    Each cell shows the raw per-predictor ΔR²: small faint markers are the
+    per-fold values (e.g. leave-one-subject-out), the large black-edged marker
+    is the across-fold aggregate. Positive = the predictor helps predict
+    held-out data. Each target-NM row is drawn in its own color and shares a
+    y-axis within the row, so predictors and events are comparable within an NM
+    while rows scale independently. The full model's in-sample marginal R² is
+    annotated top-left of each panel as an absolute reference. Predictor order
+    keeps the recognized task terms (``_RELIABILITY_TERMS``) first and appends
+    any others (e.g. ``log_<var>``) in encounter order.
 
     Parameters
     ----------
@@ -2274,8 +2273,7 @@ def plot_lmm_reliability(reliability_df, full_r2, title):
         ``delta_r2`` (with a per-group ``fold == 'aggregate'`` row).
     full_r2 : pd.DataFrame
         Full model's in-sample marginal R² per panel: columns ``target_NM``,
-        ``event``, ``marginal_r2``. Both the scaling denominator and the
-        annotated absolute reference.
+        ``event``, ``marginal_r2``. Annotated top-left as an absolute reference.
     title : str
         Figure suptitle.
 
@@ -2290,30 +2288,23 @@ def plot_lmm_reliability(reliability_df, full_r2, title):
     events = _sort_events(reliability_df['event'].unique()) if has_data else []
     n_rows, n_cols = max(len(targets), 1), max(len(events), 1)
     fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, sharex=True,
-                             sharey=True, layout='constrained',
+                             sharey='row', layout='constrained',
                              figsize=(2.6 * n_cols + 1, 2.0 * n_rows + 1))
 
     if not has_data:
         fig.suptitle(title, fontsize=LABELFONTSIZE)
         return fig
 
-    # Scale each ΔR² to a proportion of its panel's full-model marginal R².
     marginal = full_r2.set_index(['target_NM', 'event'])['marginal_r2']
-    df = reliability_df.merge(full_r2[['target_NM', 'event', 'marginal_r2']],
-                              on=['target_NM', 'event'], how='left')
-    df['proportion'] = np.where(df['marginal_r2'] > 0,
-                                df['delta_r2'] / df['marginal_r2'], np.nan)
-
-    terms = _reliability_predictor_order(df['predictor'])
+    terms = _reliability_predictor_order(reliability_df['predictor'])
     for r, target_nm in enumerate(targets):
         color = TARGETNM_COLORS.get(target_nm, 'gray')
-        df_t = df[df['target_NM'] == target_nm]
+        df_t = reliability_df[reliability_df['target_NM'] == target_nm]
         for c, event in enumerate(events):
             ax = axes[r, c]
             df_ev = df_t[df_t['event'] == event]
             for x, term in enumerate(terms):
-                _scatter_folds(ax, x, df_ev[df_ev['predictor'] == term], color,
-                               value_col='proportion')
+                _scatter_folds(ax, x, df_ev[df_ev['predictor'] == term], color)
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             m = marginal.get((target_nm, event), np.nan)
             if np.isfinite(m):
@@ -2327,7 +2318,7 @@ def plot_lmm_reliability(reliability_df, full_r2, title):
         axes[-1, c].set_xticks(range(len(terms)))
         axes[-1, c].set_xticklabels(terms, rotation=30, ha='right',
                                     fontsize=TICKFONTSIZE)
-    fig.supylabel('ΔR² (proportion of full-model marginal R²)')
+    fig.supylabel('Out-of-sample ΔR²')
     fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
