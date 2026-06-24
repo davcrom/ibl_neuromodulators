@@ -17,6 +17,7 @@ from iblnm.config import (
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
 )
+from iblnm.util import get_contrast_coding
 
 
 def _coef_label(term):
@@ -1983,6 +1984,48 @@ _EMM_LEVEL_LABELS = {
 }
 
 
+def _decode_contrast_levels(emm_df: pd.DataFrame) -> pd.DataFrame:
+    """Replace per-fit-centered coded contrast with true percent, per target-NM.
+
+    The LMM mean-centers log2 contrast on each recording's own trial
+    distribution (:func:`iblnm.analysis.code_predictors`), so one percent maps to
+    a different coded level for every target-NM. Within a single fit the
+    0%-contrast clamp is always the minimum level, so subtracting that fit's own
+    minimum cancels its centering constant and the log2 inverse recovers percent.
+    Decoding must therefore be per target-NM: a single pooled offset only cancels
+    the centering of the target-NM holding the global minimum, leaving the rest
+    on incomparable axes. Returns a copy; the input is not mutated.
+    """
+    inverse = get_contrast_coding('log2')[1]
+    emm_df = emm_df.copy()
+    emm_df['contrast'] = emm_df.groupby('target_NM')['contrast'].transform(
+        lambda c: inverse(c - c.min()))
+    return emm_df
+
+
+def _emm_level_labels(factor: str, levels: list[float]) -> list[str]:
+    """X-axis labels for one factor's EMM levels.
+
+    ``reward``/``side`` map deviation codes (±0.5) to words. ``contrast`` levels
+    arrive already decoded to percent (see :func:`_decode_contrast_levels`), so
+    they — and any other factor — format their numeric level directly.
+
+    Parameters
+    ----------
+    factor : str
+        EMM factor name (the emm frame's level column).
+    levels : list of float
+        Sorted levels for ``factor`` (percent for ``contrast``).
+
+    Returns
+    -------
+    list of str
+        One tick label per level.
+    """
+    label_map = _EMM_LEVEL_LABELS.get(factor, {})
+    return [str(label_map.get(lvl, f'{lvl:g}')) for lvl in levels]
+
+
 def plot_marginal_means(emm_df, ax=None):
     """Main-effect estimated marginal means for one factor, per target-NM.
 
@@ -2012,8 +2055,9 @@ def plot_marginal_means(emm_df, ax=None):
 
     value_cols = {'predicted', 'ci_lower', 'ci_upper', 'target_NM', 'event'}
     factor = next(c for c in emm_df.columns if c not in value_cols)
+    if factor == 'contrast':
+        emm_df = _decode_contrast_levels(emm_df)
     levels = sorted(emm_df[factor].unique())
-    label_map = _EMM_LEVEL_LABELS.get(factor, {})
 
     targets = sorted(emm_df['target_NM'].unique(),
                      key=lambda t: TARGETNM2POSITION.get(t, 999))
@@ -2029,8 +2073,8 @@ def plot_marginal_means(emm_df, ax=None):
                     label=tnm, markersize=5)
 
     ax.set_xticks(range(len(levels)))
-    ax.set_xticklabels([str(label_map.get(lvl, round(lvl, 2)))
-                        for lvl in levels])
+    ax.set_xticklabels(_emm_level_labels(factor, levels),
+                       rotation=45, ha='right', fontsize=TICKFONTSIZE)
     ax.set_ylabel('z-score (EMM)')
     ax.set_title(f'Effect of {factor}')
     ax.axhline(0, ls='--', color='gray', lw=0.5)

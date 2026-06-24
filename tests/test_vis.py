@@ -804,6 +804,51 @@ class TestPlotMarginalMeans:
         assert labels == ['incorrect', 'correct']
         plt.close(fig)
 
+    @staticmethod
+    def _contrast_emm_df(center):
+        """Contrast EMMs with the LMM's mean-centered log2 coding.
+
+        Percent set {0, 6.25, 12.5, 25, 100} → log2 (0% clamped to 0) → shifted
+        by ``center``. ``center`` is arbitrary: the decode anchors on the 0%
+        clamp (the minimum level), so any center recovers the same percents.
+        """
+        pct = np.array([0., 6.25, 12.5, 25., 100.])
+        log2 = np.where(pct != 0, np.log2(np.where(pct != 0, pct, 1)), 0.0)
+        levels = log2 - center
+        return pd.DataFrame({
+            'target_NM': ['VTA-DA'] * 5,
+            'contrast': levels,
+            'predicted': [0.1, 0.2, 0.3, 0.4, 0.5],
+            'ci_lower': [0.0] * 5,
+            'ci_upper': [0.6] * 5,
+        })
+
+    @pytest.mark.parametrize('center', [3.0, 4.2])
+    def test_contrast_xticklabels_decode_to_percent(self, center):
+        """Contrast levels label as their actual percents, independent of the
+        per-fit centering constant."""
+        from iblnm.vis import plot_marginal_means
+        fig, ax = plt.subplots()
+        plot_marginal_means(self._contrast_emm_df(center), ax=ax)
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        assert labels == ['0', '6.25', '12.5', '25', '100']
+        plt.close(fig)
+
+    def test_contrast_levels_align_across_targets_with_different_centering(self):
+        """Each target-NM mean-centers contrast on its own trial distribution, so
+        coded levels differ across target-NMs. Decoding must be per-target-NM so
+        the labels collapse to one tick per true percent, not one per
+        (target-NM × level)."""
+        from iblnm.vis import plot_marginal_means
+        a = self._contrast_emm_df(center=3.0)
+        b = self._contrast_emm_df(center=4.2)
+        b['target_NM'] = 'DR-5HT'
+        fig, ax = plt.subplots()
+        plot_marginal_means(pd.concat([a, b], ignore_index=True), ax=ax)
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        assert labels == ['0', '6.25', '12.5', '25', '100']
+        plt.close(fig)
+
 
 # =============================================================================
 # Consolidated LMM Summary Plot Tests
