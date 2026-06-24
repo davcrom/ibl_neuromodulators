@@ -23,6 +23,12 @@ from iblnm.gui import PhotometrySessionViewer
 from iblnm.io import _get_default_connection
 from iblnm.validation import MissingRawData, MissingExtractedData
 
+# Cached H5 groups to load in the viewer. Trials are deliberately excluded:
+# the viewer always loads the raw signal, whose session-time cropping needs
+# the trials' intervals_0/intervals_1 columns, and the H5 trials table never
+# stores those. Trials are always loaded fresh from ONE instead.
+H5_GROUPS_EXCEPT_TRIALS = ['metadata', 'errors', 'photometry', 'wheel', 'video']
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
@@ -88,19 +94,21 @@ def print_session_errors(ps):
 def load_session_data(ps):
     """Populate ps with everything the viewer needs.
 
-    Loads from the H5 cache when available, then fills any remaining gaps
-    from the pipeline. Each step is a no-op when its output is already
-    present, so full, partial, and missing H5s are all handled uniformly.
+    Loads cached groups from the H5 when available (everything except
+    trials), always loads trials fresh from ONE (the H5 trials table lacks
+    the interval columns the raw-signal load needs), then fills any
+    remaining gaps from the pipeline. Each pipeline step is a no-op when its
+    output is already present, so full, partial, and missing H5s are all
+    handled uniformly.
     """
     h5_path = SESSIONS_H5_DIR / f'{ps.eid}.h5'
     if h5_path.exists():
-        ps.load_h5(h5_path)
+        ps.load_h5(h5_path, groups=H5_GROUPS_EXCEPT_TRIALS)
 
-    if ps.trials is None:
-        try:
-            ps.load_trials()
-        except (MissingRawData, MissingExtractedData) as e:
-            print(f"Warning: trials not available for {ps.eid} -- {e}")
+    try:
+        ps.load_trials()
+    except (MissingRawData, MissingExtractedData) as e:
+        print(f"Warning: trials not available for {ps.eid} -- {e}")
 
     if 'GCaMP' not in ps.photometry:
         try:

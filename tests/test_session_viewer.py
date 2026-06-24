@@ -195,14 +195,15 @@ def _make_mock_ps(load_trials_side_effect=None):
 
 
 def test_load_session_data_complete_h5_skips_pipeline(monkeypatch, tmp_path):
-    """When H5 fills every data attribute, no pipeline step runs."""
+    """Cached photometry/responses skip the pipeline, but trials always
+    load from ONE — the H5 trials group is never read (it lacks the interval
+    columns the raw-signal load needs)."""
     ps = _make_mock_ps()
     h5_path = tmp_path / 'test-eid.h5'
     h5_path.touch()
     monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
-    def _populate_from_h5(path):
-        ps.trials = MagicMock()
+    def _populate_from_h5(path, groups=None):
         ps.photometry = {'GCaMP': MagicMock(),
                          'Isosbestic': MagicMock(),
                          'GCaMP_preprocessed': MagicMock()}
@@ -212,8 +213,9 @@ def test_load_session_data_complete_h5_skips_pipeline(monkeypatch, tmp_path):
     result = load_session_data(ps)
 
     assert result is ps
-    ps.load_h5.assert_called_once_with(h5_path)
-    ps.load_trials.assert_not_called()
+    ps.load_h5.assert_called_once_with(h5_path, groups=sv.H5_GROUPS_EXCEPT_TRIALS)
+    assert 'trials' not in sv.H5_GROUPS_EXCEPT_TRIALS
+    ps.load_trials.assert_called_once()
     ps.load_photometry.assert_not_called()
     ps.preprocess.assert_not_called()
     ps.extract_responses.assert_not_called()
@@ -237,7 +239,7 @@ def test_load_session_data_partial_h5_runs_pipeline(monkeypatch, tmp_path):
 
     load_session_data(ps)
 
-    ps.load_h5.assert_called_once_with(h5_path)
+    ps.load_h5.assert_called_once_with(h5_path, groups=sv.H5_GROUPS_EXCEPT_TRIALS)
     ps.load_trials.assert_called_once()
     ps.load_photometry.assert_called_once()
     ps.preprocess.assert_called_once()
