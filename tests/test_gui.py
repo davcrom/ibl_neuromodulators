@@ -1,8 +1,13 @@
 """Tests for iblnm.gui helper functions."""
+import matplotlib
+matplotlib.use('Agg')
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib import pyplot as plt
 
+from iblnm.config import RESPONSE_WINDOWS
+from iblnm.gui import PhotometrySessionViewer
 from iblnm.task import sort_trials_by_type
 
 
@@ -76,3 +81,24 @@ def test_all_incorrect():
     assert sorted(idx) == [0, 1, 2]
     contrasts = [trials.loc[i, 'contrast'] for i in idx]
     assert contrasts == sorted(contrasts, reverse=True)
+
+
+# =========================================================================
+# _shade_response_windows
+# =========================================================================
+
+def test_shade_response_windows_marks_config_windows():
+    """Shaded spans match the configured post-event response windows."""
+    viewer = PhotometrySessionViewer(session=None)
+    fig, ax = plt.subplots()
+    viewer._shade_response_windows(ax)
+
+    spans = set()
+    for p in ax.patches:
+        x0 = p.get_x()
+        spans.add((round(float(x0), 6), round(float(x0 + p.get_width()), 6)))
+    plt.close(fig)
+
+    expected = {(round(t0, 6), round(t1, 6))
+                for t0, t1 in RESPONSE_WINDOWS.values()}
+    assert spans == expected

@@ -17,6 +17,7 @@ from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.widgets import Button
 
+from iblnm.config import RESPONSE_WINDOWS
 from iblnm.task import sort_trials_by_type
 
 DEMO_EID = '2025366a-c9aa-4b6c-97be-8af40eda6410'
@@ -36,6 +37,15 @@ EVENT_ORDER = ['stimOn_times', 'firstMovement_times', 'feedback_times']
 RATIO_SIGNAL   = 2
 RATIO_HEATMAP  = 4
 RATIO_MEAN     = 2
+
+# Font sizes
+FS_SUPTITLE = 12
+FS_TITLE    = 10
+FS_LABEL    = 9
+FS_TICK     = 8
+
+# Shading for the post-event response windows (config.RESPONSE_WINDOWS)
+RESPONSE_WINDOW_SHADE = dict(color='0.6', alpha=0.15, lw=0, zorder=0)
 
 
 class PhotometrySessionViewer:
@@ -275,10 +285,10 @@ class PhotometrySessionViewer:
         ax.legend(handles=signal_handles + event_handles,
                   loc='upper left', bbox_to_anchor=(1.02, 1),
                   borderaxespad=0, fontsize=6)
-        ax.set_ylabel('Signal (a.u.)', fontsize=7)
-        ax.set_title(f'Raw — {region}', fontsize=8)
+        ax.set_ylabel('Signal (a.u.)', fontsize=FS_LABEL)
+        ax.set_title(f'Raw — {region}', fontsize=FS_TITLE)
         ax.set_xlim(t[0], t[-1])
-        ax.tick_params(labelbottom=False)
+        ax.tick_params(labelbottom=False, labelsize=FS_TICK)
 
     def _plot_preprocessed(self, ax, region):
         ax.cla()
@@ -291,10 +301,11 @@ class PhotometrySessionViewer:
             ax.legend(handles=event_handles,
                       loc='upper left', bbox_to_anchor=(1.02, 1),
                       borderaxespad=0, fontsize=6)
-        ax.set_ylabel('z-score', fontsize=7)
-        ax.set_xlabel('Time (s)', fontsize=7)
-        ax.set_title(f'Preprocessed — {region}', fontsize=8)
+        ax.set_ylabel('z-score', fontsize=FS_LABEL)
+        ax.set_xlabel('Time (s)', fontsize=FS_LABEL)
+        ax.set_title(f'Preprocessed — {region}', fontsize=FS_TITLE)
         ax.set_xlim(t[0], t[-1])
+        ax.tick_params(labelsize=FS_TICK)
 
     def _draw_heatmap(self, ax, raw, resp, tpts):
         """Draw RdBu_r heatmap with NaN masking and zero-line."""
@@ -309,8 +320,17 @@ class PhotometrySessionViewer:
             extent=[tpts[0], tpts[-1], 0, raw.shape[0]],
         )
         ax.axvline(0, color='k', lw=0.7, ls='--')
-        ax.set_ylabel('Trial', fontsize=7)
-        ax.tick_params(labelbottom=False)
+        ax.set_ylabel('Trial', fontsize=FS_LABEL)
+        ax.tick_params(labelbottom=False, labelsize=FS_TICK)
+
+    def _shade_response_windows(self, ax):
+        """Draw light bands marking the post-event response windows."""
+        edges = set()
+        for t0, t1 in RESPONSE_WINDOWS.values():
+            ax.axvspan(t0, t1, **RESPONSE_WINDOW_SHADE)
+            edges.update((t0, t1))
+        for edge in edges:
+            ax.axvline(edge, color='0.6', lw=0.4, alpha=0.6, zorder=0)
 
     def _plot_psth_by_type(self, ax, resp, trials, tpts, event_color,
                            show_legend=False):
@@ -341,8 +361,8 @@ class PhotometrySessionViewer:
 
         ax.axhline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
         ax.axvline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
-        ax.set_ylabel('z-score', fontsize=7)
-        ax.set_xlabel('Time (s)', fontsize=7)
+        ax.set_ylabel('z-score', fontsize=FS_LABEL)
+        ax.set_xlabel('Time (s)', fontsize=FS_LABEL)
 
         if show_legend:
             contrast_handles = [
@@ -378,13 +398,13 @@ class PhotometrySessionViewer:
 
             self._draw_heatmap(ax_heat, raw[sort_idx], resp[sort_idx], tpts)
             ax_heat.axhline(n_incorrect, color='k', lw=0.8, ls='-')
-            ax_heat.set_title(event.replace('_times', ''), fontsize=8)
+            ax_heat.set_title(event.replace('_times', ''), fontsize=FS_TITLE)
 
             self._plot_psth_by_type(ax_mean, resp, trials, tpts, color,
                                     show_legend=show_legend)
         else:
             self._draw_heatmap(ax_heat, raw, resp, tpts)
-            ax_heat.set_title(event.replace('_times', ''), fontsize=8)
+            ax_heat.set_title(event.replace('_times', ''), fontsize=FS_TITLE)
 
             mean = np.nanmean(resp, axis=0)
             err  = scipy_sem(resp, axis=0, nan_policy='omit')
@@ -392,8 +412,11 @@ class PhotometrySessionViewer:
             ax_mean.fill_between(tpts, mean - err, mean + err, color=color, alpha=0.3)
             ax_mean.axhline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
             ax_mean.axvline(0, color='gray', ls='--', lw=0.5, alpha=0.5)
-            ax_mean.set_ylabel('z-score', fontsize=7)
-            ax_mean.set_xlabel('Time (s)', fontsize=7)
+            ax_mean.set_ylabel('z-score', fontsize=FS_LABEL)
+            ax_mean.set_xlabel('Time (s)', fontsize=FS_LABEL)
+
+        self._shade_response_windows(ax_mean)
+        ax_mean.tick_params(labelsize=FS_TICK)
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -416,7 +439,7 @@ class PhotometrySessionViewer:
         s = self.session
         fig.suptitle(
             f"{s.subject} | {s.date} | {s.session_type} | {s.eid[:8]}",
-            fontsize=10, y=0.99,
+            fontsize=FS_SUPTITLE, y=0.99,
         )
         self._draw_region(self._current_region)
         return fig
