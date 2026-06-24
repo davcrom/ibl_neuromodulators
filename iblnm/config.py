@@ -459,16 +459,28 @@ MOTION_ENERGY_EVENT = 'stimOn_times'
 # column (`choice_side`, `log_reaction_time`, `peak_velocity`).
 
 
+def _render_terms(terms: list) -> str:
+    """Render an ordered list of model terms as a Wilkinson right-hand side.
+
+    Each term is a tuple of variable names: a 1-tuple is a main effect, a
+    2-tuple an interaction (joined with ``:``).
+    """
+    return ' + '.join(':'.join(t) for t in terms)
+
+
 def _movement_family(pred: str, reward: bool) -> dict:
     """One movement reliability family: the revised per-event task base extended
     with a movement predictor at 2nd order.
 
-    Mirrors the per-event ``task_reliability`` base (``contrast * side`` with
-    reward and its ``contrast:reward`` term added at feedback, ``side:reward``
-    always dropped) and adds ``pred`` plus its two-way interactions with each
-    task variable. Reference ``full``; each task key drops a task variable and
-    its surviving interactions; ``movement`` drops ``pred`` entirely (leaving the
-    task base); ``interactions`` makes ``pred`` additive (drops its interactions).
+    The task base carries the task mains plus ``contrast``'s two-way
+    interactions (``contrast:side`` always, ``contrast:reward`` at feedback);
+    ``side:reward`` is never present. The predictor enters as a main effect plus
+    two-way interactions with the task variables — except ``choice_side``, whose
+    ``side``/``reward`` interactions are collinear with the ``reward``/``side``
+    mains (``choice_side`` ≈ ``2·side·reward``), so choice interacts only with
+    ``contrast``. Reference ``full``; each task key drops a task variable and
+    every term containing it; ``movement`` drops the predictor (leaving the task
+    base); ``interactions`` makes the predictor additive.
 
     Parameters
     ----------
@@ -478,24 +490,20 @@ def _movement_family(pred: str, reward: bool) -> dict:
         True at feedback (reward known): the base carries reward; False
         pre-feedback (stimOn / firstMovement): no reward term or key.
     """
-    if reward:
-        base = 'contrast * side + contrast * reward'
-        return {
-            'full': f'{{response}} ~ (contrast + side + reward + {pred})**2 - side:reward',
-            'contrast': f'{{response}} ~ (side + reward + {pred})**2 - side:reward',
-            'side': f'{{response}} ~ (contrast + reward + {pred})**2',
-            'reward': f'{{response}} ~ (contrast + side + {pred})**2',
-            'movement': f'{{response}} ~ {base}',
-            'interactions': f'{{response}} ~ {base} + {pred}',
-        }
-    base = 'contrast * side'
-    return {
-        'full': f'{{response}} ~ (contrast + side + {pred})**2',
-        'contrast': f'{{response}} ~ (side + {pred})**2',
-        'side': f'{{response}} ~ (contrast + {pred})**2',
-        'movement': f'{{response}} ~ {base}',
-        'interactions': f'{{response}} ~ {base} + {pred}',
+    task_vars = ['contrast', 'side'] + (['reward'] if reward else [])
+    base = [(v,) for v in task_vars] + \
+           [('contrast', v) for v in task_vars if v != 'contrast']
+    pred_x = ['contrast'] if pred == 'choice_side' else list(task_vars)
+    full = base + [(pred,)] + [(v, pred) for v in pred_x]
+
+    family = {
+        'full': full,
+        'movement': base,
+        'interactions': base + [(pred,)],
+        **{v: [t for t in full if v not in t] for v in task_vars},
     }
+    return {name: '{response} ~ ' + _render_terms(terms)
+            for name, terms in family.items()}
 
 
 LMM_FORMULAS = {

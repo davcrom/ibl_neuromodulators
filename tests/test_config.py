@@ -95,27 +95,39 @@ def test_movement_vars_and_predictors():
 
 
 def test_movement_family_formulas_choice():
-    # One family in full: the revised per-event task base extended with the
-    # movement predictor at 2nd order. feedback carries reward (no side:reward),
-    # stimOn/firstMovement omit reward.
+    # choice interacts only with contrast (choice:side / choice:reward are
+    # collinear with the reward / side mains), so its family carries no
+    # choice:side or choice:reward terms. feedback carries reward (never
+    # side:reward); stimOn/firstMovement omit reward.
     family = LMM_FORMULAS['movement_choice']
     assert _format(family['feedback_times']) == {
-        'full': 'response ~ (contrast + side + reward + choice_side)**2 - side:reward',
-        'contrast': 'response ~ (side + reward + choice_side)**2 - side:reward',
-        'side': 'response ~ (contrast + reward + choice_side)**2',
-        'reward': 'response ~ (contrast + side + choice_side)**2',
-        'movement': 'response ~ contrast * side + contrast * reward',
-        'interactions': 'response ~ contrast * side + contrast * reward + choice_side',
+        'full': 'response ~ contrast + side + reward + contrast:side + contrast:reward + choice_side + contrast:choice_side',
+        'contrast': 'response ~ side + reward + choice_side',
+        'side': 'response ~ contrast + reward + contrast:reward + choice_side + contrast:choice_side',
+        'reward': 'response ~ contrast + side + contrast:side + choice_side + contrast:choice_side',
+        'movement': 'response ~ contrast + side + reward + contrast:side + contrast:reward',
+        'interactions': 'response ~ contrast + side + reward + contrast:side + contrast:reward + choice_side',
     }
     no_reward = {
-        'full': 'response ~ (contrast + side + choice_side)**2',
-        'contrast': 'response ~ (side + choice_side)**2',
-        'side': 'response ~ (contrast + choice_side)**2',
-        'movement': 'response ~ contrast * side',
-        'interactions': 'response ~ contrast * side + choice_side',
+        'full': 'response ~ contrast + side + contrast:side + choice_side + contrast:choice_side',
+        'contrast': 'response ~ side + choice_side',
+        'side': 'response ~ contrast + choice_side + contrast:choice_side',
+        'movement': 'response ~ contrast + side + contrast:side',
+        'interactions': 'response ~ contrast + side + contrast:side + choice_side',
     }
     assert _format(family['stimOn_times']) == no_reward
     assert _format(family['firstMovement_times']) == no_reward
+
+
+def test_choice_omits_side_reward_interactions_unlike_continuous():
+    # Continuous predictors interact with side and reward; choice does not.
+    rt_full = LMM_FORMULAS['movement_reaction_time']['feedback_times']['full']
+    assert 'side:log_reaction_time' in rt_full
+    assert 'reward:log_reaction_time' in rt_full
+    choice_full = LMM_FORMULAS['movement_choice']['feedback_times']['full']
+    assert 'side:choice_side' not in choice_full
+    assert 'reward:choice_side' not in choice_full
+    assert 'contrast:choice_side' in choice_full
 
 
 def test_movement_families_per_event_reference_and_predictor():
