@@ -268,7 +268,7 @@ TRIAL_COLUMNS = [
 ]
 
 # Events for response extraction (NOT goCue — too close to stimOn, variable latency)
-RESPONSE_EVENTS = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+RESPONSE_EVENTS = ['stimOn_times', 'feedback_times']
 
 # QC parameters
 MIN_NTRIALS = 90

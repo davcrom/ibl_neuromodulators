@@ -2324,6 +2324,30 @@ class TestMaskSubsequentEvents:
         )
         np.testing.assert_array_equal(result.values, responses.values)
 
+    def test_default_event_order_masks_stimon_at_feedback(self, mock_session_series):
+        """With the default event_order (RESPONSE_EVENTS), stimOn is masked at
+        feedback: firstMovement is no longer the event between them."""
+        from iblnm.data import PhotometrySession
+        import xarray as xr
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        tpts = np.array([-1.0, -0.5, 0.0, 0.5, 1.0])
+        responses = xr.DataArray(
+            np.ones((1, 2, 5)),
+            dims=['event', 'trial', 'time'],
+            coords={'event': ['stimOn_times'], 'trial': [0, 1], 'time': tpts},
+        )
+        session.trials = pd.DataFrame({
+            'stimOn_times':        [0.0, 0.0],
+            'firstMovement_times': [np.nan, np.nan],
+            'feedback_times':      [0.3, np.nan],
+        })
+        result = session.mask_subsequent_events(responses)  # default event_order
+        mat = result.sel(event='stimOn_times').values
+        assert np.isnan(mat[0, 3])      # t=0.5 > feedback-stimOn=0.3 → masked
+        assert np.isnan(mat[0, 4])      # t=1.0 > 0.3 → masked
+        assert not np.isnan(mat[0, 2])  # t=0.0 ≤ 0.3 → kept
+        assert not np.isnan(mat[1, 3])  # feedback NaN → not masked
+
 
 class TestMatchPhotometryToMetadata:
     """_match_photometry_to_metadata renames columns to match brain_region metadata."""
@@ -4960,8 +4984,7 @@ class TestLoadResponseTraces:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         events = {k[2] for k in group.response_traces.keys()}
-        assert events == {'stimOn_times', 'firstMovement_times',
-                          'feedback_times'}
+        assert events == {'stimOn_times', 'feedback_times'}
 
 
 class TestGetResponseMagnitudesFromCache:
@@ -5012,7 +5035,7 @@ class TestGetMeanTraces:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         result = group.get_mean_traces()
         n_rec_events = result.groupby(['eid', 'brain_region', 'event']).ngroups
-        assert n_rec_events == 2 * 3  # 2 recordings × 3 events
+        assert n_rec_events == 2 * 2  # 2 recordings × 2 events
 
     def test_stored_as_attribute(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
