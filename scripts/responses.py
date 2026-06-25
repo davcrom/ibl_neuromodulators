@@ -42,6 +42,7 @@ from iblnm.vis import (
     plot_mean_response_traces,
     plot_movement_r2_bars,
     plot_ols_dropone,
+    plot_ols_total_r2,
 )
 from iblnm.analysis import (
     split_features_by_event,
@@ -396,13 +397,14 @@ def plot_movement_figures(group, fig_dirs, data_dir):
 # =========================================================================
 
 def plot_persession_figures(group, figures_dir):
-    """Save the per-session drop-one ΔR² grid figure from the in-scope frame.
+    """Save the per-session drop-one ΔR² and full-model R² figures.
 
     Reads ``group.response_ols_dropone_results`` (computed under ``--reprocess``
     or loaded from cache in the default run), scopes it to ``RESPONSE_EVENTS``
     (a cached frame may carry events since dropped from the analysis), and saves
-    the ``plot_ols_dropone`` grid (dropped-regressor rows × event columns, every
-    session a point).
+    two figures from it: the ``plot_ols_dropone`` ΔR² grid (dropped-regressor
+    rows × event columns) and the ``plot_ols_total_r2`` full-model R² figure
+    (its own y-axis), every session a point in both.
 
     Parameters
     ----------
@@ -419,7 +421,14 @@ def plot_persession_figures(group, figures_dir):
     fig.savefig(figures_dir / 'response_ols_persession_dropone.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
-    print("  Per-session OLS drop-one figure saved")
+
+    fig = plot_ols_total_r2(
+        results,
+        title='Per-session full-model R²\nevery session is a point')
+    fig.savefig(figures_dir / 'response_ols_persession_total_r2.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+    print("  Per-session OLS drop-one and full-model R² figures saved")
 
 
 if __name__ == '__main__':

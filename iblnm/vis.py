@@ -2450,28 +2450,31 @@ def _scatter_subject(ax, x, deltas, color):
                s=_MEDIAN_MARKER_SIZE, linewidths=_MEDIAN_LINEWIDTH, zorder=4)
 
 
-def plot_ols_dropone(df, title):
-    """Per-session ΔR² per dropped regressor — grid of regressor × event.
+def _plot_persession_grid(df, title, rows, supylabel):
+    """Per-session scatter grid: ``rows`` by event columns, sharing one y-axis.
 
-    Every session is one point. The top row is the full-model R² (column
-    ``r2``); the remaining rows are each dropped regressor's ΔR² (``delta_r2``),
-    in ``_PERSESSION_DROPONE_PREDICTORS`` order. Columns are events
-    (``_sort_events`` order). Within a panel each subject occupies its own x
-    position (sessions as translucent open dots edge-colored by target-NM, one
-    thicker target-NM-colored ``'_'`` marker at the subject's median), grouped by
-    target-NM with a gap so a target-NM's width scales with its subject count
-    (see ``_subject_xlayout``). One x-tick per target-NM is centred on its
-    subjects. There is no across-subject aggregate. All panels share one y-axis;
-    the figure width scales with the total subject count.
+    Shared layout for the per-session figures. Each entry of ``rows`` is one
+    grid row; columns are events (``_sort_events`` order). Within a panel each
+    subject occupies its own x position (sessions as translucent open dots
+    edge-colored by target-NM, one thicker target-NM-colored ``'_'`` marker at
+    the subject's median), grouped by target-NM with a gap so a target-NM's width
+    scales with its subject count (see ``_subject_xlayout``). One x-tick per
+    target-NM is centred on its subjects. All panels share one y-axis; the figure
+    size scales with the total subject count and the number of rows.
 
     Parameters
     ----------
     df : pd.DataFrame
         Long-form per-session fits: ``target_NM``, ``event``, ``subject``,
-        ``predictor``, ``r2`` (full-model, identical across predictors),
-        ``delta_r2`` (one row per session × dropped predictor).
+        ``predictor``, and the value columns named in ``rows``.
     title : str
         Figure suptitle.
+    rows : list[tuple[str, str, str]]
+        ``(row_label, value_column, predictor)`` per grid row. ``predictor``
+        selects the frame rows to read (and, since ``r2`` repeats across
+        predictors, dedupes a per-session value to one row).
+    supylabel : str
+        Shared y-axis label.
 
     Returns
     -------
@@ -2479,11 +2482,6 @@ def plot_ols_dropone(df, title):
     """
     has_data = len(df) > 0
     events = _sort_events(df['event'].unique()) if has_data else []
-    predictors = _PERSESSION_DROPONE_PREDICTORS
-    # Top row reads the full-model R² off one predictor (it repeats across them);
-    # each later row reads that regressor's ΔR².
-    rows = [('full model R²', 'r2', predictors[0])] + \
-           [(p, 'delta_r2', p) for p in predictors]
     n_rows, n_cols = len(rows), max(len(events), 1)
 
     if not has_data:
@@ -2523,9 +2521,33 @@ def plot_ols_dropone(df, title):
         axes[-1, c].set_xticks([centre for _, centre in ticks])
         axes[-1, c].set_xticklabels([tnm for tnm, _ in ticks], rotation=30,
                                     ha='right', fontsize=TICKFONTSIZE)
-    fig.supylabel('R² / ΔR² (per-session, in-sample)')
+    fig.supylabel(supylabel)
     fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
+
+
+def plot_ols_dropone(df, title):
+    """Per-session drop-one ΔR² — dropped-regressor rows × event columns.
+
+    One row per dropped regressor (``_PERSESSION_DROPONE_PREDICTORS`` order),
+    each plotting that regressor's ``delta_r2``. See ``_plot_persession_grid``
+    for the shared layout.
+    """
+    rows = [(p, 'delta_r2', p) for p in _PERSESSION_DROPONE_PREDICTORS]
+    return _plot_persession_grid(df, title, rows,
+                                 'ΔR² (per-session, in-sample)')
+
+
+def plot_ols_total_r2(df, title):
+    """Per-session full-model R² — single row × event columns.
+
+    Same format as ``plot_ols_dropone`` but a separate figure (its own y-axis),
+    plotting the full-model ``r2`` (read off one predictor, since it repeats
+    across them). See ``_plot_persession_grid``.
+    """
+    rows = [('full model R²', 'r2', _PERSESSION_DROPONE_PREDICTORS[0])]
+    return _plot_persession_grid(df, title, rows,
+                                 'R² (per-session, in-sample)')
 
 
 def plot_decoding_summary(coefficients, contributions, fig=None):
