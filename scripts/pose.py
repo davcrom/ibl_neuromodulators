@@ -397,6 +397,21 @@ if __name__ == '__main__':
         ['lp_exists', 'session_type_val', 'video_qc_score'],
         ascending=[False, False, False]
         )
+    df_csv = df_csv.rename(columns={'lp_exists': 'LP status'})
+    df_csv['LP status'] = df_csv['LP status'].map({True: 'COMPLETE', False: 'NONE'})
+    csv_columns = [
+        'eid', 'LP status', 'session_type', 'fraction_correct', 'mean_rt',
+        'framerate_from_tpts', 'length_discrepancy',
+        'qc_videoLeft_timestamps', 'qc_videoLeft_dropped_frames',
+        'qc_videoLeft_pin_state', 'qc_videoLeft_focus', 'qc_videoLeft_position',
+        'qc_videoLeft_brightness', 'qc_videoLeft_resolution',
+        'qc_videoLeft_wheel_alignment', 'video_qc_score', 'drift',
+        'peak_lag_early', 'peak_lag_mid', 'peak_lag_late',
+        'peak_val_early', 'peak_val_mid', 'peak_val_late',
+        'motion_energy', 'nose', 'paw', 'tongue_likelihood', 'tongue_speed',
+        'qc_lp', 'qc_movement', 'qc_timing',
+    ]
+    df_csv = df_csv[csv_columns]
     csv_fpath = 'metadata/LightningPoseSessions.csv'
     df_csv.to_csv(csv_fpath, index=False)
     print(f"Wrote {len(df_csv)} analysis-ready session to {csv_fpath}")
