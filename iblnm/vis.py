@@ -5,13 +5,12 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib import colors
-from matplotlib.lines import Line2D
 from matplotlib.ticker import FormatStrFormatter
 from scipy.stats import sem as scipy_sem
 from sklearn.preprocessing import quantile_transform
 
 from iblnm.config import (
-    ANALYSIS_CONTRASTS, MIN_RECORDINGS_PERMOUSE, NM_CMAPS, QCCMAP,
+    ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP,
     RESPONSE_EVENTS, RESPONSE_WINDOWS,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
@@ -2385,25 +2384,6 @@ _PERSESSION_DROPONE_PREDICTORS = ['contrast', 'side', 'reward', 'choice_side',
                                   'log_reaction_time', 'peak_velocity']
 
 
-def _mouse_dropone_stats(delta_r2):
-    """Return ``(median, q25, q75)`` of one mouse's per-recording ΔR².
-
-    Parameters
-    ----------
-    delta_r2 : array-like
-        Per-recording ΔR² values for one subject in one cell.
-
-    Returns
-    -------
-    tuple of float
-        Median, 25th and 75th percentiles — the marker height and IQR whisker
-        endpoints.
-    """
-    return (float(np.median(delta_r2)),
-            float(np.percentile(delta_r2, 25)),
-            float(np.percentile(delta_r2, 75)))
-
-
 def _slot_jitter(subjects):
     """Map subjects to small deterministic x-offsets centred on 0.
 
@@ -2428,49 +2408,45 @@ def _slot_jitter(subjects):
 
 
 def _scatter_mice(ax, x, df_group, color):
-    """Draw one regressor slot: a median marker + IQR whisker per qualifying mouse.
+    """Draw one target-NM slot: every session as a point, mice offset within it.
 
-    Each subject with at least ``MIN_RECORDINGS_PERMOUSE`` recordings in
-    ``df_group`` gets a vertical whisker (25th–75th percentile) and a marker at
-    its median ΔR², jittered horizontally about ``x`` so mice do not overlap.
+    Each subject in ``df_group`` is given a small deterministic horizontal
+    offset (via ``_slot_jitter``) about ``x``; every one of that subject's
+    sessions is plotted as a point at its ΔR². No aggregate marker.
 
     Parameters
     ----------
     ax : matplotlib.axes.Axes
     x : int
-        Regressor x-slot centre.
+        Target-NM x-slot centre.
     df_group : pd.DataFrame
-        Rows for one ``(target_NM, event, predictor)`` cell; needs ``subject``
-        and ``delta_r2`` columns.
+        Rows for one ``(target_NM, event, predictor)`` cell, one row per
+        session; needs ``subject`` and ``delta_r2`` columns.
     color : color
-        Marker and whisker color (the row's target-NM color).
+        Point color (the cell's target-NM color).
     """
-    counts = df_group.groupby('subject').size()
-    qualifying = counts.index[counts >= MIN_RECORDINGS_PERMOUSE]
-    jitter = _slot_jitter(qualifying)
-    for subject in qualifying:
-        median, q25, q75 = _mouse_dropone_stats(
-            df_group.loc[df_group['subject'] == subject, 'delta_r2'])
-        x_jit = x + jitter[subject]
-        ax.vlines(x_jit, q25, q75, color=color, lw=1.5, alpha=0.5, zorder=2)
-        ax.scatter(x_jit, median, color=color, s=30, alpha=0.5, zorder=3)
+    jitter = _slot_jitter(df_group['subject'].unique())
+    x_jit = x + df_group['subject'].map(jitter)
+    ax.scatter(x_jit, df_group['delta_r2'], color=color, s=30, alpha=0.5,
+               zorder=3)
 
 
 def plot_ols_dropone(df, title):
-    """Per-recording ΔR² per dropped regressor — grid of target-NM × event.
+    """Per-session ΔR² per dropped regressor — grid of event × regressor.
 
-    Each mouse is one marker at its across-recording median ΔR² with a vertical
-    whisker spanning the 25th–75th percentile (IQR), per dropped regressor.
-    Only mice with at least ``MIN_RECORDINGS_PERMOUSE`` recordings in a cell are
-    drawn; there is no across-mice aggregate. Markers are jittered horizontally
-    within each regressor's x-slot and colored by ``target_NM``. Each target-NM
-    row shares a y-axis so regressors and events are comparable within an NM.
+    Every session is one point at its per-recording ΔR² (plain, unsigned).
+    Rows are events (``_sort_events`` order), columns the six dropped regressors
+    (``_PERSESSION_DROPONE_PREDICTORS`` order). Within a panel the x-axis holds
+    one slot per target-NM (ordered by ``TARGETNM2POSITION``); mice are spread by
+    a small deterministic offset within their slot, and points are colored by
+    ``target_NM``. There is no per-mouse or across-mouse aggregate. Each event
+    row shares a y-axis.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Long-form per-recording ΔR²: ``target_NM``, ``event``, ``subject``,
-        ``predictor``, ``delta_r2`` (one row per recording × dropped predictor).
+        Long-form per-session ΔR²: ``target_NM``, ``event``, ``subject``,
+        ``predictor``, ``delta_r2`` (one row per session × dropped predictor).
     title : str
         Figure suptitle.
 
@@ -2479,47 +2455,37 @@ def plot_ols_dropone(df, title):
     plt.Figure
     """
     has_data = len(df) > 0
-    targets = (sorted(df['target_NM'].unique(),
-                      key=lambda x: TARGETNM2POSITION.get(x, 999))
-               if has_data else [])
     events = _sort_events(df['event'].unique()) if has_data else []
-    n_rows, n_cols = max(len(targets), 1), max(len(events), 1)
-    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, sharex=True,
+    predictors = _PERSESSION_DROPONE_PREDICTORS
+    n_rows, n_cols = max(len(events), 1), len(predictors)
+    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, sharex='col',
                              sharey='row', layout='constrained',
-                             figsize=(2.6 * n_cols + 1, 2.0 * n_rows + 1))
+                             figsize=(2.0 * n_cols + 1, 2.0 * n_rows + 1))
 
     if not has_data:
         fig.suptitle(title, fontsize=LABELFONTSIZE)
         return fig
 
-    predictors = _PERSESSION_DROPONE_PREDICTORS
-    for r, target_nm in enumerate(targets):
-        color = TARGETNM_COLORS.get(target_nm, 'gray')
-        df_t = df[df['target_NM'] == target_nm]
-        for c, event in enumerate(events):
+    targets = sorted(df['target_NM'].unique(),
+                     key=lambda x: TARGETNM2POSITION.get(x, 999))
+    for r, event in enumerate(events):
+        df_ev = df[df['event'] == event]
+        for c, predictor in enumerate(predictors):
             ax = axes[r, c]
-            df_ev = df_t[df_t['event'] == event]
-            for x, predictor in enumerate(predictors):
-                _scatter_mice(ax, x, df_ev[df_ev['predictor'] == predictor],
-                              color)
+            df_p = df_ev[df_ev['predictor'] == predictor]
+            for x, target_nm in enumerate(targets):
+                _scatter_mice(ax, x, df_p[df_p['target_NM'] == target_nm],
+                              TARGETNM_COLORS.get(target_nm, 'gray'))
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
-                ax.set_title(event)
-        axes[r, 0].set_ylabel(target_nm, fontsize=TICKFONTSIZE)
+                ax.set_title(predictor)
+        axes[r, 0].set_ylabel(event, fontsize=TICKFONTSIZE)
 
     for c in range(n_cols):
-        axes[-1, c].set_xticks(range(len(predictors)))
-        axes[-1, c].set_xticklabels(predictors, rotation=30, ha='right',
+        axes[-1, c].set_xticks(range(len(targets)))
+        axes[-1, c].set_xticklabels(targets, rotation=30, ha='right',
                                     fontsize=TICKFONTSIZE)
-    fig.supylabel('ΔR² (per-recording, in-sample)')
-
-    role_handles = [
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6,
-               alpha=0.5),
-        Line2D([0], [0], color='gray', lw=1.5, alpha=0.5),
-    ]
-    fig.legend(role_handles, ['mouse median', 'IQR'], frameon=False,
-               fontsize=TICKFONTSIZE, loc='upper right')
+    fig.supylabel('ΔR² (per-session, in-sample)')
     fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
