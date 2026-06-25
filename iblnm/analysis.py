@@ -1246,11 +1246,17 @@ class CCAResult:
         Selected regularization strength (sparse CCA only).
     l1_ratio : float or None
         L1/L2 mixing ratio (sparse CCA only). 0 = ridge, 1 = lasso.
+    x_variance_explained : np.ndarray or None
+        (n_components,) variance extracted from the neural block per variate
+        (mean squared loading). None if not computed.
+    y_variance_explained : np.ndarray or None
+        (n_components,) variance extracted from the behavioral block per variate.
     """
 
     def __init__(self, x_weights, y_weights, x_scores, y_scores,
                  correlations, p_values, n_recordings, n_permutations,
-                 alpha=None, l1_ratio=None):
+                 alpha=None, l1_ratio=None,
+                 x_variance_explained=None, y_variance_explained=None):
         self.x_weights = x_weights
         self.y_weights = y_weights
         self.x_scores = x_scores
@@ -1261,6 +1267,41 @@ class CCAResult:
         self.n_permutations = n_permutations
         self.alpha = alpha
         self.l1_ratio = l1_ratio
+        self.x_variance_explained = x_variance_explained
+        self.y_variance_explained = y_variance_explained
+
+
+def cca_variance_extracted(data, scores):
+    """Variance extracted (adequacy) per canonical variate.
+
+    For each variate, the mean over features of the squared loading — the
+    squared Pearson correlation between each original feature and the variate.
+    This is the fraction of variance in ``data``'s own feature block that the
+    variate captures.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        (n, K) feature block (neural or behavioral).
+    scores : np.ndarray
+        (n, n_components) canonical variates for that block.
+
+    Returns
+    -------
+    np.ndarray
+        (n_components,) variance extracted per variate, in [0, 1]. Constant
+        features (zero variance) contribute a loading of 0.
+    """
+    data = np.asarray(data, dtype=float)
+    scores = np.asarray(scores, dtype=float)
+    n = data.shape[0]
+    dc = data - data.mean(axis=0, keepdims=True)
+    sc = scores - scores.mean(axis=0, keepdims=True)
+    cov = (dc.T @ sc) / n                          # (K, n_components)
+    denom = np.outer(dc.std(axis=0), sc.std(axis=0))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        loadings = np.where(denom > 0, cov / denom, 0.0)
+    return (loadings ** 2).mean(axis=0)
 
 
 def fit_cca(X, Y, n_components=None, n_permutations=0, session_labels=None,
@@ -1394,6 +1435,8 @@ def fit_cca(X, Y, n_components=None, n_permutations=0, session_labels=None,
         p_values=p_values,
         n_recordings=n,
         n_permutations=n_permutations,
+        x_variance_explained=cca_variance_extracted(X_z, x_scores),
+        y_variance_explained=cca_variance_extracted(Y_z, y_scores),
     )
 
 
@@ -1611,6 +1654,8 @@ def fit_sparse_cca(X, Y, n_components=None, n_permutations=0,
         n_permutations=n_permutations,
         alpha=alpha,
         l1_ratio=l1_ratio,
+        x_variance_explained=cca_variance_extracted(X_z, x_scores),
+        y_variance_explained=cca_variance_extracted(Y_z, y_scores),
     )
 
 
@@ -1680,6 +1725,8 @@ def align_cca_signs(results, reference=None):
                 n_permutations=res.n_permutations,
                 alpha=res.alpha,
                 l1_ratio=res.l1_ratio,
+                x_variance_explained=res.x_variance_explained,
+                y_variance_explained=res.y_variance_explained,
             )
         else:
             aligned[key] = res

@@ -153,8 +153,14 @@ def plot_cohort_scatter(cca_result, cohort_name, event_label):
                c=color, alpha=0.7, edgecolors='white', s=40)
     r = cca_result.correlations[0]
     p = cca_result.p_values[0] if cca_result.p_values is not None else np.nan
-    ax.set_xlabel('Neural canonical variate')
-    ax.set_ylabel('Behavioral canonical variate')
+    xlabel = 'Neural canonical variate'
+    ylabel = 'Behavioral canonical variate'
+    if cca_result.x_variance_explained is not None:
+        xlabel += f' (R² = {cca_result.x_variance_explained[0]:.2f})'
+    if cca_result.y_variance_explained is not None:
+        ylabel += f' (R² = {cca_result.y_variance_explained[0]:.2f})'
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     ax.set_title(f'{cohort_name} ({event_label}): r = {r:.3f}, p = {p:.4f}')
     fig.tight_layout()
     return fig
@@ -164,7 +170,8 @@ def save_cca_results(results, data_dir, label):
     """Save per-cohort CCAResult data to CSVs.
 
     Files written:
-        {label}_summary.csv  — cohort, correlation, p_value, n, alpha, l1_ratio
+        {label}_summary.csv  — cohort, correlation, p_value, n, alpha, l1_ratio,
+                               x/y_variance_explained (CC1 variance extracted)
         {label}_weights.csv  — cohort, view (neural/behavioral), feature, CC1
         {label}_scores.csv   — cohort, x_score, y_score
     """
@@ -179,6 +186,12 @@ def save_cca_results(results, data_dir, label):
             'n_recordings': r.n_recordings,
             'alpha': r.alpha if r.alpha is not None else np.nan,
             'l1_ratio': r.l1_ratio if r.l1_ratio is not None else np.nan,
+            'x_variance_explained': (r.x_variance_explained[0]
+                                     if r.x_variance_explained is not None
+                                     else np.nan),
+            'y_variance_explained': (r.y_variance_explained[0]
+                                     if r.y_variance_explained is not None
+                                     else np.nan),
         })
     pd.DataFrame(summary_rows).to_csv(
         data_dir / f'{label}_summary.csv', index=False)
@@ -248,6 +261,12 @@ def load_cca_results(data_dir, label):
         alpha = row['alpha'] if not np.isnan(row['alpha']) else None
         l1_ratio = row['l1_ratio'] if not np.isnan(row['l1_ratio']) else None
         p_val = row['p_value'] if not np.isnan(row['p_value']) else None
+        xve = (np.array([row['x_variance_explained']])
+               if 'x_variance_explained' in row
+               and not np.isnan(row['x_variance_explained']) else None)
+        yve = (np.array([row['y_variance_explained']])
+               if 'y_variance_explained' in row
+               and not np.isnan(row['y_variance_explained']) else None)
 
         results[tnm] = CCAResult(
             x_weights=x_weights,
@@ -260,6 +279,8 @@ def load_cca_results(data_dir, label):
             n_permutations=0,
             alpha=alpha,
             l1_ratio=l1_ratio,
+            x_variance_explained=xve,
+            y_variance_explained=yve,
         )
 
     return results, cp, ws

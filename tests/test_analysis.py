@@ -1223,6 +1223,56 @@ class TestFitCCA:
         assert result.y_weights.shape[0] == 1  # constant column removed
         assert result.correlations.shape == (1,)
 
+    def test_variance_explained_populated(self):
+        """fit_cca reports per-variate variance extracted for both blocks."""
+        from iblnm.analysis import fit_cca
+        rng = np.random.default_rng(0)
+        n, k, p = 40, 6, 3
+        X = pd.DataFrame(rng.standard_normal((n, k)),
+                         columns=[f'x{i}' for i in range(k)])
+        Y = pd.DataFrame(rng.standard_normal((n, p)),
+                         columns=[f'y{i}' for i in range(p)])
+        result = fit_cca(X, Y, n_components=2)
+        assert result.x_variance_explained.shape == (2,)
+        assert result.y_variance_explained.shape == (2,)
+        assert np.all((result.x_variance_explained >= 0)
+                      & (result.x_variance_explained <= 1))
+        assert np.all((result.y_variance_explained >= 0)
+                      & (result.y_variance_explained <= 1))
+
+
+class TestCCAVarianceExtracted:
+
+    def test_score_equals_feature_block(self):
+        """All features equal (up to scale) to the variate -> full extraction."""
+        from iblnm.analysis import cca_variance_extracted
+        rng = np.random.default_rng(1)
+        score = rng.standard_normal((50, 1))
+        data = np.column_stack([score[:, 0], 2 * score[:, 0], -3 * score[:, 0]])
+        ve = cca_variance_extracted(data, score)
+        assert ve.shape == (1,)
+        assert np.isclose(ve[0], 1.0)
+
+    def test_orthogonal_score(self):
+        """A variate uncorrelated with every feature extracts ~0 variance."""
+        from iblnm.analysis import cca_variance_extracted
+        rng = np.random.default_rng(2)
+        n = 200
+        data = rng.standard_normal((n, 4))
+        score = rng.standard_normal((n, 1))
+        ve = cca_variance_extracted(data, score)
+        assert ve[0] < 0.05
+
+    def test_constant_feature_contributes_zero(self):
+        """A constant feature has no shared variance and is not a div-by-zero."""
+        from iblnm.analysis import cca_variance_extracted
+        rng = np.random.default_rng(3)
+        score = rng.standard_normal((30, 1))
+        data = np.column_stack([score[:, 0], np.ones(30)])
+        ve = cca_variance_extracted(data, score)
+        # feature 0 loads 1.0, constant feature loads 0 -> mean of [1, 0]
+        assert np.isclose(ve[0], 0.5)
+
 
 # =============================================================================
 # Sparse CCA Tests
