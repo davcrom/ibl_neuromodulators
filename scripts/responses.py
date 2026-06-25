@@ -12,8 +12,8 @@ Output:
     figures/responses/             — all figures, organized by analysis
 
 Usage:
-    python scripts/responses.py          # full pipeline: extract + plot
-    python scripts/responses.py --plot   # plot only from existing parquet files
+    python scripts/responses.py              # plot from existing parquet files
+    python scripts/responses.py --reprocess  # re-extract + re-fit, then plot
 """
 import argparse
 
@@ -26,7 +26,7 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
-    RESPONSE_MATRIX_FPATH, MEAN_TRACES_FPATH,
+    MEAN_TRACES_FPATH,
     RESPONSE_OLS_PERSESSION_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
@@ -395,38 +395,27 @@ def plot_movement_figures(group, fig_dirs, data_dir):
 # Per-recording OLS drop-one
 # =========================================================================
 
-def plot_persession_figures(group, figures_dir, data_dir, response_col='response'):
-    """Per-recording drop-one OLS ΔR²: save the long-form CSV and the grid figure.
+def plot_persession_figures(group, figures_dir):
+    """Save the per-session drop-one ΔR² grid figure from the in-scope frame.
 
-    Runs ``group.response_ols_dropone`` with the ``persession`` formula family,
-    writes the returned long-form frame to ``RESPONSE_OLS_PERSESSION_FPATH``, and
-    saves the ``plot_ols_dropone`` grid (target-NM × event, mice as markers).
+    Reads ``group.response_ols_dropone_results`` (computed under ``--reprocess``
+    or loaded from cache in the default run) and saves the ``plot_ols_dropone``
+    grid (event rows × dropped-regressor columns, every session a point).
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have ``recordings`` populated (H5-backed per-recording fits).
+        Must have ``response_ols_dropone_results`` populated.
     figures_dir : Path
         Output directory for the SVG figure.
-    data_dir : Path
-        Output directory for sibling CSVs; the per-recording frame itself is
-        written to the ``RESPONSE_OLS_PERSESSION_FPATH`` config path.
-    response_col : str
-        Per-trial response magnitude column the formulas model.
     """
-    df = group.response_ols_dropone(LMM_FORMULAS['persession'],
-                                    response_col=response_col)
-    df.to_csv(RESPONSE_OLS_PERSESSION_FPATH, index=False)
-    print(f"  Per-recording OLS drop-one CSV saved to "
-          f"{RESPONSE_OLS_PERSESSION_FPATH}")
-
     fig = plot_ols_dropone(
-        df, title='Per-recording OLS drop-one ΔR²\n'
-                  'mice are markers (median ± IQR)')
+        group.response_ols_dropone_results,
+        title='Per-session OLS drop-one ΔR²\nevery session is a point')
     fig.savefig(figures_dir / 'response_ols_persession_dropone.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
-    print("  Per-recording OLS drop-one figure saved")
+    print("  Per-session OLS drop-one figure saved")
 
 
 if __name__ == '__main__':
@@ -434,8 +423,9 @@ if __name__ == '__main__':
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--plot', action='store_true',
-                        help='skip extraction; plot from existing parquet files')
+    parser.add_argument('--reprocess', action='store_true',
+                        help='re-extract responses and re-fit per-session models; '
+                             'default plots from existing parquet files')
     args = parser.parse_args()
 
     # Create output directories
@@ -477,28 +467,9 @@ if __name__ == '__main__':
     print(f"  Deduplicated ({len(dup_log)} true-duplicate groups resolved)")
     print(f"  Recordings (session x region): {len(group)}")
 
-    if args.plot:
+    if args.reprocess:
         # =================================================================
-        # Plot-only mode: load pre-existing parquet files
-        # =================================================================
-        if not RESPONSES_FPATH.exists():
-            print(f"Error: {RESPONSES_FPATH} not found. Run without --plot first.")
-            raise SystemExit(1)
-        if not RESPONSE_MATRIX_FPATH.exists():
-            print(f"Error: {RESPONSE_MATRIX_FPATH} not found. Run without --plot first.")
-            raise SystemExit(1)
-        if not TRIAL_REGRESSORS_FPATH.exists():
-            print(f"Error: {TRIAL_REGRESSORS_FPATH} not found. Run without --plot first.")
-            raise SystemExit(1)
-
-        group.load_response_magnitudes(RESPONSES_FPATH)
-        group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
-        group.load_response_features(RESPONSE_MATRIX_FPATH)
-        group.load_mean_traces(MEAN_TRACES_FPATH)
-
-    else:
-        # =================================================================
-        # Full pipeline: extract from H5 files
+        # Full pipeline: extract from H5 files and re-fit per-session models
         # =================================================================
 
         # --- Load traces cache ---
@@ -528,17 +499,29 @@ if __name__ == '__main__':
         group.mean_traces.to_parquet(MEAN_TRACES_FPATH, index=False)
         print(f"Saved mean traces to {MEAN_TRACES_FPATH}")
 
-        # --- Response vectors ---
-        # ~ print("\nBuilding response features...")
-        # ~ group.get_response_features(nan_handling='drop_features')
+        # --- Per-session drop-one fits ---
+        print("Fitting per-session drop-one OLS models...")
+        group.response_ols_dropone_results = group.response_ols_dropone(
+            LMM_FORMULAS['persession'])
+        group.response_ols_dropone_results.to_parquet(
+            RESPONSE_OLS_PERSESSION_FPATH, index=False)
+        print(f"Saved per-session drop-one fits to "
+              f"{RESPONSE_OLS_PERSESSION_FPATH}")
 
-        # ~ if len(group.response_features) == 0:
-            # ~ print("No response vectors extracted. Check H5 files.")
-            # ~ raise SystemExit(1)
+    else:
+        # =================================================================
+        # Default: load pre-existing parquet files
+        # =================================================================
+        for fpath in (RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
+                      RESPONSE_OLS_PERSESSION_FPATH):
+            if not fpath.exists():
+                print(f"Error: {fpath} not found. Run with --reprocess first.")
+                raise SystemExit(1)
 
-        # ~ group.response_features.to_parquet(RESPONSE_MATRIX_FPATH)
-        # ~ print(f"Saved {len(group.response_features)} response vectors "
-              # ~ f"to {RESPONSE_MATRIX_FPATH}")
+        group.load_response_magnitudes(RESPONSES_FPATH)
+        group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
+        group.load_mean_traces(MEAN_TRACES_FPATH)
+        group.load_response_ols_dropone(RESPONSE_OLS_PERSESSION_FPATH)
 
     # =====================================================================
     # Mean response traces per target-NM (first figures)
@@ -591,24 +574,11 @@ if __name__ == '__main__':
         print("  No groups with sufficient data for ANOVA.")
 
     # =====================================================================
-    # LMM statistical analysis
+    # Per-session OLS drop-one
     # =====================================================================
-    print("\nFitting linear mixed-effects models...")
-    plot_lmm_figures(group, fig_dirs['lmm'], data_dir)
-
-    # =====================================================================
-    # Movement encoding (ordered claims, raw-data check, ΔR² comparison)
-    # =====================================================================
-    print("\nRunning movement-variable encoding analyses...")
-    plot_movement_figures(group, fig_dirs, data_dir)
-    print(f"Movement figures saved under {fig_base / 'movement'}")
-
-    # =====================================================================
-    # Per-recording OLS drop-one
-    # =====================================================================
-    print("\nRunning per-recording OLS drop-one analysis...")
-    plot_persession_figures(group, fig_dirs['persession'], data_dir)
-    print(f"Per-recording OLS figures saved to {fig_dirs['persession']}")
+    print("\nGenerating per-session OLS drop-one figure...")
+    plot_persession_figures(group, fig_dirs['persession'])
+    print(f"Per-session OLS figures saved to {fig_dirs['persession']}")
 
     # =====================================================================
     # Response vectors: per-event similarity
