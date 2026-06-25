@@ -99,6 +99,7 @@ SUBJECTS_TO_EXCLUDE = [
     'VIV-45585',
     'photometry_test_subject_A',
     'photometry_test_subject_B',
+    'test_mouse'
 ]
 
 
@@ -413,7 +414,7 @@ RESPONSE_WINDOW = (-1, 1)
 BASELINE_WINDOW = (-0.1, 0)
 RESPONSE_WINDOWS = {
     'early': (0.1, 0.35),
-    'late': (0.35, 0.6)
+    #'late': (0.35, 0.6)
 }
 
 # Movement encoding analyses

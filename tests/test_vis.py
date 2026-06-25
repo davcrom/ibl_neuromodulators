@@ -947,6 +947,23 @@ class TestPlotLMMSummary:
         assert formula in fig._suptitle.get_text()
         plt.close(fig)
 
+    def test_omits_reward_panel_when_formula_lacks_reward(self):
+        """Bottom-row factors track the model: a reward-free formula (stimOn,
+        firstMovement) draws no reward EMM panel, matching the heatmap which
+        carries no reward term."""
+        fig = self._summary(formula='response ~ contrast * side')
+        titles = {ax.get_title() for ax in fig.axes}
+        assert 'Effect of reward' not in titles
+        assert {'Effect of side', 'Effect of contrast'} <= titles
+        plt.close(fig)
+
+    def test_keeps_reward_panel_when_formula_has_reward(self):
+        """The feedback formula names reward, so its EMM panel is drawn."""
+        fig = self._summary(formula='response ~ contrast * side + contrast * reward')
+        titles = {ax.get_title() for ax in fig.axes}
+        assert 'Effect of reward' in titles
+        plt.close(fig)
+
 
 # =============================================================================
 # _sort_events Tests
@@ -1624,7 +1641,7 @@ class TestPlotMeanResponseTraces:
         plt.close(fig)
 
     def test_response_window_shading(self):
-        """Early window on all panels, late window only on feedback."""
+        """Every window in RESPONSE_WINDOWS is shaded on every panel."""
         from iblnm.vis import plot_mean_response_traces
         from iblnm.config import RESPONSE_WINDOWS
         traces = _make_traces_df(
@@ -1633,29 +1650,10 @@ class TestPlotMeanResponseTraces:
         )
         target = traces['target_NM'].iloc[0]
         fig = plot_mean_response_traces(traces, target)
-        early = RESPONSE_WINDOWS['early']
-        late = RESPONSE_WINDOWS['late']
-        # stimOn is col 0 → axes[0] (top row)
-        ax_stim = fig.axes[0]
-        assert any(
-            np.isclose(p.get_x(), early[0], atol=0.01)
-            for p in ax_stim.patches
-        )
-        # stimOn should NOT have late window
-        assert not any(
-            np.isclose(p.get_x(), late[0], atol=0.01)
-            for p in ax_stim.patches
-        )
-        # feedback is col 1 → axes[1] (top row)
-        ax_fb = fig.axes[1]
-        assert any(
-            np.isclose(p.get_x(), early[0], atol=0.01)
-            for p in ax_fb.patches
-        )
-        assert any(
-            np.isclose(p.get_x(), late[0], atol=0.01)
-            for p in ax_fb.patches
-        )
+        for ax in fig.axes[:2]:  # top-row stimOn (col 0) and feedback (col 1)
+            for start, _ in RESPONSE_WINDOWS.values():
+                assert any(np.isclose(p.get_x(), start, atol=0.01)
+                           for p in ax.patches)
         plt.close(fig)
 
 

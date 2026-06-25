@@ -2177,7 +2177,9 @@ def plot_lmm_summary(r2_df, coef_df, emm_frames, event, formula=None,
     Panels:
     1. Variance explained (R² bars), top-left.
     2. Coefficient heatmap, top-right.
-    3-5. Main-effect EMM panels for reward, side, contrast (bottom row).
+    3+. Main-effect EMM panels (bottom row), one per factor in ``reward``,
+       ``side``, ``contrast`` that ``formula`` names — so a reward-free model
+       draws no reward panel. With ``formula=None`` all three are drawn.
 
     Parameters
     ----------
@@ -2200,14 +2202,24 @@ def plot_lmm_summary(r2_df, coef_df, emm_frames, event, formula=None,
     -------
     plt.Figure
     """
+    # Bottom-row factors track the model: only EMM panels for factors the
+    # formula actually names are drawn, so reward-free events (stimOn,
+    # firstMovement) get no reward panel — consistent with the heatmap. Word
+    # boundaries keep `side` from matching inside `choice_side`. 6 columns
+    # divide evenly for the 1-3 factors a task formula can name.
+    bottom_factors = [f for f in ('reward', 'side', 'contrast')
+                      if formula is None or re.search(rf'\b{f}\b', formula)]
+    span = 6 // len(bottom_factors)
+
     if fig is None:
-        fig = plt.figure(figsize=(14, 8), layout='constrained')
+        fig = plt.figure(figsize=(16, 9), layout='constrained')
+        fig.get_layout_engine().set(w_pad=0.12, h_pad=0.12, wspace=0.06,
+                                    hspace=0.10)
     gs = fig.add_gridspec(2, 6)
     ax_r2 = fig.add_subplot(gs[0, :2])
     ax_hm = fig.add_subplot(gs[0, 2:])
-    ax_a = fig.add_subplot(gs[1, :2])
-    ax_b = fig.add_subplot(gs[1, 2:4])
-    ax_c = fig.add_subplot(gs[1, 4:])
+    bottom_axes = [fig.add_subplot(gs[1, i * span:(i + 1) * span])
+                   for i in range(len(bottom_factors))]
 
     r2_event = r2_df[r2_df['event'] == event]
     coef_event = coef_df[coef_df['event'] == event]
@@ -2215,7 +2227,7 @@ def plot_lmm_summary(r2_df, coef_df, emm_frames, event, formula=None,
     plot_lmm_variance_explained(r2_event, ax=ax_r2)
     plot_lmm_coefficient_heatmap(coef_event, ax=ax_hm)
 
-    for ax, factor in zip((ax_a, ax_b, ax_c), ('reward', 'side', 'contrast')):
+    for ax, factor in zip(bottom_axes, bottom_factors):
         emm = emm_frames[factor]
         plot_marginal_means(emm[emm['event'] == event], ax=ax)
 
@@ -2440,8 +2452,8 @@ def _scatter_mice(ax, x, df_group, color):
         median, q25, q75 = _mouse_dropone_stats(
             df_group.loc[df_group['subject'] == subject, 'delta_r2'])
         x_jit = x + jitter[subject]
-        ax.vlines(x_jit, q25, q75, color=color, lw=1.5, zorder=2)
-        ax.scatter(x_jit, median, color=color, s=30, zorder=3)
+        ax.vlines(x_jit, q25, q75, color=color, lw=1.5, alpha=0.5, zorder=2)
+        ax.scatter(x_jit, median, color=color, s=30, alpha=0.5, zorder=3)
 
 
 def plot_ols_dropone(df, title):
@@ -2502,8 +2514,9 @@ def plot_ols_dropone(df, title):
     fig.supylabel('ΔR² (per-recording, in-sample)')
 
     role_handles = [
-        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6),
-        Line2D([0], [0], color='gray', lw=1.5),
+        Line2D([0], [0], marker='o', color='gray', ls='none', markersize=6,
+               alpha=0.5),
+        Line2D([0], [0], color='gray', lw=1.5, alpha=0.5),
     ]
     fig.legend(role_handles, ['mouse median', 'IQR'], frameon=False,
                fontsize=TICKFONTSIZE, loc='upper right')
@@ -2805,14 +2818,9 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
 
             ax.axvline(0, color='gray', linewidth=0.5, linestyle='--')
 
-            # Shaded response windows
-            early = RESPONSE_WINDOWS['early']
-            ax.axvspan(early[0], early[1], alpha=0.12, color='gray',
-                       zorder=0)
-            if event == 'feedback_times':
-                late = RESPONSE_WINDOWS['late']
-                ax.axvspan(late[0], late[1], alpha=0.08, color='gray',
-                           zorder=0)
+            # Shaded response windows (whichever are defined in config)
+            for start, end in RESPONSE_WINDOWS.values():
+                ax.axvspan(start, end, alpha=0.12, color='gray', zorder=0)
 
             if row == 1:
                 ax.set_xlabel('Time (s)')
