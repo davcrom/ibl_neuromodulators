@@ -399,8 +399,10 @@ def plot_persession_figures(group, figures_dir):
     """Save the per-session drop-one ΔR² grid figure from the in-scope frame.
 
     Reads ``group.response_ols_dropone_results`` (computed under ``--reprocess``
-    or loaded from cache in the default run) and saves the ``plot_ols_dropone``
-    grid (event rows × dropped-regressor columns, every session a point).
+    or loaded from cache in the default run), scopes it to ``RESPONSE_EVENTS``
+    (a cached frame may carry events since dropped from the analysis), and saves
+    the ``plot_ols_dropone`` grid (dropped-regressor rows × event columns, every
+    session a point).
 
     Parameters
     ----------
@@ -409,8 +411,10 @@ def plot_persession_figures(group, figures_dir):
     figures_dir : Path
         Output directory for the SVG figure.
     """
+    results = group.response_ols_dropone_results
+    results = results[results['event'].isin(RESPONSE_EVENTS)]
     fig = plot_ols_dropone(
-        group.response_ols_dropone_results,
+        results,
         title='Per-session OLS drop-one ΔR²\nevery session is a point')
     fig.savefig(figures_dir / 'response_ols_persession_dropone.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')

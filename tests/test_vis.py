@@ -1214,7 +1214,7 @@ class TestPlotLmmReliability:
 
 
 class TestPlotOlsDropone:
-    """Per-session ΔR² scatter grid: event rows × dropped-regressor columns."""
+    """Per-session ΔR² scatter grid: dropped-regressor rows × event columns."""
 
     _PREDICTORS = ('contrast', 'side', 'reward', 'choice_side',
                    'log_reaction_time', 'peak_velocity')
@@ -1248,38 +1248,72 @@ class TestPlotOlsDropone:
                                if isinstance(c, PathCollection)
                                and len(c.get_offsets())])
 
-    def test_grid_rows_events_cols_predictors(self):
-        """2 event rows × 6 regressor columns; titles/labels name the axes."""
+    def test_grid_rows_predictors_cols_events(self):
+        """6 regressor rows × 2 event columns; titles/labels name the axes."""
         from iblnm.vis import plot_ols_dropone
         fig = plot_ols_dropone(self._df(), 'Per-session ΔR²')
         assert isinstance(fig, plt.Figure)
-        assert len(fig.axes) == 2 * 6
-        # fig.axes is row-major: row 0 = stimOn (sorts first), row 1 = feedback.
-        assert [ax.get_title() for ax in fig.axes[:6]] == list(self._PREDICTORS)
-        assert fig.axes[0].get_ylabel() == 'stimOn_times'
-        assert fig.axes[6].get_ylabel() == 'feedback_times'
+        assert len(fig.axes) == 6 * 2
+        # fig.axes is row-major: col 0 = stimOn (sorts first), col 1 = feedback.
+        assert [ax.get_title() for ax in fig.axes[:2]] == [
+            'stimOn_times', 'feedback_times']
+        col0 = [fig.axes[r * 2].get_ylabel() for r in range(6)]
+        assert col0 == list(self._PREDICTORS)
         plt.close(fig)
 
     def test_point_y_is_delta_r2_in_matching_cell(self):
-        """A point's y equals its row's ΔR², in the (event, predictor) panel."""
+        """A point's y equals its cell's ΔR², in the (predictor, event) panel."""
         from iblnm.vis import plot_ols_dropone
         fig = plot_ols_dropone(self._df(), 't')
-        # feedback row (index 1) × 'reward' column (index 2) → axes[1*6 + 2].
-        ax = fig.axes[1 * 6 + 2]
+        # 'reward' row (index 2) × feedback column (index 1) → axes[2*2 + 1].
+        ax = fig.axes[2 * 2 + 1]
         expected = self._EVENT_BASE['feedback_times'] + 0.001 * 2
         ys = self._points(ax)[:, 1]
         assert np.allclose(ys, expected)
         plt.close(fig)
 
-    def test_targetnm_xslots_separated_with_mouse_offsets(self):
-        """Target-NMs occupy distinct x-slots; mice are offset within a slot."""
+    def test_subjects_get_distinct_x_with_centered_targetnm_ticks(self):
+        """Each subject occupies its own x; the gap between target-NM groups is
+        wider than within-group spacing, and one tick per target-NM sits at the
+        centre of its subjects."""
         from iblnm.vis import plot_ols_dropone
-        fig = plot_ols_dropone(self._df(), 't')  # VTA-DA (slot 0), DR-5HT (slot 1)
-        xs = self._points(fig.axes[0])[:, 0]
-        slot0, slot1 = xs[xs < 0.5], xs[xs >= 0.5]
-        assert len(slot0) and len(slot1)
-        assert slot0.max() < slot1.min()  # slots separated
-        assert len(np.unique(np.round(slot0, 6))) == 2  # two mice offset in slot
+        fig = plot_ols_dropone(self._df(), 't')  # VTA-DA then DR-5HT, 2 mice each
+        xs = np.unique(np.round(self._points(fig.axes[0])[:, 0], 6))
+        assert len(xs) == 4  # one x per subject
+        within = xs[1] - xs[0]   # two VTA-DA subjects
+        between = xs[2] - xs[1]  # gap to the DR-5HT group
+        assert between > within  # groups separated by a wider gap
+        bottom_left = fig.axes[(6 - 1) * 2]  # last row, stimOn column
+        assert np.allclose(bottom_left.get_xticks(),
+                           [(xs[0] + xs[1]) / 2, (xs[2] + xs[3]) / 2])
+        assert [t.get_text() for t in bottom_left.get_xticklabels()] == [
+            'VTA-DA', 'DR-5HT']
+        plt.close(fig)
+
+    def test_one_median_dash_per_subject_colored_by_targetnm(self):
+        """Each subject gets exactly one '_' median marker, colored by its
+        target-NM (not black), at its own median ΔR²."""
+        from iblnm.vis import plot_ols_dropone
+        from iblnm.config import TARGETNM_COLORS
+        from matplotlib.collections import PathCollection
+        import matplotlib.colors as mcolors
+        rows = [
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+             'subject': subj, 'predictor': 'contrast', 'delta_r2': v}
+            for subj, vals in [('m_a', [0.1, 0.3]), ('m_b', [0.4, 0.6])]
+            for v in vals
+        ]
+        fig = plot_ols_dropone(pd.DataFrame(rows), 't')
+        ax = fig.axes[0]  # contrast × stimOn
+        # Median markers carry a single point (sessions come in 2s here).
+        medians = [c for c in ax.collections
+                   if isinstance(c, PathCollection) and len(c.get_offsets()) == 1]
+        assert len(medians) == 2  # one per subject, not per session
+        ys = sorted(round(float(c.get_offsets()[0][1]), 6) for c in medians)
+        assert ys == [0.2, 0.5]  # each at its subject's median
+        vta = mcolors.to_rgb(TARGETNM_COLORS['VTA-DA'])
+        assert all(np.allclose(np.asarray(c.get_edgecolors())[0][:3], vta)
+                   for c in medians)
         plt.close(fig)
 
     def test_empty_frame_returns_titled_figure(self):
