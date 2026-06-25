@@ -973,18 +973,18 @@ class TestPlotLMMSummary:
 class TestSortEvents:
 
     def test_orders_events_chronologically(self):
-        """Events sort stimOn → firstMovement → feedback regardless of input
-        order, not alphabetically. Operates on the real ``_times`` event names."""
+        """Events sort stimOn → feedback regardless of input order, not
+        alphabetically. Operates on the real ``_times`` event names."""
         from iblnm.vis import _sort_events
-        shuffled = ['feedback_times', 'firstMovement_times', 'stimOn_times']
-        assert _sort_events(shuffled) == [
-            'stimOn_times', 'firstMovement_times', 'feedback_times']
+        shuffled = ['feedback_times', 'stimOn_times']
+        assert _sort_events(shuffled) == ['stimOn_times', 'feedback_times']
 
     def test_unknown_events_sort_last_alphabetically(self):
-        """Events outside the chronology fall after known ones, in name order."""
+        """Events outside the chronology fall after known ones, in name order.
+        firstMovement is no longer in RESPONSE_EVENTS, so it sorts as unknown."""
         from iblnm.vis import _sort_events
-        assert _sort_events(['zzz', 'stimOn_times', 'aaa']) == [
-            'stimOn_times', 'aaa', 'zzz']
+        assert _sort_events(['firstMovement_times', 'stimOn_times', 'aaa']) == [
+            'stimOn_times', 'aaa', 'firstMovement_times']
 
 
 # =============================================================================
@@ -1627,17 +1627,17 @@ class TestPlotMeanResponseTraces:
             assert len(ax.collections) >= 1
         plt.close(fig)
 
-    def test_event_order_stim_movement_feedback(self):
+    def test_event_order_stim_feedback(self):
         from iblnm.vis import plot_mean_response_traces
         traces = _make_traces_df(
             n_targets=1,
-            events=['feedback_times', 'stimOn_times', 'firstMovement_times'],
+            events=['feedback_times', 'stimOn_times'],
         )
         target = traces['target_NM'].iloc[0]
         fig = plot_mean_response_traces(traces, target)
-        # Top row: col 0, 1, 2 → axes[0], axes[1], axes[2]
-        titles = [fig.axes[col].get_title() for col in range(3)]
-        assert titles == ['stimOn', 'firstMovement', 'feedback']
+        # Top row: col 0, 1 → axes[0], axes[1]
+        titles = [fig.axes[col].get_title() for col in range(2)]
+        assert titles == ['stimOn', 'feedback']
         plt.close(fig)
 
     def test_response_window_shading(self):
