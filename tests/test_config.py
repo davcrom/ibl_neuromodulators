@@ -193,4 +193,4 @@ def test_persession_formulas():
 def test_persession_thresholds_and_path():
     assert config.MIN_TRIALS_PERSESSION == 50
     assert config.MIN_RECORDINGS_PERMOUSE == 3
-    assert config.RESPONSE_OLS_PERSESSION_FPATH.name == 'response_ols_persession_dropone.csv'
+    assert config.RESPONSE_OLS_PERSESSION_FPATH.name == 'response_ols_persession_dropone.parquet'
