@@ -3595,6 +3595,31 @@ class TestLoaderMethods:
         assert len(group.response_magnitudes) == 3
         assert 'eid-99' not in group.response_magnitudes['eid'].values
 
+    def test_load_response_ols_dropone(self, tmp_path):
+        from iblnm.data import RESPONSE_OLS_DROPONE_COLUMNS
+        group = self._make_group()
+        rows = [
+            {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
+             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': 0.1, 'n_trials': 80},
+            {'eid': 'eid-1', 'subject': 'subj-1', 'target_NM': 'target-0',
+             'brain_region': 'region-0', 'event': 'feedback_times',
+             'predictor': 'reward', 'r2': 0.4, 'delta_r2': 0.2, 'n_trials': 70},
+            {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
+             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'predictor': 'side', 'r2': 0.3, 'delta_r2': 0.05, 'n_trials': 60},
+        ]
+        df = pd.DataFrame(rows)[RESPONSE_OLS_DROPONE_COLUMNS]
+        path = tmp_path / 'response_ols_persession_dropone.parquet'
+        df.to_parquet(path, index=False)
+
+        group.load_response_ols_dropone(path)
+        assert set(group.response_ols_dropone_results['eid'].values) == {'eid-0', 'eid-1'}
+        assert 'eid-99' not in group.response_ols_dropone_results['eid'].values
+
+        group.load_response_ols_dropone(tmp_path / 'nonexistent.parquet')
+        assert group.response_ols_dropone_results is None
+
     def test_load_trial_regressors(self, tmp_path):
         group = self._make_group()
         df = pd.DataFrame([

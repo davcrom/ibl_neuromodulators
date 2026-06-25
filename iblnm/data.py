@@ -1941,6 +1941,7 @@ class PhotometrySessionGroup:
         self.response_traces_tpts = None
         self.mean_traces = None
         self.response_magnitudes = None
+        self.response_ols_dropone_results = None
         self.trial_regressors = None
         self.response_features = None
         self.performance = None
@@ -2519,6 +2520,10 @@ class PhotometrySessionGroup:
     def load_response_magnitudes(self, path):
         """Load response magnitudes from parquet, filtered to current recordings."""
         self.response_magnitudes = self._load_parquet(path)
+
+    def load_response_ols_dropone(self, path):
+        """Load per-session drop-one results from parquet, filtered to current recordings."""
+        self.response_ols_dropone_results = self._load_parquet(path)
 
     def load_trial_regressors(self, path):
         """Load trial regressors from parquet, filtered to current recordings."""

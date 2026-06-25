@@ -22,7 +22,7 @@ TRIAL_REGRESSORS_FPATH = RESPONSES_DIR / 'trial_regressors.pqt'
 RESPONSE_MATRIX_FPATH = RESPONSES_DIR / 'response_matrix.pqt'
 RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 MEAN_TRACES_FPATH = RESPONSES_DIR / 'mean_traces.pqt'
-RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.csv'
+RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.parquet'
 TASK_ENCODING_DIR = RESULTS_DIR / 'task_encoding'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 
