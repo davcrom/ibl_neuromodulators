@@ -195,8 +195,8 @@ class TestPlotMovementFigures:
 
 
 class TestPlotPersessionFigures:
-    """The persession orchestration writes the long-form CSV to the config path
-    and the drop-one grid SVG to the figures dir."""
+    """The persession figure step plots from the in-scope drop-one frame
+    (``response_ols_dropone_results``) without recomputing or writing data."""
 
     def _stub_frame(self):
         predictors = ['contrast', 'side', 'reward', 'choice_side',
@@ -211,22 +211,46 @@ class TestPlotPersessionFigures:
                     'n_trials': 100})
         return pd.DataFrame(rows)
 
-    def test_writes_csv_to_config_path_and_figure(self, tmp_path, monkeypatch):
+    def test_plots_from_loaded_frame_without_recompute(self, tmp_path):
         from scripts import responses
-        csv_path = tmp_path / 'response_ols_persession_dropone.csv'
-        monkeypatch.setattr(responses, 'RESPONSE_OLS_PERSESSION_FPATH', csv_path)
-
-        frame = self._stub_frame()
         group = MagicMock()
-        group.response_ols_dropone.return_value = frame
+        group.response_ols_dropone_results = self._stub_frame()
 
         fig_dir = tmp_path / 'persession'
         fig_dir.mkdir()
-        responses.plot_persession_figures(group, fig_dir, tmp_path)
+        responses.plot_persession_figures(group, fig_dir)
 
-        group.response_ols_dropone.assert_called_once()
-        written = pd.read_csv(csv_path)
-        assert set(written['predictor']) == set(frame['predictor'])
-        assert len(written) == len(frame)
+        group.response_ols_dropone.assert_not_called()
         svg = fig_dir / 'response_ols_persession_dropone.svg'
         assert svg.exists() and svg.stat().st_size > 0
+
+
+def _responses_source():
+    """Return (full source, __main__ block) of scripts/responses.py."""
+    from pathlib import Path
+    import scripts.responses
+    src = Path(scripts.responses.__file__).read_text()
+    main_block = src.split("if __name__ == '__main__':", 1)[1]
+    return src, main_block
+
+
+class TestReprocessWiring:
+    """Source-level wiring: cache-load is default, --reprocess opts into refit,
+    and the trial-level LMM/movement stages are no longer called from __main__
+    while their definitions remain."""
+
+    def test_reprocess_flag_replaces_plot(self):
+        src, main_block = _responses_source()
+        assert "'--reprocess'" in src
+        assert "'--plot'" not in src
+        assert 'args.reprocess' in main_block
+
+    def test_main_block_drops_lmm_and_movement_calls(self):
+        _, main_block = _responses_source()
+        assert 'plot_lmm_figures(' not in main_block
+        assert 'plot_movement_figures(' not in main_block
+
+    def test_lmm_and_movement_definitions_remain(self):
+        src, _ = _responses_source()
+        assert 'def plot_lmm_figures(' in src
+        assert 'def plot_movement_figures(' in src
