@@ -1311,6 +1311,29 @@ class TestPlotOlsDropone:
             'VTA-DA', 'DR-5HT']
         plt.close(fig)
 
+    def test_subjects_ordered_by_median_within_group(self):
+        """Within a target-NM group, subjects are placed left to right by
+        ascending median — not by name."""
+        from iblnm.vis import plot_ols_dropone
+        from matplotlib.collections import PathCollection
+        # Name order ('hi' < 'lo') is the opposite of median order, so a pass
+        # proves ordering is by median, not name.
+        rows = [
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': subj,
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+            for subj, vals in [('hi', [0.3, 0.5]), ('lo', [0.0, 0.2])]
+            for v in vals
+        ]
+        fig = plot_ols_dropone(pd.DataFrame(rows), 't')
+        ax = fig.axes[0]  # contrast ΔR² row, one event
+        medians = sorted((c.get_offsets()[0][0], c.get_offsets()[0][1])
+                         for c in ax.collections
+                         if isinstance(c, PathCollection)
+                         and len(c.get_offsets()) == 1)
+        ys_left_to_right = [round(y, 6) for _, y in medians]
+        assert ys_left_to_right == [0.1, 0.4]  # lo (0.1) left of hi (0.4)
+        plt.close(fig)
+
     def test_one_median_dash_per_subject_colored_by_targetnm(self):
         """Each subject gets exactly one '_' median marker, colored by its
         target-NM (not black), at its own median ΔR²."""

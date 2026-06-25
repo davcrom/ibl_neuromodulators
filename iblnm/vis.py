@@ -2390,14 +2390,14 @@ _MEDIAN_MARKER_SIZE = 260    # '_' marker size for a subject's median dash
 _MEDIAN_LINEWIDTH = 3.0      # '_' median dash thickness
 
 
-def _subject_xlayout(df, targets):
-    """Place each subject on its own x, grouped by target-NM with a gap.
+def _group_xslots(df, targets):
+    """Lay out one contiguous block of x slots per target-NM group.
 
-    Subjects are laid out left to right in ``targets`` order, sorted by name
-    within each target-NM, ``_SUBJECT_SPACING`` apart, with ``_TARGETNM_GAP``
-    blank units between groups — so a target-NM's horizontal extent scales with
-    its subject count. Returns the per-subject x, each subject's target-NM, and
-    one tick per target-NM at the centre of its subjects.
+    Each target-NM with data gets one slot per subject, ``_SUBJECT_SPACING``
+    apart, with ``_TARGETNM_GAP`` blank units between groups — so a target-NM's
+    horizontal extent scales with its subject count. The slot *positions* are
+    fixed (independent of which subject fills which), so the per-panel median
+    ordering does not change group widths or tick centres.
 
     Parameters
     ----------
@@ -2408,23 +2408,25 @@ def _subject_xlayout(df, targets):
 
     Returns
     -------
-    subject_x : dict[str, float]
-    subject_target : dict[str, str]
+    subjects_by_target : dict[str, list[str]]
+        Subjects present per target-NM (name-sorted; the panel reorders them).
+    slots_by_target : dict[str, np.ndarray]
+        The x positions available to each target-NM group.
     ticks : list[tuple[str, float]]
         ``(target_NM, centre_x)`` pairs, one per non-empty target-NM.
     """
-    subject_x, subject_target, ticks = {}, {}, []
+    subjects_by_target, slots_by_target, ticks = {}, {}, []
     x = 0.0
     for tnm in targets:
         subjects = sorted(df.loc[df['target_NM'] == tnm, 'subject'].unique())
         if not subjects:
             continue
         xs = x + np.arange(len(subjects)) * _SUBJECT_SPACING
-        subject_x.update(zip(subjects, xs))
-        subject_target.update({s: tnm for s in subjects})
+        subjects_by_target[tnm] = subjects
+        slots_by_target[tnm] = xs
         ticks.append((tnm, float(xs.mean())))
         x += len(subjects) * _SUBJECT_SPACING + _TARGETNM_GAP
-    return subject_x, subject_target, ticks
+    return subjects_by_target, slots_by_target, ticks
 
 
 def _scatter_subject(ax, x, deltas, color):
@@ -2458,9 +2460,11 @@ def _plot_persession_grid(df, title, rows, supylabel):
     subject occupies its own x position (sessions as translucent open dots
     edge-colored by target-NM, one thicker target-NM-colored ``'_'`` marker at
     the subject's median), grouped by target-NM with a gap so a target-NM's width
-    scales with its subject count (see ``_subject_xlayout``). One x-tick per
-    target-NM is centred on its subjects. All panels share one y-axis; the figure
-    size scales with the total subject count and the number of rows.
+    scales with its subject count (see ``_group_xslots``). Within each group,
+    subjects are ordered left to right by ascending median in that panel (so the
+    order can differ across panels). One x-tick per target-NM is centred on its
+    subjects. All panels share one y-axis; the figure size scales with the total
+    subject count and the number of rows.
 
     Parameters
     ----------
@@ -2492,9 +2496,10 @@ def _plot_persession_grid(df, title, rows, supylabel):
 
     targets = sorted(df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
-    layouts = {event: _subject_xlayout(df[df['event'] == event], targets)
+    layouts = {event: _group_xslots(df[df['event'] == event], targets)
                for event in events}
-    col_extent = max(max(sx.values()) + 1 for sx, _, _ in layouts.values())
+    col_extent = max(slots.max() + 1 for _, slots_by_target, _ in layouts.values()
+                     for slots in slots_by_target.values())
     fig, axes = plt.subplots(
         n_rows, n_cols, squeeze=False, sharex='col', sharey=True,
         layout='constrained',
@@ -2502,17 +2507,24 @@ def _plot_persession_grid(df, title, rows, supylabel):
                  (2.0 * n_rows + 1) * 1.25))
 
     for c, event in enumerate(events):
-        subject_x, subject_target, ticks = layouts[event]
+        subjects_by_target, slots_by_target, ticks = layouts[event]
         for r, (label, value_col, predictor) in enumerate(rows):
             ax = axes[r, c]
             df_cell = df[(df['event'] == event) & (df['predictor'] == predictor)]
-            for subject, x in subject_x.items():
-                vals = df_cell.loc[df_cell['subject'] == subject,
-                                   value_col].values
-                if len(vals):
-                    _scatter_subject(
-                        ax, x, vals,
-                        TARGETNM_COLORS.get(subject_target[subject], 'gray'))
+            for tnm, subjects in subjects_by_target.items():
+                color = TARGETNM_COLORS.get(tnm, 'gray')
+                vals_by_subject = {
+                    s: df_cell.loc[df_cell['subject'] == s, value_col].values
+                    for s in subjects}
+                # Order this panel's subjects left to right by ascending median;
+                # subjects with no data here sort last (their slot stays empty).
+                ordered = sorted(subjects, key=lambda s: (
+                    np.median(vals_by_subject[s]) if len(vals_by_subject[s])
+                    else np.inf))
+                for subject, x in zip(ordered, slots_by_target[tnm]):
+                    vals = vals_by_subject[subject]
+                    if len(vals):
+                        _scatter_subject(ax, x, vals, color)
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
                 ax.set_title(event)
