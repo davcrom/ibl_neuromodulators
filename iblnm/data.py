@@ -1957,12 +1957,14 @@ class PhotometrySessionGroup:
         self._lmm_group_by = None
 
     @classmethod
-    def from_catalog(cls, catalog, one, h5_dir=SESSIONS_H5_DIR):
+    def from_catalog(cls, catalog, one, h5_dir=SESSIONS_H5_DIR,
+                     scan_h5_errors=True):
         """Build a group from a session catalog DataFrame.
 
         Validates parallel list columns and populates ``logged_errors`` from
-        each session's H5 ``/errors`` group when ``h5_dir`` is given (scans all
-        files, so it can take a moment). Call ``filter_sessions`` separately.
+        each session's H5 ``/errors`` group when ``h5_dir`` is given and
+        ``scan_h5_errors`` is True (scans all files, so it can take a moment).
+        Call ``filter_sessions`` separately.
 
         Parameters
         ----------
@@ -1972,9 +1974,16 @@ class PhotometrySessionGroup:
         one : one.api.One
             ONE connection instance.
         h5_dir : Path, optional
-            Directory containing {eid}.h5 files. When provided, the H5 ``/errors``
-            groups are scanned to populate ``logged_errors`` for error-based
-            filtering. When ``None``, ``logged_errors`` is left empty (no scan).
+            Directory containing {eid}.h5 files, retained on the group for
+            loading and processing. When provided and ``scan_h5_errors`` is
+            True, the H5 ``/errors`` groups are scanned to populate
+            ``logged_errors`` for error-based filtering.
+        scan_h5_errors : bool, optional
+            When True (default), scan the H5 ``/errors`` groups to populate
+            ``logged_errors``. Set False to reuse a ``logged_errors`` column
+            already present on ``catalog`` and skip the scan -- useful when
+            rebuilding a group from another group's ``sessions`` (an empty
+            column is created only if none exists).
         """
         from iblnm.config import SESSION_SCHEMA
         from iblnm.util import (
@@ -1986,9 +1995,10 @@ class PhotometrySessionGroup:
         parallel_cols = ['brain_region', 'hemisphere', 'target_NM']
         df = validate_parallel_lists(df, parallel_cols)
 
-        if h5_dir is not None:
+        if h5_dir is not None and scan_h5_errors:
             print(f"Scanning H5 files in {h5_dir} for logged errors "
                   "(this may take a moment)...")
+            df = df.drop(columns='logged_errors', errors='ignore')
             df = df.merge(collect_session_errors(df['eid'], h5_dir),
                           on='eid', how='left')
         elif 'logged_errors' not in df.columns:

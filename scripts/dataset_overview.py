@@ -21,6 +21,7 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+plt.ioff()
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, FIGURE_DPI,
@@ -133,8 +134,6 @@ BAR_W, BAR_H = (12, 24) if args.horizontal else (24, 12)
 figures_dir = PROJECT_ROOT / 'figures/dataset_overview'
 figures_dir.mkdir(parents=True, exist_ok=True)
 
-plt.ion()
-
 # ---- Load and enrich ----
 
 if not SESSIONS_FPATH.exists():
@@ -192,7 +191,8 @@ print("\nGenerating session matrices...")
 print("\n[Matrix universe: structural filters, no QC]")
 group.filter_sessions(**_base, qc_blockers=set(), targetnms=VALID_TARGETNMS)
 df_all = group.sessions.copy()
-grp = PhotometrySessionGroup.from_catalog(df_all, one=None)
+# Reuse the logged_errors already scanned into `group`; re-scanning is slow.
+grp = PhotometrySessionGroup.from_catalog(df_all, one=None, scan_h5_errors=False)
 
 print("\n[Plot 1: All sessions]")
 grp.filter_sessions(session_types=False, qc_blockers=set(), targetnms=False,

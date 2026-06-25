@@ -2630,6 +2630,17 @@ class TestFromCatalog:
         group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
         assert group._catalog['logged_errors'].apply(lambda x: x == []).all()
 
+    def test_scan_h5_errors_false_reuses_existing_column(self, tmp_path):
+        """scan_h5_errors=False skips the H5 scan and keeps a pre-existing
+        logged_errors column without a merge collision."""
+        from iblnm.data import PhotometrySessionGroup
+        catalog = self._make_catalog()
+        catalog['logged_errors'] = [['MissingRawData'] for _ in range(len(catalog))]
+        group = PhotometrySessionGroup.from_catalog(
+            catalog, one=MagicMock(), h5_dir=tmp_path, scan_h5_errors=False)
+        assert group._catalog['logged_errors'].apply(
+            lambda x: x == ['MissingRawData']).all()
+
 
 class TestDeduplicate:
     """Tests for PhotometrySessionGroup.deduplicate."""
