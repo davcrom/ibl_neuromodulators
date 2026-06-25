@@ -1223,10 +1223,11 @@ class TestPlotOlsDropone:
 
     def _df(self, targets=('VTA-DA', 'DR-5HT'),
             events=('feedback_times', 'stimOn_times')):
-        """Long-form per-session ΔR²: 2 mice per target-NM, 3 sessions each.
+        """Long-form per-session fits: 2 mice per target-NM, 3 sessions each.
 
         ``delta_r2`` is ``_EVENT_BASE[event] + 0.001 * predictor_index`` so a
-        point's value pins down the (event, predictor) panel it belongs in.
+        point's value pins down the (event, predictor) panel it belongs in;
+        ``r2`` (full-model) is constant per event, repeated across predictors.
         """
         rows = []
         for tnm in targets:
@@ -1237,6 +1238,7 @@ class TestPlotOlsDropone:
                             rows.append({
                                 'target_NM': tnm, 'event': event,
                                 'subject': subject, 'predictor': pred,
+                                'r2': self._EVENT_BASE[event] + 0.3,
                                 'delta_r2': self._EVENT_BASE[event] + 0.001 * pi})
         return pd.DataFrame(rows)
 
@@ -1248,28 +1250,46 @@ class TestPlotOlsDropone:
                                if isinstance(c, PathCollection)
                                and len(c.get_offsets())])
 
-    def test_grid_rows_predictors_cols_events(self):
-        """6 regressor rows × 2 event columns; titles/labels name the axes."""
+    def test_grid_rows_total_then_predictors_cols_events(self):
+        """Full-model-R² row + 6 regressor rows × 2 event columns; titles/labels
+        name the axes."""
         from iblnm.vis import plot_ols_dropone
         fig = plot_ols_dropone(self._df(), 'Per-session ΔR²')
         assert isinstance(fig, plt.Figure)
-        assert len(fig.axes) == 6 * 2
+        assert len(fig.axes) == 7 * 2
         # fig.axes is row-major: col 0 = stimOn (sorts first), col 1 = feedback.
         assert [ax.get_title() for ax in fig.axes[:2]] == [
             'stimOn_times', 'feedback_times']
-        col0 = [fig.axes[r * 2].get_ylabel() for r in range(6)]
-        assert col0 == list(self._PREDICTORS)
+        col0 = [fig.axes[r * 2].get_ylabel() for r in range(7)]
+        assert col0 == ['full model R²'] + list(self._PREDICTORS)
         plt.close(fig)
 
     def test_point_y_is_delta_r2_in_matching_cell(self):
         """A point's y equals its cell's ΔR², in the (predictor, event) panel."""
         from iblnm.vis import plot_ols_dropone
         fig = plot_ols_dropone(self._df(), 't')
-        # 'reward' row (index 2) × feedback column (index 1) → axes[2*2 + 1].
-        ax = fig.axes[2 * 2 + 1]
+        # Rows: 0 = total R², 1 = contrast, 2 = side, 3 = reward.
+        # 'reward' row (3) × feedback column (1) → axes[3*2 + 1].
+        ax = fig.axes[3 * 2 + 1]
         expected = self._EVENT_BASE['feedback_times'] + 0.001 * 2
         ys = self._points(ax)[:, 1]
         assert np.allclose(ys, expected)
+        plt.close(fig)
+
+    def test_top_row_shows_full_model_r2(self):
+        """The top row plots the full-model R² (column ``r2``), read once per
+        session (not repeated per predictor)."""
+        from iblnm.vis import plot_ols_dropone
+        rows = [
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
+             'predictor': pred, 'r2': r2, 'delta_r2': 0.05}
+            for pred in ('contrast', 'side')   # r2 repeats across predictors
+            for r2 in (0.4, 0.6)               # two sessions
+        ]
+        fig = plot_ols_dropone(pd.DataFrame(rows), 't')
+        ys = self._points(fig.axes[0])[:, 1]   # total-R² × stimOn panel
+        # Two sessions (0.4, 0.6) + their median (0.5) — not 4 session points.
+        assert sorted(np.round(ys, 6)) == [0.4, 0.5, 0.6]
         plt.close(fig)
 
     def test_subjects_get_distinct_x_with_centered_targetnm_ticks(self):
@@ -1283,7 +1303,7 @@ class TestPlotOlsDropone:
         within = xs[1] - xs[0]   # two VTA-DA subjects
         between = xs[2] - xs[1]  # gap to the DR-5HT group
         assert between > within  # groups separated by a wider gap
-        bottom_left = fig.axes[(6 - 1) * 2]  # last row, stimOn column
+        bottom_left = fig.axes[(7 - 1) * 2]  # last row, stimOn column
         assert np.allclose(bottom_left.get_xticks(),
                            [(xs[0] + xs[1]) / 2, (xs[2] + xs[3]) / 2])
         assert [t.get_text() for t in bottom_left.get_xticklabels()] == [
@@ -1298,13 +1318,13 @@ class TestPlotOlsDropone:
         from matplotlib.collections import PathCollection
         import matplotlib.colors as mcolors
         rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times',
-             'subject': subj, 'predictor': 'contrast', 'delta_r2': v}
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': subj,
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
             for subj, vals in [('m_a', [0.1, 0.3]), ('m_b', [0.4, 0.6])]
             for v in vals
         ]
         fig = plot_ols_dropone(pd.DataFrame(rows), 't')
-        ax = fig.axes[0]  # contrast × stimOn
+        ax = fig.axes[1]  # one event → 1 column; contrast ΔR² row (row 1)
         # Median markers carry a single point (sessions come in 2s here).
         medians = [c for c in ax.collections
                    if isinstance(c, PathCollection) and len(c.get_offsets()) == 1]
