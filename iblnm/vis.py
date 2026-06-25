@@ -2382,65 +2382,87 @@ def plot_lmm_reliability(reliability_df, full_r2, title):
 # `persession` model family keys minus `full`.
 _PERSESSION_DROPONE_PREDICTORS = ['contrast', 'side', 'reward', 'choice_side',
                                   'log_reaction_time', 'peak_velocity']
+# x-axis layout (units where one subject occupies a width of 1):
+_SUBJECT_SPACING = 0.7       # x between consecutive subjects within a target-NM
+_TARGETNM_GAP = 1.0          # blank x between consecutive target-NM groups
+_SESSION_MARKER_SIZE = 40    # open-dot marker size for a single session
+_MEDIAN_MARKER_SIZE = 260    # '_' marker size for a subject's median dash
+_MEDIAN_LINEWIDTH = 3.0      # '_' median dash thickness
 
 
-def _slot_jitter(subjects):
-    """Map subjects to small deterministic x-offsets centred on 0.
+def _subject_xlayout(df, targets):
+    """Place each subject on its own x, grouped by target-NM with a gap.
 
-    Subjects are spread evenly within a fixed slot width so their markers do
-    not overlap. Sorting by name makes the offsets reproducible.
+    Subjects are laid out left to right in ``targets`` order, sorted by name
+    within each target-NM, ``_SUBJECT_SPACING`` apart, with ``_TARGETNM_GAP``
+    blank units between groups — so a target-NM's horizontal extent scales with
+    its subject count. Returns the per-subject x, each subject's target-NM, and
+    one tick per target-NM at the centre of its subjects.
 
     Parameters
     ----------
-    subjects : sequence of str
-        Subject identifiers drawn in one x-slot.
+    df : pd.DataFrame
+        One event's rows; needs ``target_NM`` and ``subject``.
+    targets : sequence of str
+        Target-NMs in plot order.
 
     Returns
     -------
-    dict of {str: float}
-        Per-subject horizontal offset in ``[-0.15, 0.15]``.
+    subject_x : dict[str, float]
+    subject_target : dict[str, str]
+    ticks : list[tuple[str, float]]
+        ``(target_NM, centre_x)`` pairs, one per non-empty target-NM.
     """
-    ordered = sorted(subjects)
-    if len(ordered) == 1:
-        return {ordered[0]: 0.0}
-    offsets = np.linspace(-0.15, 0.15, len(ordered))
-    return dict(zip(ordered, offsets))
+    subject_x, subject_target, ticks = {}, {}, []
+    x = 0.0
+    for tnm in targets:
+        subjects = sorted(df.loc[df['target_NM'] == tnm, 'subject'].unique())
+        if not subjects:
+            continue
+        xs = x + np.arange(len(subjects)) * _SUBJECT_SPACING
+        subject_x.update(zip(subjects, xs))
+        subject_target.update({s: tnm for s in subjects})
+        ticks.append((tnm, float(xs.mean())))
+        x += len(subjects) * _SUBJECT_SPACING + _TARGETNM_GAP
+    return subject_x, subject_target, ticks
 
 
-def _scatter_mice(ax, x, df_group, color):
-    """Draw one target-NM slot: every session as a point, mice offset within it.
+def _scatter_subject(ax, x, deltas, color):
+    """Plot one subject's sessions and its median at ``x``.
 
-    Each subject in ``df_group`` is given a small deterministic horizontal
-    offset (via ``_slot_jitter``) about ``x``; every one of that subject's
-    sessions is plotted as a point at its ΔR². No aggregate marker.
+    Each session is a translucent open dot edge-colored by target-NM (no fill)
+    stacked at the subject's x; the subject's median is a single thicker ``'_'``
+    marker in the same target-NM color on top.
 
     Parameters
     ----------
     ax : matplotlib.axes.Axes
-    x : int
-        Target-NM x-slot centre.
-    df_group : pd.DataFrame
-        Rows for one ``(target_NM, event, predictor)`` cell, one row per
-        session; needs ``subject`` and ``delta_r2`` columns.
+    x : float
+        The subject's x position.
+    deltas : np.ndarray
+        That subject's per-session ΔR² in one cell.
     color : color
-        Point color (the cell's target-NM color).
+        Marker color (the subject's target-NM color).
     """
-    jitter = _slot_jitter(df_group['subject'].unique())
-    x_jit = x + df_group['subject'].map(jitter)
-    ax.scatter(x_jit, df_group['delta_r2'], color=color, s=30, alpha=0.5,
-               zorder=3)
+    ax.scatter(np.full(len(deltas), x), deltas, marker='o', facecolors='none',
+               edgecolors=color, s=_SESSION_MARKER_SIZE, alpha=0.5, zorder=3)
+    ax.scatter(x, np.median(deltas), marker='_', color=color,
+               s=_MEDIAN_MARKER_SIZE, linewidths=_MEDIAN_LINEWIDTH, zorder=4)
 
 
 def plot_ols_dropone(df, title):
-    """Per-session ΔR² per dropped regressor — grid of event × regressor.
+    """Per-session ΔR² per dropped regressor — grid of regressor × event.
 
     Every session is one point at its per-recording ΔR² (plain, unsigned).
-    Rows are events (``_sort_events`` order), columns the six dropped regressors
-    (``_PERSESSION_DROPONE_PREDICTORS`` order). Within a panel the x-axis holds
-    one slot per target-NM (ordered by ``TARGETNM2POSITION``); mice are spread by
-    a small deterministic offset within their slot, and points are colored by
-    ``target_NM``. There is no per-mouse or across-mouse aggregate. Each event
-    row shares a y-axis.
+    Rows are the six dropped regressors (``_PERSESSION_DROPONE_PREDICTORS``
+    order), columns the events (``_sort_events`` order). Within a panel each
+    subject occupies its own x position (sessions as translucent open dots
+    edge-colored by target-NM, one thicker target-NM-colored ``'_'`` marker at
+    the subject's median), grouped by target-NM with a gap so a target-NM's width
+    scales with its subject count (see ``_subject_xlayout``).
+    Points are colored by ``target_NM``; one x-tick per target-NM is centred on
+    its subjects. There is no across-subject aggregate. All panels share one
+    y-axis; the figure width scales with the total subject count.
 
     Parameters
     ----------
@@ -2457,34 +2479,45 @@ def plot_ols_dropone(df, title):
     has_data = len(df) > 0
     events = _sort_events(df['event'].unique()) if has_data else []
     predictors = _PERSESSION_DROPONE_PREDICTORS
-    n_rows, n_cols = max(len(events), 1), len(predictors)
-    fig, axes = plt.subplots(n_rows, n_cols, squeeze=False, sharex='col',
-                             sharey='row', layout='constrained',
-                             figsize=(2.0 * n_cols + 1, 2.0 * n_rows + 1))
+    n_rows, n_cols = len(predictors), max(len(events), 1)
 
     if not has_data:
+        fig, _ = plt.subplots(n_rows, n_cols, squeeze=False,
+                              layout='constrained')
         fig.suptitle(title, fontsize=LABELFONTSIZE)
         return fig
 
     targets = sorted(df['target_NM'].unique(),
                      key=lambda x: TARGETNM2POSITION.get(x, 999))
-    for r, event in enumerate(events):
-        df_ev = df[df['event'] == event]
-        for c, predictor in enumerate(predictors):
+    layouts = {event: _subject_xlayout(df[df['event'] == event], targets)
+               for event in events}
+    col_extent = max(max(sx.values()) + 1 for sx, _, _ in layouts.values())
+    fig, axes = plt.subplots(
+        n_rows, n_cols, squeeze=False, sharex='col', sharey=True,
+        layout='constrained',
+        figsize=((0.35 * col_extent * n_cols + 1) * 0.75,
+                 (2.0 * n_rows + 1) * 1.25))
+
+    for c, event in enumerate(events):
+        subject_x, subject_target, ticks = layouts[event]
+        for r, predictor in enumerate(predictors):
             ax = axes[r, c]
-            df_p = df_ev[df_ev['predictor'] == predictor]
-            for x, target_nm in enumerate(targets):
-                _scatter_mice(ax, x, df_p[df_p['target_NM'] == target_nm],
-                              TARGETNM_COLORS.get(target_nm, 'gray'))
+            df_pe = df[(df['event'] == event) & (df['predictor'] == predictor)]
+            for subject, x in subject_x.items():
+                deltas = df_pe.loc[df_pe['subject'] == subject,
+                                   'delta_r2'].values
+                if len(deltas):
+                    _scatter_subject(
+                        ax, x, deltas,
+                        TARGETNM_COLORS.get(subject_target[subject], 'gray'))
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
-                ax.set_title(predictor)
-        axes[r, 0].set_ylabel(event, fontsize=TICKFONTSIZE)
-
-    for c in range(n_cols):
-        axes[-1, c].set_xticks(range(len(targets)))
-        axes[-1, c].set_xticklabels(targets, rotation=30, ha='right',
-                                    fontsize=TICKFONTSIZE)
+                ax.set_title(event)
+            if c == 0:
+                ax.set_ylabel(predictor, fontsize=TICKFONTSIZE)
+        axes[-1, c].set_xticks([centre for _, centre in ticks])
+        axes[-1, c].set_xticklabels([tnm for tnm, _ in ticks], rotation=30,
+                                    ha='right', fontsize=TICKFONTSIZE)
     fig.supylabel('ΔR² (per-session, in-sample)')
     fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
@@ -2783,6 +2816,7 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
                                     color=color, alpha=0.2)
 
             ax.axvline(0, color='gray', linewidth=0.5, linestyle='--')
+            ax.set_ylim(-1.5, 3)
 
             # Shaded response windows (whichever are defined in config)
             for start, end in RESPONSE_WINDOWS.values():
