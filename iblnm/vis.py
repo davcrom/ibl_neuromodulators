@@ -2453,22 +2453,23 @@ def _scatter_subject(ax, x, deltas, color):
 def plot_ols_dropone(df, title):
     """Per-session ΔR² per dropped regressor — grid of regressor × event.
 
-    Every session is one point at its per-recording ΔR² (plain, unsigned).
-    Rows are the six dropped regressors (``_PERSESSION_DROPONE_PREDICTORS``
-    order), columns the events (``_sort_events`` order). Within a panel each
-    subject occupies its own x position (sessions as translucent open dots
-    edge-colored by target-NM, one thicker target-NM-colored ``'_'`` marker at
-    the subject's median), grouped by target-NM with a gap so a target-NM's width
-    scales with its subject count (see ``_subject_xlayout``).
-    Points are colored by ``target_NM``; one x-tick per target-NM is centred on
-    its subjects. There is no across-subject aggregate. All panels share one
-    y-axis; the figure width scales with the total subject count.
+    Every session is one point. The top row is the full-model R² (column
+    ``r2``); the remaining rows are each dropped regressor's ΔR² (``delta_r2``),
+    in ``_PERSESSION_DROPONE_PREDICTORS`` order. Columns are events
+    (``_sort_events`` order). Within a panel each subject occupies its own x
+    position (sessions as translucent open dots edge-colored by target-NM, one
+    thicker target-NM-colored ``'_'`` marker at the subject's median), grouped by
+    target-NM with a gap so a target-NM's width scales with its subject count
+    (see ``_subject_xlayout``). One x-tick per target-NM is centred on its
+    subjects. There is no across-subject aggregate. All panels share one y-axis;
+    the figure width scales with the total subject count.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Long-form per-session ΔR²: ``target_NM``, ``event``, ``subject``,
-        ``predictor``, ``delta_r2`` (one row per session × dropped predictor).
+        Long-form per-session fits: ``target_NM``, ``event``, ``subject``,
+        ``predictor``, ``r2`` (full-model, identical across predictors),
+        ``delta_r2`` (one row per session × dropped predictor).
     title : str
         Figure suptitle.
 
@@ -2479,7 +2480,11 @@ def plot_ols_dropone(df, title):
     has_data = len(df) > 0
     events = _sort_events(df['event'].unique()) if has_data else []
     predictors = _PERSESSION_DROPONE_PREDICTORS
-    n_rows, n_cols = len(predictors), max(len(events), 1)
+    # Top row reads the full-model R² off one predictor (it repeats across them);
+    # each later row reads that regressor's ΔR².
+    rows = [('full model R²', 'r2', predictors[0])] + \
+           [(p, 'delta_r2', p) for p in predictors]
+    n_rows, n_cols = len(rows), max(len(events), 1)
 
     if not has_data:
         fig, _ = plt.subplots(n_rows, n_cols, squeeze=False,
@@ -2500,25 +2505,25 @@ def plot_ols_dropone(df, title):
 
     for c, event in enumerate(events):
         subject_x, subject_target, ticks = layouts[event]
-        for r, predictor in enumerate(predictors):
+        for r, (label, value_col, predictor) in enumerate(rows):
             ax = axes[r, c]
-            df_pe = df[(df['event'] == event) & (df['predictor'] == predictor)]
+            df_cell = df[(df['event'] == event) & (df['predictor'] == predictor)]
             for subject, x in subject_x.items():
-                deltas = df_pe.loc[df_pe['subject'] == subject,
-                                   'delta_r2'].values
-                if len(deltas):
+                vals = df_cell.loc[df_cell['subject'] == subject,
+                                   value_col].values
+                if len(vals):
                     _scatter_subject(
-                        ax, x, deltas,
+                        ax, x, vals,
                         TARGETNM_COLORS.get(subject_target[subject], 'gray'))
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
                 ax.set_title(event)
             if c == 0:
-                ax.set_ylabel(predictor, fontsize=TICKFONTSIZE)
+                ax.set_ylabel(label, fontsize=TICKFONTSIZE)
         axes[-1, c].set_xticks([centre for _, centre in ticks])
         axes[-1, c].set_xticklabels([tnm for tnm, _ in ticks], rotation=30,
                                     ha='right', fontsize=TICKFONTSIZE)
-    fig.supylabel('ΔR² (per-session, in-sample)')
+    fig.supylabel('R² / ΔR² (per-session, in-sample)')
     fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
