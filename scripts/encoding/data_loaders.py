@@ -13,32 +13,6 @@ from iblphotometry.pipelines import sliding_mad_pipeline, run_pipeline
 from brainbox.behavior import wheel as wheel_methods
 
 
-def find_sessions(one: ONE, django: list[str]) -> list[dict]:
-    """List Alyx sessions matching a django filter.
-
-    Args:
-        one (ONE): an open ONE connection.
-        django (list[str]): Alyx django query terms.
-
-    Returns:
-        list[dict]: matching session records.
-    """
-    return one.alyx.rest("sessions", "list", django=django)
-
-
-def eids_for_subject(sessions: list[dict], subject: str) -> list[str]:
-    """Return the eids in `sessions` belonging to one subject.
-
-    Args:
-        sessions (list[dict]): session records from `find_sessions`.
-        subject (str): subject nickname to filter by.
-
-    Returns:
-        list[str]: matching experiment ids.
-    """
-    return [session["id"] for session in sessions if session["subject"] == subject]
-
-
 def load_fluorescence(
     psl: PhotometrySessionLoader, brain_region: str, band: str = "GCaMP"
 ) -> nap.Tsd:

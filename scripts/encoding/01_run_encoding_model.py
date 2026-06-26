@@ -10,7 +10,7 @@ import pandas as pd
 from one.api import ONE
 from iblphotometry.plotters import plot_psths_from_trace
 
-from data_loaders import find_sessions, eids_for_subject, load_session_data
+from data_loaders import load_session_data
 from encoding_model import (
     make_time_grid,
     make_lags,
@@ -38,19 +38,19 @@ django = [
     "projects__name__icontains,ibl_fibrephotometry",
     "data_dataset_session_related__name__icontains,lightning",
 ]
-sessions = find_sessions(one, django)
+sessions = one.alyx.rest("sessions", "list", django=django)
 
 # %%
 # genotype and session count per subject
-for subject in sorted({session["subject"] for session in sessions}):
-    n_sessions = len(eids_for_subject(sessions, subject))
-    line = one.alyx.rest("subjects", "read", subject)["line"]
-    print(subject, line, n_sessions)
+# for subject in sorted({session["subject"] for session in sessions}):
+#     n_sessions = len(eids_for_subject(sessions, subject))
+#     line = one.alyx.rest("subjects", "read", subject)["line"]
+#     print(subject, line, n_sessions)
 
 # %% pick a subject
 subject = "ZFM-09343"
 brain_region = "SNc-l"  # TODO dataset-specific
-eids = eids_for_subject(sessions, subject)
+eids = [session["id"] for session in sessions if session["subject"] == subject]
 
 # %%
 eid = "6931684c-a721-4db8-9698-e3101d0e4a1b"
