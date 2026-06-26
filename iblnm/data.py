@@ -3187,71 +3187,86 @@ class PhotometrySessionGroup:
         self.response_features = df
         return df
 
-    def get_glm_response_features(self, event_name='stimOn_times',
-                                   weight_by_se=False, min_trials=20,
-                                   contrast_coding='log'):
-        """Build GLM coefficient features for each recording.
+    def get_glm_response_features(self, formula, event_name='stimOn_times',
+                                  weight_by_se=False, contrast_coding='log2',
+                                  min_trials=MIN_TRIALS_PERSESSION):
+        """Fit a caller-supplied response model per recording, return coefficients.
 
-        Fits a per-recording OLS model on trial-level responses and uses the
-        regression coefficients as a compact feature vector.
+        Builds the canonical trial frame (:meth:`_modeling_frame`), restricts it
+        to ``event_name``, then for each recording codes the predictors, drops
+        complete-case rows over the formula's columns, and fits ``formula``
+        through :func:`iblnm.analysis.fit_ols`.
+        The fitted coefficients (or t-statistics) become that recording's feature
+        vector. The formula is the caller's, per the layering rules; this method
+        does no ``config.LMM_FORMULAS`` lookup.
 
         Parameters
         ----------
+        formula : str
+            Wilkinson formula template with a ``{response}`` placeholder, e.g.
+            ``LMM_FORMULAS['persession']['full']``. Its coefficient names become
+            the output columns.
         event_name : str
             Event to model (default ``'stimOn_times'``).
         weight_by_se : bool
-            If True, return t-statistics (coef / SE) instead of raw
+            If True, store t-statistics (``coef / SE``) instead of raw
             coefficients.
+        contrast_coding : str
+            Coding passed to :func:`iblnm.analysis.code_predictors`.
         min_trials : int
-            Minimum valid trials per recording.
+            A recording with fewer complete-case rows for the event is skipped.
 
         Returns
         -------
         pd.DataFrame
-            (n_recordings, 7) indexed by ``(eid, target_NM, fiber_idx)``.
+            ``(n_recordings, n_coefficients)`` indexed by
+            ``(eid, target_NM, fiber_idx)``; columns are the fitted model's
+            coefficient names (intercept included). Empty when no recording is
+            scorable.
         """
-        from iblnm.analysis import fit_response_glm
+        formula = formula.format(response='response')
+        df = self._modeling_frame(response_col='response')
+        df = df[df['event'] == event_name]
+        if 'fiber_idx' not in df.columns:
+            df = df.assign(fiber_idx=0)
 
-        if self.response_magnitudes is None:
-            self.get_response_magnitudes()
+        group_keys = ['eid', 'target_NM', 'brain_region', 'fiber_idx']
+        features = {}
+        for keys, grp in df.groupby(group_keys):
+            coded = analysis.code_predictors(grp, contrast_coding)
+            coded = coded.dropna(
+                subset=analysis.formula_union_columns([formula], coded.columns))
+            if len(coded) < min_trials:
+                continue
+            fit = analysis.fit_ols(formula, coded)
+            if fit is None:
+                continue
+            features[keys] = fit.tvalues if weight_by_se else fit.params
 
-        # FIXME: this method should iterate over sessions, filter trials and select the event type,  not the underlying function
-        events = self._merge_trial_regressors()
-        events = events.query('choice != 0 and response_time > 0.05')
-
-        if len(events) == 0:
+        if not features:
             self.glm_response_features = pd.DataFrame()
-            return pd.DataFrame()
+            return self.glm_response_features
 
-        coefs, ses = fit_response_glm(events, event_name,
-                                       min_trials=min_trials,
-                                       contrast_coding=contrast_coding)
-
-        if len(coefs) == 0:
-            self.glm_response_features = coefs
-            return coefs
-
-        if weight_by_se:
-            result = coefs / ses
-        else:
-            result = coefs
-
-        # Reindex to (eid, target_NM, fiber_idx) dropping brain_region level
+        result = pd.DataFrame.from_dict(features, orient='index')
+        result.index = pd.MultiIndex.from_tuples(result.index, names=group_keys)
         result = result.droplevel('brain_region')
         self.glm_response_features = result
         return result
 
-    def pca_glm_coefficients(self, event_name='stimOn_times',
-                             contrast_coding='log', n_components=3,
-                             min_trials=20, cohort_weighted=False):
+    def pca_glm_coefficients(self, formula, event_name='stimOn_times',
+                             contrast_coding='log2', n_components=3,
+                             min_trials=MIN_TRIALS_PERSESSION,
+                             cohort_weighted=False):
         """Fit per-session GLM and run PCA on coefficients.
 
         Parameters
         ----------
+        formula : str
+            Wilkinson formula forwarded to :meth:`get_glm_response_features`.
         event_name : str
             Event to model.
         contrast_coding : str
-            Contrast transform for the GLM ('log', 'linear', 'rank').
+            Contrast transform for the GLM ('log', 'log2', 'linear', 'rank').
         n_components : int
             Number of PCs to retain.
         min_trials : int
@@ -3266,7 +3281,7 @@ class PhotometrySessionGroup:
         from iblnm.analysis import pca_glm_coefficients
 
         self.get_glm_response_features(
-            event_name=event_name, min_trials=min_trials,
+            formula, event_name=event_name, min_trials=min_trials,
             contrast_coding=contrast_coding,
         )
         if self.glm_response_features is None or len(self.glm_response_features) == 0:
@@ -3278,17 +3293,20 @@ class PhotometrySessionGroup:
         self.glm_pca_result = result
         return result
 
-    def ica_glm_coefficients(self, event_name='stimOn_times',
-                             contrast_coding='log', n_components=3,
-                             min_trials=20, cohort_weighted=False):
+    def ica_glm_coefficients(self, formula, event_name='stimOn_times',
+                             contrast_coding='log2', n_components=3,
+                             min_trials=MIN_TRIALS_PERSESSION,
+                             cohort_weighted=False):
         """Fit per-session GLM and run ICA on coefficients.
 
         Parameters
         ----------
+        formula : str
+            Wilkinson formula forwarded to :meth:`get_glm_response_features`.
         event_name : str
             Event to model.
         contrast_coding : str
-            Contrast transform for the GLM ('log', 'linear', 'rank').
+            Contrast transform for the GLM ('log', 'log2', 'linear', 'rank').
         n_components : int
             Number of independent components to extract.
         min_trials : int
@@ -3303,7 +3321,7 @@ class PhotometrySessionGroup:
         from iblnm.analysis import ica_glm_coefficients
 
         self.get_glm_response_features(
-            event_name=event_name, min_trials=min_trials,
+            formula, event_name=event_name, min_trials=min_trials,
             contrast_coding=contrast_coding,
         )
         if self.glm_response_features is None or len(self.glm_response_features) == 0:

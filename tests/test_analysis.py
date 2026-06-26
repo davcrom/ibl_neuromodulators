@@ -1470,32 +1470,8 @@ class TestCCAPermutation:
 
 
 # =============================================================================
-# fit_response_glm
+# GLM coefficient decomposition (PCA / ICA on per-recording coefficients)
 # =============================================================================
-
-
-def _make_glm_events(n=200, eid='eid1', brain_region='VTA', hemisphere='l',
-                     target_nm='VTA-DA', seed=42):
-    """Synthetic events DataFrame for GLM tests."""
-    rng = np.random.default_rng(seed)
-    contrast = rng.choice([0, 6.25, 12.5, 25, 100], n)
-    stim_side = rng.choice(['left', 'right'], n)
-    feedback_type = rng.choice([-1, 1], n)
-    log_c = contrast_transform(contrast)
-    contra_side = {'l': 'right', 'r': 'left'}[hemisphere]
-    # Deviation coding ±0.5, matching fit_response_glm
-    side = np.where(stim_side == contra_side, 0.5, -0.5)
-    reward = np.where(feedback_type == 1, 0.5, -0.5)
-    response = (2 + 0.5 * log_c + 1.0 * side + 0.3 * reward
-                + rng.normal(0, 0.5, n))
-    return pd.DataFrame({
-        'eid': eid, 'brain_region': brain_region, 'hemisphere': hemisphere,
-        'target_NM': target_nm, 'event': 'stimOn_times',
-        'contrast': contrast, 'stim_side': stim_side,
-        'signed_contrast': np.where(stim_side == 'left', -contrast, contrast),
-        'feedbackType': feedback_type, 'probabilityLeft': 0.5,
-        'response': response,
-    })
 
 
 def _make_glm_coefs(seed=42):
@@ -1704,110 +1680,6 @@ class TestIcaGlmCoefficients:
             for i in range(2)
         )
         assert max_sep > 1.0
-
-
-class TestFitResponseGLM:
-    def test_known_coefficients(self):
-        """Synthetic data with known linear relationship recovers coefficients."""
-        from iblnm.analysis import fit_response_glm
-        rng = np.random.default_rng(42)
-        n = 400
-        contrast = rng.choice([0, 6.25, 12.5, 25, 100], n)
-        stim_side = rng.choice(['left', 'right'], n)
-        # Deviation coding ±0.5, matching fit_response_glm
-        side = np.where(stim_side == 'right', 0.5, -0.5)  # hemisphere='l'
-        feedback_type = rng.choice([-1, 1], n)
-        reward = np.where(feedback_type == 1, 0.5, -0.5)
-        log_c = contrast_transform(contrast)
-        log_c_centered = log_c - log_c.mean()
-
-        # 7 known coefficients (contrast predictor is centered)
-        true_beta = np.array([2.0, 0.5, 1.0, 0.3, -0.2, 0.1, 0.4])
-        X = np.column_stack([
-            np.ones(n), log_c_centered, side, reward,
-            log_c_centered * side, log_c_centered * reward, side * reward,
-        ])
-        response = X @ true_beta + rng.normal(0, 0.1, n)
-
-        events = pd.DataFrame({
-            'eid': 'eid1', 'brain_region': 'VTA', 'hemisphere': 'l',
-            'target_NM': 'VTA-DA', 'event': 'stimOn_times',
-            'contrast': contrast, 'stim_side': stim_side,
-            'signed_contrast': np.where(stim_side == 'left', -contrast, contrast),
-            'feedbackType': feedback_type,
-            'probabilityLeft': 0.5,
-            'response': response,
-        })
-        coefs, ses = fit_response_glm(events, 'stimOn_times')
-        np.testing.assert_allclose(coefs.iloc[0].values, true_beta, atol=0.15)
-
-    def test_returns_standard_errors(self):
-        """SE values are positive and finite."""
-        from iblnm.analysis import fit_response_glm
-        events = _make_glm_events(n=200, seed=0)
-        coefs, ses = fit_response_glm(events, 'stimOn_times')
-        assert (ses.values > 0).all()
-        assert np.all(np.isfinite(ses.values))
-
-    def test_multiple_recordings(self):
-        """Two recordings produce two rows."""
-        from iblnm.analysis import fit_response_glm
-        e1 = _make_glm_events(n=200, eid='eid1', brain_region='VTA', seed=0)
-        e2 = _make_glm_events(n=200, eid='eid2', brain_region='SNc', seed=1)
-        events = pd.concat([e1, e2], ignore_index=True)
-        coefs, ses = fit_response_glm(events, 'stimOn_times')
-        assert len(coefs) == 2
-
-    def test_skips_too_few_trials(self):
-        """Recording with fewer than min_trials is excluded."""
-        from iblnm.analysis import fit_response_glm
-        events = _make_glm_events(n=10, seed=0)
-        coefs, ses = fit_response_glm(events, 'stimOn_times', min_trials=20)
-        assert len(coefs) == 0
-
-    def test_skips_nan_responses(self):
-        """Trials with NaN response are excluded; fit proceeds on remainder."""
-        from iblnm.analysis import fit_response_glm
-        events = _make_glm_events(n=100, seed=0)
-        events.loc[:29, 'response'] = np.nan
-        coefs, ses = fit_response_glm(events, 'stimOn_times', min_trials=20)
-        assert len(coefs) == 1  # fits on 70 valid trials
-
-    def test_skips_singular_design(self):
-        """Recording with rank-deficient design is skipped."""
-        from iblnm.analysis import fit_response_glm
-        events = _make_glm_events(n=100, seed=0)
-        events['contrast'] = 25  # constant
-        events['stim_side'] = 'right'  # constant
-        events['feedbackType'] = 1  # constant
-        coefs, ses = fit_response_glm(events, 'stimOn_times')
-        assert len(coefs) == 0
-
-    def test_wrong_event_raises(self):
-        """Requesting an event not in data raises ValueError."""
-        from iblnm.analysis import fit_response_glm
-        events = _make_glm_events(n=100, seed=0)
-        with pytest.raises(ValueError, match="not found"):
-            fit_response_glm(events, 'nonexistent_event')
-
-    def test_column_names(self):
-        """Output columns use 'reward' (not 'feedback') for consistency with LMM."""
-        from iblnm.analysis import fit_response_glm
-        events = _make_glm_events(n=200, seed=0)
-        coefs, ses = fit_response_glm(events, 'stimOn_times')
-        expected = ['intercept', 'contrast', 'side', 'reward',
-                    'contrast:side', 'contrast:reward',
-                    'side:reward']
-        assert list(coefs.columns) == expected
-        assert list(ses.columns) == expected
-
-    def test_filters_biased_blocks(self):
-        """Only trials with probabilityLeft == 0.5 are used."""
-        from iblnm.analysis import fit_response_glm
-        events = _make_glm_events(n=200, seed=0)
-        events.loc[:99, 'probabilityLeft'] = 0.2
-        coefs, ses = fit_response_glm(events, 'stimOn_times', min_trials=20)
-        assert len(coefs) == 1  # fits on ~100 unbiased trials
 
 
 # =============================================================================

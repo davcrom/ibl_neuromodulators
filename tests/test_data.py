@@ -3875,7 +3875,13 @@ def _make_group_with_events():
     )
     trial_regressors['movement_time'] = 0.15
     trial_regressors['response_time'] = 1.0
-    trial_regressors['peak_velocity'] = 1.0
+    # Per-trial variation so peak_velocity and log_reaction_time are not constant
+    # (constants are collinear with the intercept and make the persession design
+    # singular). Fixed seed keeps the fixture deterministic.
+    mvmt_rng = np.random.default_rng(1)
+    n_reg = len(trial_regressors)
+    trial_regressors['peak_velocity'] = mvmt_rng.uniform(0.5, 2.0, n_reg)
+    trial_regressors['reaction_time'] = mvmt_rng.uniform(0.1, 0.5, n_reg)
     response_magnitudes = df_events[[
         'eid', 'subject', 'target_NM', 'NM', 'brain_region', 'hemisphere',
         'event', 'trial', 'session_type', 'response',
@@ -4838,65 +4844,78 @@ class TestGroupFitCCA:
 
 
 class TestGetGLMResponseFeatures:
+    # Percent-unit fixture: the persession model codes contrast with log2, which
+    # requires nonzero contrasts >= 1 (see ``_make_group_for_response_lmm``).
 
-    def test_returns_dataframe(self):
-        """Returns a DataFrame with GLM coefficient columns."""
-        group = _make_group_with_events()
-        result = group.get_glm_response_features(event_name='stimOn_times')
+    @staticmethod
+    def _formula():
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']['full']
+
+    def test_returns_persession_coefficient_columns(self):
+        """Columns are the persession model's coefficient names."""
+        group = _make_group_for_response_lmm()
+        result = group.get_glm_response_features(
+            self._formula(), event_name='stimOn_times')
         assert isinstance(result, pd.DataFrame)
-        assert 'contrast' in result.columns
-        assert 'side' in result.columns
-        assert 'side:reward' in result.columns
+        for col in ('Intercept', 'contrast', 'side', 'reward', 'choice_side',
+                    'log_reaction_time', 'peak_velocity', 'contrast:side'):
+            assert col in result.columns
 
     def test_stored_as_attribute(self):
         """Result is stored as self.glm_response_features."""
-        group = _make_group_with_events()
-        group.get_glm_response_features(event_name='stimOn_times')
+        group = _make_group_for_response_lmm()
+        group.get_glm_response_features(self._formula(), event_name='stimOn_times')
         assert group.glm_response_features is not None
         assert len(group.glm_response_features) > 0
 
     def test_index_structure(self):
         """Index has (eid, target_NM, fiber_idx) levels."""
-        group = _make_group_with_events()
-        result = group.get_glm_response_features(event_name='stimOn_times')
+        group = _make_group_for_response_lmm()
+        result = group.get_glm_response_features(
+            self._formula(), event_name='stimOn_times')
         assert result.index.names == ['eid', 'target_NM', 'fiber_idx']
 
     def test_weight_by_se(self):
         """With weight_by_se=True, values are t-statistics (coef / SE)."""
-        group = _make_group_with_events()
+        group = _make_group_for_response_lmm()
         coefs = group.get_glm_response_features(
-            event_name='stimOn_times', weight_by_se=False)
-        group2 = _make_group_with_events()
+            self._formula(), event_name='stimOn_times', weight_by_se=False)
+        group2 = _make_group_for_response_lmm()
         tstats = group2.get_glm_response_features(
-            event_name='stimOn_times', weight_by_se=True)
+            self._formula(), event_name='stimOn_times', weight_by_se=True)
         assert not np.allclose(coefs.values, tstats.values)
 
     def test_one_row_per_recording(self):
-        """Each recording (eid × brain_region) produces one row."""
-        group = _make_group_with_events()
-        result = group.get_glm_response_features(event_name='stimOn_times')
-        # _make_group_with_events has 6 recordings (3 subjects × 2 targets)
+        """Each scorable recording (eid × brain_region) produces one row."""
+        group = _make_group_for_response_lmm()
+        result = group.get_glm_response_features(
+            self._formula(), event_name='stimOn_times')
+        # fixture has 6 recordings (3 subjects × 2 targets)
         assert len(result) == 6
 
-    def test_seven_coefficients(self):
-        """Output has 7 coefficient columns."""
-        group = _make_group_with_events()
-        result = group.get_glm_response_features(event_name='stimOn_times')
-        assert result.shape[1] == 7
+    def test_persession_coefficient_count(self):
+        """Output has 19 columns (6 mains + 12 interactions + intercept)."""
+        group = _make_group_for_response_lmm()
+        result = group.get_glm_response_features(
+            self._formula(), event_name='stimOn_times')
+        assert result.shape[1] == 19
 
     def test_excludes_false_start_trials(self):
         """Trials with response_time <= 0.05 must be excluded; all-fast → empty result."""
-        group = _make_group_with_events()
+        group = _make_group_for_response_lmm()
         group.trial_regressors['response_time'] = 0.01
-        result = group.get_glm_response_features(event_name='stimOn_times')
+        result = group.get_glm_response_features(
+            self._formula(), event_name='stimOn_times')
         assert len(result) == 0
 
     def test_excludes_nogo_trials(self):
         """Trials with choice == 0 must be excluded; all-nogo → empty result."""
-        group = _make_group_with_events()
+        group = _make_group_for_response_lmm()
         group.trial_regressors = group.trial_regressors.copy()
         group.trial_regressors['choice'] = 0
-        result = group.get_glm_response_features(event_name='stimOn_times')
+        result = group.get_glm_response_features(
+            self._formula(), event_name='stimOn_times')
         assert len(result) == 0
 
 
@@ -4905,8 +4924,10 @@ class TestGLMFeaturesCCA:
     def test_cca_with_glm_features(self):
         """fit_cca works with glm_response_features as X input."""
         import tempfile
-        group = _make_group_with_events()
-        group.get_glm_response_features(event_name='stimOn_times')
+        from iblnm.config import LMM_FORMULAS
+        group = _make_group_for_response_lmm()
+        group.get_glm_response_features(
+            LMM_FORMULAS['persession']['full'], event_name='stimOn_times')
         group.response_features = group.glm_response_features
         perf = _make_mock_performance(group)
         with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
