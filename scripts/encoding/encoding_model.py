@@ -562,7 +562,11 @@ def plot_prediction(fit: EncodingFit, axes: plt.Axes = None) -> plt.Axes:
 
 
 def plot_kernels(
-    fit: EncodingFit, names: list[str], lags: np.ndarray, how: str = "line"
+    fit: EncodingFit,
+    names: list[str],
+    lags: np.ndarray,
+    how: str = "line",
+    fontsize: float | str = "small",
 ) -> plt.Figure:
     """Plot the fitted lagged kernel for each named event block.
 
@@ -575,6 +579,8 @@ def plot_kernels(
         how ({"line", "matshow"}): "line" draws one line panel per kernel;
             "matshow" stacks the kernels into a single heatmap (one row per
             name). Defaults to "line".
+        fontsize (float | str): font size for labels and ticks (any matplotlib
+            size, e.g. 8 or "small"). Defaults to "small".
 
     Returns:
         plt.Figure: the kernel figure.
@@ -585,7 +591,7 @@ def plot_kernels(
 
     if how == "matshow":
         kernels = np.stack([get_kernel(fit, name) for name in names])
-        fig, axes = plt.subplots(figsize=[6, 0.35 * len(names) + 1.5])
+        fig, axes = plt.subplots(figsize=[8, 0.35 * len(names) + 1.5])
         # symmetric diverging scale centred on zero
         limit = np.abs(kernels).max()
         # extent maps columns to seconds and rows to 0..n-1 (top row first)
@@ -603,23 +609,23 @@ def plot_kernels(
         axes.xaxis.set_label_position("bottom")
         axes.axvline(0, linestyle=":", color="k", lw=1)
         axes.set_yticks(range(len(names)))
-        axes.set_yticklabels(names, fontsize="small")
-        axes.set_xlabel("time (s)")
-        axes.tick_params(labelsize="small")
+        axes.set_yticklabels(names, fontsize=fontsize)
+        axes.set_xlabel("time (s)", fontsize=fontsize)
+        axes.tick_params(labelsize=fontsize)
         colorbar = fig.colorbar(image, ax=axes)
-        colorbar.set_label("coefficient", fontsize="small")
-        colorbar.ax.tick_params(labelsize="small")
+        colorbar.set_label("coefficient", fontsize=fontsize)
+        colorbar.ax.tick_params(labelsize=fontsize)
         fig.tight_layout()
         return fig
 
     fig, axes = plt.subplots(ncols=len(names), sharey=True, figsize=[3 * len(names), 3])
     for ax, name in zip(np.atleast_1d(axes), names):
         ax.plot(lag_seconds, get_kernel(fit, name))
-        ax.set_title(name, fontsize="small")
+        ax.set_title(name, fontsize=fontsize)
         ax.axhline(0, linestyle=":", color="k", lw=1)
         ax.axvline(0, linestyle=":", color="k", lw=1)
-        ax.set_xlabel("time (s)")
-        ax.tick_params(labelsize="small")
+        ax.set_xlabel("time (s)", fontsize=fontsize)
+        ax.tick_params(labelsize=fontsize)
     fig.tight_layout()
     return fig
 

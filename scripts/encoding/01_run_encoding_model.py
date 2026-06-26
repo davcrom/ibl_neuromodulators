@@ -9,6 +9,10 @@
 import pandas as pd
 from one.api import ONE
 from iblphotometry.plotters import plot_psths_from_trace
+import seaborn as sns
+import matplotlib as mpl
+from pathlib import Path
+mpl.rcParams['figure.dpi'] = 284 # screen dpi adjustment
 
 from data_loaders import load_session_data
 from encoding_model import (
@@ -32,30 +36,18 @@ from encoding_model import (
 
 one = ONE()
 
-# %% find the photometry sessions and show subjects
-django = [
-    "users__username,laura.silva",
-    "lab__name,mainenlab",
-    "projects__name__icontains,ibl_fibrephotometry",
-    "data_dataset_session_related__name__icontains,lightning",
-]
-sessions = one.alyx.rest("sessions", "list", django=django)
+PLOT_FOLDER = Path(__file__).parent / 'plots'
+PLOT_FOLDER.mkdir(parents=True,exist_ok=True)
 
 # %%
-# genotype and session count per subject
-for subject in sorted({session["subject"] for session in sessions}):
-    eids = [session["id"] for session in sessions if session["subject"] == subject]
-    line = one.alyx.rest("subjects", "read", subject)["line"]
-    print(subject, line, len(eids))
+# eid = "6931684c-a721-4db8-9698-e3101d0e4a1b" # first session
+# label = 'early'
 
-# %% pick a subject
-subject = "ZFM-09343"
-brain_region = "SNc-l"  # TODO dataset-specific
-eids = [session["id"] for session in sessions if session["subject"] == subject]
+eid = "5e57fcd0-8743-41c8-8360-d846a4e0469d" # last session
+label = 'late'
 
-# %%
-eid = "6931684c-a721-4db8-9698-e3101d0e4a1b" # first session
-# eid = "5e57fcd0-8743-41c8-8360-d846a4e0469d" # last session
+subject = one.eid2ref(eid)['subject']
+genotype = one.alyx.rest('subjects','read', subject)['line']
 brain_region = "SNc-l"  # TODO dataset-specific
 
 # model config
@@ -97,19 +89,28 @@ fit = fit_encoding_model(design, target, slices, label=f"{subject}:{eid}")
 print(f"R^2 = {fit.r2:.3f}")
 
 # %% inspect the fit
-plot_prediction(fit)
-plot_kernels(fit, list(events), make_lags(N_LAGS), how='matshow')
+axes = plot_prediction(fit)
+axes.set_title(f"{subject}:{genotype}, R^2 = {fit.r2:.3f}")
+sns.despine(axes.figure)
+axes.set_xlim(500,600)
+axes.set_ylabel('fluorescence (mad-scored)')
+axes.figure.savefig(PLOT_FOLDER / f'{subject}-{label}_fit_model_trace_comparison.pdf', dpi=300)
 
 # %%
-import matplotlib as mpl
-mpl.rcParams['figure.dpi'] = 200
+axes = plot_kernels(fit, list(events), make_lags(N_LAGS), how='matshow', fontsize='large')
+axes.figure.savefig(PLOT_FOLDER / f'{subject}-{label}_kernels.pdf', dpi=300)
 
 # %% per-regressor contribution (leave-one-regressor-out)
 deltas = delta_r_squared(fit, cv=None)  # in-sample; pass cv=5 for cross-validated
 print(deltas)
+
 # %% plot
 deltas = deltas.loc[list(blocks.keys())[::-1]]
-plot_delta_r_squared(deltas, order_by_magnitude=False)
+axes = plot_delta_r_squared(deltas, order_by_magnitude=False)
+axes.figure.suptitle(f"{subject}:{genotype}")
+sns.despine(axes.figure)
+axes.figure.tight_layout()
+axes.figure.savefig(PLOT_FOLDER / f'{subject}-{label}_rsq_drops.pdf', dpi=300)
 
 # %% PSTH of the signal for visual inspection
 plot_psths_from_trace(pd.Series(fluorescence.d, index=fluorescence.t), trials)
