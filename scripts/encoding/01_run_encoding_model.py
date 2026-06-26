@@ -27,10 +27,12 @@ from encoding_model import (
     build_design_matrix,
     interpolate_to_grid,
     fit_encoding_model,
+    delta_r_squared,
+)
+from plotters import (
     plot_prediction,
     plot_kernels,
     plot_cosine_basis,
-    delta_r_squared,
     plot_delta_r_squared,
 )
 
@@ -39,16 +41,41 @@ one = ONE()
 PLOT_FOLDER = Path(__file__).parent / 'plots'
 PLOT_FOLDER.mkdir(parents=True,exist_ok=True)
 
-# %%
-# eid = "6931684c-a721-4db8-9698-e3101d0e4a1b" # first session
-# label = 'early'
+# %% DA
+eid = "6931684c-a721-4db8-9698-e3101d0e4a1b" # first session
+label = 'early'
 
 eid = "5e57fcd0-8743-41c8-8360-d846a4e0469d" # last session
 label = 'late'
+brain_region = "SNc-l"  # TODO dataset-specific
 
+# %% 5-HT
+eid = '5c5a5e99-d353-496c-9c84-7aa657d81e44'
+label = 'early'
+brain_region = "DRN"  # TODO dataset-specific
+print(one.eid2ref(eid)['date'])
+
+# %%
+eid = 'a3a3c3f1-78c3-4dda-ad25-59184989ed1f' # has tracking
+# eid = "234b622f-12ac-4c49-a89a-077d01df9ce3"
+
+label = 'late'
+brain_region = "DR"  # TODO dataset-specific
+print(one.eid2ref(eid)['date'])
+
+
+# %%
+from iblphotometry.fpio import PhotometrySessionLoader
+psl = PhotometrySessionLoader(one=one, eid=eid)
+psl.load_photometry()
+print(psl.photometry['GCaMP'].columns)
+from iblphotometry.plotters import plot_photometry_traces_from_eid
+plot_photometry_traces_from_eid(eid=eid, one=one)
+brain_region = "DR"
+
+# %%
 subject = one.eid2ref(eid)['subject']
 genotype = one.alyx.rest('subjects','read', subject)['line']
-brain_region = "SNc-l"  # TODO dataset-specific
 
 # model config
 DT = 0.1
@@ -69,10 +96,9 @@ continuous.update(split_pose(pose))
 tvec = make_time_grid(fluorescence.times()[0], fluorescence.times()[-1], DT)
 EVENTS = {
     "stimOn_times": 'signed_contrast',
-    # "goCue_times": None,
     "response_times": 'choice',
     "firstMovement_times": 'choice',
-    # "intervals_0": None,
+    "intervals_0": None,
     # "intervals_1": None,
     "feedback_times": "feedbackType",
 }
