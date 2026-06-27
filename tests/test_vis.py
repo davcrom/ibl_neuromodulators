@@ -2464,3 +2464,39 @@ class TestMouseOverviewBarplotHorizontal:
         for p in patches:
             assert p.get_width() >= p.get_height(), "Expected horizontal bars"
         plt.close('all')
+
+
+class TestPlotBaselinePropsig:
+
+    @staticmethod
+    def _results():
+        # DR-5HT (position 2) before VTA-DA (position 0) in input order, so
+        # input/name order differs from TARGETNM2POSITION order.
+        rows = (
+            [('DR-5HT', 0.02), ('DR-5HT', 0.9)]              # sig 0.5, nonsig 0.5
+            + [('VTA-DA', 0.01)] * 3 + [('VTA-DA', 0.5)]     # sig 0.75, nonsig 0.25
+        )
+        return pd.DataFrame(rows, columns=['target_NM', 'p_value'])
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_baseline_propsig
+        fig = plot_baseline_propsig(self._results())
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_bar_heights_match_fractions(self):
+        from iblnm.vis import plot_baseline_propsig
+        fig = plot_baseline_propsig(self._results())
+        ax = fig.axes[0]
+        heights = [p.get_height() for p in ax.patches]
+        # Position order VTA-DA, DR-5HT; each target: sig then non-sig.
+        assert heights == pytest.approx([0.75, 0.25, 0.5, 0.5])
+        plt.close(fig)
+
+    def test_xticklabels_in_position_order(self):
+        from iblnm.vis import plot_baseline_propsig
+        fig = plot_baseline_propsig(self._results())
+        ax = fig.axes[0]
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        assert labels == ['VTA-DA', 'DR-5HT']
+        plt.close(fig)
