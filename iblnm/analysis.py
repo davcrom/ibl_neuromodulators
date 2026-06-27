@@ -2091,6 +2091,63 @@ def dropone_delta_r2(r2_by_name, reference: str = 'full') -> pd.DataFrame:
     return pd.DataFrame(rows, columns=['predictor', 'r2', 'delta_r2'])
 
 
+def compute_feature_dispersion(
+    df: pd.DataFrame,
+    unit_cols: list[str],
+    session_col: str,
+    feature_col: str,
+    value_col: str,
+    standardize_by: str | None = None,
+) -> pd.DataFrame:
+    """Per-unit normalized dispersion of feature values across sessions.
+
+    Variable-agnostic: operates on long-form ``(unit, session, feature, value)``
+    rows. Each feature is first z-scored to a common scale so differently-scaled
+    features contribute equally; the dispersion is then the root-mean-square,
+    over features, of each unit's population variance across its sessions.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-form rows; one value per ``(unit, session, feature)``.
+    unit_cols : list[str]
+        Columns identifying a unit (the grouping the dispersion is computed for).
+    session_col : str
+        Column whose distinct values are the sessions a unit varies over.
+    feature_col : str
+        Column naming the feature each value belongs to.
+    value_col : str
+        Column holding the numeric values.
+    standardize_by : str or None
+        If given, z-score within each ``(standardize_by, feature_col)`` group so
+        scaling is per-cohort; if None, z-score per feature over the whole frame.
+        A feature constant within its standardization group has zero spread and
+        is mapped to z = 0 (contributing nothing), not NaN.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per unit, columns ``unit_cols + ['dispersion', 'n_sessions']``.
+        ``dispersion`` is ``sqrt(mean over features of the population variance
+        (ddof=0) of the z-scored value across the unit's sessions)``;
+        ``n_sessions`` is the unit's distinct ``session_col`` count. Z-scoring
+        uses the full frame passed in, before any downstream session-count
+        filtering.
+    """
+    group_keys = [feature_col] if standardize_by is None \
+        else [standardize_by, feature_col]
+    grouped = df.groupby(group_keys)[value_col]
+    std = grouped.transform('std', ddof=0)
+    z = (df[value_col] - grouped.transform('mean')) / std
+    z = z.where(std != 0, 0.0)
+
+    feature_var = z.groupby([df[c] for c in unit_cols + [feature_col]]).var(ddof=0)
+    dispersion = feature_var.groupby(level=unit_cols).mean().pow(0.5)
+    n_sessions = df.groupby(unit_cols)[session_col].nunique()
+    out = pd.DataFrame({'dispersion': dispersion, 'n_sessions': n_sessions})
+    return out.reset_index()[unit_cols + ['dispersion', 'n_sessions']]
+
+
 def compute_marginal_means(lmm_result, factors):
     """Estimated marginal means for a set of factors from an LMM fit.
 
