@@ -1200,6 +1200,33 @@ def fit_sparse_cca(X, Y, n_components=None, n_permutations=0,
     )
 
 
+def select_block_terms(columns, mains) -> list:
+    """Select model-term columns belonging to one category block.
+
+    A coefficient column name is a statsmodels term: a single factor (a main
+    effect, e.g. ``'contrast'``) or factors joined by ``':'`` (an interaction,
+    e.g. ``'contrast:side'``). A column belongs to the block when every one of
+    its ``':'``-split factors is in ``mains``. This keeps the block's main
+    effects and its within-block interactions while excluding the intercept and
+    any interaction that crosses into another category. Variable-agnostic: the
+    caller supplies the block's main effects.
+
+    Parameters
+    ----------
+    columns : iterable of str
+        Coefficient column (model term) names.
+    mains : iterable of str
+        The block's main-effect factor names.
+
+    Returns
+    -------
+    list of str
+        Block columns, in input order.
+    """
+    mains = set(mains)
+    return [col for col in columns if set(col.split(':')) <= mains]
+
+
 def cross_project_cca(X_z, Y_z, target_result):
     """Cross-project data through another cohort's CCA weights.
 

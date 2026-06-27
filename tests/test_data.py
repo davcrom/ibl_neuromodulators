@@ -5269,6 +5269,15 @@ class TestGroupFitCohortCCA:
         assert 'VTA-DA' in results
         assert 'DR-5HT' not in results
 
+    def test_feature_cols_subsets_neural_features(self):
+        """feature_cols restricts X to the named columns; weights index matches."""
+        feature_cols = ['contrast', 'side', 'reward',
+                        'contrast:side', 'contrast:reward']
+        group = _make_group_for_cohort_cca()
+        results = group.fit_cohort_cca(n_permutations=0, feature_cols=feature_cols)
+        for result in results.values():
+            assert list(result.x_weights.index) == feature_cols
+
 
 class TestGroupCrossProjectCCA:
 

@@ -1241,6 +1241,46 @@ class TestFitCCA:
                       & (result.y_variance_explained <= 1))
 
 
+class TestSelectBlockTerms:
+    # Full per-session persession model term names (intercept + 6 mains + 12
+    # within-/cross-category two-ways), matching get_persession_ols_features.
+    _PERSESSION_COLUMNS = [
+        'Intercept', 'contrast', 'side', 'reward', 'choice_side',
+        'log_reaction_time', 'peak_velocity',
+        'contrast:side', 'contrast:reward', 'contrast:choice_side',
+        'contrast:log_reaction_time', 'contrast:peak_velocity',
+        'side:log_reaction_time', 'side:peak_velocity',
+        'reward:log_reaction_time', 'reward:peak_velocity',
+        'choice_side:log_reaction_time', 'choice_side:peak_velocity',
+        'log_reaction_time:peak_velocity',
+    ]
+
+    def test_task_block(self):
+        from iblnm.analysis import select_block_terms
+        from iblnm.config import CCA_TASK_MAINS
+        selected = select_block_terms(self._PERSESSION_COLUMNS, CCA_TASK_MAINS)
+        assert set(selected) == {
+            'contrast', 'side', 'reward', 'contrast:side', 'contrast:reward'}
+
+    def test_movement_block(self):
+        from iblnm.analysis import select_block_terms
+        from iblnm.config import CCA_MOVEMENT_MAINS
+        selected = select_block_terms(self._PERSESSION_COLUMNS, CCA_MOVEMENT_MAINS)
+        assert set(selected) == {
+            'choice_side', 'log_reaction_time', 'peak_velocity',
+            'choice_side:log_reaction_time', 'choice_side:peak_velocity',
+            'log_reaction_time:peak_velocity'}
+
+    def test_cross_term_and_intercept_in_neither_block(self):
+        from iblnm.analysis import select_block_terms
+        from iblnm.config import CCA_TASK_MAINS, CCA_MOVEMENT_MAINS
+        task = select_block_terms(self._PERSESSION_COLUMNS, CCA_TASK_MAINS)
+        movement = select_block_terms(self._PERSESSION_COLUMNS, CCA_MOVEMENT_MAINS)
+        for col in ('contrast:peak_velocity', 'Intercept'):
+            assert col not in task
+            assert col not in movement
+
+
 class TestCCAVarianceExtracted:
 
     def test_score_equals_feature_block(self):
