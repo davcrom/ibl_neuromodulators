@@ -1,21 +1,19 @@
 """
 Task Encoding Analysis
 
-Per-session GLM encoding model decomposed via PCA/ICA across recordings, and
-per-cohort CCA between GLM-derived neural features and psychometric parameters.
+Per-cohort CCA between per-session GLM-derived neural features and psychometric
+parameters.
 
 Requires responses.py to have run first (loads pre-computed response
 magnitudes and trial timing from disk).
 
 Output:
     results/task_encoding/             — CSV data files
-    figures/task_encoding/pca/         — PCA/ICA summary figures
     figures/task_encoding/cca/scatter/ — per-cohort CCA score scatter plots
     figures/task_encoding/cca/summary/ — CCA summary figures
 
 Usage:
     python scripts/task_encoding.py
-    python scripts/task_encoding.py --ica
     python scripts/task_encoding.py --n-permutations 5000
     python scripts/task_encoding.py --events stimOn_times feedback_times
     python scripts/task_encoding.py --plot-only
@@ -35,8 +33,7 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.analysis import pca_score_stats
-from iblnm.vis import plot_glm_pca_summary, plot_cohort_cca_summary
+from iblnm.vis import plot_cohort_cca_summary
 
 plt.ion()
 
@@ -54,94 +51,6 @@ L1_RATIO_GRID = [0.0]
 def _event_label(event_name):
     """Strip '_times' suffix for display and filenames."""
     return event_name.replace('_times', '')
-
-
-# =========================================================================
-# PCA/ICA helpers
-# =========================================================================
-
-def run_decomposition(group, event, args, data_dir, fig_dir):
-    """Fit PCA or ICA on GLM coefficients and save results.
-
-    Parameters
-    ----------
-    group : PhotometrySessionGroup
-    event : str
-        Event name (e.g. 'stimOn_times').
-    args : argparse.Namespace
-        Must have: ica, contrast_coding, cohort_weighted.
-    data_dir : Path
-        Output directory for CSV files.
-    fig_dir : Path
-        Output directory for figures.
-
-    Returns
-    -------
-    GLMPCAResult or None
-    """
-    event_stem = _event_label(event)
-    decomp = 'ICA' if args.ica else 'PCA'
-    comp_label = 'IC' if args.ica else 'PC'
-
-    print(f"\n  [{event_stem}] Fitting per-session GLMs + {decomp}...")
-
-    if args.ica:
-        result = group.ica_glm_coefficients(
-            formula=LMM_FORMULAS['persession']['full'],
-            event_name=event,
-            contrast_coding=args.contrast_coding,
-            n_components=3,
-            cohort_weighted=args.cohort_weighted,
-        )
-    else:
-        result = group.pca_glm_coefficients(
-            formula=LMM_FORMULAS['persession']['full'],
-            event_name=event,
-            contrast_coding=args.contrast_coding,
-            n_components=3,
-            cohort_weighted=args.cohort_weighted,
-        )
-
-    if result is None:
-        print(f"  [{event_stem}] No valid recordings, skipping")
-        return None
-
-    n_recs = result.scores.shape[0]
-    targets = sorted(set(result.target_labels))
-    print(f"  [{event_stem}] {n_recs} recordings, {len(targets)} targets")
-    for i, pct in enumerate(result.explained_variance_ratio):
-        print(f"    {comp_label}{i+1}: {pct:.1%}")
-
-    # Statistical tests
-    stats_df = pca_score_stats(result)
-    stats_df.to_csv(
-        data_dir / f'{decomp.lower()}_stats_{event_stem}.csv', index=False)
-
-    for pc_i in range(result.scores.shape[1]):
-        kw = stats_df[(stats_df['pc'] == pc_i + 1)
-                      & stats_df['target_a'].isna()]
-        if len(kw):
-            print(f"    {comp_label}{pc_i+1} KW: "
-                  f"H={kw['kruskal_h'].iloc[0]:.2f}, "
-                  f"p={kw['kruskal_p'].iloc[0]:.4f}")
-        pw = stats_df[(stats_df['pc'] == pc_i + 1)
-                      & stats_df['target_a'].notna()
-                      & (stats_df['mwu_p'] < 0.05)]
-        for _, row in pw.iterrows():
-            print(f"      {row['target_a']} vs {row['target_b']}: "
-                  f"U={row['mwu_u']:.0f}, p={row['mwu_p']:.4f}")
-
-    # Plot
-    fig = plot_glm_pca_summary(result, group.recordings,
-                                stats=stats_df,
-                                comp_label=comp_label)
-    fig.suptitle(f'GLM coefficient {decomp} — {event_stem}', fontsize=12)
-    fig.savefig(
-        fig_dir / f'{decomp.lower()}_summary_{event_stem}.svg',
-        dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
-
-    return result
 
 
 # =========================================================================
@@ -310,14 +219,13 @@ def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
     label = _event_label(event)
     params = args.params if args.params else DEFAULT_PARAMS
 
-    # If weight_by_se, re-fit GLM with t-statistics for CCA
-    if args.weight_by_se:
-        print("  Re-fitting GLM with t-statistics for CCA...")
-        group.get_glm_response_features(
-            formula=LMM_FORMULAS['persession']['full'],
-            event_name=event, weight_by_se=True,
-            contrast_coding=args.contrast_coding,
-        )
+    # Fit per-session GLMs for this event (CCA neural view)
+    print("  Fitting per-session GLMs for CCA...")
+    group.get_glm_response_features(
+        formula=LMM_FORMULAS['persession']['full'],
+        event_name=event, weight_by_se=args.weight_by_se,
+        contrast_coding=args.contrast_coding,
+    )
 
     # Align psychometric features to GLM features
     group.response_features = group.glm_response_features
@@ -423,11 +331,6 @@ if __name__ == '__main__':
     parser.add_argument('--events', nargs='+', default=None,
                         help='events to analyze '
                         f'(default: {RESPONSE_EVENTS})')
-    # PCA/ICA
-    parser.add_argument('--cohort-weighted', action='store_true',
-                        help='weight PCA by 1/n_k so each target contributes equally')
-    parser.add_argument('--ica', action='store_true',
-                        help='use ICA instead of PCA')
     # CCA
     parser.add_argument('--n-permutations', type=int, default=1000,
                         help='CCA permutation test iterations (default: 1000)')
@@ -452,7 +355,6 @@ if __name__ == '__main__':
     data_dir.mkdir(parents=True, exist_ok=True)
 
     fig_dirs = {
-        'pca': PROJECT_ROOT / 'figures/task_encoding/pca',
         'cca_scatter': PROJECT_ROOT / 'figures/task_encoding/cca/scatter',
         'cca_summary': PROJECT_ROOT / 'figures/task_encoding/cca/summary',
     }
@@ -490,13 +392,6 @@ if __name__ == '__main__':
     # Plot-only mode
     # =====================================================================
     if args.plot_only:
-        # PCA/ICA: re-compute (fast, no permutation test)
-        decomp = 'ICA' if args.ica else 'PCA'
-        w_label = 'cohort-weighted' if args.cohort_weighted else 'unweighted'
-        print(f"\nRe-computing {decomp} ({w_label})...")
-        for event in events:
-            run_decomposition(group, event, args, data_dir, fig_dirs['pca'])
-
         # CCA: reload from saved CSVs
         print("\nReloading saved CCA results...")
         plot_cca_from_saved(
@@ -507,11 +402,9 @@ if __name__ == '__main__':
         raise SystemExit(0)
 
     # =====================================================================
-    # Full pipeline: per-event GLM + PCA/ICA + CCA
+    # Full pipeline: per-event GLM + CCA
     # =====================================================================
-    decomp = 'ICA' if args.ica else 'PCA'
-    w_label = 'cohort-weighted' if args.cohort_weighted else 'unweighted'
-    print(f"\n{decomp} ({w_label}) + CCA pipeline")
+    print("\nCCA pipeline")
 
     for event in events:
         label = _event_label(event)
@@ -519,13 +412,8 @@ if __name__ == '__main__':
         print(f"Event: {label}")
         print('=' * 60)
 
-        # --- PCA/ICA ---
-        # This internally fits the GLM via get_glm_response_features
-        run_decomposition(group, event, args, data_dir, fig_dirs['pca'])
-
         # --- CCA ---
-        # Reuses group.glm_response_features from PCA step (unless
-        # weight_by_se is set, in which case run_cca re-fits with t-stats)
+        # run_cca fits the per-session GLMs (neural view) at entry.
         run_cca(group, event, args, data_dir,
                 fig_dirs['cca_scatter'], fig_dirs['cca_summary'])
 
