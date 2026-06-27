@@ -2500,3 +2500,52 @@ class TestPlotBaselinePropsig:
         labels = [t.get_text() for t in ax.get_xticklabels()]
         assert labels == ['VTA-DA', 'DR-5HT']
         plt.close(fig)
+
+
+class TestPlotBaselineR2:
+
+    @staticmethod
+    def _results():
+        # DR-5HT (position 2) listed before VTA-DA (position 0), so input/name
+        # order differs from TARGETNM2POSITION order. Known sig/non-sig counts:
+        #   DR-5HT  -> 2 significant, 0 non-significant
+        #   VTA-DA  -> 3 significant, 1 non-significant
+        rows = (
+            [('DR-5HT', 0.01, 0.40), ('DR-5HT', 0.02, 0.45)]
+            + [('VTA-DA', 0.01, 0.50), ('VTA-DA', 0.02, 0.60),
+               ('VTA-DA', 0.03, 0.70), ('VTA-DA', 0.50, 0.10)]
+        )
+        return pd.DataFrame(rows, columns=['target_NM', 'p_value', 'observed_r2'])
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_baseline_r2
+        fig = plot_baseline_r2(self._results())
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_xticklabels_in_position_order(self):
+        from iblnm.vis import plot_baseline_r2
+        fig = plot_baseline_r2(self._results())
+        ax = fig.axes[0]
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        assert labels == ['VTA-DA', 'DR-5HT']
+        plt.close(fig)
+
+    def test_violin_body_count_matches_nonempty_subsets(self):
+        from matplotlib.collections import PolyCollection
+        from iblnm.vis import plot_baseline_r2
+        fig = plot_baseline_r2(self._results())
+        ax = fig.axes[0]
+        bodies = [c for c in ax.collections if isinstance(c, PolyCollection)]
+        # VTA-DA: sig + non-sig = 2 violins; DR-5HT: sig only = 1 violin.
+        assert len(bodies) == 3
+        plt.close(fig)
+
+    def test_n_annotations_match_counts(self):
+        from iblnm.vis import plot_baseline_r2
+        fig = plot_baseline_r2(self._results())
+        ax = fig.axes[0]
+        labels = [t.get_text() for t in ax.texts if t.get_text().startswith('n=')]
+        # Position order VTA-DA then DR-5HT; each target: sig then non-sig.
+        assert labels == ['n=3', 'n=1', 'n=2', 'n=0']
+        plt.close(fig)
