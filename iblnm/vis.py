@@ -260,6 +260,54 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
     return ax
 
 
+def plot_baseline_propsig(results: pd.DataFrame, ax=None) -> plt.Figure:
+    """Paired bars of significant vs non-significant session fractions per target.
+
+    For each ``target_NM`` group, draws two side-by-side bars: the fraction of
+    sessions with ``p_value <= 0.05`` (significant, full opacity) and the
+    fraction with ``p_value > 0.05`` (non-significant, ``alpha=0.4``). Targets
+    are ordered along x by ``TARGETNM2POSITION`` and colored by
+    ``TARGETNM_COLORS``.
+
+    Parameters
+    ----------
+    results : pandas.DataFrame
+        Per-session baseline results with ``target_NM`` and ``p_value`` columns.
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw into; a new figure/axes is created when omitted.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure containing the barplot.
+    """
+    prop_sig = results.groupby('target_NM')['p_value'].apply(lambda p: (p <= 0.05).mean())
+    prop_nonsig = results.groupby('target_NM')['p_value'].apply(lambda p: (p > 0.05).mean())
+
+    targets = sorted(
+        prop_sig.index,
+        key=lambda t: TARGETNM2POSITION.get(t, len(TARGETNM2POSITION))
+    )
+    prop_sig = prop_sig.reindex(targets)
+    prop_nonsig = prop_nonsig.reindex(targets)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+    width = 0.25
+    positions = range(len(targets))
+    for i, nm in enumerate(targets):
+        color = TARGETNM_COLORS.get(nm, 'gray')
+        ax.bar(i - width / 2, prop_sig[nm], width=width, color=color, label=nm)
+        ax.bar(i + width / 2, prop_nonsig[nm], width=width, color=color, alpha=0.4)
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels(targets, ha='right')
+    ax.set_ylabel('Fraction of sessions')
+
+    return ax.figure
+
+
 def _add_bar_labels(ax, positions, values, hemisphere_counts=None, color='white',
                     horizontal=False):
     """Add text labels to bars with optional L/R breakdown."""
