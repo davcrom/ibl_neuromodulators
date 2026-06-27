@@ -221,14 +221,14 @@ def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
 
     # Fit per-session GLMs for this event (CCA neural view)
     print("  Fitting per-session GLMs for CCA...")
-    group.get_glm_response_features(
+    group.get_persession_ols_features(
         formula=LMM_FORMULAS['persession']['full'],
         event_name=event, weight_by_se=args.weight_by_se,
         contrast_coding=args.contrast_coding,
     )
 
     # Align psychometric features to GLM features
-    group.response_features = group.glm_response_features
+    group.response_features = group.persession_ols_features
     group.get_psychometric_features(params=params)
     n_valid = group.psychometric_features.notna().all(axis=1).sum()
     print(f"  {n_valid}/{len(group.psychometric_features)} recordings "

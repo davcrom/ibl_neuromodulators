@@ -1948,7 +1948,7 @@ class PhotometrySessionGroup:
         self.psychometric_features = None
         self.similarity_matrix = None
         self.decoder = None
-        self.glm_response_features = None
+        self.persession_ols_features = None
         self.cca_result = None
         self.cohort_cca_results = None
         self.cohort_cca_data = None
@@ -3187,7 +3187,7 @@ class PhotometrySessionGroup:
         self.response_features = df
         return df
 
-    def get_glm_response_features(self, formula, event_name='stimOn_times',
+    def get_persession_ols_features(self, formula, event_name='stimOn_times',
                                   weight_by_se=False, contrast_coding='log2',
                                   min_trials=MIN_TRIALS_PERSESSION):
         """Fit a caller-supplied response model per recording, return coefficients.
@@ -3244,13 +3244,13 @@ class PhotometrySessionGroup:
             features[keys] = fit.tvalues if weight_by_se else fit.params
 
         if not features:
-            self.glm_response_features = pd.DataFrame()
-            return self.glm_response_features
+            self.persession_ols_features = pd.DataFrame()
+            return self.persession_ols_features
 
         result = pd.DataFrame.from_dict(features, orient='index')
         result.index = pd.MultiIndex.from_tuples(result.index, names=group_keys)
         result = result.droplevel('brain_region')
-        self.glm_response_features = result
+        self.persession_ols_features = result
         return result
 
     def response_similarity_matrix(self, **kwargs):
@@ -3514,12 +3514,12 @@ class PhotometrySessionGroup:
         if sparse:
             from iblnm.analysis import fit_sparse_cca
 
-        if self.glm_response_features is None:
-            raise ValueError("glm_response_features is None")
+        if self.persession_ols_features is None:
+            raise ValueError("persession_ols_features is None")
         if self.psychometric_features is None:
             raise ValueError("psychometric_features is None")
 
-        X = self.glm_response_features.copy()
+        X = self.persession_ols_features.copy()
         Y = self.psychometric_features.copy()
 
         if exclude_intercept and 'intercept' in X.columns:
