@@ -29,8 +29,9 @@ from iblnm.config import (
     RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH, TASK_ENCODING_DIR,
     RESPONSE_EVENTS, FIGURE_DPI, TARGETNM_COLORS,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
-    LMM_FORMULAS,
+    LMM_FORMULAS, CCA_TASK_MAINS, CCA_MOVEMENT_MAINS,
 )
+from iblnm.analysis import select_block_terms
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.vis import plot_cohort_cca_summary
@@ -43,6 +44,12 @@ DEFAULT_PARAMS = [
     'psych_50_lapse_left', 'psych_50_lapse_right',
 ]
 
+# Neural-feature blocks for the two-block CCA: each block's main effects select
+# its coefficient columns (mains + within-block interactions) via
+# select_block_terms. Cross-category interactions and the intercept stay in the
+# fitted features but are excluded from every block.
+CCA_BLOCK_MAINS = {'task': CCA_TASK_MAINS, 'movement': CCA_MOVEMENT_MAINS}
+
 # Grid search defaults for sparse CCA
 ALPHA_GRID = [1e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
 L1_RATIO_GRID = [0.0]
@@ -51,6 +58,25 @@ L1_RATIO_GRID = [0.0]
 def _event_label(event_name):
     """Strip '_times' suffix for display and filenames."""
     return event_name.replace('_times', '')
+
+
+def _block_label(event_name, block):
+    """Combine event and CCA block into one output label.
+
+    Parameters
+    ----------
+    event_name : str
+        Event name with the ``_times`` suffix (e.g. ``'stimOn_times'``).
+    block : str
+        Block tag, ``'task'`` or ``'movement'``.
+
+    Returns
+    -------
+    str
+        ``'{event_stem}_{block}'`` (e.g. ``'stimOn_task'``), used to tag the
+        per-event, per-block CCA CSVs and figures.
+    """
+    return f'{_event_label(event_name)}_{block}'
 
 
 # =========================================================================
@@ -198,8 +224,90 @@ def load_cca_results(data_dir, label):
     return results, cp, ws
 
 
+def _plot_cca_figures(results, cp, ws, label, scatter_dir, summary_dir):
+    """Write per-cohort scatter SVGs and the cohort summary SVG for one label.
+
+    Parameters
+    ----------
+    results : dict[str, CCAResult]
+        Per-cohort CCA fits.
+    cp : pd.DataFrame
+        Cross-projection correlations.
+    ws : pd.DataFrame
+        Weight cosine similarities.
+    label : str
+        Output label (``'{event}_{block}'``) used in figure filenames/titles.
+    scatter_dir, summary_dir : Path
+        Output directories for scatter and summary figures.
+    """
+    for tnm, r in sorted(results.items()):
+        fig = plot_cohort_scatter(r, tnm, label)
+        fname = f'{label}_{tnm.replace("-", "_")}.svg'
+        fig.savefig(scatter_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
+
+    fig = plot_cohort_cca_summary(results, cp, ws)
+    fig.suptitle(f'CCA summary — {label}', fontsize=14, y=1.02)
+    fig.savefig(summary_dir / f'{label}_summary.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _run_cca_block(group, event, block, feature_cols, cca_kwargs,
+                   data_dir, scatter_dir, summary_dir):
+    """Fit, cross-project, compare, and save per-cohort CCA for one block.
+
+    The neural view is subset to ``feature_cols`` (one category block); the
+    behavioral view and ``cca_kwargs`` are shared across blocks. ``cross_project``
+    and ``compare_weights`` read the cohort results populated by the immediately
+    preceding ``fit_cohort_cca``, so they belong inside this per-block call. All
+    outputs are tagged ``_block_label(event, block)``.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+    event : str
+        Event name (e.g. ``'stimOn_times'``).
+    block : str
+        Block tag (``'task'`` or ``'movement'``).
+    feature_cols : list[str]
+        Neural-feature columns for this block.
+    cca_kwargs : dict
+        Keyword arguments forwarded to ``fit_cohort_cca`` (shared across blocks).
+    data_dir, scatter_dir, summary_dir : Path
+        Output directories for CSVs, scatter figures, and summary figures.
+    """
+    label = _block_label(event, block)
+    print(f"\n  [{label}] Fitting per-cohort CCA on {len(feature_cols)} "
+          "neural features...")
+    results = group.fit_cohort_cca(feature_cols=feature_cols, **cca_kwargs)
+
+    print(f"  Fitted {len(results)} cohorts:")
+    for tnm, r in sorted(results.items()):
+        alpha_str = (f', a={r.alpha:.4f} (l1={r.l1_ratio})'
+                     if r.alpha is not None else '')
+        p = r.p_values[0] if r.p_values is not None else np.nan
+        sig = '*' if p < 0.05 else ''
+        print(f"    {tnm}: r = {r.correlations[0]:.4f}, "
+              f"p = {p:.4f}, n = {r.n_recordings}{alpha_str} {sig}")
+
+    cp = group.cross_project_cca()
+    ws = group.compare_cca_weights()
+
+    save_cca_results(results, data_dir, label)
+    cp.to_csv(data_dir / f'{label}_cross_projections.csv', index=False)
+    ws.to_csv(data_dir / f'{label}_weight_similarities.csv', index=False)
+
+    _plot_cca_figures(results, cp, ws, label, scatter_dir, summary_dir)
+
+
 def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
-    """Fit per-cohort CCA and save results.
+    """Fit the two-block per-cohort CCA for one event and save results.
+
+    Fits the per-session OLS neural features and the shared psychometric
+    (behavioral) features once, then runs CCA twice — once per neural-feature
+    block in ``CCA_BLOCK_MAINS`` (task, movement) — writing block-labelled CSVs
+    and figures.
 
     Parameters
     ----------
@@ -216,28 +324,23 @@ def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
     summary_dir : Path
         Output directory for summary figures.
     """
-    label = _event_label(event)
     params = args.params if args.params else DEFAULT_PARAMS
 
-    # Fit per-session GLMs for this event (CCA neural view)
-    print("  Fitting per-session GLMs for CCA...")
+    # Fit per-session OLS for this event (CCA neural view), shared across blocks
+    print("  Fitting per-session OLS for CCA neural features...")
     group.get_persession_ols_features(
         formula=LMM_FORMULAS['persession']['full'],
         event_name=event, weight_by_se=args.weight_by_se,
         contrast_coding=args.contrast_coding,
     )
 
-    # Align psychometric features to GLM features
+    # Align psychometric (behavioral) features to the neural features
     group.response_features = group.persession_ols_features
     group.get_psychometric_features(params=params)
     n_valid = group.psychometric_features.notna().all(axis=1).sum()
     print(f"  {n_valid}/{len(group.psychometric_features)} recordings "
           "with complete psychometric data")
 
-    # Fit per-cohort CCA
-    cca_type = 'sparse CCA' if args.sparse else 'CCA'
-    print(f"  Fitting per-cohort {cca_type} "
-          f"({args.n_permutations} permutations)...")
     cca_kwargs = dict(
         n_permutations=args.n_permutations,
         seed=args.seed,
@@ -247,69 +350,23 @@ def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
         cca_kwargs['alpha'] = ALPHA_GRID
         cca_kwargs['l1_ratio'] = L1_RATIO_GRID
         cca_kwargs['unit_norm'] = args.unit_norm
-    results = group.fit_cohort_cca(**cca_kwargs)
 
-    print(f"\n  Fitted {len(results)} cohorts:")
-    for tnm, r in sorted(results.items()):
-        alpha_str = (f', a={r.alpha:.4f} (l1={r.l1_ratio})'
-                     if r.alpha is not None else '')
-        p = r.p_values[0] if r.p_values is not None else np.nan
-        sig = '*' if p < 0.05 else ''
-        print(f"    {tnm}: r = {r.correlations[0]:.4f}, "
-              f"p = {p:.4f}, n = {r.n_recordings}{alpha_str} {sig}")
-
-    # Cross-projection and weight comparison
-    print("\n  Cross-projecting...")
-    cp = group.cross_project_cca()
-    print(cp.to_string(index=False))
-
-    print("\n  Weight cosine similarities...")
-    ws = group.compare_cca_weights()
-    print(ws.to_string(index=False))
-
-    # Save CSVs
-    save_cca_results(results, data_dir, label)
-    cp.to_csv(data_dir / f'{label}_cross_projections.csv', index=False)
-    ws.to_csv(data_dir / f'{label}_weight_similarities.csv', index=False)
-
-    # Scatter plots
-    print("\n  Generating per-cohort scatter plots...")
-    for tnm, r in sorted(results.items()):
-        fig = plot_cohort_scatter(r, tnm, label)
-        fname = f'{label}_{tnm.replace("-", "_")}.svg'
-        fig.savefig(scatter_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
-
-    # Summary figure
-    print("  Generating summary figure...")
-    fig = plot_cohort_cca_summary(results, cp, ws)
-    fig.suptitle(f'CCA summary — {label}', fontsize=14, y=1.02)
-    fig.savefig(summary_dir / f'{label}_summary.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
+    columns = group.persession_ols_features.columns
+    for block, mains in CCA_BLOCK_MAINS.items():
+        feature_cols = select_block_terms(columns, mains)
+        _run_cca_block(group, event, block, feature_cols, cca_kwargs,
+                       data_dir, scatter_dir, summary_dir)
 
 
 def plot_cca_from_saved(data_dir, events, scatter_dir, summary_dir):
-    """Reload saved CCA results and regenerate figures."""
+    """Reload saved per-event, per-block CCA results and regenerate figures."""
     for event in events:
-        label = _event_label(event)
-        print(f"\n  [{label}] Loading saved CCA results...")
-
-        results, cp, ws = load_cca_results(data_dir, label)
-        print(f"  Loaded {len(results)} cohorts")
-
-        for tnm, r in sorted(results.items()):
-            fig = plot_cohort_scatter(r, tnm, label)
-            fname = f'{label}_{tnm.replace("-", "_")}.svg'
-            fig.savefig(scatter_dir / fname,
-                        dpi=FIGURE_DPI, bbox_inches='tight')
-            plt.close(fig)
-
-        fig = plot_cohort_cca_summary(results, cp, ws)
-        fig.suptitle(f'CCA summary — {label}', fontsize=14, y=1.02)
-        fig.savefig(summary_dir / f'{label}_summary.svg',
-                    dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
+        for block in CCA_BLOCK_MAINS:
+            label = _block_label(event, block)
+            print(f"\n  [{label}] Loading saved CCA results...")
+            results, cp, ws = load_cca_results(data_dir, label)
+            print(f"  Loaded {len(results)} cohorts")
+            _plot_cca_figures(results, cp, ws, label, scatter_dir, summary_dir)
 
 
 # =========================================================================
