@@ -3483,7 +3483,7 @@ class PhotometrySessionGroup:
     def fit_cohort_cca(self, n_permutations=1000, seed=42,
                        min_recordings=10, exclude_intercept=True,
                        sparse=False, alpha=0.01, l1_ratio=0.0,
-                       unit_norm=True):
+                       unit_norm=True, feature_cols=None):
         """Fit CCA separately per target-NM cohort.
 
         Parameters
@@ -3504,6 +3504,11 @@ class PhotometrySessionGroup:
         l1_ratio : float or list[float]
             L1/L2 mixing ratio for sparse CCA. When a list,
             grid-searched. Ignored when ``sparse=False``.
+        feature_cols : list[str], optional
+            Neural-feature columns to fit on. When given, ``X`` is subset to
+            these columns after the intercept drop and index alignment (e.g. a
+            single category block from :func:`iblnm.analysis.select_block_terms`).
+            Default None fits on all columns.
 
         Returns
         -------
@@ -3529,6 +3534,9 @@ class PhotometrySessionGroup:
         shared = X.index.intersection(Y.index)
         X = X.loc[shared]
         Y = Y.loc[shared]
+
+        if feature_cols is not None:
+            X = X[feature_cols]
 
         # Group by target_NM
         target_nms = X.index.get_level_values('target_NM')

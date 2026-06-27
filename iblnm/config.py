@@ -611,6 +611,12 @@ LMM_FORMULAS = {
 MIN_TRIALS_PERSESSION = 50
 MIN_RECORDINGS_PERMOUSE = 3
 
+# CCA neural-feature blocks: the main effects defining the task and movement
+# categories. select_block_terms uses these to pick each block's coefficient
+# columns (mains plus within-block interactions) from the persession model.
+CCA_TASK_MAINS = ['contrast', 'side', 'reward']
+CCA_MOVEMENT_MAINS = ['choice_side', 'log_reaction_time', 'peak_velocity']
+
 
 # Plotting parameters
 FIGURE_DPI = 150
