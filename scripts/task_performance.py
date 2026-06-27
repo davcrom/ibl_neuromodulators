@@ -43,7 +43,7 @@ if __name__ == '__main__':
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
     group.filter_sessions(
-        session_types=SESSION_TYPES_TO_ANALYZE,
+        session_types=('biased', 'ephys'),
         qc_blockers=ANALYSIS_QC_BLOCKERS,
         targetnms=TARGETNMS_TO_ANALYZE,
     )
