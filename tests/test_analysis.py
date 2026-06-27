@@ -2714,3 +2714,92 @@ class TestDroponeDeltaR2:
               'x2': fit_ols('y ~ x1', df).rsquared}
         out = dropone_delta_r2(r2)
         assert (out['delta_r2'] >= 0).all()
+
+
+class TestComputeFeatureDispersion:
+    def test_identical_across_sessions_gives_zero(self):
+        """A unit whose feature value is identical across its sessions has zero
+        within-unit variance, so its dispersion is 0 even when other units in the
+        cohort vary (and thus give the feature a nonzero z-score scale)."""
+        from iblnm.analysis import compute_feature_dispersion
+        df = pd.DataFrame({
+            'unit': ['U1', 'U1', 'U1', 'U2', 'U2', 'U2'],
+            'eid': ['s1', 's2', 's3', 's1', 's2', 's3'],
+            'feat': ['f1'] * 6,
+            'val': [5.0, 5.0, 5.0, 1.0, 2.0, 9.0],
+        })
+        out = compute_feature_dispersion(
+            df, ['unit'], 'eid', 'feat', 'val').set_index('unit')
+        assert out.loc['U1', 'dispersion'] == pytest.approx(0.0)
+
+    def test_combines_features_as_rms_of_within_unit_variance(self):
+        """With two features z-scored to a common scale, a unit's dispersion is
+        the sqrt of the mean of its per-feature within-unit variances. Here f1 is
+        globally unit-variance (z == raw); f2 has global pop var 2 (z == raw/√2).
+        U1's z-variance is 1 on f1 and 2 on f2, so dispersion == sqrt(1.5)."""
+        from iblnm.analysis import compute_feature_dispersion
+        df = pd.DataFrame({
+            'unit': ['U1', 'U1', 'U2', 'U2', 'U1', 'U1', 'U2', 'U2'],
+            'eid': ['s1', 's2', 's1', 's2', 's1', 's2', 's1', 's2'],
+            'feat': ['f1', 'f1', 'f1', 'f1', 'f2', 'f2', 'f2', 'f2'],
+            'val': [1.0, -1.0, 1.0, -1.0, 2.0, -2.0, 0.0, 0.0],
+        })
+        out = compute_feature_dispersion(
+            df, ['unit'], 'eid', 'feat', 'val').set_index('unit')
+        assert out.loc['U1', 'dispersion'] == pytest.approx(np.sqrt(1.5))
+
+    def test_standardize_by_scales_per_group(self):
+        """With ``standardize_by``, each group's feature is z-scored on its own
+        scale. Two units with the same shape but different magnitudes (group A
+        spread ±1, group B spread ±10) are equalized to dispersion 1 each;
+        without ``standardize_by`` the shared global scale leaves them unequal."""
+        from iblnm.analysis import compute_feature_dispersion
+        df = pd.DataFrame({
+            'unit': ['A', 'A', 'B', 'B'],
+            'grp': ['A', 'A', 'B', 'B'],
+            'eid': ['s1', 's2', 's1', 's2'],
+            'feat': ['f1'] * 4,
+            'val': [-1.0, 1.0, -10.0, 10.0],
+        })
+        per_group = compute_feature_dispersion(
+            df, ['unit'], 'eid', 'feat', 'val',
+            standardize_by='grp').set_index('unit')
+        assert per_group.loc['A', 'dispersion'] == pytest.approx(1.0)
+        assert per_group.loc['B', 'dispersion'] == pytest.approx(1.0)
+        global_z = compute_feature_dispersion(
+            df, ['unit'], 'eid', 'feat', 'val').set_index('unit')
+        assert global_z.loc['A', 'dispersion'] < global_z.loc['B', 'dispersion']
+
+    def test_constant_within_group_contributes_zero_not_nan(self):
+        """A feature constant within its standardization group has zero spread,
+        so per-group z-scoring would divide by zero; it maps to z = 0, giving the
+        unit a finite dispersion of 0 rather than NaN."""
+        from iblnm.analysis import compute_feature_dispersion
+        df = pd.DataFrame({
+            'unit': ['A', 'A', 'A', 'B', 'B', 'B'],
+            'grp': ['A', 'A', 'A', 'B', 'B', 'B'],
+            'eid': ['s1', 's2', 's3', 's1', 's2', 's3'],
+            'feat': ['f1'] * 6,
+            'val': [7.0, 7.0, 7.0, 1.0, 2.0, 3.0],
+        })
+        out = compute_feature_dispersion(
+            df, ['unit'], 'eid', 'feat', 'val',
+            standardize_by='grp').set_index('unit')
+        assert out.loc['A', 'dispersion'] == pytest.approx(0.0)
+        assert np.isfinite(out.loc['A', 'dispersion'])
+
+    def test_n_sessions_counts_distinct_sessions_per_unit(self):
+        """n_sessions is the number of distinct sessions a unit spans, counted
+        once per session regardless of how many feature rows reference it."""
+        from iblnm.analysis import compute_feature_dispersion
+        df = pd.DataFrame({
+            'unit': ['U1'] * 6 + ['U2'] * 4,
+            'eid': ['s1', 's2', 's3', 's1', 's2', 's3', 's1', 's2', 's1', 's2'],
+            'feat': ['f1', 'f1', 'f1', 'f2', 'f2', 'f2',
+                     'f1', 'f1', 'f2', 'f2'],
+            'val': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0],
+        })
+        out = compute_feature_dispersion(
+            df, ['unit'], 'eid', 'feat', 'val').set_index('unit')
+        assert out.loc['U1', 'n_sessions'] == 3
+        assert out.loc['U2', 'n_sessions'] == 2
