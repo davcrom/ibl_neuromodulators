@@ -308,6 +308,71 @@ def plot_baseline_propsig(results: pd.DataFrame, ax=None) -> plt.Figure:
     return ax.figure
 
 
+def _color_violin(parts, color, sig: bool) -> None:
+    """Style violin bodies: significant filled, non-significant unfilled outline."""
+    for body in parts['bodies']:
+        body.set_facecolor(color if sig else 'none')
+        body.set_edgecolor(color)
+        body.set_alpha(0.7 if sig else 1.0)
+    for key in ('cbars', 'cmins', 'cmaxes'):
+        if key in parts:
+            parts[key].set_edgecolor(color)
+
+
+def plot_baseline_r2(results: pd.DataFrame, ax=None) -> plt.Figure:
+    """Violins of observed R² per target, split by significance.
+
+    For each ``target_NM`` group, draws a violin of ``observed_r2`` for the
+    significant sessions (``p_value <= 0.05``, filled, ``alpha=0.7``) offset left
+    of the target position and one for the non-significant sessions
+    (``p_value > 0.05``, unfilled outline) offset right. Empty subsets are
+    skipped. Each violin is annotated with its ``n`` above the axis. Targets are
+    ordered along x by ``TARGETNM2POSITION`` and colored by ``TARGETNM_COLORS``.
+
+    Parameters
+    ----------
+    results : pandas.DataFrame
+        Per-session baseline results with ``target_NM``, ``p_value``, and
+        ``observed_r2`` columns.
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw into; a new figure/axes is created when omitted.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure containing the violin plot.
+    """
+    targets = sorted(
+        results['target_NM'].dropna().unique(),
+        key=lambda t: TARGETNM2POSITION.get(t, len(TARGETNM2POSITION))
+    )
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+    for i, target in enumerate(targets):
+        group = results[results['target_NM'] == target]
+        color = TARGETNM_COLORS.get(target, 'gray')
+        sig = group[group['p_value'] <= 0.05]['observed_r2'].dropna().values
+        non_sig = group[group['p_value'] > 0.05]['observed_r2'].dropna().values
+
+        if len(sig) > 0:
+            parts = ax.violinplot(sig, positions=[i - 0.2], widths=0.35, bw_method=0.2)
+            _color_violin(parts, color, sig=True)
+        if len(non_sig) > 0:
+            parts = ax.violinplot(non_sig, positions=[i + 0.2], widths=0.35, bw_method=0.2)
+            _color_violin(parts, color, sig=False)
+
+        ax.text(i - 0.2, ax.get_ylim()[1], f'n={len(sig)}', ha='center', va='bottom', fontsize=10)
+        ax.text(i + 0.2, ax.get_ylim()[1], f'n={len(non_sig)}', ha='center', va='bottom', fontsize=10)
+
+    ax.set_xticks(range(len(targets)))
+    ax.set_xticklabels(targets)
+    ax.set_ylabel('Observed R²')
+
+    return ax.figure
+
+
 def _add_bar_labels(ax, positions, values, hemisphere_counts=None, color='white',
                     horizontal=False):
     """Add text labels to bars with optional L/R breakdown."""
