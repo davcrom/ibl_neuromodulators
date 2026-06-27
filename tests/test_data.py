@@ -4855,7 +4855,7 @@ class TestGetGLMResponseFeatures:
     def test_returns_persession_coefficient_columns(self):
         """Columns are the persession model's coefficient names."""
         group = _make_group_for_response_lmm()
-        result = group.get_glm_response_features(
+        result = group.get_persession_ols_features(
             self._formula(), event_name='stimOn_times')
         assert isinstance(result, pd.DataFrame)
         for col in ('Intercept', 'contrast', 'side', 'reward', 'choice_side',
@@ -4863,33 +4863,33 @@ class TestGetGLMResponseFeatures:
             assert col in result.columns
 
     def test_stored_as_attribute(self):
-        """Result is stored as self.glm_response_features."""
+        """Result is stored as self.persession_ols_features."""
         group = _make_group_for_response_lmm()
-        group.get_glm_response_features(self._formula(), event_name='stimOn_times')
-        assert group.glm_response_features is not None
-        assert len(group.glm_response_features) > 0
+        group.get_persession_ols_features(self._formula(), event_name='stimOn_times')
+        assert group.persession_ols_features is not None
+        assert len(group.persession_ols_features) > 0
 
     def test_index_structure(self):
         """Index has (eid, target_NM, fiber_idx) levels."""
         group = _make_group_for_response_lmm()
-        result = group.get_glm_response_features(
+        result = group.get_persession_ols_features(
             self._formula(), event_name='stimOn_times')
         assert result.index.names == ['eid', 'target_NM', 'fiber_idx']
 
     def test_weight_by_se(self):
         """With weight_by_se=True, values are t-statistics (coef / SE)."""
         group = _make_group_for_response_lmm()
-        coefs = group.get_glm_response_features(
+        coefs = group.get_persession_ols_features(
             self._formula(), event_name='stimOn_times', weight_by_se=False)
         group2 = _make_group_for_response_lmm()
-        tstats = group2.get_glm_response_features(
+        tstats = group2.get_persession_ols_features(
             self._formula(), event_name='stimOn_times', weight_by_se=True)
         assert not np.allclose(coefs.values, tstats.values)
 
     def test_one_row_per_recording(self):
         """Each scorable recording (eid × brain_region) produces one row."""
         group = _make_group_for_response_lmm()
-        result = group.get_glm_response_features(
+        result = group.get_persession_ols_features(
             self._formula(), event_name='stimOn_times')
         # fixture has 6 recordings (3 subjects × 2 targets)
         assert len(result) == 6
@@ -4897,7 +4897,7 @@ class TestGetGLMResponseFeatures:
     def test_persession_coefficient_count(self):
         """Output has 19 columns (6 mains + 12 interactions + intercept)."""
         group = _make_group_for_response_lmm()
-        result = group.get_glm_response_features(
+        result = group.get_persession_ols_features(
             self._formula(), event_name='stimOn_times')
         assert result.shape[1] == 19
 
@@ -4905,7 +4905,7 @@ class TestGetGLMResponseFeatures:
         """Trials with response_time <= 0.05 must be excluded; all-fast → empty result."""
         group = _make_group_for_response_lmm()
         group.trial_regressors['response_time'] = 0.01
-        result = group.get_glm_response_features(
+        result = group.get_persession_ols_features(
             self._formula(), event_name='stimOn_times')
         assert len(result) == 0
 
@@ -4914,7 +4914,7 @@ class TestGetGLMResponseFeatures:
         group = _make_group_for_response_lmm()
         group.trial_regressors = group.trial_regressors.copy()
         group.trial_regressors['choice'] = 0
-        result = group.get_glm_response_features(
+        result = group.get_persession_ols_features(
             self._formula(), event_name='stimOn_times')
         assert len(result) == 0
 
@@ -4922,13 +4922,13 @@ class TestGetGLMResponseFeatures:
 class TestGLMFeaturesCCA:
 
     def test_cca_with_glm_features(self):
-        """fit_cca works with glm_response_features as X input."""
+        """fit_cca works with persession_ols_features as X input."""
         import tempfile
         from iblnm.config import LMM_FORMULAS
         group = _make_group_for_response_lmm()
-        group.get_glm_response_features(
+        group.get_persession_ols_features(
             LMM_FORMULAS['persession']['full'], event_name='stimOn_times')
-        group.response_features = group.glm_response_features
+        group.response_features = group.persession_ols_features
         perf = _make_mock_performance(group)
         with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
             perf.to_parquet(f.name)
@@ -5223,7 +5223,7 @@ def _make_group_for_cohort_cca(n_per_cohort=None, seed=42):
 
     glm_index = pd.MultiIndex.from_tuples(
         glm_rows.keys(), names=['eid', 'target_NM', 'fiber_idx'])
-    group.glm_response_features = pd.DataFrame(
+    group.persession_ols_features = pd.DataFrame(
         list(glm_rows.values()), index=glm_index, columns=glm_cols)
 
     psych_index = pd.MultiIndex.from_tuples(
