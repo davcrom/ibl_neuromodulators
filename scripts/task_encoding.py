@@ -31,6 +31,7 @@ from iblnm.config import (
     RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH, TASK_ENCODING_DIR,
     RESPONSE_EVENTS, FIGURE_DPI, TARGETNM_COLORS,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
+    LMM_FORMULAS,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -86,6 +87,7 @@ def run_decomposition(group, event, args, data_dir, fig_dir):
 
     if args.ica:
         result = group.ica_glm_coefficients(
+            formula=LMM_FORMULAS['persession']['full'],
             event_name=event,
             contrast_coding=args.contrast_coding,
             n_components=3,
@@ -93,6 +95,7 @@ def run_decomposition(group, event, args, data_dir, fig_dir):
         )
     else:
         result = group.pca_glm_coefficients(
+            formula=LMM_FORMULAS['persession']['full'],
             event_name=event,
             contrast_coding=args.contrast_coding,
             n_components=3,
@@ -311,6 +314,7 @@ def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
     if args.weight_by_se:
         print("  Re-fitting GLM with t-statistics for CCA...")
         group.get_glm_response_features(
+            formula=LMM_FORMULAS['persession']['full'],
             event_name=event, weight_by_se=True,
             contrast_coding=args.contrast_coding,
         )
@@ -412,9 +416,10 @@ if __name__ == '__main__':
     # Shared
     parser.add_argument('--plot-only', action='store_true',
                         help='skip fitting; regenerate figures from saved data')
-    parser.add_argument('--contrast-coding', choices=['log', 'linear', 'rank'],
-                        default='rank',
-                        help='contrast transform for GLM (default: rank)')
+    parser.add_argument('--contrast-coding',
+                        choices=['log', 'log2', 'linear', 'rank'],
+                        default='log2',
+                        help='contrast transform for GLM (default: log2)')
     parser.add_argument('--events', nargs='+', default=None,
                         help='events to analyze '
                         f'(default: {RESPONSE_EVENTS})')
