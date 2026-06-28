@@ -2703,3 +2703,35 @@ class TestLagExpand:
         out = lag_expand(reg, np.array([2]))
         # impulse shifted past the end is zero-filled away
         assert out.sum() == 0.0
+
+
+class TestRaisedCosineBasis:
+    def test_shape_and_nonnegative(self):
+        from iblnm.analysis import raised_cosine_basis
+        n_basis, duration, dt = 5, 1.0, 0.1
+        basis = raised_cosine_basis(n_basis, duration, 0.05, dt)
+        assert basis.shape == (int(np.ceil(duration / dt)), n_basis)
+        assert (basis >= 0).all()
+
+    def test_nonpositive_offset_raises(self):
+        from iblnm.analysis import raised_cosine_basis
+        with pytest.raises(ValueError):
+            raised_cosine_basis(5, 1.0, 0.0, 0.1)
+
+
+class TestRaisedCosineExpand:
+    def test_single_impulse_superposes_to_basis(self):
+        from iblnm.analysis import raised_cosine_basis, raised_cosine_expand
+        n_basis, duration, offset, dt = 4, 1.0, 0.05, 0.1
+        tvec = np.arange(0.0, 3.0, dt)
+        impulse_idx = 5
+        regressor = np.zeros(tvec.size)
+        regressor[impulse_idx] = 1.0
+        block = raised_cosine_expand(regressor, tvec, n_basis, duration, offset)
+        assert block.shape == (tvec.size, n_basis)
+        # column superposition equals the basis placed at the impulse (truncated)
+        basis = raised_cosine_basis(n_basis, duration, offset, dt)
+        n_kernel = basis.shape[0]
+        expected = np.zeros(tvec.size)
+        expected[impulse_idx:impulse_idx + n_kernel] = basis.sum(axis=1)
+        np.testing.assert_allclose(block.sum(axis=1), expected)
