@@ -24,6 +24,7 @@ RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 MEAN_TRACES_FPATH = RESPONSES_DIR / 'mean_traces.pqt'
 RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.parquet'
 TASK_ENCODING_DIR = RESULTS_DIR / 'task_encoding'
+DISPERSION_FIGURES_DIR = PROJECT_ROOT / 'figures/task_encoding/dispersion'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 
 # Per-script error logs (unified schema: eid, error_type, error_message, traceback)
@@ -610,6 +611,11 @@ LMM_FORMULAS = {
 # and minimum recordings per mouse (per cell) for that mouse to be plotted.
 MIN_TRIALS_PERSESSION = 50
 MIN_RECORDINGS_PERMOUSE = 3
+
+# Coefficient-dispersion-vs-behavior scatter: a (subject, target_NM) unit is
+# plotted only when it has at least this many scorable sessions in both the
+# neural and behavioral dispersion sets.
+MIN_SESSIONS_DISPERSION = 3
 
 # CCA neural-feature blocks: the main effects defining the task and movement
 # categories. select_block_terms uses these to pick each block's coefficient
