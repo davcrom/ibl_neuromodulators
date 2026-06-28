@@ -11,6 +11,7 @@ Output:
     results/task_encoding/             — CSV data files
     figures/task_encoding/cca/scatter/ — per-cohort CCA score scatter plots
     figures/task_encoding/cca/summary/ — CCA summary figures
+    figures/task_encoding/dispersion/  — coefficient-dispersion-vs-behavior scatter
 
 Usage:
     python scripts/task_encoding.py
@@ -27,6 +28,7 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
     RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH, TASK_ENCODING_DIR,
+    DISPERSION_FIGURES_DIR, MIN_SESSIONS_DISPERSION,
     RESPONSE_EVENTS, FIGURE_DPI, TARGETNM_COLORS,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
     LMM_FORMULAS, CCA_TASK_MAINS, CCA_MOVEMENT_MAINS,
@@ -34,7 +36,7 @@ from iblnm.config import (
 from iblnm.analysis import compute_feature_dispersion, select_block_terms
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.vis import plot_cohort_cca_summary
+from iblnm.vis import plot_cohort_cca_summary, plot_dispersion_scatter
 
 plt.ion()
 
@@ -142,6 +144,90 @@ def assemble_dispersion_frame(neural_by_event, behavioral_long, block_mains,
                 'neural_dispersion', 'behavioral_dispersion']])
 
     return pd.concat(frames, ignore_index=True)
+
+
+def _neural_long_with_subject(features, recordings):
+    """Melt a per-recording coefficient frame to long form with subject attached.
+
+    Parameters
+    ----------
+    features : pandas.DataFrame
+        ``get_persession_ols_features`` output, indexed
+        ``(eid, target_NM, fiber_idx)``; columns are coefficient terms.
+    recordings : pandas.DataFrame
+        ``group.recordings``; supplies the ``(eid, target_NM, fiber_idx) →
+        subject`` map.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Long frame with columns ``['subject', 'target_NM', 'eid', 'term',
+        'coef']`` (the ``fiber_idx`` index level is dropped after the join).
+    """
+    recs = recordings.copy()
+    if 'fiber_idx' not in recs.columns:
+        recs['fiber_idx'] = 0
+    idx_cols = ['eid', 'target_NM', 'fiber_idx']
+    subject = (recs[idx_cols + ['subject']].drop_duplicates(idx_cols)
+               .set_index(idx_cols)['subject'].reindex(features.index))
+    wide = features.assign(subject=subject.values).reset_index()
+    return wide.melt(
+        id_vars=['subject', 'target_NM', 'eid', 'fiber_idx'],
+        var_name='term', value_name='coef').drop(columns='fiber_idx')
+
+
+def run_dispersion(group, events, args, fig_dir,
+                   block_mains=CCA_BLOCK_MAINS,
+                   min_sessions=MIN_SESSIONS_DISPERSION):
+    """Build and save the coefficient-dispersion-vs-behavior scatter.
+
+    Fits the per-session OLS neural features per event, computes per-block neural
+    dispersion and per-subject behavioral dispersion, and writes the 4-panel
+    (2 blocks × 2 events) figure to ``fig_dir``.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+    events : list of str
+        Events forming the figure columns.
+    args : argparse.Namespace
+        Must have ``weight_by_se``, ``contrast_coding``, and ``params``.
+    fig_dir : Path
+        Output directory for the dispersion figure.
+    block_mains : dict[str, list[str]]
+        Block label → main-effect factor names (figure rows).
+    min_sessions : int
+        Minimum sessions per unit in both dispersion sets.
+    """
+    params = args.params if args.params else DEFAULT_PARAMS
+
+    if group.performance is None:
+        group.load_performance(PERFORMANCE_FPATH)
+    behavioral_long = (
+        group.recordings[['eid', 'subject']].drop_duplicates()
+        .merge(group.performance[['eid'] + params], on='eid')
+        .melt(id_vars=['subject', 'eid'], value_vars=params,
+              var_name='param', value_name='value')
+        .dropna(subset=['value'])
+    )
+
+    neural_by_event = {}
+    for event in events:
+        features = group.get_persession_ols_features(
+            formula=LMM_FORMULAS['persession']['full'], event_name=event,
+            weight_by_se=args.weight_by_se, contrast_coding=args.contrast_coding,
+        )
+        neural_by_event[event] = _neural_long_with_subject(
+            features, group.recordings)
+
+    df = assemble_dispersion_frame(
+        neural_by_event, behavioral_long, block_mains, min_sessions)
+    print(f"  Dispersion: {len(df)} (subject, target_NM) × (event, block) units")
+
+    fig = plot_dispersion_scatter(df, events, list(block_mains))
+    fig.savefig(fig_dir / 'coef_dispersion_vs_behavior.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
 
 
 # =========================================================================
@@ -479,6 +565,7 @@ if __name__ == '__main__':
     fig_dirs = {
         'cca_scatter': PROJECT_ROOT / 'figures/task_encoding/cca/scatter',
         'cca_summary': PROJECT_ROOT / 'figures/task_encoding/cca/summary',
+        'dispersion': DISPERSION_FIGURES_DIR,
     }
     for d in fig_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
@@ -526,6 +613,9 @@ if __name__ == '__main__':
     # =====================================================================
     # Full pipeline: per-event GLM + CCA
     # =====================================================================
+    print("\nCoefficient-dispersion-vs-behavior scatter")
+    run_dispersion(group, events, args, fig_dirs['dispersion'])
+
     print("\nCCA pipeline")
 
     for event in events:
