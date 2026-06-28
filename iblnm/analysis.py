@@ -2472,3 +2472,95 @@ def lag_expand(regressor: np.ndarray, lags: np.ndarray) -> np.ndarray:
         return out
 
     return np.stack([shift(regressor, int(lag)) for lag in lags], axis=1)
+
+
+def raised_cosine_basis(
+    n_basis: int, rcos_duration: float, rcos_nloffset: float, dt: float
+) -> np.ndarray:
+    """Build a causal log-raised-cosine "bump" basis.
+
+    Reproduces the brain-wide-map basis (``neurencoding.utils.nonlinear_rcos``):
+    time is log-warped so bumps are dense just after the event and sparse later.
+    The basis spans ``[0, rcos_duration]`` after the event.
+
+    Parameters
+    ----------
+    n_basis : int
+        Number of bumps (basis columns).
+    rcos_duration : float
+        Kernel window in seconds.
+    rcos_nloffset : float
+        Log-warp offset in seconds (must be > 0); smaller packs more bumps near
+        the event.
+    dt : float
+        Time-grid resolution in seconds.
+
+    Returns
+    -------
+    np.ndarray
+        ``(n_kernel, n_basis)`` basis, ``n_kernel = ceil(rcos_duration / dt)``.
+    """
+    if rcos_nloffset <= 0:
+        raise ValueError("rcos_nloffset must be positive and nonzero")
+
+    def n_bins(seconds: float) -> int:
+        """Number of grid bins spanning `seconds` (BWM binfun)."""
+        return int(np.ceil(seconds / dt))
+
+    def log_warp(x: np.ndarray) -> np.ndarray:
+        """Log time-warp (small epsilon keeps log(0) finite)."""
+        return np.log(x + 1e-20)
+
+    def bump(x: np.ndarray, center: np.ndarray, spacing: float) -> np.ndarray:
+        """Raised-cosine bump, clamped to one period and scaled to [0, 1]."""
+        inner = np.clip(np.pi * (x - center) / (2 * spacing), -np.pi, np.pi)
+        return (np.cos(inner) + 1) / 2
+
+    # bump centres in log-warped time (after Pillow; neurencoding.nonlinear_rcos)
+    n_kernel = n_bins(rcos_duration)
+    offset_bins = n_bins(rcos_nloffset)
+    y_range = log_warp(np.array([0, n_kernel]) + offset_bins)
+    spacing = (y_range[1] - y_range[0]) / (n_basis - 1)
+    centers = y_range[0] + spacing * np.arange(n_basis)
+    sample = log_warp(np.arange(n_kernel) + offset_bins)
+    return bump(sample[:, None], centers[None, :], spacing)
+
+
+def raised_cosine_expand(
+    regressor: np.ndarray,
+    tvec: np.ndarray,
+    n_basis: int,
+    rcos_duration: float,
+    rcos_nloffset: float,
+) -> np.ndarray:
+    """Expand an event impulse train onto a log-raised-cosine kernel basis.
+
+    Returns one column per bump (the impulse train convolved with each basis
+    function). Fitted coefficients weight the bumps, and the kernel is their
+    weighted sum. See `raised_cosine_basis` for the basis itself.
+
+    Parameters
+    ----------
+    regressor : np.ndarray
+        1-D binary event regressor on the grid (length ``len(tvec)``).
+    tvec : np.ndarray
+        Uniform model time grid; supplies grid resolution ``dt`` and length.
+    n_basis : int
+        Number of raised-cosine bumps.
+    rcos_duration : float
+        Post-event kernel window in seconds.
+    rcos_nloffset : float
+        Log-warp offset in seconds.
+
+    Returns
+    -------
+    np.ndarray
+        ``(len(tvec), n_basis)`` block on the grid.
+    """
+    dt = (tvec[-1] - tvec[0]) / (tvec.size - 1)
+    basis = raised_cosine_basis(n_basis, rcos_duration, rcos_nloffset, dt)
+    # convolve the impulse train with each bump, truncate to the grid length
+    return np.stack(
+        [np.convolve(regressor, basis[:, j])[: tvec.size] for j in range(n_basis)],
+        axis=1,
+    )
