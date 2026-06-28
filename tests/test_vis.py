@@ -2549,3 +2549,35 @@ class TestPlotBaselineR2:
         # Position order VTA-DA then DR-5HT; each target: sig then non-sig.
         assert labels == ['n=3', 'n=1', 'n=2', 'n=0']
         plt.close(fig)
+
+
+class TestPlotDispersionScatter:
+    def _df(self):
+        # One point per panel; only the (task, stimOn_times) VTA-DA point is
+        # checked for encoding mapping below.
+        return pd.DataFrame([
+            {'subject': 's1', 'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+             'block': 'task', 'behavioral_dispersion': 0.7,
+             'neural_dispersion': 0.3},
+            {'subject': 's2', 'target_NM': 'SNc-DA', 'event': 'feedback_times',
+             'block': 'movement', 'behavioral_dispersion': 0.1,
+             'neural_dispersion': 0.9},
+        ])
+
+    def test_point_position_and_color(self):
+        from matplotlib import colors as mcolors
+        from iblnm.config import TARGETNM_COLORS
+        from iblnm.vis import plot_dispersion_scatter
+
+        events = ['stimOn_times', 'feedback_times']
+        blocks = ['task', 'movement']
+        fig = plot_dispersion_scatter(self._df(), events, blocks)
+
+        # Panel (block row 0 = task, event col 0 = stimOn) holds the VTA-DA point
+        ax = fig.axes[0]
+        offsets = ax.collections[0].get_offsets()
+        assert offsets.tolist() == [[0.7, 0.3]]
+        facecolor = ax.collections[0].get_facecolors()[0]
+        expected = mcolors.to_rgba(TARGETNM_COLORS['VTA-DA'])
+        assert np.allclose(facecolor, expected)
+        plt.close(fig)

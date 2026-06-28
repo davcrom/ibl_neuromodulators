@@ -373,6 +373,51 @@ def plot_baseline_r2(results: pd.DataFrame, ax=None) -> plt.Figure:
     return ax.figure
 
 
+def plot_dispersion_scatter(df, events, blocks):
+    """Grid of behavioral-vs-neural coefficient-dispersion scatters.
+
+    One panel per ``(block, event)``: rows are ``blocks`` (e.g. task/movement),
+    columns are ``events``. Within a panel each ``(subject, target_NM)`` unit is
+    one marker at ``(behavioral_dispersion, neural_dispersion)``, colored by its
+    ``target_NM`` via ``TARGETNM_COLORS``.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Plot-ready frame with columns ``['subject', 'target_NM', 'event',
+        'block', 'neural_dispersion', 'behavioral_dispersion']``.
+    events : list of str
+        Event names, in column order.
+    blocks : list of str
+        Block labels, in row order.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The ``len(blocks)`` × ``len(events)`` grid.
+    """
+    fig, axes = plt.subplots(
+        len(blocks), len(events), figsize=(4 * len(events), 4 * len(blocks)),
+        squeeze=False)
+    for row, block in enumerate(blocks):
+        for col, event in enumerate(events):
+            ax = axes[row][col]
+            panel = df[(df['block'] == block) & (df['event'] == event)]
+            point_colors = [TARGETNM_COLORS.get(t, 'gray')
+                            for t in panel['target_NM']]
+            ax.scatter(panel['behavioral_dispersion'],
+                       panel['neural_dispersion'],
+                       c=point_colors, edgecolors='white', s=40)
+            if row == len(blocks) - 1:
+                ax.set_xlabel('Behavioral dispersion')
+            if col == 0:
+                ax.set_ylabel(f'{block}\nNeural dispersion')
+            if row == 0:
+                ax.set_title(event.replace('_times', ''))
+    fig.tight_layout()
+    return fig
+
+
 def _add_bar_labels(ax, positions, values, hemisphere_counts=None, color='white',
                     horizontal=False):
     """Add text labels to bars with optional L/R breakdown."""
