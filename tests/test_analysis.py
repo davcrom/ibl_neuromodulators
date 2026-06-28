@@ -2630,3 +2630,76 @@ class TestComputeFeatureDispersion:
             df, ['unit'], 'eid', 'feat', 'val').set_index('unit')
         assert out.loc['U1', 'n_sessions'] == 3
         assert out.loc['U2', 'n_sessions'] == 2
+
+
+class TestMakeTimeGrid:
+    def test_spans_half_open_interval(self):
+        from iblnm.analysis import make_time_grid
+        tvec = make_time_grid(0.0, 1.0, 0.25)
+        np.testing.assert_allclose(tvec, [0.0, 0.25, 0.5, 0.75])
+
+
+class TestMakeLags:
+    def test_integer_centred_length(self):
+        from iblnm.analysis import make_lags
+        lags = make_lags(50)
+        assert np.issubdtype(lags.dtype, np.integer)
+        assert len(lags) == 50
+        assert lags[0] == -25
+        assert lags[-1] == 24
+
+
+class TestTimesToIndices:
+    def test_nearest_bin(self):
+        from iblnm.analysis import times_to_indices
+        tvec = np.arange(0.0, 1.0, 0.1)
+        # 0.34 rounds to bin 3 (0.3), 0.66 rounds to bin 7 (0.7)
+        idx = times_to_indices(np.array([0.34, 0.66]), tvec)
+        np.testing.assert_array_equal(idx, [3, 7])
+
+    def test_clip_bounds(self):
+        from iblnm.analysis import times_to_indices
+        tvec = np.arange(0.0, 1.0, 0.1)
+        idx = times_to_indices(np.array([-5.0, 5.0]), tvec, clip=True)
+        np.testing.assert_array_equal(idx, [0, tvec.size])
+
+
+class TestMakeEventRegressor:
+    def test_event_lands_on_nearest_bin(self):
+        from iblnm.analysis import make_event_regressor
+        tvec = np.arange(0.0, 1.0, 0.1)
+        reg = make_event_regressor(np.array([0.52]), tvec)
+        assert reg.shape == (tvec.size,)
+        assert reg[5] == 1.0
+        assert reg.sum() == 1.0
+
+    def test_events_outside_grid_dropped(self):
+        from iblnm.analysis import make_event_regressor
+        tvec = np.arange(0.0, 1.0, 0.1)
+        reg = make_event_regressor(np.array([-1.0, 0.3, 2.0]), tvec)
+        assert reg.sum() == 1.0
+        assert reg[3] == 1.0
+
+
+class TestLagExpand:
+    def test_impulse_shifts_by_lag(self):
+        from iblnm.analysis import lag_expand
+        reg = np.zeros(10)
+        reg[5] = 1.0
+        lags = np.array([-2, 0, 3])
+        out = lag_expand(reg, lags)
+        assert out.shape == (10, 3)
+        # positive lag shifts the 1.0 later in time
+        assert out[3, 0] == 1.0   # lag -2 -> index 3
+        assert out[5, 1] == 1.0   # lag 0 -> index 5
+        assert out[8, 2] == 1.0   # lag +3 -> index 8
+        # exactly one nonzero per column, vacated entries zero
+        np.testing.assert_array_equal(out.sum(axis=0), [1.0, 1.0, 1.0])
+
+    def test_positive_lag_drops_off_grid(self):
+        from iblnm.analysis import lag_expand
+        reg = np.zeros(6)
+        reg[5] = 1.0
+        out = lag_expand(reg, np.array([2]))
+        # impulse shifted past the end is zero-filled away
+        assert out.sum() == 0.0

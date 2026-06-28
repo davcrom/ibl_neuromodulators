@@ -2372,3 +2372,103 @@ def pairwise_mannwhitney(groups, correction='bonferroni'):
         results.append((a, b, U, p_corr))
 
     return results
+
+
+# --- FIR encoding-model design primitives ---
+
+
+def make_time_grid(t_start: float, t_stop: float, dt: float) -> np.ndarray:
+    """Build a uniform model time grid spanning [t_start, t_stop)."""
+    return np.arange(t_start, t_stop, dt)
+
+
+def make_lags(n_lags: int) -> np.ndarray:
+    """Integer sample lags centred on zero (lag 0 == event onset)."""
+    return np.arange(n_lags) - n_lags // 2
+
+
+def times_to_indices(
+    times: np.ndarray, tvec: np.ndarray, clip: bool = False
+) -> np.ndarray:
+    """Map times to the nearest sample indices on the uniform grid `tvec`.
+
+    Parameters
+    ----------
+    times : np.ndarray
+        Event/query times in seconds.
+    tvec : np.ndarray
+        Uniform model time grid.
+    clip : bool
+        If True, clamp indices to [0, len(tvec)] for use as slice bounds; if
+        False, return raw indices (caller masks out-of-range).
+
+    Returns
+    -------
+    np.ndarray
+        Integer indices, one per input time.
+    """
+    # robust grid spacing (averages out arange float accumulation)
+    dt = (tvec[-1] - tvec[0]) / (tvec.size - 1)
+    indices = np.round((times - tvec[0]) / dt).astype(int)
+    if clip:
+        indices = np.clip(indices, 0, tvec.size)
+    return indices
+
+
+def make_event_regressor(
+    event_times: np.ndarray, tvec: np.ndarray
+) -> np.ndarray:
+    """Binary regressor: 1.0 at the nearest grid sample of each event time.
+
+    Parameters
+    ----------
+    event_times : np.ndarray
+        Event timestamps in seconds.
+    tvec : np.ndarray
+        Uniform model time grid.
+
+    Returns
+    -------
+    np.ndarray
+        1-D binary regressor on `tvec`; events outside the grid are dropped.
+    """
+    indices = times_to_indices(event_times, tvec)
+    # keep only events falling inside the grid
+    valid = (indices >= 0) & (indices < tvec.size)
+    regressor = np.zeros(tvec.size)
+    regressor[indices[valid]] = 1.0
+    return regressor
+
+
+def lag_expand(regressor: np.ndarray, lags: np.ndarray) -> np.ndarray:
+    """Build lagged copies of a regressor, one column per lag.
+
+    Convention: column ``j`` is `regressor` shifted by ``lags[j]`` samples
+    (zero-padded, no wrap), so a positive lag shifts the event's contribution
+    later in time. A fitted positive-lag coefficient is therefore the signal's
+    post-event response (lag 0 == event onset).
+
+    Parameters
+    ----------
+    regressor : np.ndarray
+        1-D regressor on the model grid.
+    lags : np.ndarray
+        Integer sample lags, e.g. ``arange(-25, 25)``.
+
+    Returns
+    -------
+    np.ndarray
+        Matrix of shape ``(len(regressor), len(lags))``.
+    """
+    def shift(array: np.ndarray, n: int) -> np.ndarray:
+        """Shift `array` by `n` samples, zero-filling vacated entries (no wrap)."""
+        out = np.zeros_like(array)
+        if n > 0:
+            out[n:] = array[:-n]
+        elif n < 0:
+            out[:n] = array[-n:]
+        else:
+            out[:] = array
+        return out
+
+    return np.stack([shift(regressor, int(lag)) for lag in lags], axis=1)
