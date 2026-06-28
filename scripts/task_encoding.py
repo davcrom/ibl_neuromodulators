@@ -31,7 +31,7 @@ from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
     LMM_FORMULAS, CCA_TASK_MAINS, CCA_MOVEMENT_MAINS,
 )
-from iblnm.analysis import select_block_terms
+from iblnm.analysis import compute_feature_dispersion, select_block_terms
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.vis import plot_cohort_cca_summary
@@ -77,6 +77,71 @@ def _block_label(event_name, block):
         per-event, per-block CCA CSVs and figures.
     """
     return f'{_event_label(event_name)}_{block}'
+
+
+# =========================================================================
+# Dispersion scatter
+# =========================================================================
+
+def assemble_dispersion_frame(neural_by_event, behavioral_long, block_mains,
+                              min_sessions):
+    """Build the plot-ready coefficient-dispersion-vs-behavior frame.
+
+    Behavioral dispersion is computed once per subject (sensor-independent) and
+    joined to each ``(subject, target_NM)`` unit, so it is identical across the
+    event columns. Neural dispersion is computed per event and block over that
+    block's coefficient terms, z-scored within ``target_NM``. A unit appears in a
+    panel only when both its neural ``n_sessions`` (for that event/block) and its
+    behavioral ``n_sessions`` are at least ``min_sessions``.
+
+    Parameters
+    ----------
+    neural_by_event : dict[str, pandas.DataFrame]
+        Maps event name to a long per-session coefficient frame with columns
+        ``['subject', 'target_NM', 'eid', 'term', 'coef']``.
+    behavioral_long : pandas.DataFrame
+        Long per-session behavioral params with columns
+        ``['subject', 'eid', 'param', 'value']``.
+    block_mains : dict[str, list[str]]
+        Maps block label (``'task'``/``'movement'``) to its main-effect factor
+        names; :func:`iblnm.analysis.select_block_terms` picks each block's terms.
+    min_sessions : int
+        Minimum scorable sessions in both the neural and behavioral sets.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per surviving ``(subject, target_NM, event, block)``, columns
+        ``['subject', 'target_NM', 'event', 'block', 'neural_dispersion',
+        'behavioral_dispersion']``.
+    """
+    behavioral = compute_feature_dispersion(
+        behavioral_long, unit_cols=['subject'], session_col='eid',
+        feature_col='param', value_col='value', standardize_by=None)
+    behavioral = behavioral[behavioral['n_sessions'] >= min_sessions]
+    behavioral = behavioral.rename(
+        columns={'dispersion': 'behavioral_dispersion'})[
+            ['subject', 'behavioral_dispersion']]
+
+    frames = []
+    for event, neural_long in neural_by_event.items():
+        for block, mains in block_mains.items():
+            block_terms = select_block_terms(neural_long['term'].unique(), mains)
+            block_long = neural_long[neural_long['term'].isin(block_terms)]
+            neural = compute_feature_dispersion(
+                block_long, unit_cols=['subject', 'target_NM'],
+                session_col='eid', feature_col='term', value_col='coef',
+                standardize_by='target_NM')
+            neural = neural[neural['n_sessions'] >= min_sessions]
+            neural = neural.rename(columns={'dispersion': 'neural_dispersion'})
+            merged = neural.merge(behavioral, on='subject')
+            merged['event'] = event
+            merged['block'] = block
+            frames.append(merged[[
+                'subject', 'target_NM', 'event', 'block',
+                'neural_dispersion', 'behavioral_dispersion']])
+
+    return pd.concat(frames, ignore_index=True)
 
 
 # =========================================================================
