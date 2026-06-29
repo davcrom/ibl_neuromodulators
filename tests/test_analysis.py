@@ -2772,3 +2772,19 @@ class TestRaisedCosineExpand:
         expected = np.zeros(tvec.size)
         expected[impulse_idx:impulse_idx + n_kernel] = basis.sum(axis=1)
         np.testing.assert_allclose(block.sum(axis=1), expected)
+
+
+class TestBuildDesignMatrix:
+    def test_spans_and_block_recovery(self):
+        from iblnm.analysis import build_design_matrix
+        n_rows = 4
+        a = np.arange(n_rows * 3).reshape(n_rows, 3).astype(float)
+        b = np.arange(n_rows).astype(float)  # 1-D, promoted to one column
+        c = np.arange(n_rows * 2).reshape(n_rows, 2).astype(float)
+        matrix, slices = build_design_matrix({'a': a, 'b': b, 'c': c})
+        assert matrix.shape == (n_rows, 6)
+        assert slices == {'a': slice(0, 3), 'b': slice(3, 4), 'c': slice(4, 6)}
+        # each block is recoverable by its span
+        np.testing.assert_array_equal(matrix[:, slices['a']], a)
+        np.testing.assert_array_equal(matrix[:, slices['b']], b[:, None])
+        np.testing.assert_array_equal(matrix[:, slices['c']], c)
