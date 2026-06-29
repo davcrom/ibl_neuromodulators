@@ -13,43 +13,45 @@ from iblnm.analysis import (
 from iblnm.util import contrast_transform
 
 
-def _synthetic_varcomp_data(mouse_sd, session_sd, n_mice=5, n_sessions=6, se=0.1, seed=0):
+def _synthetic_varcomp_data(mouse_sd, session_sd, n_mice=30, n_sessions=8, se=0.1, seed=0):
     """Per-session estimates with injected mouse-SD and session-SD.
 
-    Returns ``(estimates, ses, mouse_ids)`` for ``n_mice`` mice each contributing
-    ``n_sessions`` sessions. Each estimate is a mouse effect + session effect +
-    measurement noise of known SD ``se``.
+    Returns ``(estimates, ses, mouse_ids, v_mouse_true, v_session_true)`` for
+    ``n_mice`` mice each contributing ``n_sessions`` sessions. Each estimate is a
+    mouse effect + session effect + measurement noise of known SD ``se``. The two
+    ``*_true`` values are the *realized* between-mouse and between-session
+    variances standardized by the estimate variance — the quantities the
+    standardized model recovers, which differ from the injected SDs by
+    finite-sample sampling. ``n_mice`` is large enough that the between-mouse
+    component is identifiable.
     """
     rng = np.random.default_rng(seed)
     mouse_ids = np.repeat(np.arange(n_mice), n_sessions)
-    mouse_effect = rng.normal(0, mouse_sd, n_mice)[mouse_ids]
+    mouse_effect = rng.normal(0, mouse_sd, n_mice)
     session_effect = rng.normal(0, session_sd, mouse_ids.size)
     noise = rng.normal(0, se, mouse_ids.size)
-    estimates = mouse_effect + session_effect + noise
+    estimates = mouse_effect[mouse_ids] + session_effect + noise
     ses = np.full(mouse_ids.size, se)
-    return estimates, ses, mouse_ids
+    scale_sq = estimates.var()
+    return (estimates, ses, mouse_ids,
+            mouse_effect.var() / scale_sq, session_effect.var() / scale_sq)
 
 
 class TestVarcompFit:
-    def test_recovers_injected_variances(self):
-        mouse_sd, session_sd = 0.6, 0.3
-        estimates, ses, mouse_ids = _synthetic_varcomp_data(mouse_sd, session_sd)
+    def test_recovers_realized_variances(self):
+        estimates, ses, mouse_ids, v_mouse_true, v_session_true = (
+            _synthetic_varcomp_data(0.6, 0.3))
         v_mouse, v_session = fit_measurement_error_varcomp(
             estimates, ses, mouse_ids, draws=500, tune=500, chains=2, random_seed=0
         )
-        # standardized scale: injected SDs divided by the data SD
-        scale = estimates.std()
-        np.testing.assert_allclose(
-            v_mouse.mean(), (mouse_sd / scale) ** 2, atol=0.35
-        )
-        np.testing.assert_allclose(
-            v_session.mean(), (session_sd / scale) ** 2, atol=0.35
-        )
+        # the standardized model recovers the realized component variances
+        np.testing.assert_allclose(v_mouse.mean(), v_mouse_true, atol=0.25)
+        np.testing.assert_allclose(v_session.mean(), v_session_true, atol=0.25)
         # mouse component clearly exceeds session component here
         assert v_mouse.mean() > v_session.mean()
 
     def test_scaling_invariance(self):
-        estimates, ses, mouse_ids = _synthetic_varcomp_data(0.6, 0.3)
+        estimates, ses, mouse_ids, *_ = _synthetic_varcomp_data(0.6, 0.3)
         vm1, vs1 = fit_measurement_error_varcomp(
             estimates, ses, mouse_ids, draws=500, tune=500, chains=2, random_seed=0
         )
