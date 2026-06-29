@@ -2598,6 +2598,36 @@ def make_trial_constant(
     return values
 
 
+def build_design_matrix(
+    blocks: dict[str, np.ndarray],
+) -> tuple[np.ndarray, dict[str, slice]]:
+    """Concatenate named regressor blocks; return the matrix and a span map.
+
+    Block insertion order sets column order; the returned slices let callers
+    retrieve any block's coefficients by name.
+
+    Parameters
+    ----------
+    blocks : dict[str, np.ndarray]
+        Ordered ``name -> block`` mapping. A 1-D block is promoted to a single
+        column; a 2-D block contributes its columns as-is. All blocks must share
+        the same number of rows.
+
+    Returns
+    -------
+    tuple[np.ndarray, dict[str, slice]]
+        The column-wise concatenation in insertion order, and a
+        ``name -> slice`` map giving each block's column span in the matrix.
+    """
+    matrix, slices, start = [], {}, 0
+    for name, block in blocks.items():
+        columns = block[:, None] if block.ndim == 1 else block
+        slices[name] = slice(start, start + columns.shape[1])
+        matrix.append(columns)
+        start += columns.shape[1]
+    return np.concatenate(matrix, axis=1), slices
+
+
 def interpolate_to_grid(
     series: pd.Series | pd.DataFrame, tvec: np.ndarray, kind: str = "quadratic"
 ) -> np.ndarray:
