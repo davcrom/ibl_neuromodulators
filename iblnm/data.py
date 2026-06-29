@@ -24,7 +24,9 @@ from iblnm.config import (
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
-    RESPONSE_EVENTS, RESPONSE_OLS_COEFS_COLUMNS, RESPONSE_WINDOW,
+    RESPONSE_EVENTS, RESPONSE_OLS_COEFS_COLUMNS,
+    RESPONSE_VARCOMP_SUMMARY_COLUMNS, RESPONSE_VARCOMP_VIOLIN_COLUMNS,
+    RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
@@ -33,6 +35,7 @@ from iblnm.config import (
 from iblnm.analysis import (
     get_responses, compute_response_magnitude, movement_trace,
     per_third_crosscorr, resample_pose, resample_signal,
+    fit_measurement_error_varcomp, summarize_posterior,
 )
 from iblnm import analysis
 from iblnm import task
@@ -1989,6 +1992,8 @@ class PhotometrySessionGroup:
         self.response_magnitudes = None
         self.response_ols_dropone_results = None
         self.response_ols_coefficients = None
+        self.response_varcomp_summary = None
+        self.response_varcomp_violin = None
         self.trial_regressors = None
         self.response_features = None
         self.performance = None
@@ -2564,6 +2569,83 @@ class PhotometrySessionGroup:
                           ignore_index=True)[RESPONSE_OLS_COEFS_COLUMNS]
         return dropone, coefs
 
+    def response_varcomp(self, coefficients, *, mcmc, tau_prior, min_mice,
+                         min_sessions_per_mouse, grid_size, hdi_prob):
+        """Per-cell mouse-vs-session variance components from the coefficients table.
+
+        Groups the per-session coefficients by ``(target_NM, event, regressor)``
+        and, for each cell, applies the inclusion rule (drop mice with fewer than
+        ``min_sessions_per_mouse`` sessions; keep the cell only if at least
+        ``min_mice`` mice survive), fits the measurement-error variance-components
+        model on the survivors, and reduces each posterior to summary stats and a
+        KDE-on-grid. Omitted cells appear in neither output. Reads no config —
+        the caller passes every analysis choice in.
+
+        Parameters
+        ----------
+        coefficients : pandas.DataFrame
+            Per-session coefficients at grain ``(eid, subject, target_NM,
+            brain_region, event, regressor)`` with ``coef`` and ``coef_se``
+            columns; ``subject`` is the mouse id. Each row is one session.
+        mcmc : dict
+            Sampler settings forwarded to
+            :func:`iblnm.analysis.fit_measurement_error_varcomp` (``draws``,
+            ``tune``, ``chains``, ``target_accept``, ``random_seed``).
+        tau_prior : tuple of (str, float)
+            tau prior family and scale for the fit.
+        min_mice : int
+            Minimum surviving mice required to fit a cell.
+        min_sessions_per_mouse : int
+            Mice with fewer sessions than this in a cell are dropped before the
+            mouse-count check.
+        grid_size : int
+            KDE grid length for each violin shape.
+        hdi_prob : float
+            Highest-density-interval mass for the summary bounds.
+
+        Returns
+        -------
+        summary_df : pandas.DataFrame
+            One row per (included cell, component) with columns
+            ``RESPONSE_VARCOMP_SUMMARY_COLUMNS``; ``n_mice``/``n_sessions`` count
+            survivors.
+        violin_df : pandas.DataFrame
+            Long-form KDE outlines, ``grid_size`` rows per (cell, component),
+            columns ``RESPONSE_VARCOMP_VIOLIN_COLUMNS``.
+        """
+        summary_rows, violin_frames = [], []
+        cell_keys = ['target_NM', 'event', 'regressor']
+        for (target_nm, event, regressor), cell in coefficients.groupby(cell_keys):
+            counts = cell['subject'].value_counts()
+            survivors = cell[cell['subject'].isin(
+                counts.index[counts >= min_sessions_per_mouse])]
+            if survivors['subject'].nunique() < min_mice:
+                continue
+            v_mouse, v_session = fit_measurement_error_varcomp(
+                survivors['coef'].to_numpy(), survivors['coef_se'].to_numpy(),
+                survivors['subject'].to_numpy(), tau_prior=tau_prior, **mcmc)
+            n_mice, n_sessions = survivors['subject'].nunique(), len(survivors)
+            for component, samples in (('V_mouse', v_mouse),
+                                       ('V_session', v_session)):
+                mean, hdi_low, hdi_high, x_grid, density = summarize_posterior(
+                    samples, grid_size=grid_size, hdi_prob=hdi_prob)
+                summary_rows.append({
+                    'target_NM': target_nm, 'event': event,
+                    'regressor': regressor, 'component': component,
+                    'mean': mean, 'hdi_low': hdi_low, 'hdi_high': hdi_high,
+                    'n_mice': n_mice, 'n_sessions': n_sessions})
+                violin_frames.append(pd.DataFrame({
+                    'target_NM': target_nm, 'event': event,
+                    'regressor': regressor, 'component': component,
+                    'x': x_grid, 'density': density}))
+
+        summary_df = pd.DataFrame(
+            summary_rows, columns=RESPONSE_VARCOMP_SUMMARY_COLUMNS)
+        violin_df = (pd.concat(violin_frames, ignore_index=True)
+                     if violin_frames
+                     else pd.DataFrame(columns=RESPONSE_VARCOMP_VIOLIN_COLUMNS))
+        return summary_df, violin_df
+
     # -----------------------------------------------------------------
     # Parquet loaders — populate group attributes from saved files
     # -----------------------------------------------------------------
@@ -2596,6 +2678,32 @@ class PhotometrySessionGroup:
     def load_response_ols_coefficients(self, path):
         """Load per-session coefficients from parquet, filtered to current recordings."""
         self.response_ols_coefficients = self._load_parquet(path)
+
+    @staticmethod
+    def _read_parquet(path):
+        """Read a parquet file unfiltered, returning None if it does not exist.
+
+        For tables keyed by cell rather than session (no ``eid`` column), where
+        the recordings-based filter of :meth:`_load_parquet` does not apply.
+        """
+        path = Path(path)
+        return pd.read_parquet(path) if path.exists() else None
+
+    def load_response_varcomp_summary(self, path):
+        """Load the variance-components summary table from parquet.
+
+        Keyed by ``(target_NM, event, regressor)`` with no ``eid`` column, so it
+        is a plain read — not the eid-filtered ``_load_parquet``.
+        """
+        self.response_varcomp_summary = self._read_parquet(path)
+
+    def load_response_varcomp_violin(self, path):
+        """Load the variance-components violin-shape table from parquet.
+
+        Keyed by ``(target_NM, event, regressor)`` with no ``eid`` column, so it
+        is a plain read — not the eid-filtered ``_load_parquet``.
+        """
+        self.response_varcomp_violin = self._read_parquet(path)
 
     def load_trial_regressors(self, path):
         """Load trial regressors from parquet, filtered to current recordings."""

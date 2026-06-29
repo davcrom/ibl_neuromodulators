@@ -3678,6 +3678,47 @@ class TestLoaderMethods:
         group.load_response_ols_coefficients(tmp_path / 'nonexistent.parquet')
         assert group.response_ols_coefficients is None
 
+    def test_load_response_varcomp_summary(self, tmp_path):
+        from iblnm.config import RESPONSE_VARCOMP_SUMMARY_COLUMNS
+        group = self._make_group()
+        df = pd.DataFrame([
+            {'target_NM': 'target-0', 'event': 'stimOn_times',
+             'regressor': 'contrast', 'component': 'V_mouse', 'mean': 0.3,
+             'hdi_low': 0.1, 'hdi_high': 0.5, 'n_mice': 4, 'n_sessions': 22},
+            {'target_NM': 'target-0', 'event': 'stimOn_times',
+             'regressor': 'contrast', 'component': 'V_session', 'mean': 0.2,
+             'hdi_low': 0.05, 'hdi_high': 0.4, 'n_mice': 4, 'n_sessions': 22},
+        ])[RESPONSE_VARCOMP_SUMMARY_COLUMNS]
+        path = tmp_path / 'response_varcomp_summary.parquet'
+        df.to_parquet(path, index=False)
+
+        group.load_response_varcomp_summary(path)
+        # No eid column: the loader reads and assigns the frame verbatim.
+        pd.testing.assert_frame_equal(group.response_varcomp_summary, df)
+
+        group.load_response_varcomp_summary(tmp_path / 'nonexistent.parquet')
+        assert group.response_varcomp_summary is None
+
+    def test_load_response_varcomp_violin(self, tmp_path):
+        from iblnm.config import RESPONSE_VARCOMP_VIOLIN_COLUMNS
+        group = self._make_group()
+        df = pd.DataFrame({
+            'target_NM': ['target-0'] * 4,
+            'event': ['stimOn_times'] * 4,
+            'regressor': ['contrast'] * 4,
+            'component': ['V_mouse', 'V_mouse', 'V_session', 'V_session'],
+            'x': [0.0, 0.5, 0.0, 0.5],
+            'density': [1.0, 0.2, 0.8, 0.3],
+        })[RESPONSE_VARCOMP_VIOLIN_COLUMNS]
+        path = tmp_path / 'response_varcomp_violin.parquet'
+        df.to_parquet(path, index=False)
+
+        group.load_response_varcomp_violin(path)
+        pd.testing.assert_frame_equal(group.response_varcomp_violin, df)
+
+        group.load_response_varcomp_violin(tmp_path / 'nonexistent.parquet')
+        assert group.response_varcomp_violin is None
+
     def test_load_trial_regressors(self, tmp_path):
         group = self._make_group()
         df = pd.DataFrame([
@@ -3763,6 +3804,103 @@ class TestLoaderMethods:
         group.load_response_magnitudes(path)
         assert len(group.response_magnitudes) == 2
         assert 'eid-2' not in group.response_magnitudes['eid'].values
+
+
+# =============================================================================
+# response_varcomp Tests
+# =============================================================================
+
+def _make_varcomp_coefficients():
+    """Per-session coefficients with one includable cell and one that fails.
+
+    Cell A (target-A): 4 mice × 5 sessions → passes the ≥4 mice, ≥5
+    sessions/mouse rule. Cell B (target-B): 3 mice × 5 sessions → fails the
+    mouse-count check. Coefficients carry injected between-mouse and
+    between-session spread so the fit has signal.
+    """
+    rng = np.random.default_rng(0)
+    rows = []
+    cells = {'target-A': 4, 'target-B': 3}
+    eid = 0
+    for target_nm, n_mice in cells.items():
+        mouse_means = rng.normal(0, 0.6, n_mice)
+        for m in range(n_mice):
+            for _ in range(5):
+                rows.append({
+                    'eid': f'eid-{eid}', 'subject': f'{target_nm}-m{m}',
+                    'target_NM': target_nm, 'brain_region': 'region-0',
+                    'event': 'stimOn_times', 'regressor': 'contrast',
+                    'coef': mouse_means[m] + rng.normal(0, 0.3),
+                    'coef_se': 0.1, 'n_trials': 80})
+                eid += 1
+    return pd.DataFrame(rows)
+
+
+class TestResponseVarcomp:
+    """Tests for PhotometrySessionGroup.response_varcomp."""
+
+    def _make_group(self):
+        from iblnm.data import PhotometrySessionGroup
+        return PhotometrySessionGroup(_make_sessions_df(), one=MagicMock())
+
+    def test_inclusion_rule_and_output_shapes(self, monkeypatch):
+        # Stub the PyMC fit (its sampling is covered in test_analysis.py): return
+        # fixed posterior draws and record which sessions reach it, isolating the
+        # orchestration — inclusion rule, frame shapes, survivor counts. The real
+        # summarize_posterior runs on the stubbed draws.
+        from iblnm.config import (RESPONSE_VARCOMP_SUMMARY_COLUMNS,
+                                   RESPONSE_VARCOMP_VIOLIN_COLUMNS)
+        rng = np.random.default_rng(1)
+        calls = []
+
+        def fake_fit(estimates, ses, mouse_ids, **kwargs):
+            calls.append(len(estimates))
+            return rng.gamma(2.0, 0.1, 400), rng.gamma(2.0, 0.05, 400)
+
+        monkeypatch.setattr('iblnm.data.fit_measurement_error_varcomp', fake_fit)
+
+        group = self._make_group()
+        grid_size = 32
+        summary_df, violin_df = group.response_varcomp(
+            _make_varcomp_coefficients(),
+            mcmc={'draws': 50, 'tune': 50, 'chains': 1, 'target_accept': 0.9,
+                  'random_seed': 0},
+            tau_prior=('halfnormal', 1.0), min_mice=4,
+            min_sessions_per_mouse=5, grid_size=grid_size, hdi_prob=0.94)
+
+        # Only the passing cell (4 mice × 5 sessions) is fit, on all 20 sessions.
+        assert calls == [20]
+        # The passing cell yields V_mouse and V_session; the failing cell is gone.
+        assert list(summary_df.columns) == RESPONSE_VARCOMP_SUMMARY_COLUMNS
+        assert set(summary_df['target_NM']) == {'target-A'}
+        passing = summary_df[summary_df['target_NM'] == 'target-A']
+        assert set(passing['component']) == {'V_mouse', 'V_session'}
+        assert (passing['n_mice'] == 4).all()
+        assert (passing['n_sessions'] == 20).all()
+
+        # Violin frame: grid_size rows per (cell, component) = 2 components here.
+        assert list(violin_df.columns) == RESPONSE_VARCOMP_VIOLIN_COLUMNS
+        assert len(violin_df) == 2 * grid_size
+        counts = violin_df.groupby(['target_NM', 'component']).size()
+        assert (counts == grid_size).all()
+
+    def test_subthreshold_mice_dropped_then_cell_omitted(self):
+        """A cell where too few mice clear the per-mouse session floor is omitted."""
+        group = self._make_group()
+        coefficients = _make_varcomp_coefficients()
+        # Thin two of target-A's mice below the 5-session floor: only 2 survive,
+        # short of min_mice=4, so the whole cell drops.
+        thin = coefficients[~(
+            coefficients['subject'].isin(['target-A-m0', 'target-A-m1'])
+            & (coefficients.groupby('subject').cumcount() >= 2))]
+        summary_df, violin_df = group.response_varcomp(
+            thin,
+            mcmc={'draws': 50, 'tune': 50, 'chains': 1, 'target_accept': 0.9,
+                  'random_seed': 0},
+            tau_prior=('halfnormal', 1.0), min_mice=4,
+            min_sessions_per_mouse=5, grid_size=16, hdi_prob=0.94)
+        assert summary_df.empty
+        assert violin_df.empty
 
 
 # =============================================================================
