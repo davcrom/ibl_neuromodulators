@@ -2580,7 +2580,7 @@ class TestFromCatalog:
     def test_validates_parallel_columns(self):
         """from_catalog validates parallel list columns and drops mismatched."""
         from iblnm.data import PhotometrySessionGroup
-        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock(), h5_dir=None)
         # eid-3 dropped (mismatched), eid-1 and eid-2 kept
         assert len(group.sessions) == 2
         assert 'eid-3' not in group.sessions['eid'].values
@@ -2588,7 +2588,7 @@ class TestFromCatalog:
     def test_recordings_from_catalog(self):
         """recordings produces one row per region after from_catalog."""
         from iblnm.data import PhotometrySessionGroup
-        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock(), h5_dir=None)
         group.filter_sessions(session_types=False, targetnms=False,
                               qc_blockers=set(),
                               min_performance=False, required_contrasts=False)
@@ -2599,7 +2599,7 @@ class TestFromCatalog:
     def test_filter_reflected_in_recordings(self):
         """Filtering by session type is reflected in recordings."""
         from iblnm.data import PhotometrySessionGroup
-        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock(), h5_dir=None)
         group.filter_sessions(session_types=('biased',), targetnms=False,
                               qc_blockers=set(),
                               min_performance=False, required_contrasts=False)
@@ -2608,14 +2608,14 @@ class TestFromCatalog:
     def test_from_catalog_enforces_schema(self):
         """from_catalog fills missing schema columns with typed defaults."""
         from iblnm.data import PhotometrySessionGroup
-        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock(), h5_dir=None)
         # 'lab' is in SESSION_SCHEMA but absent from the catalog fixture
         assert 'lab' in group._catalog.columns
 
     def test_recordings_reflects_refilter(self):
         """recordings updates automatically when filter_sessions is re-called."""
         from iblnm.data import PhotometrySessionGroup
-        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock(), h5_dir=None)
         group.filter_sessions(session_types=('biased',), targetnms=False,
                               qc_blockers=set(),
                               min_performance=False, required_contrasts=False)
@@ -2642,16 +2642,45 @@ class TestFromCatalog:
              'start_time': '2024-01-02T10:00:00', 'number': 1, 'brain_region': ['DR'],
              'hemisphere': ['l'], 'target_NM': ['DR-5HT'], 'NM': '5HT'},
         ])
-        group = PhotometrySessionGroup.from_catalog(catalog, one=MagicMock(), h5_dir=tmp_path)
+        group = PhotometrySessionGroup.from_catalog(
+            catalog, one=MagicMock(), h5_dir=tmp_path,
+            cache_path=tmp_path / 'logged_errors.pqt')
         group.filter_sessions(session_types=False, targetnms=False,
                               qc_blockers={'MissingRawData'},
                               min_performance=False, required_contrasts=False)
         assert set(group.sessions['eid']) == {'eid-2'}
 
+    def test_from_catalog_caches_logged_errors(self, tmp_path):
+        """from_catalog writes the error scan to cache_path and reuses it, so a
+        later call reads the cache instead of rescanning the H5 /errors groups."""
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.validation import MissingRawData
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', 'biased',
+                          brain_region=['VTA'], errors=[MissingRawData('x')])
+        catalog = pd.DataFrame([
+            {'eid': 'eid-1', 'subject': 'mouse_A', 'session_type': 'biased',
+             'start_time': '2024-01-01T10:00:00', 'number': 1,
+             'brain_region': ['VTA'], 'hemisphere': ['l'],
+             'target_NM': ['VTA-DA'], 'NM': 'DA'},
+        ])
+        cache_path = tmp_path / 'logged_errors.pqt'
+        PhotometrySessionGroup.from_catalog(
+            catalog, one=MagicMock(), h5_dir=tmp_path, cache_path=cache_path)
+        assert cache_path.exists()
+        # Point h5_dir at an empty dir: a rescan would find no errors, so a
+        # correct cache hit must still report the original error.
+        group = PhotometrySessionGroup.from_catalog(
+            catalog, one=MagicMock(), h5_dir=tmp_path / 'empty',
+            cache_path=cache_path)
+        assert group._catalog.loc[
+            group._catalog['eid'] == 'eid-1', 'logged_errors'].iloc[0] == \
+            ['MissingRawData']
+
     def test_no_h5_dir_leaves_logged_errors_empty(self):
         """Without h5_dir, from_catalog skips the scan and logged_errors are all empty."""
         from iblnm.data import PhotometrySessionGroup
-        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock())
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock(), h5_dir=None)
         assert group._catalog['logged_errors'].apply(lambda x: x == []).all()
 
     def test_scan_h5_errors_false_reuses_existing_column(self, tmp_path):
