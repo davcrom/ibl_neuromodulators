@@ -16,10 +16,14 @@ import numpy as np
 import pandas as pd
 
 from iblnm.config import SESSIONS_FPATH
-from iblnm.io import _get_default_connection
 from iblnm.data import PhotometrySessionGroup
 
 from iblnm.config import PREPROCESSING_PIPELINES
+
+from deploy.iblsdsc import OneSdsc
+
+# requires the unmerged PR #121 https://github.com/int-brain-lab/iblscripts/pull/121
+one = OneSdsc(location="popeye")
 
 
 def prepare_session(ps):
@@ -37,6 +41,7 @@ def prepare_session(ps):
 
     pipeline = PREPROCESSING_PIPELINES["isosbestic_correction"]
 
+    #
     pipeline[0]["parameters"] = dict(
         correction_method="subtract-divide",
         N=3,
@@ -106,9 +111,11 @@ if __name__ == "__main__":
         required=True,
         help="which baseline analysis to run",
     )
+    # for per-session paralellization
+    # adding an eid and building an exclusion set of all other eids
     parser.add_argument(
         "--eid",
-        required=True,
+        required=False,
         help="subsetting to eid",
     )
     # add exclude eid argument here
@@ -118,20 +125,20 @@ if __name__ == "__main__":
 
     group = PhotometrySessionGroup.from_catalog(
         pd.read_parquet(SESSIONS_FPATH),
-        one=  # TODO SDSC one
+        one=one,
     )
-    # group has a list of valid sessions
-    # if eid is passed
+    # group has a list of all valid sessions
+    # we are exluding all sessions except the session of interest
+    assert args.eid is not None
     exclude_eids = {group.sessions["eid"]} - args.eid
 
-    # if eid is passed
     group.filter_sessions(
         exclude_eids=exclude_eids,
         session_types=("ephys",),
     )
     _ = group.deduplicate()
 
-    out_dir = Path("results/baseline")
+    out_dir = Path(__file__).parent.parent / "results" / "baseline"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results = group.session_permutation_test(
