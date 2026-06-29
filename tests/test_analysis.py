@@ -2788,3 +2788,77 @@ class TestBuildDesignMatrix:
         np.testing.assert_array_equal(matrix[:, slices['a']], a)
         np.testing.assert_array_equal(matrix[:, slices['b']], b[:, None])
         np.testing.assert_array_equal(matrix[:, slices['c']], c)
+
+
+class TestDeviationCode:
+    def test_two_levels_map_to_plus_minus_half(self):
+        from iblnm.analysis import deviation_code
+        codes = deviation_code(['contra', 'ipsi', 'contra'], 'contra')
+        np.testing.assert_array_equal(codes, [0.5, -0.5, 0.5])
+
+
+class TestBuildEventBlocks:
+    def _identity_expander(self):
+        # expander that returns the 1-D event train as a single column, so block
+        # heights are directly readable at event bins
+        return lambda regressor: regressor[:, None]
+
+    def test_baseline_unit_heights_and_modulator_values(self):
+        from iblnm.analysis import build_event_blocks
+        tvec = np.arange(0.0, 1.0, 0.1)
+        event_times = np.array([0.2, 0.5])
+        contrast = np.array([0.25, -0.75])  # already mean-centered by the caller
+        blocks = build_event_blocks(
+            event_times, tvec, self._identity_expander(),
+            modulators={'contrast': contrast}, name='stimOn_times',
+        )
+        assert set(blocks) == {'stimOn_times|baseline', 'stimOn_times|contrast'}
+        baseline = blocks['stimOn_times|baseline'][:, 0]
+        # unit height at each event bin (0.2 -> 2, 0.5 -> 5), zero elsewhere
+        assert baseline[2] == 1.0 and baseline[5] == 1.0
+        assert baseline.sum() == 2.0
+        mod = blocks['stimOn_times|contrast'][:, 0]
+        assert mod[2] == 0.25 and mod[5] == -0.75
+
+    def test_interaction_block_is_product_of_modulators(self):
+        from iblnm.analysis import build_event_blocks
+        tvec = np.arange(0.0, 1.0, 0.1)
+        event_times = np.array([0.2, 0.5])
+        side = np.array([0.5, -0.5])
+        contrast = np.array([0.25, -0.75])
+        blocks = build_event_blocks(
+            event_times, tvec, self._identity_expander(),
+            modulators={'side': side, 'contrast': contrast},
+            interactions=[('side', 'contrast')], name='stimOn_times',
+        )
+        assert 'stimOn_times|side:contrast' in blocks
+        inter = blocks['stimOn_times|side:contrast'][:, 0]
+        # height at each event bin equals the product of the two modulators
+        assert inter[2] == 0.5 * 0.25
+        assert inter[5] == -0.5 * -0.75
+
+    def test_split_replicates_block_set_per_level(self):
+        from iblnm.analysis import build_event_blocks
+        tvec = np.arange(0.0, 1.0, 0.1)
+        event_times = np.array([0.2, 0.5, 0.7])
+        contrast = np.array([0.25, -0.75, 0.5])
+        split = pd.Series([1, -1, 1], name='feedbackType')
+        blocks = build_event_blocks(
+            event_times, tvec, self._identity_expander(),
+            modulators={'contrast': contrast}, split=split, name='feedback_times',
+        )
+        assert set(blocks) == {
+            'feedback_times|feedbackType=-1|baseline',
+            'feedback_times|feedbackType=-1|contrast',
+            'feedback_times|feedbackType=1|baseline',
+            'feedback_times|feedbackType=1|contrast',
+        }
+        # the +1 group fires only at its events (0.2 -> bin 2, 0.7 -> bin 7)
+        pos = blocks['feedback_times|feedbackType=1|baseline'][:, 0]
+        assert pos[2] == 1.0 and pos[7] == 1.0 and pos[5] == 0.0
+        # its modulator carries that group's contrasts only
+        pos_mod = blocks['feedback_times|feedbackType=1|contrast'][:, 0]
+        assert pos_mod[2] == 0.25 and pos_mod[7] == 0.5
+        # the -1 group fires only at its single event (0.5 -> bin 5)
+        neg = blocks['feedback_times|feedbackType=-1|baseline'][:, 0]
+        assert neg[5] == 1.0 and neg.sum() == 1.0
