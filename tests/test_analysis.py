@@ -2719,6 +2719,43 @@ class TestRaisedCosineBasis:
             raised_cosine_basis(5, 1.0, 0.0, 0.1)
 
 
+class TestMakeTrialConstant:
+    def test_value_held_inside_interval_zero_outside(self):
+        from iblnm.analysis import make_trial_constant
+        tvec = np.arange(0.0, 1.0, 0.1)
+        trials = pd.DataFrame(
+            {"intervals_0": [0.2, 0.6], "intervals_1": [0.4, 0.8], "x": [5.0, 9.0]}
+        )
+        values = make_trial_constant(trials, "x", tvec)
+        assert values.shape == (tvec.size,)
+        # bins inside trial 0's interval [0.2, 0.4) carry its value
+        assert values[2] == 5.0
+        assert values[3] == 5.0
+        # bins inside trial 1's interval [0.6, 0.8) carry its value
+        assert values[6] == 9.0
+        assert values[7] == 9.0
+        # bins outside any interval are zero
+        assert values[0] == 0.0
+        assert values[5] == 0.0
+        assert values[9] == 0.0
+
+
+class TestInterpolateToGrid:
+    def test_linear_series_recovered_interior_nan_outside(self):
+        from iblnm.analysis import interpolate_to_grid
+        src_t = np.linspace(0.0, 1.0, 6)
+        series = pd.Series(2.0 * src_t + 1.0, index=src_t)
+        # grid extends past the source support on both ends
+        tvec = np.array([-0.2, 0.25, 0.5, 0.75, 1.3])
+        out = interpolate_to_grid(series, tvec)
+        assert out.shape == (tvec.size,)
+        # a linear input is reproduced exactly by quadratic interpolation
+        np.testing.assert_allclose(out[1:4], 2.0 * tvec[1:4] + 1.0)
+        # samples outside [0, 1] have no support
+        assert np.isnan(out[0])
+        assert np.isnan(out[-1])
+
+
 class TestRaisedCosineExpand:
     def test_single_impulse_superposes_to_basis(self):
         from iblnm.analysis import raised_cosine_basis, raised_cosine_expand

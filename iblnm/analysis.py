@@ -2564,3 +2564,72 @@ def raised_cosine_expand(
         [np.convolve(regressor, basis[:, j])[: tvec.size] for j in range(n_basis)],
         axis=1,
     )
+
+
+def make_trial_constant(
+    trials: pd.DataFrame, column: str, tvec: np.ndarray
+) -> np.ndarray:
+    """Step (tonic) regressor: `column` held constant across each trial interval.
+
+    Each trial's value of `column` fills the grid samples spanning its
+    ``[intervals_0, intervals_1]`` interval; samples outside every interval
+    stay zero.
+
+    Parameters
+    ----------
+    trials : pd.DataFrame
+        Trials table with ``intervals_0``/``intervals_1`` interval bounds (s).
+    column : str
+        Trial column whose value fills each interval.
+    tvec : np.ndarray
+        Uniform model time grid.
+
+    Returns
+    -------
+    np.ndarray
+        1-D step regressor on `tvec`.
+    """
+    values = np.zeros(tvec.size)
+    for _, row in trials.iterrows():
+        start, stop = times_to_indices(
+            np.array([row["intervals_0"], row["intervals_1"]]), tvec, clip=True
+        )
+        values[start:stop] = row[column]
+    return values
+
+
+def interpolate_to_grid(
+    series: pd.Series | pd.DataFrame, tvec: np.ndarray, kind: str = "quadratic"
+) -> np.ndarray:
+    """Resample a time-indexed series onto the model grid `tvec`.
+
+    Unlike `resample_signal`, which builds its own PCHIP grid, this places an
+    externally supplied series onto a caller-given grid and NaN-pads samples
+    outside the source's time support.
+
+    Parameters
+    ----------
+    series : pd.Series | pd.DataFrame
+        Source values indexed by time (s). A frame interpolates each column.
+    tvec : np.ndarray
+        Uniform model time grid.
+    kind : str
+        scipy `interp1d` interpolation kind.
+
+    Returns
+    -------
+    np.ndarray
+        Values on `tvec`: 1-D for a Series, ``(len(tvec), n_columns)`` for a
+        frame. Samples outside the source support are NaN.
+    """
+    from scipy.interpolate import interp1d
+
+    interpolator = interp1d(
+        series.index.values,
+        series.values,
+        kind=kind,
+        axis=0,
+        bounds_error=False,
+        fill_value=np.nan,
+    )
+    return interpolator(tvec)
