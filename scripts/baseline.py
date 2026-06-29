@@ -101,8 +101,7 @@ if __name__ == '__main__':
             swapped_var=['baseline'],
             statistic_key='r2',
             alternative='greater',
-            n_iter=1000,
-            eids_to_process=pd.read_csv('eids4parallel.csv').iloc[:, 0].to_list()
+            n_iter=1000
             )
         results.to_parquet(out_dir / fname)
 
