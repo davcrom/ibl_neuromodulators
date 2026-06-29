@@ -2881,7 +2881,7 @@ def plot_response_decoding_summary(response_matrix, coefficients,
     return fig
 
 
-def plot_mean_response_traces(traces_df, target_nm, min_trials=10,
+def plot_mean_response_traces(traces_df, target_nm, min_trials=5,
                               baseline_window=(-0.15, 0)):
     """Mean peri-event response traces for one target-NM.
 
