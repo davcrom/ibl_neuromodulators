@@ -20,18 +20,21 @@ for subject in sorted({session["subject"] for session in sessions}):
     print(subject, genotype, len(eids))
 
 # %% pick a subject
-subject = "ZFM-09365" # 5HT
-subject = "ZFM-09343" # DA
+subject = "ZFM-09365"  # 5HT
+subject = "ZFM-09343"  # DA
+subject = "ZFM-09439"  # 5HT-2
+subject = "ZFM-08871"  # DBh
 
-genotype = one.alyx.rest('subjects','read', subject)['line']
+genotype = one.alyx.rest("subjects", "read", subject)["line"]
 eids = [session["id"] for session in sessions if session["subject"] == subject]
 
 for eid in eids:
-    print(one.eid2ref(eid)['date'], eid)
+    print(one.eid2ref(eid)["date"], eid)
 
 # %% verify that lightningpose can be loaded
 from data_loaders import load_pose
 from tqdm import tqdm
+
 res = {}
 for eid in tqdm(eids):
     try:
@@ -47,10 +50,11 @@ for eid in eids:
 
 # %% verify brain regions
 from data_loaders import get_brain_regions
+
 brain_regions = {}
 for eid in tqdm(eids):
     brain_regions[eid] = get_brain_regions(eid=eid, one=one)
-    
+
 # %% save valid eids to file
 from pathlib import Path
 
