@@ -12,6 +12,10 @@ from iblphotometry.fpio import PhotometrySessionLoader
 from iblphotometry.pipelines import sliding_mad_pipeline, run_pipeline
 from brainbox.behavior import wheel as wheel_methods
 
+def get_brain_regions(eid: str, one: ONE):
+    psl = PhotometrySessionLoader(one=one, eid=eid)
+    psl.load_photometry()
+    return psl.photometry['GCaMP'].columns
 
 def load_fluorescence(
     psl: PhotometrySessionLoader, brain_region: str, band: str = "GCaMP"
