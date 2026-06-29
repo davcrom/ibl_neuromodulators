@@ -1,5 +1,6 @@
 import re
 import warnings
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
@@ -2416,9 +2417,9 @@ def times_to_indices(
 
 
 def make_event_regressor(
-    event_times: np.ndarray, tvec: np.ndarray
+    event_times: np.ndarray, tvec: np.ndarray, heights: np.ndarray | None = None
 ) -> np.ndarray:
-    """Binary regressor: 1.0 at the nearest grid sample of each event time.
+    """Event regressor: per-event height at the nearest grid sample.
 
     Parameters
     ----------
@@ -2426,17 +2427,20 @@ def make_event_regressor(
         Event timestamps in seconds.
     tvec : np.ndarray
         Uniform model time grid.
+    heights : np.ndarray, optional
+        Per-event values placed at each event sample (parametric modulator). Must
+        align with `event_times`. Defaults to unit height (binary train).
 
     Returns
     -------
     np.ndarray
-        1-D binary regressor on `tvec`; events outside the grid are dropped.
+        1-D regressor on `tvec`; events outside the grid are dropped.
     """
     indices = times_to_indices(event_times, tvec)
     # keep only events falling inside the grid
     valid = (indices >= 0) & (indices < tvec.size)
     regressor = np.zeros(tvec.size)
-    regressor[indices[valid]] = 1.0
+    regressor[indices[valid]] = 1.0 if heights is None else np.asarray(heights)[valid]
     return regressor
 
 
@@ -2663,3 +2667,98 @@ def interpolate_to_grid(
         fill_value=np.nan,
     )
     return interpolator(tvec)
+
+
+def deviation_code(labels: np.ndarray, positive: str) -> np.ndarray:
+    """Deviation-code a 2-level categorical to ±0.5.
+
+    Returns +0.5 where ``labels == positive`` and −0.5 elsewhere, so a fitted
+    coefficient reads as the contrast between the two levels (the script uses
+    this for ``side``/``choice`` relative to the recording hemisphere).
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Per-event categorical labels.
+    positive : str
+        Label assigned the +0.5 code.
+
+    Returns
+    -------
+    np.ndarray
+        Float array of ±0.5, same length as `labels`.
+    """
+    return np.where(np.asarray(labels) == positive, 0.5, -0.5)
+
+
+def build_event_blocks(
+    event_times: np.ndarray,
+    tvec: np.ndarray,
+    expander: Callable[[np.ndarray], np.ndarray],
+    modulators: dict[str, np.ndarray] | None = None,
+    interactions: list[tuple[str, ...]] | None = None,
+    split: pd.Series | None = None,
+    name: str = "",
+) -> dict[str, np.ndarray]:
+    """Build the kernel blocks for one event term.
+
+    Emits a baseline block (unit-height event train) plus one block per
+    modulator and one per interaction, each the event train scaled by per-event
+    heights and passed through `expander`. With `split`, the whole block set is
+    replicated once per categorical level, each group's blocks firing only at
+    that group's events. Stays variable-agnostic: heights arrive already coded
+    (continuous mean-centered, categorical deviation-coded ±0.5 by the caller).
+
+    Parameters
+    ----------
+    event_times : np.ndarray
+        Event timestamps in seconds.
+    tvec : np.ndarray
+        Uniform model time grid.
+    expander : Callable[[np.ndarray], np.ndarray]
+        Basis expansion applied to a 1-D event train, returning a 2-D block
+        (e.g. FIR `lag_expand` or `raised_cosine_expand` with bound parameters).
+    modulators : dict[str, np.ndarray], optional
+        Maps modulator name to its per-event height array (aligned with
+        `event_times`).
+    interactions : list[tuple[str, ...]], optional
+        Each tuple names modulators whose elementwise product forms an
+        interaction block, named by joining the modulator names with ``:``.
+    split : pd.Series, optional
+        Per-event categorical labels (aligned with `event_times`); its `.name`
+        labels the split column. When given, the block set repeats per level.
+    name : str
+        Event-term prefix for block names.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        Ordered ``block name -> (len(tvec), n_basis)`` mapping. Names are
+        ``f'{name}|baseline'``, ``f'{name}|{mod}'``, ``f'{name}|{a}:{b}'``; split
+        levels prefix the level as ``f'{name}|{split.name}={level}|...'``.
+    """
+    modulators = modulators or {}
+    interactions = interactions or []
+    event_times = np.asarray(event_times)
+
+    def group_blocks(mask: np.ndarray, prefix: str) -> dict[str, np.ndarray]:
+        """Build the baseline + modulator + interaction blocks for one group."""
+        times = event_times[mask]
+        blocks = {f"{prefix}|baseline": expander(make_event_regressor(times, tvec))}
+        for mod_name, heights in modulators.items():
+            block = expander(make_event_regressor(times, tvec, np.asarray(heights)[mask]))
+            blocks[f"{prefix}|{mod_name}"] = block
+        for terms in interactions:
+            product = np.prod([np.asarray(modulators[m]) for m in terms], axis=0)
+            block = expander(make_event_regressor(times, tvec, product[mask]))
+            blocks[f"{prefix}|{':'.join(terms)}"] = block
+        return blocks
+
+    if split is None:
+        return group_blocks(np.ones(event_times.size, dtype=bool), name)
+
+    labels = np.asarray(split)
+    blocks = {}
+    for level in np.unique(labels):
+        blocks.update(group_blocks(labels == level, f"{name}|{split.name}={level}"))
+    return blocks
