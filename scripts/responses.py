@@ -27,7 +27,7 @@ from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     MEAN_TRACES_FPATH,
-    RESPONSE_OLS_PERSESSION_FPATH,
+    RESPONSE_OLS_PERSESSION_FPATH, RESPONSE_OLS_COEFS_FPATH,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
     MOVEMENT_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
@@ -512,14 +512,16 @@ if __name__ == '__main__':
         group.mean_traces.to_parquet(MEAN_TRACES_FPATH, index=False)
         print(f"Saved mean traces to {MEAN_TRACES_FPATH}")
 
-        # --- Per-session drop-one fits ---
+        # --- Per-session drop-one fits and full-model coefficients ---
         print("Fitting per-session drop-one OLS models...")
-        group.response_ols_dropone_results = group.response_ols_dropone(
-            LMM_FORMULAS['persession'])
+        group.response_ols_dropone_results, coefs_df = (
+            group.response_ols_dropone(LMM_FORMULAS['persession']))
         group.response_ols_dropone_results.to_parquet(
             RESPONSE_OLS_PERSESSION_FPATH, index=False)
         print(f"Saved per-session drop-one fits to "
               f"{RESPONSE_OLS_PERSESSION_FPATH}")
+        coefs_df.to_parquet(RESPONSE_OLS_COEFS_FPATH, index=False)
+        print(f"Saved per-session coefficients to {RESPONSE_OLS_COEFS_FPATH}")
 
     else:
         # =================================================================
@@ -535,6 +537,7 @@ if __name__ == '__main__':
         group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
         group.load_mean_traces(MEAN_TRACES_FPATH)
         group.load_response_ols_dropone(RESPONSE_OLS_PERSESSION_FPATH)
+        group.load_response_ols_coefficients(RESPONSE_OLS_COEFS_FPATH)
 
     # =====================================================================
     # Mean response traces per target-NM (first figures)
