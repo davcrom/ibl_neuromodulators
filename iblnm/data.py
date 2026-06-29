@@ -18,7 +18,7 @@ from one.alf.exceptions import ALFObjectNotFound
 from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
-    LP_QC_LABELS,
+    LOGGED_ERRORS_FPATH, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION, MOTION_ENERGY_EVENT,
     N_UNIQUE_SAMPLES_THRESHOLD,
     POSE_MEASURES,
@@ -2006,7 +2006,7 @@ class PhotometrySessionGroup:
 
     @classmethod
     def from_catalog(cls, catalog, one, h5_dir=SESSIONS_H5_DIR,
-                     scan_h5_errors=True):
+                     scan_h5_errors=True, cache_path=LOGGED_ERRORS_FPATH):
         """Build a group from a session catalog DataFrame.
 
         Validates parallel list columns and populates ``logged_errors`` from
@@ -2027,15 +2027,21 @@ class PhotometrySessionGroup:
             True, the H5 ``/errors`` groups are scanned to populate
             ``logged_errors`` for error-based filtering.
         scan_h5_errors : bool, optional
-            When True (default), scan the H5 ``/errors`` groups to populate
-            ``logged_errors``. Set False to reuse a ``logged_errors`` column
-            already present on ``catalog`` and skip the scan -- useful when
-            rebuilding a group from another group's ``sessions`` (an empty
-            column is created only if none exists).
+            When True (default), populate ``logged_errors`` via
+            ``load_or_collect_session_errors`` (reads ``cache_path`` if it
+            exists, else scans the H5 ``/errors`` groups and writes the cache).
+            Set False to reuse a ``logged_errors`` column already present on
+            ``catalog`` and skip both -- useful when rebuilding a group from
+            another group's ``sessions`` (an empty column is created only if
+            none exists).
+        cache_path : Path, optional
+            Parquet cache for the error scan, passed through to
+            ``load_or_collect_session_errors``. Defaults to
+            ``LOGGED_ERRORS_FPATH``; delete it to force a rescan.
         """
         from iblnm.config import SESSION_SCHEMA
         from iblnm.util import (
-            enforce_schema, validate_parallel_lists, collect_session_errors,
+            enforce_schema, validate_parallel_lists, load_or_collect_session_errors,
         )
 
         df = enforce_schema(catalog.copy(), SESSION_SCHEMA)
@@ -2044,11 +2050,10 @@ class PhotometrySessionGroup:
         df = validate_parallel_lists(df, parallel_cols)
 
         if h5_dir is not None and scan_h5_errors:
-            print(f"Scanning H5 files in {h5_dir} for logged errors "
-                  "(this may take a moment)...")
             df = df.drop(columns='logged_errors', errors='ignore')
-            df = df.merge(collect_session_errors(df['eid'], h5_dir),
-                          on='eid', how='left')
+            df = df.merge(
+                load_or_collect_session_errors(df['eid'], h5_dir, cache_path),
+                on='eid', how='left')
         elif 'logged_errors' not in df.columns:
             df['logged_errors'] = [[] for _ in range(len(df))]
 
