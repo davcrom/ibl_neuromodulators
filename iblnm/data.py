@@ -2388,7 +2388,8 @@ class PhotometrySessionGroup:
     def session_permutation_test(self, prep_fn, stat_fn, fixed_var, swapped_var,
                                  statistic_key, group_by='target_NM',
                                  unit='recordings', n_iter=1000,
-                                 alternative='two-sided', seed=42):
+                                 alternative='two-sided', seed=42,
+                                 eids_to_process=None):
         """Session-swap permutation test of a statistic, per unit.
 
         For each unit (a recording or session), computes the observed
@@ -2450,8 +2451,13 @@ class PhotometrySessionGroup:
         view = self.recordings if unit == 'recordings' else self.sessions
         rng = np.random.default_rng(seed)
 
+        if eids_to_process is not None:
+            eid_inds = np.where(view['eid'].isin(eids_to_process))[0]
+        else:
+            eid_inds = np.arange(len(view))
+
         rows = []
-        for pos in tqdm(range(len(view)), desc="Permutation test"):
+        for pos in tqdm(eid_inds, desc="Permutation test"):
             session = view.iloc[pos]
             donors = _get_donor_sessions(view, pos, group_by)
             if len(donors) == 0:
