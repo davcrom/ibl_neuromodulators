@@ -6,7 +6,7 @@ from datetime import datetime
 from iblnm.config import (
     N_UNIQUE_SAMPLES_THRESHOLD, VALID_TARGETNMS, DATASET_CATEGORIES,
     EXCLUDE_SESSION_TYPES, PROTOCOL_RED_FLAGS, SESSION_TYPES,
-    SUBJECTS_TO_EXCLUDE, SESSIONS_H5_DIR,
+    SUBJECTS_TO_EXCLUDE, SESSIONS_H5_DIR, LOGGED_ERRORS_FPATH,
 )
 from iblnm.validation import (
     exception_logger,
@@ -67,6 +67,46 @@ def collect_session_errors(eids, h5_dir=SESSIONS_H5_DIR) -> pd.DataFrame:
         'eid': list(eids),
         'logged_errors': [errors_by_eid.get(eid, []) for eid in eids],
     })
+
+
+def load_or_collect_session_errors(eids, h5_dir=SESSIONS_H5_DIR,
+                                   cache_path=LOGGED_ERRORS_FPATH) -> pd.DataFrame:
+    """Return per-session logged errors, caching the H5 scan to a parquet.
+
+    Write-once cache around :func:`collect_session_errors`. When ``cache_path``
+    is absent the H5 ``/errors`` groups are scanned and the result written to
+    it; when present the parquet is read back and the slow scan is skipped.
+    Delete ``cache_path`` to regenerate after reprocessing H5 files -- the
+    cache is never invalidated automatically, so the H5 groups remain the
+    source of truth.
+
+    Parameters
+    ----------
+    eids : iterable of str
+        Session eids to report on. The result has one row per eid, in this
+        order; eids absent from the cache get an empty list.
+    h5_dir : Path or str, optional
+        Directory of {eid}.h5 files, scanned only when the cache is absent.
+    cache_path : Path or str, optional
+        Parquet cache location. Defaults to ``LOGGED_ERRORS_FPATH``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ['eid', 'logged_errors']; one row per input eid, in order.
+    """
+    cache_path = Path(cache_path)
+    if cache_path.exists():
+        cached = pd.read_parquet(cache_path)
+        result = pd.DataFrame({'eid': list(eids)}).merge(
+            cached, on='eid', how='left')
+        result['logged_errors'] = result['logged_errors'].apply(
+            lambda e: list(e) if isinstance(e, (list, np.ndarray)) else [])
+        return result
+    errors = collect_session_errors(eids, h5_dir)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    errors.to_parquet(cache_path)
+    return errors
 
 
 def collect_catalog(h5_dir):

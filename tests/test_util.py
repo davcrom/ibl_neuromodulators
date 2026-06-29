@@ -14,6 +14,7 @@ from iblnm.util import (
     get_session_type,
     get_targetNM,
     collect_session_errors,
+    load_or_collect_session_errors,
     collect_catalog,
     collect_errors,
     fill_brain_region_from_fibers,
@@ -595,6 +596,40 @@ class TestCollectSessionErrors:
                           errors=[MissingRawData('x'), MissingRawData('x')])
         result = collect_session_errors(['eid-1'], tmp_path)
         assert result.iloc[0]['logged_errors'] == ['MissingRawData']
+
+
+class TestLoadOrCollectSessionErrors:
+    def test_first_call_scans_and_writes_cache(self, tmp_path):
+        from iblnm.validation import MissingRawData
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', errors=[MissingRawData('x')])
+        cache_path = tmp_path / 'logged_errors.pqt'
+        result = load_or_collect_session_errors(
+            ['eid-1'], h5_dir=tmp_path, cache_path=cache_path)
+        assert result.iloc[0]['logged_errors'] == ['MissingRawData']
+        assert cache_path.exists()
+
+    def test_second_call_reads_cache_without_rescanning(self, tmp_path):
+        from iblnm.validation import MissingRawData
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', errors=[MissingRawData('x')])
+        cache_path = tmp_path / 'logged_errors.pqt'
+        load_or_collect_session_errors(
+            ['eid-1'], h5_dir=tmp_path, cache_path=cache_path)
+        # Point h5_dir at an empty dir: a rescan would now return no errors,
+        # so a correct cache hit must still report the original error.
+        result = load_or_collect_session_errors(
+            ['eid-1'], h5_dir=tmp_path / 'empty', cache_path=cache_path)
+        assert result.iloc[0]['logged_errors'] == ['MissingRawData']
+
+    def test_eid_absent_from_cache_gets_empty_list(self, tmp_path):
+        from iblnm.validation import MissingRawData
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', errors=[MissingRawData('x')])
+        cache_path = tmp_path / 'logged_errors.pqt'
+        load_or_collect_session_errors(
+            ['eid-1'], h5_dir=tmp_path, cache_path=cache_path)
+        result = load_or_collect_session_errors(
+            ['eid-1', 'eid-new'], h5_dir=tmp_path, cache_path=cache_path)
+        assert list(result['eid']) == ['eid-1', 'eid-new']
+        assert result[result['eid'] == 'eid-new'].iloc[0]['logged_errors'] == []
 
 
 class TestDeduplicateLog:
