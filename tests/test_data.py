@@ -3620,6 +3620,35 @@ class TestLoaderMethods:
         group.load_response_ols_dropone(tmp_path / 'nonexistent.parquet')
         assert group.response_ols_dropone_results is None
 
+    def test_load_response_ols_coefficients(self, tmp_path):
+        from iblnm.config import RESPONSE_OLS_COEFS_COLUMNS
+        group = self._make_group()
+        rows = [
+            {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
+             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'regressor': 'contrast', 'coef': 0.5, 'coef_se': 0.1,
+             'n_trials': 80},
+            {'eid': 'eid-1', 'subject': 'subj-1', 'target_NM': 'target-0',
+             'brain_region': 'region-0', 'event': 'feedback_times',
+             'regressor': 'reward', 'coef': 0.4, 'coef_se': 0.2,
+             'n_trials': 70},
+            {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
+             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'regressor': 'side', 'coef': 0.3, 'coef_se': 0.05,
+             'n_trials': 60},
+        ]
+        df = pd.DataFrame(rows)[RESPONSE_OLS_COEFS_COLUMNS]
+        path = tmp_path / 'response_ols_persession_coefs.parquet'
+        df.to_parquet(path, index=False)
+
+        group.load_response_ols_coefficients(path)
+        assert set(group.response_ols_coefficients['eid'].values) == {
+            'eid-0', 'eid-1'}
+        assert 'eid-99' not in group.response_ols_coefficients['eid'].values
+
+        group.load_response_ols_coefficients(tmp_path / 'nonexistent.parquet')
+        assert group.response_ols_coefficients is None
+
     def test_load_trial_regressors(self, tmp_path):
         group = self._make_group()
         df = pd.DataFrame([
@@ -4302,7 +4331,7 @@ class TestCompareResponseModels:
 
     def test_absent_region_returns_empty_frame(self):
         ps = _make_session_for_persession()
-        out = ps.compare_response_models('NOT-A-REGION', self.formulas)
+        out, _ = ps.compare_response_models('NOT-A-REGION', self.formulas)
         assert out.empty
         assert list(out.columns) == [
             'brain_region', 'target_NM', 'event', 'predictor', 'r2',
@@ -4311,14 +4340,14 @@ class TestCompareResponseModels:
 
     def test_informative_contrast_has_positive_delta_r2(self):
         ps = _make_session_for_persession()
-        out = ps.compare_response_models('VTA-r', self.formulas)
+        out, _ = ps.compare_response_models('VTA-r', self.formulas)
         contrast_rows = out[out['predictor'] == 'contrast']
         assert not contrast_rows.empty
         assert (contrast_rows['delta_r2'] > 0).all()
 
     def test_rows_tagged_with_region_and_target_nm(self):
         ps = _make_session_for_persession()
-        out = ps.compare_response_models('VTA-r', self.formulas)
+        out, _ = ps.compare_response_models('VTA-r', self.formulas)
         assert (out['brain_region'] == 'VTA-r').all()
         assert (out['target_NM'] == 'VTA-DA').all()
         # No `full` reference row; one row per dropped predictor per event.
@@ -4336,15 +4365,43 @@ class TestCompareResponseModels:
 
     def test_ols_fits_cached_per_name_event(self):
         ps = _make_session_for_persession()
-        out = ps.compare_response_models('VTA-r', self.formulas)
+        out, _ = ps.compare_response_models('VTA-r', self.formulas)
         for event in set(out['event']):
             for name in self.formulas:
                 assert (name, event) in ps.ols_fits
 
     def test_event_below_min_trials_is_skipped(self):
         ps = _make_session_for_persession(n_trials=120)
-        out = ps.compare_response_models('VTA-r', self.formulas, min_trials=200)
-        assert out.empty
+        _, coefs = ps.compare_response_models(
+            'VTA-r', self.formulas, min_trials=200)
+        dropone, _ = ps.compare_response_models(
+            'VTA-r', self.formulas, min_trials=200)
+        assert dropone.empty
+        assert coefs.empty
+
+    def test_coefficients_frame_columns_and_grain(self):
+        from iblnm.data import PERSESSION_COEFS_COLUMNS
+        from iblnm.config import _PERSESSION_REGRESSORS
+        ps = _make_session_for_persession()
+        _, coefs = ps.compare_response_models('VTA-r', self.formulas)
+        assert list(coefs.columns) == PERSESSION_COEFS_COLUMNS
+        # One row per (event, regressor) present in that event's full fit.
+        regressors = set(_PERSESSION_REGRESSORS)
+        assert set(coefs['regressor']) <= regressors
+        per_event = coefs.groupby('event')['regressor'].agg(set)
+        for event, present in per_event.items():
+            full_params = set(ps.ols_fits[('full', event)].params.index)
+            assert present == regressors & full_params
+
+    def test_coefficients_read_full_fit_params_and_bse(self):
+        ps = _make_session_for_persession()
+        _, coefs = ps.compare_response_models('VTA-r', self.formulas)
+        for _, row in coefs.iterrows():
+            fit = ps.ols_fits[('full', row['event'])]
+            assert row['coef'] == fit.params[row['regressor']]
+            assert row['coef_se'] == fit.bse[row['regressor']]
+            assert row['brain_region'] == 'VTA-r'
+            assert row['target_NM'] == 'VTA-DA'
 
 
 class TestResponseOlsDropone:
@@ -4388,7 +4445,7 @@ class TestResponseOlsDropone:
             ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT'),
         ])
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        out = group.response_ols_dropone(self.formulas)
+        out, coefs = group.response_ols_dropone(self.formulas)
 
         assert list(out.columns) == [
             'eid', 'subject', 'target_NM', 'brain_region', 'event',
@@ -4408,6 +4465,13 @@ class TestResponseOlsDropone:
         per_event = out.groupby(['eid', 'event'])['predictor'].agg(set)
         assert (per_event == dropped).all()
 
+        # The coefficients frame is tagged with the same eid/subject pairs.
+        from iblnm.config import RESPONSE_OLS_COEFS_COLUMNS
+        assert list(coefs.columns) == RESPONSE_OLS_COEFS_COLUMNS
+        assert set(coefs['eid']) == {'eid-0', 'eid-1'}
+        assert dict(coefs.groupby('eid')['subject'].first()) == {
+            'eid-0': 'subj-0', 'eid-1': 'subj-1'}
+
     def test_insufficient_recording_is_absent(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
         self._write_recording(tmp_path, 'eid-0', 'subj-0', 'VTA-r', 'r',
@@ -4420,10 +4484,11 @@ class TestResponseOlsDropone:
             ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT'),
         ])
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        out = group.response_ols_dropone(self.formulas)
+        out, coefs = group.response_ols_dropone(self.formulas)
 
         assert set(out['eid']) == {'eid-0'}
         assert 'eid-1' not in set(out['eid'])
+        assert set(coefs['eid']) == {'eid-0'}
 
 
 class TestResponseLMMEffects:

@@ -24,9 +24,11 @@ from iblnm.config import (
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
-    RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, SESSIONS_H5_DIR,
+    RESPONSE_EVENTS, RESPONSE_OLS_COEFS_COLUMNS, RESPONSE_WINDOW,
+    RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
+    _PERSESSION_REGRESSORS,
 )
 from iblnm.analysis import (
     get_responses, compute_response_magnitude, movement_trace,
@@ -55,6 +57,14 @@ PERSESSION_DROPONE_COLUMNS = [
 RESPONSE_OLS_DROPONE_COLUMNS = [
     'eid', 'subject', 'target_NM', 'brain_region', 'event', 'predictor', 'r2',
     'delta_r2', 'n_trials',
+]
+
+# Per-recording full-model main-effect coefficients (one row per event ×
+# regressor for a single recording). The group method tags these with
+# eid/subject to reach RESPONSE_OLS_COEFS_COLUMNS.
+PERSESSION_COEFS_COLUMNS = [
+    'brain_region', 'target_NM', 'event', 'regressor', 'coef', 'coef_se',
+    'n_trials',
 ]
 
 
@@ -1750,18 +1760,26 @@ class PhotometrySession(PhotometrySessionLoader):
 
         Returns
         -------
-        pd.DataFrame
+        dropone : pd.DataFrame
             Long-form rows ``brain_region, target_NM, event, predictor, r2,
             delta_r2, n_trials``. Empty (those columns) if ``brain_region`` is
             absent or no event is scorable.
+        coefs : pd.DataFrame
+            The ``reference`` model's main-effect weights, one row per (event,
+            regressor) for each regressor in ``_PERSESSION_REGRESSORS`` present
+            in that event's fitted design: ``brain_region, target_NM, event,
+            regressor, coef, coef_se, n_trials``. Read from the same fits — no
+            refit. Empty (``PERSESSION_COEFS_COLUMNS``) when ``dropone`` is.
         """
+        empty = (pd.DataFrame(columns=PERSESSION_DROPONE_COLUMNS),
+                 pd.DataFrame(columns=PERSESSION_COEFS_COLUMNS))
         if brain_region not in self.responses:
-            return pd.DataFrame(columns=PERSESSION_DROPONE_COLUMNS)
+            return empty
 
         target_NM = self.target_NM[self.brain_region.index(brain_region)]
         df = self._response_modeling_frame(brain_region, response_col)
 
-        frames = []
+        dropone_frames, coef_frames = [], []
         for event, df_event in df.groupby('event'):
             df_event = analysis.code_predictors(df_event, contrast_coding)
             union_cols = analysis.formula_union_columns(
@@ -1782,11 +1800,39 @@ class PhotometrySession(PhotometrySessionLoader):
             rows.insert(1, 'target_NM', target_NM)
             rows.insert(2, 'event', event)
             rows['n_trials'] = len(df_event)
-            frames.append(rows)
+            dropone_frames.append(rows)
+            coef_frames.append(self._coefficient_rows(
+                fits[reference], brain_region, target_NM, event,
+                len(df_event)))
 
-        if not frames:
-            return pd.DataFrame(columns=PERSESSION_DROPONE_COLUMNS)
-        return pd.concat(frames, ignore_index=True)[PERSESSION_DROPONE_COLUMNS]
+        if not dropone_frames:
+            return empty
+        dropone = pd.concat(dropone_frames,
+                            ignore_index=True)[PERSESSION_DROPONE_COLUMNS]
+        coefs = pd.concat(coef_frames,
+                          ignore_index=True)[PERSESSION_COEFS_COLUMNS]
+        return dropone, coefs
+
+    @staticmethod
+    def _coefficient_rows(fit, brain_region: str, target_NM: str, event: str,
+                          n_trials: int) -> pd.DataFrame:
+        """Main-effect weight and SE per regressor from one fitted model.
+
+        Reads ``fit.params[r]`` / ``fit.bse[r]`` for each bare regressor name
+        ``r`` in ``_PERSESSION_REGRESSORS`` present in ``fit.params`` (a
+        regressor absent from this event's design contributes no row). No
+        refit — ``fit`` is the already-fitted reference model.
+        """
+        present = [r for r in _PERSESSION_REGRESSORS if r in fit.params.index]
+        return pd.DataFrame({
+            'brain_region': brain_region,
+            'target_NM': target_NM,
+            'event': event,
+            'regressor': present,
+            'coef': [fit.params[r] for r in present],
+            'coef_se': [fit.bse[r] for r in present],
+            'n_trials': n_trials,
+        })
 
     def _response_modeling_frame(self, brain_region: str,
                                  response_col: str) -> pd.DataFrame:
@@ -1942,6 +1988,7 @@ class PhotometrySessionGroup:
         self.mean_traces = None
         self.response_magnitudes = None
         self.response_ols_dropone_results = None
+        self.response_ols_coefficients = None
         self.trial_regressors = None
         self.response_features = None
         self.performance = None
@@ -2463,14 +2510,17 @@ class PhotometrySessionGroup:
 
         Returns
         -------
-        pandas.DataFrame
+        dropone : pandas.DataFrame
             Long-form ``eid, subject, target_NM, brain_region, event,
             predictor, r2, delta_r2, n_trials``; empty (those columns) when no
             recording is scorable.
+        coefs : pandas.DataFrame
+            The full model's main-effect weights from the same fits, columns
+            ``RESPONSE_OLS_COEFS_COLUMNS``; empty (those columns) likewise.
         """
         from tqdm import tqdm
 
-        frames = []
+        dropone_frames, coef_frames = [], []
         for _, row in tqdm(self.recordings.iterrows(),
                            total=len(self.recordings),
                            desc="Per-recording OLS drop-one"):
@@ -2482,19 +2532,26 @@ class PhotometrySessionGroup:
             ps = PhotometrySession(row, one=self.one, load_data=False)
             ps.load_h5(Path(self.h5_dir) / f"{row['eid']}.h5",
                        groups=['photometry', 'trials', 'wheel'])
-            rows = ps.compare_response_models(
+            rows, coefs = ps.compare_response_models(
                 brain_region=row['brain_region'], formulas=formulas,
                 response_col=response_col, reference=reference,
                 min_trials=min_trials, contrast_coding=contrast_coding)
             if rows.empty:
                 continue
-            rows.insert(0, 'eid', row['eid'])
-            rows.insert(1, 'subject', row['subject'])
-            frames.append(rows)
+            for frame in (rows, coefs):
+                frame.insert(0, 'eid', row['eid'])
+                frame.insert(1, 'subject', row['subject'])
+            dropone_frames.append(rows)
+            coef_frames.append(coefs)
 
-        if not frames:
-            return pd.DataFrame(columns=RESPONSE_OLS_DROPONE_COLUMNS)
-        return pd.concat(frames, ignore_index=True)[RESPONSE_OLS_DROPONE_COLUMNS]
+        if not dropone_frames:
+            return (pd.DataFrame(columns=RESPONSE_OLS_DROPONE_COLUMNS),
+                    pd.DataFrame(columns=RESPONSE_OLS_COEFS_COLUMNS))
+        dropone = pd.concat(dropone_frames,
+                            ignore_index=True)[RESPONSE_OLS_DROPONE_COLUMNS]
+        coefs = pd.concat(coef_frames,
+                          ignore_index=True)[RESPONSE_OLS_COEFS_COLUMNS]
+        return dropone, coefs
 
     # -----------------------------------------------------------------
     # Parquet loaders — populate group attributes from saved files
@@ -2524,6 +2581,10 @@ class PhotometrySessionGroup:
     def load_response_ols_dropone(self, path):
         """Load per-session drop-one results from parquet, filtered to current recordings."""
         self.response_ols_dropone_results = self._load_parquet(path)
+
+    def load_response_ols_coefficients(self, path):
+        """Load per-session coefficients from parquet, filtered to current recordings."""
+        self.response_ols_coefficients = self._load_parquet(path)
 
     def load_trial_regressors(self, path):
         """Load trial regressors from parquet, filtered to current recordings."""

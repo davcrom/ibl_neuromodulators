@@ -23,6 +23,12 @@ RESPONSE_MATRIX_FPATH = RESPONSES_DIR / 'response_matrix.pqt'
 RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 MEAN_TRACES_FPATH = RESPONSES_DIR / 'mean_traces.pqt'
 RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.parquet'
+RESPONSE_OLS_COEFS_FPATH = RESPONSES_DIR / 'response_ols_persession_coefs.parquet'
+# Group-level per-session coefficients frame: one row per (session, event,
+# regressor) carrying the full model's main-effect weight and its SE.
+RESPONSE_OLS_COEFS_COLUMNS = ['eid', 'subject', 'target_NM', 'brain_region',
+                              'event', 'regressor', 'coef', 'coef_se',
+                              'n_trials']
 TASK_ENCODING_DIR = RESULTS_DIR / 'task_encoding'
 DISPERSION_FIGURES_DIR = PROJECT_ROOT / 'figures/task_encoding/dispersion'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
