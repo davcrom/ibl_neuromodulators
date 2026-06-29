@@ -17,6 +17,7 @@ import pandas as pd
 from iblnm.config import SESSIONS_FPATH, PROJECT_ROOT, FIGURE_DPI
 from iblnm.io import _get_default_connection
 from iblnm.data import PhotometrySessionGroup
+from iblnm.util import load_or_collect_session_errors
 from iblnm.vis import plot_baseline_propsig, plot_baseline_r2
 
 def prepare_session(ps):
@@ -77,12 +78,18 @@ if __name__ == '__main__':
     if args.reprocess:
         results = pd.read_parquet(out_dir / fname)
     else:
+        catalog = pd.read_parquet(SESSIONS_FPATH)
+        catalog = catalog.merge(
+            load_or_collect_session_errors(catalog['eid']),
+            on='eid', how='left'
+            )
         group = PhotometrySessionGroup.from_catalog(
-            pd.read_parquet(SESSIONS_FPATH),
-            one=_get_default_connection()
+            catalog,
+            one=_get_default_connection(),
+            scan_h5_errors=False
             )
         group.filter_sessions(
-            session_types=('ephys',),
+            session_types=('biased', 'ephys',),
         )
         _ = group.deduplicate()
 
@@ -94,7 +101,8 @@ if __name__ == '__main__':
             swapped_var=['baseline'],
             statistic_key='r2',
             alternative='greater',
-            n_iter=1000
+            n_iter=1000,
+            eids_to_process=pd.read_csv('eids4parallel.csv').iloc[:, 0].to_list()
             )
         results.to_parquet(out_dir / fname)
 

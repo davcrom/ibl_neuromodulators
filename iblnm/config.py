@@ -38,6 +38,7 @@ EVENTS_LOG_FPATH = PROJECT_ROOT / 'metadata/events_log.pqt'
 ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
 POSE_FPATH = PROJECT_ROOT / 'metadata/pose.pqt'
 POSE_LOG_FPATH = PROJECT_ROOT / 'metadata/pose_log.pqt'
+LOGGED_ERRORS_FPATH = PROJECT_ROOT / 'metadata/logged_errors.pqt'
 
 # Video QC parameters
 LENGTH_MISMATCH_THRESHOLD = 120  # seconds
