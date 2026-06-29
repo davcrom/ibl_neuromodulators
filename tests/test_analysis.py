@@ -3,8 +3,74 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from iblnm.analysis import get_responses, normalize_responses, resample_signal
+from iblnm.analysis import (
+    fit_measurement_error_varcomp,
+    get_responses,
+    normalize_responses,
+    resample_signal,
+    summarize_posterior,
+)
 from iblnm.util import contrast_transform
+
+
+def _synthetic_varcomp_data(mouse_sd, session_sd, n_mice=5, n_sessions=6, se=0.1, seed=0):
+    """Per-session estimates with injected mouse-SD and session-SD.
+
+    Returns ``(estimates, ses, mouse_ids)`` for ``n_mice`` mice each contributing
+    ``n_sessions`` sessions. Each estimate is a mouse effect + session effect +
+    measurement noise of known SD ``se``.
+    """
+    rng = np.random.default_rng(seed)
+    mouse_ids = np.repeat(np.arange(n_mice), n_sessions)
+    mouse_effect = rng.normal(0, mouse_sd, n_mice)[mouse_ids]
+    session_effect = rng.normal(0, session_sd, mouse_ids.size)
+    noise = rng.normal(0, se, mouse_ids.size)
+    estimates = mouse_effect + session_effect + noise
+    ses = np.full(mouse_ids.size, se)
+    return estimates, ses, mouse_ids
+
+
+class TestVarcompFit:
+    def test_recovers_injected_variances(self):
+        mouse_sd, session_sd = 0.6, 0.3
+        estimates, ses, mouse_ids = _synthetic_varcomp_data(mouse_sd, session_sd)
+        v_mouse, v_session = fit_measurement_error_varcomp(
+            estimates, ses, mouse_ids, draws=500, tune=500, chains=2, random_seed=0
+        )
+        # standardized scale: injected SDs divided by the data SD
+        scale = estimates.std()
+        np.testing.assert_allclose(
+            v_mouse.mean(), (mouse_sd / scale) ** 2, atol=0.35
+        )
+        np.testing.assert_allclose(
+            v_session.mean(), (session_sd / scale) ** 2, atol=0.35
+        )
+        # mouse component clearly exceeds session component here
+        assert v_mouse.mean() > v_session.mean()
+
+    def test_scaling_invariance(self):
+        estimates, ses, mouse_ids = _synthetic_varcomp_data(0.6, 0.3)
+        vm1, vs1 = fit_measurement_error_varcomp(
+            estimates, ses, mouse_ids, draws=500, tune=500, chains=2, random_seed=0
+        )
+        vm2, vs2 = fit_measurement_error_varcomp(
+            10 * estimates, 10 * ses, mouse_ids,
+            draws=500, tune=500, chains=2, random_seed=0,
+        )
+        np.testing.assert_allclose(vm1.mean(), vm2.mean(), atol=0.05)
+        np.testing.assert_allclose(vs1.mean(), vs2.mean(), atol=0.05)
+
+
+class TestSummarizePosterior:
+    def test_summary_and_grid(self):
+        samples = np.random.default_rng(0).normal(2.0, 1.0, 5000)
+        mean, hdi_low, hdi_high, x_grid, density = summarize_posterior(
+            samples, grid_size=150
+        )
+        assert hdi_low <= mean <= hdi_high
+        assert len(x_grid) == 150
+        assert len(density) == 150
+        assert np.all(density >= 0)
 
 
 class TestContrastTransform:
@@ -2253,9 +2319,14 @@ class TestSelectModelingTrials:
             'peak_velocity': [1.0, 1.0, 1.0, 1.0, 1.0],
         })
 
-    def test_drops_filtered_trials(self):
+    def test_keeps_all_blocks_by_default(self):
         from iblnm.analysis import select_modeling_trials
         kept = select_modeling_trials(self._merged_frame())
+        assert kept['trial'].tolist() == [0, 3]
+
+    def test_probability_left_filters_to_block(self):
+        from iblnm.analysis import select_modeling_trials
+        kept = select_modeling_trials(self._merged_frame(), probability_left=0.5)
         assert kept['trial'].tolist() == [0]
 
     def test_adds_log_timing_columns(self):
@@ -2278,7 +2349,7 @@ class TestSelectModelingTrials:
         from iblnm.analysis import select_modeling_trials
         df = self._merged_frame().rename(columns={'response': 'baseline'})
         kept = select_modeling_trials(df, response_col='baseline')
-        assert kept['trial'].tolist() == [0]
+        assert kept['trial'].tolist() == [0, 3]
 
 
 class TestCodePredictors:

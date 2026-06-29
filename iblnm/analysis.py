@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
+from scipy.stats import gaussian_kde
 from tqdm import tqdm
 
 from iblnm.config import (
@@ -1507,16 +1508,16 @@ def build_trial_regressors(
 
 
 def select_modeling_trials(
-    df: pd.DataFrame, response_col: str = 'response'
+    df: pd.DataFrame, response_col: str = 'response',
+    probability_left: float | None = None,
 ) -> pd.DataFrame:
-    """Keep the unbiased-block go trials usable for response modeling.
+    """Keep the go trials usable for response modeling.
 
-    Drops biased-block trials (``probabilityLeft != 0.5``), no-go trials
-    (``choice == 0``), false starts (``response_time <= 0.05``), and trials
-    with a null ``response_col``. Adds a ``log_<var>`` column (base-10, NaN
-    where the value is ≤ 0) for each ``config.MOVEMENT_PREDICTORS`` entry coded
-    as ``log_<var>``, so movement models can reference them; the NaN rows are
-    dropped per family at fit time.
+    Drops no-go trials (``choice == 0``), false starts
+    (``response_time <= 0.05``), and trials with a null ``response_col``. Adds a
+    ``log_<var>`` column (base-10, NaN where the value is ≤ 0) for each
+    ``config.MOVEMENT_PREDICTORS`` entry coded as ``log_<var>``, so movement
+    models can reference them; the NaN rows are dropped per family at fit time.
 
     Parameters
     ----------
@@ -1525,6 +1526,9 @@ def select_modeling_trials(
         ``choice``, ``response_time``, and the log-transformed movement columns.
     response_col : str
         Column name for the response magnitude whose NaNs are dropped.
+    probability_left : float or None
+        When set, keep only trials with this ``probabilityLeft`` (e.g. ``0.5``
+        for the unbiased block). ``None`` (default) keeps all blocks.
 
     Returns
     -------
@@ -1532,7 +1536,8 @@ def select_modeling_trials(
         The retained trials, with added ``log_<var>`` columns. A copy; the
         input is not mutated.
     """
-    df = df.query('probabilityLeft == 0.5')
+    if probability_left is not None:
+        df = df[df['probabilityLeft'] == probability_left]
     df = df.dropna(subset=[response_col])
     df = df.query('choice != 0 and response_time > 0.05').copy()
     for var, pred in MOVEMENT_PREDICTORS.items():
@@ -2762,3 +2767,144 @@ def build_event_blocks(
     for level in np.unique(labels):
         blocks.update(group_blocks(labels == level, f"{name}|{split.name}={level}"))
     return blocks
+
+
+def fit_measurement_error_varcomp(
+    estimates: np.ndarray,
+    ses: np.ndarray,
+    mouse_ids: np.ndarray,
+    *,
+    tau_prior: tuple[str, float] = ("halfnormal", 1.0),
+    draws: int = 1000,
+    tune: int = 1000,
+    chains: int = 4,
+    target_accept: float = 0.9,
+    random_seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit the multilevel measurement-error variance-components model.
+
+    Each per-session estimate is a noisy observation of an unknown true effect,
+    decomposed into a between-mouse and a between-session (within-mouse)
+    component. Standard errors enter as *known* (fixed) measurement noise so
+    estimation uncertainty is not counted as real variability — the standard
+    multilevel random-effects meta-analysis ("eight schools") model.
+
+    Estimates are standardized internally (``z = (estimates - mean) / std``,
+    ``se_z = ses / std``) so the ``tau`` priors are scale-free; returned
+    variances are therefore in standardized units.
+
+    Parameters
+    ----------
+    estimates : 1D array, shape (n_sessions,)
+        Per-session coefficient estimates.
+    ses : 1D array, shape (n_sessions,)
+        Per-session standard errors of ``estimates`` (treated as known).
+    mouse_ids : 1D array, shape (n_sessions,)
+        Mouse identifier per session; any hashable labels, mapped to contiguous
+        integer indices internally.
+    tau_prior : tuple of (str, float)
+        Prior family and scale for the ``tau`` standard-deviation parameters.
+        Family is one of ``'halfnormal'``, ``'halfcauchy'``, ``'uniform'``
+        (``Uniform(0, scale)``).
+    draws, tune, chains : int
+        MCMC draws kept, tuning steps, and chains.
+    target_accept : float
+        NUTS target acceptance probability.
+    random_seed : int
+        Seed for reproducible sampling.
+
+    Returns
+    -------
+    v_mouse : 1D array, shape (chains * draws,)
+        Posterior draws of the between-mouse variance ``tau_mouse**2``.
+    v_session : 1D array, shape (chains * draws,)
+        Posterior draws of the between-session variance ``tau_session**2``.
+    """
+    import pymc as pm
+
+    estimates = np.asarray(estimates, dtype=float)
+    ses = np.asarray(ses, dtype=float)
+    scale = estimates.std()
+    z = (estimates - estimates.mean()) / scale
+    se_z = ses / scale
+
+    _, mouse_idx = np.unique(mouse_ids, return_inverse=True)
+    n_mice = int(mouse_idx.max() + 1)
+    n_sessions = int(z.size)
+
+    prior = _tau_prior_factory(tau_prior)
+    with pm.Model():
+        mu = pm.Normal("mu", 0, 1)
+        tau_mouse = prior("tau_mouse")
+        tau_session = prior("tau_session")
+        b_mouse = pm.Normal("b_mouse", 0, tau_mouse, shape=n_mice)
+        c_session = pm.Normal("c_session", 0, tau_session, shape=n_sessions)
+        theta = mu + b_mouse[mouse_idx] + c_session
+        pm.Normal("obs", theta, se_z, observed=z)
+        pm.Deterministic("V_mouse", tau_mouse**2)
+        pm.Deterministic("V_session", tau_session**2)
+        idata = pm.sample(
+            draws,
+            tune=tune,
+            chains=chains,
+            target_accept=target_accept,
+            random_seed=random_seed,
+            progressbar=False,
+        )
+
+    v_mouse = idata.posterior["V_mouse"].values.ravel()
+    v_session = idata.posterior["V_session"].values.ravel()
+    return v_mouse, v_session
+
+
+def _tau_prior_factory(tau_prior: tuple[str, float]) -> Callable:
+    """Return a ``name -> pm.Distribution`` builder for the chosen tau prior."""
+    import pymc as pm
+
+    family, scale = tau_prior
+    builders = {
+        "halfnormal": lambda name: pm.HalfNormal(name, scale),
+        "halfcauchy": lambda name: pm.HalfCauchy(name, scale),
+        "uniform": lambda name: pm.Uniform(name, 0, scale),
+    }
+    if family not in builders:
+        raise ValueError(f"Unknown tau prior family: {family!r}")
+    return builders[family]
+
+
+def summarize_posterior(
+    samples: np.ndarray,
+    *,
+    grid_size: int = 200,
+    hdi_prob: float = 0.94,
+) -> tuple[float, float, float, np.ndarray, np.ndarray]:
+    """Reduce a 1-D posterior sample vector to a summary and a KDE outline.
+
+    Parameters
+    ----------
+    samples : 1D array
+        Posterior draws of one quantity.
+    grid_size : int
+        Number of points in the KDE evaluation grid.
+    hdi_prob : float
+        Highest-density-interval mass (e.g. 0.94).
+
+    Returns
+    -------
+    mean : float
+        Posterior mean.
+    hdi_low, hdi_high : float
+        Bounds of the ``hdi_prob`` highest-density interval.
+    x_grid : 1D array, shape (grid_size,)
+        Grid from 0 to ``samples.max()`` on which the density is evaluated.
+    density : 1D array, shape (grid_size,)
+        Gaussian-KDE density (the violin outline) on ``x_grid``.
+    """
+    import arviz as az
+
+    samples = np.asarray(samples, dtype=float)
+    mean = float(samples.mean())
+    hdi_low, hdi_high = (float(x) for x in az.hdi(samples, prob=hdi_prob))
+    x_grid = np.linspace(0, samples.max(), grid_size)
+    density = gaussian_kde(samples)(x_grid)
+    return mean, hdi_low, hdi_high, x_grid, density
