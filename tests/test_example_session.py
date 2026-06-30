@@ -5,11 +5,12 @@ import pytest
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
+from matplotlib.colors import to_rgba
 
 from iblnm.config import TARGETNM_COLORS
 from scripts.example_session import (
     camera_timing_ok, find_snippet_window, _normalize_window, build_traces,
-    plot_example_session,
+    plot_example_session, contrast_rank_grays, feedback_colors,
 )
 
 
@@ -75,6 +76,7 @@ def snippet_data():
         'feedback_times': fb,
         'feedbackType': [1, -1, 1, 1, -1, 1, 1, -1],
         'choice': [1, -1, 1, 1, -1, 1, 1, -1],
+        'contrast': [1.0, 0.25, 0.0625, 0.0, 1.0, 0.125, 0.25, 0.0],
     })
 
     return photometry, wheel, pose_df, pose_times, trials, t_start, t_end
@@ -196,6 +198,28 @@ class TestBuildTraces:
 
 
 # =========================================================================
+# contrast_rank_grays / feedback_colors
+# =========================================================================
+
+class TestMarkers:
+    def test_contrast_rank_grays_monotonic_in_rank(self):
+        levels = [0.0, 0.0625, 0.25, 1.0]
+        out = contrast_rank_grays([0.0, 1.0, 0.25, 0.0625], levels)
+        # lowest contrast (rank 0) -> white, highest -> black
+        assert out[0] == pytest.approx(1.0)   # contrast 0.0
+        assert out[1] == pytest.approx(0.0)   # contrast 1.0
+        # order follows rank, not raw value: 0.0625 lighter than 0.25
+        assert out[3] > out[2]
+
+    def test_contrast_rank_grays_single_level(self):
+        out = contrast_rank_grays([0.0, 0.0, 0.0], levels=[0.0])
+        assert np.all(out == 0.0)
+
+    def test_feedback_colors(self):
+        assert feedback_colors([1, -1, 1]) == ['green', 'red', 'green']
+
+
+# =========================================================================
 # plot_example_session
 # =========================================================================
 
@@ -250,4 +274,48 @@ class TestPlotExampleSession:
         ax = fig.axes[0]
         event_lines = [ln for ln in ax.get_lines() if len(ln.get_ydata()) == 2]
         assert len(event_lines) == n_stim + n_fb
+        plt.close(fig)
+
+    def _split_marker_collections(self, ax):
+        """Return (stim_scatter, feedback_scatter) by facecolor signature."""
+        green_red = {to_rgba('green'), to_rgba('red')}
+        stim, feedback = None, None
+        for col in ax.collections:
+            facecolors = col.get_facecolors()
+            if len(facecolors) and all(
+                    tuple(fc) in green_red for fc in facecolors):
+                feedback = col
+            else:
+                stim = col
+        return stim, feedback
+
+    def test_feedback_circles_match_feedbacktype(self, snippet_data):
+        *_, trials, t0, t1 = snippet_data
+        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        _, feedback = self._split_marker_collections(fig.axes[0])
+        in_window = trials['feedback_times'].between(t0, t1)
+        expected = [to_rgba(c)
+                    for c in feedback_colors(trials.loc[in_window, 'feedbackType'])]
+        assert [tuple(fc) for fc in feedback.get_facecolors()] == expected
+        plt.close(fig)
+
+    def test_stim_circles_have_black_edges(self, snippet_data):
+        *_, trials, t0, t1 = snippet_data
+        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        stim, _ = self._split_marker_collections(fig.axes[0])
+        assert all(tuple(e) == to_rgba('black')
+                   for e in stim.get_edgecolors())
+        plt.close(fig)
+
+    def test_markers_share_y_above_photometry_band(self, snippet_data):
+        *_, trials, t0, t1 = snippet_data
+        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        ax = fig.axes[0]
+        stim, feedback = self._split_marker_collections(ax)
+        marker_ys = np.concatenate([
+            stim.get_offsets()[:, 1], feedback.get_offsets()[:, 1]])
+        assert np.allclose(marker_ys, marker_ys[0])
+        data_lines = [ln for ln in ax.get_lines() if len(ln.get_ydata()) > 10]
+        top_band_top = max(np.nanmax(ln.get_ydata()) for ln in data_lines)
+        assert marker_ys[0] > top_band_top
         plt.close(fig)

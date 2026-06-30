@@ -39,6 +39,42 @@ GAP = 0.15            # vertical gap between unit-height normalized trace bands
 TRACE_LW = 2.0        # uniform trace linewidth
 EVENT_LINE_COLOR = '0.6'  # thin gray for stimulus/feedback event lines
 EVENT_LW = 0.8
+MARKER_GAP = 0.3      # gap between top band and the marker strip
+MARKER_SIZE = 120     # scatter marker area for the event strip circles
+
+
+def contrast_rank_grays(contrasts, levels):
+    """Grayscale value for each contrast by its rank among the session's levels.
+
+    Each ``|contrast|`` is ranked within ``levels`` (the sorted distinct contrast
+    magnitudes) and mapped to ``1 - rank / (n_levels - 1)``, so the lowest rank
+    is white (1.0) and the highest is black (0.0). Ranking — not raw value — makes
+    the mapping unit-agnostic (percent vs fraction). A single level yields all
+    0.0 (no divide-by-zero).
+
+    Parameters
+    ----------
+    contrasts : array_like
+        Per-event contrasts (sign ignored).
+    levels : array_like
+        Sorted distinct contrast magnitudes for the session.
+
+    Returns
+    -------
+    np.ndarray
+        Grayscale values in [0, 1], one per element of ``contrasts``.
+    """
+    levels = np.asarray(levels)
+    n_levels = len(levels)
+    if n_levels == 1:
+        return np.zeros(len(contrasts))
+    ranks = np.searchsorted(levels, np.abs(contrasts))
+    return 1 - ranks / (n_levels - 1)
+
+
+def feedback_colors(feedback_types):
+    """Map feedback types to circle colors: green for correct (1), else red."""
+    return ['green' if f == 1 else 'red' for f in feedback_types]
 
 
 # =========================================================================
@@ -310,14 +346,19 @@ def plot_example_session(traces, trials, t_start, t_end):
     Each trace is sliced to ``[t_start, t_end]``, normalized to its in-window
     ``[0, 1]`` range, and stacked top → bottom at non-overlapping unit-height
     offsets. Vertical gray lines mark each in-window stimulus onset and
-    feedback. The single Axes is frameless: no spines, ticks, labels, or legend.
+    feedback. A marker strip on a single shared ``y`` just above the top band
+    shows, at each event's x-position, a stimulus circle whose grayscale encodes
+    the trial's contrast rank (lowest = white, highest = black; black edge) and a
+    feedback circle (green = correct, red = incorrect). The single Axes is
+    frameless: no spines, ticks, labels, or legend.
 
     Parameters
     ----------
     traces : list of dict
         Ordered ``{'times', 'values', 'color'}`` entries from ``build_traces``.
     trials : pd.DataFrame
-        Trial table with ``stimOn_times`` and ``feedback_times`` (seconds).
+        Trial table with ``stimOn_times``, ``feedback_times`` (seconds),
+        ``contrast`` (absolute), and ``feedbackType`` (1 = correct, −1 = wrong).
     t_start, t_end : float
         Snippet window bounds (seconds).
 
@@ -341,6 +382,23 @@ def plot_example_session(traces, trials, t_start, t_end):
     event_times = event_times[(event_times >= t_start) & (event_times <= t_end)]
     for t in event_times:
         ax.axvline(t, color=EVENT_LINE_COLOR, linewidth=EVENT_LW, zorder=0)
+
+    # Marker strip on a single shared y just above the top (photometry) band.
+    marker_y = (n - 1) * step + 1 + MARKER_GAP
+
+    stim = trials['stimOn_times'].values
+    stim_mask = (stim >= t_start) & (stim <= t_end)
+    levels = np.unique(np.abs(trials['contrast'].values))
+    grays = contrast_rank_grays(trials['contrast'].values[stim_mask], levels)
+    ax.scatter(stim[stim_mask], np.full(stim_mask.sum(), marker_y),
+               s=MARKER_SIZE, facecolors=np.repeat(grays[:, None], 3, axis=1),
+               edgecolors='black', zorder=3)
+
+    fb = trials['feedback_times'].values
+    fb_mask = (fb >= t_start) & (fb <= t_end)
+    ax.scatter(fb[fb_mask], np.full(fb_mask.sum(), marker_y), s=MARKER_SIZE,
+               c=feedback_colors(trials['feedbackType'].values[fb_mask]),
+               zorder=3)
 
     for spine in ax.spines.values():
         spine.set_visible(False)
