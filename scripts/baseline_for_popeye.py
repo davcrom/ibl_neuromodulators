@@ -126,11 +126,9 @@ if __name__ == "__main__":
     # adding an eid and building an exclusion set of all other eids
     parser.add_argument(
         "--eid",
-        required=False,
+        required=True,
         help="subsetting to eid",
     )
-    # add exclude eid argument here
-
     args = parser.parse_args()
     model_fn, fixed_var, fname = MODELS[args.model]
 
@@ -139,16 +137,8 @@ if __name__ == "__main__":
         one=one,
     )
     # group has a list of all valid sessions
-    # we are exluding all sessions except the session of interest
-    assert args.eid is not None
-    eids = group.sessions["eid"].values
-    eids = [str(eid) for eid in eids if is_uuid(eid)]
-
-    exclude_eids = list({*eids} - {args.eid})
-
     group.filter_sessions(
-        exclude_eids=exclude_eids,
-        session_types=("ephys",),
+        session_types=("ephys", "biased"),
     )
     _ = group.deduplicate()
 
@@ -158,6 +148,7 @@ if __name__ == "__main__":
     results = group.session_permutation_test(
         prepare_session,
         model_fn,
+        eids_to_process=[args.eid],
         fixed_var=fixed_var,
         swapped_var=["baseline"],
         statistic_key="r2",
