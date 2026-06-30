@@ -2720,6 +2720,87 @@ def plot_ols_total_r2(df, title):
                                  'R² (per-session, in-sample)')
 
 
+_VARCOMP_COLORS = {'V_mouse': '#1f6fb4', 'V_session': '#e08214'}
+_VARCOMP_HALF_WIDTH = 0.4  # x half-width of a full-amplitude violin half
+
+
+def _half_violin(ax, centre, side, x, density, color):
+    """Fill one half-violin against ``centre`` along the variance axis ``x``.
+
+    The KDE outline ``density`` is normalized to ``_VARCOMP_HALF_WIDTH`` and laid
+    out horizontally on one side of ``centre`` (``side`` = -1 left, +1 right), so
+    two components share an x-slot as mirrored halves.
+    """
+    width = _VARCOMP_HALF_WIDTH * density / density.max()
+    ax.fill_betweenx(x, centre, centre + side * width, color=color, alpha=0.7)
+
+
+def plot_varcomp_violins(violin_df, title):
+    """Variance-components posterior violins — regressor rows × event columns.
+
+    Each panel places one x-slot per target-NM (``TARGETNM2POSITION`` order) and
+    draws, from the stored ``(x, density)`` KDE outlines, two mirrored half
+    violins per slot: ``V_mouse`` (left) and ``V_session`` (right). Panels share
+    one y-axis (the standardized variance scale). An empty frame returns a titled
+    figure.
+
+    Parameters
+    ----------
+    violin_df : pd.DataFrame
+        Long-form KDE outlines with columns ``target_NM, event, regressor,
+        component, x, density`` (``RESPONSE_VARCOMP_VIOLIN_COLUMNS``).
+    title : str
+        Figure suptitle.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    has_data = len(violin_df) > 0
+    events = _sort_events(violin_df['event'].unique()) if has_data else []
+    present = set(violin_df['regressor']) if has_data else set()
+    regressors = [r for r in _PERSESSION_DROPONE_PREDICTORS if r in present]
+    n_rows, n_cols = max(len(regressors), 1), max(len(events), 1)
+
+    if not has_data:
+        fig, _ = plt.subplots(n_rows, n_cols, squeeze=False,
+                              layout='constrained')
+        fig.suptitle(title, fontsize=LABELFONTSIZE)
+        return fig
+
+    targets = sorted(violin_df['target_NM'].unique(),
+                     key=lambda t: TARGETNM2POSITION.get(t, 999))
+    fig, axes = plt.subplots(
+        n_rows, n_cols, squeeze=False, sharex=True, sharey=True,
+        layout='constrained',
+        figsize=(1.2 * len(targets) * n_cols + 1, 2.0 * n_rows + 1))
+
+    for c, event in enumerate(events):
+        for r, regressor in enumerate(regressors):
+            ax = axes[r, c]
+            cell = violin_df[(violin_df['event'] == event)
+                             & (violin_df['regressor'] == regressor)]
+            for slot, tnm in enumerate(targets):
+                tcell = cell[cell['target_NM'] == tnm]
+                for component, side in (('V_mouse', -1), ('V_session', 1)):
+                    body = tcell[tcell['component'] == component]
+                    if body.empty:
+                        continue
+                    _half_violin(ax, slot, side, body['x'].values,
+                                 body['density'].values,
+                                 _VARCOMP_COLORS[component])
+            if r == 0:
+                ax.set_title(event)
+            if c == 0:
+                ax.set_ylabel(regressor, fontsize=TICKFONTSIZE)
+        axes[-1, c].set_xticks(range(len(targets)))
+        axes[-1, c].set_xticklabels(targets, rotation=30, ha='right',
+                                    fontsize=TICKFONTSIZE)
+    fig.supylabel('variance (standardized)')
+    fig.suptitle(title, fontsize=LABELFONTSIZE)
+    return fig
+
+
 def plot_decoding_summary(coefficients, contributions, fig=None):
     """Coefficients and unique contributions stacked with shared x-axis.
 

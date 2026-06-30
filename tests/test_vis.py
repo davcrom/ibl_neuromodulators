@@ -2581,3 +2581,47 @@ class TestPlotDispersionScatter:
         expected = mcolors.to_rgba(TARGETNM_COLORS['VTA-DA'])
         assert np.allclose(facecolor, expected)
         plt.close(fig)
+
+
+class TestPlotVarcompViolins:
+    def _violin_df(self):
+        x = np.linspace(0.0, 1.0, 5)
+        density = np.array([0.1, 0.5, 1.0, 0.5, 0.1])
+        rows = []
+        for tnm in ['VTA-DA', 'DR-5HT']:
+            for event in ['stimOn_times', 'feedback_times']:
+                for reg in ['contrast', 'side']:
+                    for comp in ['V_mouse', 'V_session']:
+                        rows.append(pd.DataFrame({
+                            'target_NM': tnm, 'event': event, 'regressor': reg,
+                            'component': comp, 'x': x, 'density': density}))
+        return pd.concat(rows, ignore_index=True)
+
+    def test_grid_layout_and_separated_violins(self):
+        from iblnm.vis import plot_varcomp_violins
+        fig = plot_varcomp_violins(self._violin_df(), 'vc')
+        axs = fig.axes
+        assert len(axs) == 4  # 2 regressors x 2 events
+        assert axs[0].get_title() == 'stimOn_times'
+        assert axs[1].get_title() == 'feedback_times'
+        assert axs[0].get_ylabel() == 'contrast'
+        assert axs[2].get_ylabel() == 'side'
+        ax = axs[0]  # top-left: 2 targets x 2 components = 4 violin bodies
+        assert len(ax.collections) == 4
+
+        def xs(coll):
+            return coll.get_paths()[0].vertices[:, 0]
+        slot0 = [c for c in ax.collections if np.all(np.abs(xs(c)) <= 0.5)]
+        assert len(slot0) == 2
+        centers = sorted(np.mean(xs(c)) for c in slot0)
+        assert centers[0] < 0 < centers[1]  # mouse half left, session half right
+        plt.close(fig)
+
+    def test_empty_frame_returns_titled_figure(self):
+        from iblnm.vis import plot_varcomp_violins
+        fig = plot_varcomp_violins(
+            pd.DataFrame(columns=['target_NM', 'event', 'regressor',
+                                  'component', 'x', 'density']),
+            'empty vc')
+        assert fig._suptitle.get_text() == 'empty vc'
+        plt.close(fig)
