@@ -6,8 +6,10 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
+from iblnm.config import TARGETNM_COLORS
 from scripts.example_session import (
-    camera_timing_ok, find_snippet_window, plot_example_snippet,
+    camera_timing_ok, find_snippet_window, _normalize_window, build_traces,
+    plot_example_session,
 )
 
 
@@ -30,9 +32,18 @@ def trials():
     })
 
 
+POSE_KEYPOINTS = ['paw_l', 'paw_r', 'nose_tip', 'tongue_end_l', 'tongue_end_r']
+
+
 @pytest.fixture
 def snippet_data():
-    """Synthetic signals for a 60s window starting at t=100."""
+    """Synthetic signals for a 60s window starting at t=100.
+
+    Pose is a flat (constant-position) DataFrame with the five keypoints the
+    figure plots, so keypoint speeds are a finite constant and likelihoods are
+    well-defined. Photometry and wheel are time-indexed Series; trials carry
+    in-window stimulus and feedback events.
+    """
     rng = np.random.default_rng(42)
     t_start, t_end = 100.0, 160.0
 
@@ -44,21 +55,17 @@ def snippet_data():
     t_wheel = np.arange(0, 300, 1 / 100)
     wheel = pd.Series(rng.normal(0, 0.5, len(t_wheel)), index=t_wheel)
 
-    # Pose at 60 Hz
-    n_frames = int(300 * 60)
+    # Pose at 30 Hz: flat positions, high likelihood
+    n_frames = int(300 * 30)
     pose_times = np.linspace(0, 300, n_frames)
-    pose = {
-        'nose_tip': pd.DataFrame({
-            'x': rng.normal(200, 10, n_frames),
-            'y': rng.normal(150, 10, n_frames),
-            'likelihood': rng.uniform(0.8, 1.0, n_frames),
-        }),
-        'paw_l': pd.DataFrame({
-            'x': rng.normal(180, 15, n_frames),
-            'y': rng.normal(300, 20, n_frames),
-            'likelihood': rng.uniform(0.5, 1.0, n_frames),
-        }),
-    }
+    pose_df = pd.DataFrame({
+        col: np.full(n_frames, fill)
+        for kp, (xfill, yfill) in zip(
+            POSE_KEYPOINTS,
+            [(200, 150), (180, 160), (100, 120), (140, 200), (145, 205)])
+        for col, fill in [(f'{kp}_x', xfill), (f'{kp}_y', yfill),
+                          (f'{kp}_likelihood', 0.95)]
+    })
 
     # Trials in the window
     stim = np.array([105, 112, 120, 128, 135, 142, 150, 155], dtype=float)
@@ -70,7 +77,7 @@ def snippet_data():
         'choice': [1, -1, 1, 1, -1, 1, 1, -1],
     })
 
-    return photometry, wheel, pose_times, pose, trials, t_start, t_end
+    return photometry, wheel, pose_df, pose_times, trials, t_start, t_end
 
 
 # =========================================================================
@@ -137,65 +144,110 @@ class TestFindSnippetWindow:
 
 
 # =========================================================================
-# plot_example_snippet
+# _normalize_window
 # =========================================================================
 
-class TestPlotExampleSnippet:
-    def test_returns_figure(self, snippet_data):
-        phot, wheel, pt, pose, trials, t0, t1 = snippet_data
-        fig = plot_example_snippet(
-            phot, wheel, pt, pose, trials, t0, t1,
-            brain_region='VTA', target_nm='VTA-DA',
-        )
+class TestNormalizeWindow:
+    def test_maps_nonconstant_to_unit_range(self):
+        t = np.arange(0, 10, dtype=float)
+        values = np.array([2, 4, 6, 8, 10, 12, 14, 16, 18, 20], dtype=float)
+        out = _normalize_window(values, t, 2.0, 7.0)
+        assert np.nanmin(out) == pytest.approx(0.0)
+        assert np.nanmax(out) == pytest.approx(1.0)
+
+    def test_constant_window_returns_zeros(self):
+        t = np.arange(0, 10, dtype=float)
+        values = np.full(10, 5.0)
+        out = _normalize_window(values, t, 2.0, 7.0)
+        assert np.all(out == 0.0)
+
+    def test_slices_to_window(self):
+        t = np.arange(0, 10, dtype=float)
+        values = np.arange(0, 10, dtype=float)
+        out = _normalize_window(values, t, 3.0, 6.0)
+        assert len(out) == 4  # t == 3, 4, 5, 6
+
+
+# =========================================================================
+# build_traces
+# =========================================================================
+
+class TestBuildTraces:
+    def test_six_traces_in_order_with_colors(self, snippet_data):
+        phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
+        traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
+        assert len(traces) == 6
+        assert traces[0]['color'] == TARGETNM_COLORS['VTA-DA']
+        assert all(t['color'] == 'black' for t in traces[1:])
+
+    def test_pose_trace_lengths_match_pose_times(self, snippet_data):
+        phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
+        traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
+        for trace in traces[2:]:
+            assert len(trace['values']) == len(pose_times)
+            assert len(trace['times']) == len(pose_times)
+
+    def test_tongue_trace_is_likelihood_in_unit_range(self, snippet_data):
+        phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
+        traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
+        tongue = traces[5]['values']
+        assert np.nanmin(tongue) >= 0.0
+        assert np.nanmax(tongue) <= 1.0
+
+
+# =========================================================================
+# plot_example_session
+# =========================================================================
+
+class TestPlotExampleSession:
+    def _traces(self, snippet_data):
+        phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
+        return build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
+
+    def test_returns_figure_single_axes(self, snippet_data):
+        *_, trials, t0, t1 = snippet_data
+        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
         assert isinstance(fig, plt.Figure)
+        assert len(fig.axes) == 1
         plt.close(fig)
 
-    def test_always_three_panels(self, snippet_data):
-        """Pose traces share a single panel regardless of body part count."""
-        phot, wheel, pt, pose, trials, t0, t1 = snippet_data
-        fig = plot_example_snippet(
-            phot, wheel, pt, pose, trials, t0, t1,
-            brain_region='VTA', target_nm='VTA-DA',
-        )
-        assert len(fig.axes) == 3
+    def test_axes_frameless(self, snippet_data):
+        *_, trials, t0, t1 = snippet_data
+        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        ax = fig.axes[0]
+        assert all(not sp.get_visible() for sp in ax.spines.values())
+        assert len(ax.get_xticklabels()) == 0 or all(
+            lbl.get_text() == '' for lbl in ax.get_xticklabels())
+        assert len(ax.get_yticklabels()) == 0 or all(
+            lbl.get_text() == '' for lbl in ax.get_yticklabels())
         plt.close(fig)
 
-    def test_three_panels_with_subset(self, snippet_data):
-        phot, wheel, pt, pose, trials, t0, t1 = snippet_data
-        fig = plot_example_snippet(
-            phot, wheel, pt, pose, trials, t0, t1,
-            brain_region='VTA', target_nm='VTA-DA',
-            body_parts=['nose_tip'],
-        )
-        assert len(fig.axes) == 3
+    def test_six_data_lines_non_overlapping(self, snippet_data):
+        *_, trials, t0, t1 = snippet_data
+        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        ax = fig.axes[0]
+        data_lines = [ln for ln in ax.get_lines() if len(ln.get_ydata()) > 10]
+        assert len(data_lines) == 6
+        baselines = sorted(np.nanmin(ln.get_ydata()) for ln in data_lines)
+        gaps = np.diff(baselines)
+        assert np.all(gaps >= 1.0)  # unit-height bands do not overlap
         plt.close(fig)
 
-    def test_axis_frames_removed(self, snippet_data):
-        """Top and right spines should be hidden on all axes."""
-        phot, wheel, pt, pose, trials, t0, t1 = snippet_data
-        fig = plot_example_snippet(
-            phot, wheel, pt, pose, trials, t0, t1,
-            brain_region='VTA', target_nm='VTA-DA',
-        )
-        for ax in fig.axes:
-            assert not ax.spines['top'].get_visible()
-            assert not ax.spines['right'].get_visible()
+    def test_photometry_line_color(self, snippet_data):
+        *_, trials, t0, t1 = snippet_data
+        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        ax = fig.axes[0]
+        data_lines = [ln for ln in ax.get_lines() if len(ln.get_ydata()) > 10]
+        colors = {ln.get_color() for ln in data_lines}
+        assert TARGETNM_COLORS['VTA-DA'] in colors
         plt.close(fig)
 
-    def test_pose_traces_offset(self, snippet_data):
-        """Pose body parts should be vertically offset in the single panel."""
-        phot, wheel, pt, pose, trials, t0, t1 = snippet_data
-        fig = plot_example_snippet(
-            phot, wheel, pt, pose, trials, t0, t1,
-            brain_region='VTA', target_nm='VTA-DA',
-        )
-        ax_pose = fig.axes[2]
-        lines = ax_pose.get_lines()
-        # With 2 body parts we expect 2 data lines plus event lines.
-        # The data lines should have different y-ranges (offset).
-        data_lines = [line for line in lines
-                      if len(line.get_ydata()) > 10]
-        if len(data_lines) >= 2:
-            means = [np.nanmean(line.get_ydata()) for line in data_lines[:2]]
-            assert abs(means[0] - means[1]) > 1.0
+    def test_event_line_per_in_window_event(self, snippet_data):
+        *_, trials, t0, t1 = snippet_data
+        n_stim = int(trials['stimOn_times'].between(t0, t1).sum())
+        n_fb = int(trials['feedback_times'].between(t0, t1).sum())
+        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        ax = fig.axes[0]
+        event_lines = [ln for ln in ax.get_lines() if len(ln.get_ydata()) == 2]
+        assert len(event_lines) == n_stim + n_fb
         plt.close(fig)
