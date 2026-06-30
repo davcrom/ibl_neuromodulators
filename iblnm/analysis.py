@@ -762,6 +762,55 @@ def permutation_pvalue(observed: float, null, alternative: str = 'two-sided') ->
     raise ValueError(f"Unrecognized alternative: {alternative!r}")
 
 
+def synchronized_permutation_pvalue(
+    observed_by_stratum,
+    null_by_stratum,
+    statistic: str = 'mean',
+    alternative: str = 'greater',
+) -> tuple[float, float]:
+    """Pool per-stratum statistics into a synchronized-permutation p-value.
+
+    Combines per-stratum observed values with per-stratum null vectors that
+    share a common permutation index (synchronized permutation: null column k
+    is the same permutation applied to every stratum). The pooled observed
+    statistic is compared to the pooled-by-column null via the add-one
+    permutation formula.
+
+    Parameters
+    ----------
+    observed_by_stratum : 1-D array-like, shape (n_strata,)
+        One observed statistic (e.g. ΔR²) per stratum.
+    null_by_stratum : 2-D array-like, shape (n_strata, K)
+        Each row is one stratum's null vector; all strata must share the same
+        length K (synchronized permutation columns). Ragged input is rejected.
+    statistic : {'mean'}
+        Pooling statistic applied across strata. ``'mean'`` averages the
+        observed values and averages each null column down the strata axis.
+    alternative : {'greater', 'less', 'two-sided'}
+        Tail passed through to :func:`permutation_pvalue`.
+
+    Returns
+    -------
+    observed_stat : float
+        Pooled observed statistic across strata.
+    p_value : float
+        Add-one permutation p-value of ``observed_stat`` against the length-K
+        pooled null, floored at ``1 / (K + 1)``.
+    """
+    observed_by_stratum = np.asarray(observed_by_stratum, dtype=float)
+    null_by_stratum = np.asarray(null_by_stratum, dtype=float)
+    if null_by_stratum.ndim != 2:
+        raise ValueError(
+            "null_by_stratum must be a 2-D (n_strata, K) array with equal-"
+            f"length rows; got shape {null_by_stratum.shape}"
+        )
+    if statistic != 'mean':
+        raise ValueError(f"Unrecognized statistic: {statistic!r}")
+    observed_stat = float(np.mean(observed_by_stratum))
+    pooled_null = null_by_stratum.mean(axis=0)
+    return observed_stat, permutation_pvalue(observed_stat, pooled_null, alternative)
+
+
 # =============================================================================
 # Canonical Correlation Analysis
 # =============================================================================

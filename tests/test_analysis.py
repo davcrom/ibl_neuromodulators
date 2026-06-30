@@ -2556,6 +2556,41 @@ class TestPermutationPvalue:
             permutation_pvalue(1.0, np.zeros(10), 'bogus')
 
 
+class TestSynchronizedPermutationPvalue:
+    def test_worked_example(self):
+        """Spec worked example: pooled mean, column-wise mouse null, add-one p."""
+        from iblnm.analysis import synchronized_permutation_pvalue
+        observed_by_stratum = [0.10, 0.06]
+        null_by_stratum = [[0.02, 0.01, 0.03], [0.015, 0.005, 0.02]]
+        observed_stat, p_value = synchronized_permutation_pvalue(
+            observed_by_stratum, null_by_stratum,
+            statistic='mean', alternative='greater',
+        )
+        assert observed_stat == pytest.approx(0.08)
+        assert p_value == pytest.approx((1 + 0) / (3 + 1))
+
+    def test_smallest_p_when_observed_exceeds_every_null_column(self):
+        """p hits its floor 1 / (K + 1) when obs beats all pooled null columns."""
+        from iblnm.analysis import synchronized_permutation_pvalue
+        observed_by_stratum = [1.0, 1.0]
+        null_by_stratum = [[0.0, 0.1, 0.2, 0.3], [0.0, 0.1, 0.2, 0.3]]
+        _, p_value = synchronized_permutation_pvalue(
+            observed_by_stratum, null_by_stratum,
+            statistic='mean', alternative='greater',
+        )
+        k = len(null_by_stratum[0])
+        assert p_value == pytest.approx(1 / (k + 1))
+
+    def test_ragged_null_raises(self):
+        """Unequal row lengths cannot form synchronized columns."""
+        from iblnm.analysis import synchronized_permutation_pvalue
+        with pytest.raises(ValueError):
+            synchronized_permutation_pvalue(
+                [0.1, 0.06], [[0.02, 0.01, 0.03], [0.015, 0.005]],
+                statistic='mean', alternative='greater',
+            )
+
+
 class TestFitOls:
     def test_recovers_high_r2_on_linear_signal(self):
         """y = 2x + small noise: the fit's R² is high and params are exposed."""
