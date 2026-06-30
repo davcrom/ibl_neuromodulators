@@ -351,6 +351,65 @@ def plot_baseline_propsig(results: pd.DataFrame, ax=None) -> plt.Figure:
     return ax.figure
 
 
+def plot_baseline_slope(results: pd.DataFrame, ax=None) -> plt.Figure:
+    """Per-session baseline regression slope, one x-slot per mouse.
+
+    Each session is a translucent open dot at its ``observed_slope``. Mice are
+    laid out one x-slot apart within their ``target_NM`` group, group width
+    scaling with mouse count (via :func:`_group_xslots`); within a group mice
+    are ordered left to right by ascending median slope. A session is
+    edge-colored by its ``target_NM`` (``TARGETNM_COLORS``) when significant
+    (``p_value <= 0.05``) and gray otherwise. A dashed line marks ``slope = 0``.
+    Errored sessions (NaN ``observed_slope`` or ``p_value``) are dropped.
+
+    Parameters
+    ----------
+    results : pandas.DataFrame
+        Per-session baseline results with ``subject``, ``target_NM``,
+        ``p_value``, and ``observed_slope`` columns.
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw into; a new figure/axes is created when omitted.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure containing the slope scatter.
+    """
+    df = results.dropna(subset=['observed_slope', 'p_value'])
+    targets = sorted(
+        df['target_NM'].unique(),
+        key=lambda t: TARGETNM2POSITION.get(t, len(TARGETNM2POSITION))
+    )
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+    subjects_by_target, slots_by_target, ticks = _group_xslots(df, targets)
+    for tnm, subjects in subjects_by_target.items():
+        color = TARGETNM_COLORS.get(tnm, 'gray')
+        slopes_by_subject = {
+            s: df.loc[df['subject'] == s, ['p_value', 'observed_slope']]
+            for s in subjects}
+        ordered = sorted(
+            subjects, key=lambda s: np.median(slopes_by_subject[s]['observed_slope']))
+        for subject, x in zip(ordered, slots_by_target[tnm]):
+            sub = slopes_by_subject[subject]
+            sig = sub['p_value'] <= 0.05
+            for mask, edge in [(sig, color), (~sig, 'gray')]:
+                slopes = sub.loc[mask, 'observed_slope'].to_numpy()
+                ax.scatter(np.full(len(slopes), x), slopes, marker='o',
+                           facecolors='none', edgecolors=edge,
+                           s=_SESSION_MARKER_SIZE, alpha=0.5, zorder=3)
+
+    ax.axhline(0, ls='--', color='gray', lw=0.5)
+    ax.set_xticks([centre for _, centre in ticks])
+    ax.set_xticklabels([tnm for tnm, _ in ticks], rotation=30, ha='right',
+                       fontsize=TICKFONTSIZE)
+    ax.set_ylabel('Slope')
+
+    return ax.figure
+
+
 def _color_violin(parts, color, sig: bool) -> None:
     """Style violin bodies: significant filled, non-significant unfilled outline."""
     for body in parts['bodies']:

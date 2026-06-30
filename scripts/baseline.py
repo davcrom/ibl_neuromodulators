@@ -17,7 +17,7 @@ import pandas as pd
 from iblnm.config import SESSIONS_FPATH, PROJECT_ROOT, FIGURE_DPI
 from iblnm.io import _get_default_connection
 from iblnm.data import PhotometrySessionGroup
-from iblnm.vis import plot_baseline_propsig, plot_baseline_r2
+from iblnm.vis import plot_baseline_propsig, plot_baseline_r2, plot_baseline_slope
 
 def prepare_session(ps):
     assert len(ps.brain_region) == 1
@@ -106,3 +106,6 @@ if __name__ == '__main__':
     r2_fig = plot_baseline_r2(results)
     r2_fig.savefig(fig_dir / f'{args.model}_r2.svg',
                    dpi=FIGURE_DPI, bbox_inches='tight')
+    slope_fig = plot_baseline_slope(results)
+    slope_fig.savefig(fig_dir / f'{args.model}_slope.svg',
+                      dpi=FIGURE_DPI, bbox_inches='tight')

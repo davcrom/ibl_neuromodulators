@@ -2604,6 +2604,89 @@ class TestPlotBaselineR2:
         plt.close(fig)
 
 
+class TestPlotBaselineSlope:
+
+    @staticmethod
+    def _results():
+        # DR-5HT (position 2) listed before VTA-DA (position 0), so input/name
+        # order differs from TARGETNM2POSITION order. One errored row (NaN
+        # slope) that must be dropped. Slopes chosen so each target's mouse
+        # median ordering is unambiguous.
+        rows = [
+            # subject, target_NM, p_value, observed_slope
+            ('m1', 'DR-5HT', 0.01, 0.40),   # sig
+            ('m1', 'DR-5HT', 0.50, 0.20),   # non-sig, same mouse
+            ('m2', 'VTA-DA', 0.02, 0.80),   # sig
+            ('m3', 'VTA-DA', 0.90, 0.10),   # non-sig
+            ('m3', 'VTA-DA', np.nan, np.nan),  # errored, dropped
+        ]
+        return pd.DataFrame(
+            rows, columns=['subject', 'target_NM', 'p_value', 'observed_slope'])
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_baseline_slope
+        fig = plot_baseline_slope(self._results())
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_xticklabels_in_position_order(self):
+        from iblnm.vis import plot_baseline_slope
+        fig = plot_baseline_slope(self._results())
+        ax = fig.axes[0]
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        assert labels == ['VTA-DA', 'DR-5HT']
+        plt.close(fig)
+
+    def test_significant_dots_use_target_color(self):
+        from matplotlib.colors import to_rgba
+        from iblnm.config import TARGETNM_COLORS
+        from iblnm.vis import plot_baseline_slope
+        fig = plot_baseline_slope(self._results())
+        ax = fig.axes[0]
+        # The VTA-DA significant session (slope 0.80) edge color = target color.
+        # Compare RGB only; the dot's alpha (0.5) is set separately.
+        sig_edges = [
+            tuple(np.round(c.get_edgecolors()[0][:3], 5))
+            for c in ax.collections
+            if len(c.get_offsets()) and c.get_offsets()[0][1] == pytest.approx(0.80)
+        ]
+        assert tuple(np.round(to_rgba(TARGETNM_COLORS['VTA-DA'])[:3], 5)) in sig_edges
+        plt.close(fig)
+
+    def test_nonsignificant_dots_gray(self):
+        from matplotlib.colors import to_rgba
+        from iblnm.vis import plot_baseline_slope
+        fig = plot_baseline_slope(self._results())
+        ax = fig.axes[0]
+        # The VTA-DA non-significant session (slope 0.10) edge color = gray.
+        nonsig_edges = [
+            tuple(np.round(c.get_edgecolors()[0][:3], 5))
+            for c in ax.collections
+            if len(c.get_offsets()) and c.get_offsets()[0][1] == pytest.approx(0.10)
+        ]
+        assert tuple(np.round(to_rgba('gray')[:3], 5)) in nonsig_edges
+        plt.close(fig)
+
+    def test_errored_rows_dropped(self):
+        from iblnm.vis import plot_baseline_slope
+        fig = plot_baseline_slope(self._results())
+        ax = fig.axes[0]
+        n_points = sum(len(c.get_offsets()) for c in ax.collections)
+        # 5 input rows, 1 NaN-slope row dropped -> 4 plotted points.
+        assert n_points == 4
+        plt.close(fig)
+
+    def test_y_positions_match_slopes(self):
+        from iblnm.vis import plot_baseline_slope
+        fig = plot_baseline_slope(self._results())
+        ax = fig.axes[0]
+        ys = sorted(
+            float(c.get_offsets()[0][1])
+            for c in ax.collections if len(c.get_offsets()))
+        assert ys == pytest.approx([0.10, 0.20, 0.40, 0.80])
+        plt.close(fig)
+
+
 class TestPlotDispersionScatter:
     def _df(self):
         # One point per panel; only the (task, stimOn_times) VTA-DA point is
