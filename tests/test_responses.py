@@ -254,3 +254,32 @@ class TestReprocessWiring:
         src, _ = _responses_source()
         assert 'def plot_lmm_figures(' in src
         assert 'def plot_movement_figures(' in src
+
+
+def _reprocess_and_default_branches():
+    """Split __main__ into the (reprocess body, default-onward) text."""
+    _, main_block = _responses_source()
+    reprocess, default = main_block.split('\n    else:', 1)
+    return reprocess, default
+
+
+class TestVarcompWiring:
+    """Source-level wiring: --reprocess fits and caches the variance-components
+    tables, default mode loads them, and the violin figure is plotted in both."""
+
+    def test_reprocess_fits_and_caches_varcomp(self):
+        reprocess, _ = _reprocess_and_default_branches()
+        assert 'response_varcomp(' in reprocess
+        assert 'RESPONSE_VARCOMP_SUMMARY_FPATH' in reprocess
+        assert 'RESPONSE_VARCOMP_VIOLIN_FPATH' in reprocess
+        assert reprocess.count('.to_parquet(') >= 2
+
+    def test_default_loads_cached_varcomp(self):
+        _, default = _reprocess_and_default_branches()
+        assert 'load_response_varcomp_summary(' in default
+        assert 'load_response_varcomp_violin(' in default
+
+    def test_violin_figure_plotted(self):
+        _, main_block = _responses_source()
+        assert 'plot_varcomp_violins(' in main_block
+        assert 'response_varcomp_violins.svg' in main_block

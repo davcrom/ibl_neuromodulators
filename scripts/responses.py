@@ -28,6 +28,9 @@ from iblnm.config import (
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     MEAN_TRACES_FPATH,
     RESPONSE_OLS_PERSESSION_FPATH, RESPONSE_OLS_COEFS_FPATH,
+    RESPONSE_VARCOMP_SUMMARY_FPATH, RESPONSE_VARCOMP_VIOLIN_FPATH,
+    VARCOMP_MCMC, VARCOMP_TAU_PRIOR, VARCOMP_MIN_MICE,
+    VARCOMP_MIN_SESSIONS_PER_MOUSE, VARCOMP_KDE_GRID, VARCOMP_HDI_PROB,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
     MOVEMENT_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
@@ -43,6 +46,7 @@ from iblnm.vis import (
     plot_movement_r2_bars,
     plot_ols_dropone,
     plot_ols_total_r2,
+    plot_varcomp_violins,
 )
 from iblnm.analysis import (
     split_features_by_event,
@@ -522,13 +526,32 @@ if __name__ == '__main__':
               f"{RESPONSE_OLS_PERSESSION_FPATH}")
         coefs_df.to_parquet(RESPONSE_OLS_COEFS_FPATH, index=False)
         print(f"Saved per-session coefficients to {RESPONSE_OLS_COEFS_FPATH}")
+        group.response_ols_coefficients = coefs_df
+
+        # --- Per-cell variance components (mouse vs session) ---
+        print("Fitting per-cell variance-components model (PyMC sampling)...")
+        group.response_varcomp_summary, group.response_varcomp_violin = (
+            group.response_varcomp(
+                group.response_ols_coefficients,
+                mcmc=VARCOMP_MCMC, tau_prior=VARCOMP_TAU_PRIOR,
+                min_mice=VARCOMP_MIN_MICE,
+                min_sessions_per_mouse=VARCOMP_MIN_SESSIONS_PER_MOUSE,
+                grid_size=VARCOMP_KDE_GRID, hdi_prob=VARCOMP_HDI_PROB))
+        group.response_varcomp_summary.to_parquet(
+            RESPONSE_VARCOMP_SUMMARY_FPATH, index=False)
+        group.response_varcomp_violin.to_parquet(
+            RESPONSE_VARCOMP_VIOLIN_FPATH, index=False)
+        print(f"Saved variance components to {RESPONSE_VARCOMP_SUMMARY_FPATH} "
+              f"and {RESPONSE_VARCOMP_VIOLIN_FPATH}")
 
     else:
         # =================================================================
         # Default: load pre-existing parquet files
         # =================================================================
         for fpath in (RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
-                      RESPONSE_OLS_PERSESSION_FPATH):
+                      RESPONSE_OLS_PERSESSION_FPATH,
+                      RESPONSE_VARCOMP_SUMMARY_FPATH,
+                      RESPONSE_VARCOMP_VIOLIN_FPATH):
             if not fpath.exists():
                 print(f"Error: {fpath} not found. Run with --reprocess first.")
                 raise SystemExit(1)
@@ -538,6 +561,8 @@ if __name__ == '__main__':
         group.load_mean_traces(MEAN_TRACES_FPATH)
         group.load_response_ols_dropone(RESPONSE_OLS_PERSESSION_FPATH)
         group.load_response_ols_coefficients(RESPONSE_OLS_COEFS_FPATH)
+        group.load_response_varcomp_summary(RESPONSE_VARCOMP_SUMMARY_FPATH)
+        group.load_response_varcomp_violin(RESPONSE_VARCOMP_VIOLIN_FPATH)
 
     # =====================================================================
     # Mean response traces per target-NM (first figures)
@@ -595,6 +620,18 @@ if __name__ == '__main__':
     print("\nGenerating per-session OLS drop-one figure...")
     plot_persession_figures(group, fig_dirs['persession'])
     print(f"Per-session OLS figures saved to {fig_dirs['persession']}")
+
+    # =====================================================================
+    # Variance components: mouse vs session posterior violins
+    # =====================================================================
+    print("\nGenerating variance-components violin figure...")
+    fig = plot_varcomp_violins(
+        group.response_varcomp_violin,
+        title='Per-cell variance components\nmouse (left) vs session (right)')
+    fig.savefig(fig_dirs['persession'] / 'response_varcomp_violins.svg',
+                dpi=FIGURE_DPI, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Variance-components figure saved to {fig_dirs['persession']}")
 
     # =====================================================================
     # Response vectors: per-event similarity
