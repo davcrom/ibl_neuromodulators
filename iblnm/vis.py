@@ -3411,7 +3411,7 @@ def _plot_weight_heatmap_pair(cohort_results, targets, ax):
     ax.figure.colorbar(im, ax=ax, shrink=0.8, label='Weight')
 
 
-def _draw_rt_violins(df, ax=None):
+def _draw_rt_violins(df, ax=None, rt_range=None):
     """Horizontal violin plots of response time by contrast, one offset per target-NM.
 
     Parameters
@@ -3421,6 +3421,12 @@ def _draw_rt_violins(df, ax=None):
         Contrasts should be absolute (unsigned).
     ax : plt.Axes, optional
         Axes to draw on. Created if not provided.
+    rt_range : tuple of float, optional
+        ``(min, max)`` response times (seconds) used to fix the log-spaced
+        x-axis ticks and limits. When given, the limits are pinned to these
+        values rather than autoscaled from ``df`` — pass a shared range across
+        panels to make their x-axes consistent. When None, the range is taken
+        from ``df``.
 
     Returns
     -------
@@ -3469,14 +3475,20 @@ def _draw_rt_violins(df, ax=None):
             vp['cmedians'].set_color(color)
 
     # Linear axis with log-formatted tick labels
-    all_vals = df.loc[df['response_time'] > 0, 'response_time'].dropna()
-    if len(all_vals):
-        log_min = np.floor(np.log10(all_vals.min()))
-        log_max = np.ceil(np.log10(all_vals.max()))
+    if rt_range is not None:
+        rt_lo, rt_hi = rt_range
+    else:
+        positive = df.loc[df['response_time'] > 0, 'response_time'].dropna()
+        rt_lo, rt_hi = (positive.min(), positive.max()) if len(positive) else (None, None)
+    if rt_lo is not None:
+        log_min = np.floor(np.log10(rt_lo))
+        log_max = np.ceil(np.log10(rt_hi))
         tick_powers = np.arange(log_min, log_max + 1)
         ax.set_xticks(tick_powers)
         ax.set_xticklabels([str(10 ** int(p)) if p >= 0 else str(round(10 ** p, 3))
                             for p in tick_powers])
+        if rt_range is not None:
+            ax.set_xlim(log_min, log_max)
 
     ax.set_yticks(range(len(contrasts)))
     ax.set_yticklabels([str(c) for c in contrasts])
@@ -3500,11 +3512,11 @@ def _draw_rt_violins(df, ax=None):
 # =============================================================================
 
 def _assemble_rt_trials(group):
-    """Build the 50-50 unbiased trial table for RT violins from a group.
+    """Build the trial table for RT violins from a group.
 
     Joins ``group.response_magnitudes`` to ``group.trial_regressors`` on
-    (eid, trial), keeps 50-50 block trials with a recorded choice, and
-    restricts to the analysed target-NMs. Returns an empty frame (with the
+    (eid, trial), keeps trials with a recorded choice across all pLeft blocks,
+    and restricts to the analysed target-NMs. Returns an empty frame (with the
     columns ``_draw_rt_violins`` expects) when either source is missing.
 
     Parameters
@@ -3526,7 +3538,7 @@ def _assemble_rt_trials(group):
                                 'contrast', 'probabilityLeft', 'choice']],
         on=['eid', 'trial'], how='inner',
     )
-    df_trial = df_trial.query('probabilityLeft == 0.5 and choice != 0').copy()
+    df_trial = df_trial.query('choice != 0').copy()
     return df_trial[df_trial['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
 
 
@@ -3557,6 +3569,10 @@ def plot_performance_grid(group, axes=None):
     df_psych = group.performance.merge(rec_meta, on='eid', how='inner')
     df_rt = _assemble_rt_trials(group)
 
+    # Shared RT x-axis range so all rows align (None when no RT data)
+    rt_positive = df_rt.loc[df_rt['response_time'] > 0, 'response_time']
+    rt_range = (rt_positive.min(), rt_positive.max()) if len(rt_positive) else None
+
     targets = [t for t in TARGETNMS_TO_ANALYZE
                if t in df_psych['target_NM'].values]
 
@@ -3576,7 +3592,8 @@ def plot_performance_grid(group, axes=None):
                       transform=ax_psych.transAxes)
         ax_psych.set_title(target_nm)
 
-        _draw_rt_violins(df_rt[df_rt['target_NM'] == target_nm], ax=axes[i, 1])
+        _draw_rt_violins(df_rt[df_rt['target_NM'] == target_nm],
+                         ax=axes[i, 1], rt_range=rt_range)
 
     fig.tight_layout()
     return fig

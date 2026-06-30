@@ -2197,6 +2197,34 @@ class TestPlotPerformanceGrid:
         assert isinstance(fig, plt.Figure)
         plt.close('all')
 
+    def test_rt_trials_include_all_pleft_blocks(self):
+        """RT trials are not restricted to the 50-50 block."""
+        from iblnm.vis import _assemble_rt_trials
+        group = _make_mock_group_with_performance_and_rt()
+        df = _assemble_rt_trials(group)
+        assert set(df['probabilityLeft'].unique()) == {0.2, 0.5, 0.8}
+        plt.close('all')
+
+    def test_rt_xaxis_shared_across_rows(self):
+        """RT panels share x-limits and ticks even when per-target RT differs."""
+        from iblnm.vis import plot_performance_grid
+        group = _make_mock_group_with_performance_and_rt()
+        rng = np.random.default_rng(1)
+        reg = group.trial_regressors.copy()
+        eid_num = reg['eid'].str.split('-').str[1].astype(int)
+        # VTA-DA (eid 0-2): fast (~0.1-0.3 s); LC-NE (eid 3-5): slow (~3-9 s)
+        reg['response_time'] = np.where(
+            eid_num < 3,
+            rng.uniform(0.1, 0.3, len(reg)),
+            rng.uniform(3.0, 9.0, len(reg)),
+        )
+        group.trial_regressors = reg
+        fig = plot_performance_grid(group)
+        ax_top, ax_bot = fig.axes[1], fig.axes[3]
+        assert ax_top.get_xlim() == ax_bot.get_xlim()
+        assert list(ax_top.get_xticks()) == list(ax_bot.get_xticks())
+        plt.close('all')
+
 
 # =============================================================================
 # plot_target_comparison
