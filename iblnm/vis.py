@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib import colors
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import FormatStrFormatter, MaxNLocator
 from scipy.stats import sem as scipy_sem
@@ -381,10 +382,15 @@ def plot_baseline_slope(results: pd.DataFrame, ax=None) -> plt.Figure:
         key=lambda t: TARGETNM2POSITION.get(t, len(TARGETNM2POSITION))
     )
 
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(12, 6))
-
     subjects_by_target, slots_by_target, ticks = _group_xslots(df, targets)
+
+    if ax is None:
+        # Width tracks the mouse count so dots are not squeezed into a fixed
+        # canvas (the source of the wasted margins); height stays compact.
+        extent = max((slots.max() for slots in slots_by_target.values()),
+                     default=1.0)
+        fig, ax = plt.subplots(figsize=(0.45 * extent + 1.5, 5))
+
     for tnm, subjects in subjects_by_target.items():
         color = TARGETNM_COLORS.get(tnm, 'gray')
         slopes_by_subject = {
@@ -395,17 +401,34 @@ def plot_baseline_slope(results: pd.DataFrame, ax=None) -> plt.Figure:
         for subject, x in zip(ordered, slots_by_target[tnm]):
             sub = slopes_by_subject[subject]
             sig = sub['p_value'] <= 0.05
-            for mask, edge in [(sig, color), (~sig, 'gray')]:
-                slopes = sub.loc[mask, 'observed_slope'].to_numpy()
-                ax.scatter(np.full(len(slopes), x), slopes, marker='o',
-                           facecolors='none', edgecolors=edge,
-                           s=_SESSION_MARKER_SIZE, alpha=0.5, zorder=3)
+            # Fill encodes significance, hue encodes target-NM: significant
+            # sessions are filled in the target colour so they read against the
+            # majority; non-significant ones are open in the same colour.
+            sig_slopes = sub.loc[sig, 'observed_slope'].to_numpy()
+            nonsig_slopes = sub.loc[~sig, 'observed_slope'].to_numpy()
+            ax.scatter(np.full(len(nonsig_slopes), x), nonsig_slopes, marker='o',
+                       facecolors='none', edgecolors=color, linewidths=0.8,
+                       s=_SESSION_MARKER_SIZE, alpha=0.5, zorder=3)
+            ax.scatter(np.full(len(sig_slopes), x), sig_slopes, marker='o',
+                       facecolors=color, edgecolors=color, linewidths=0.8,
+                       s=_SESSION_MARKER_SIZE, alpha=0.85, zorder=4)
 
     ax.axhline(0, ls='--', color='gray', lw=0.5)
+    ax.margins(x=0.01)
     ax.set_xticks([centre for _, centre in ticks])
     ax.set_xticklabels([tnm for tnm, _ in ticks], rotation=30, ha='right',
                        fontsize=TICKFONTSIZE)
     ax.set_ylabel('Slope')
+    # Fill legend, drawn in neutral grey since hue carries target-NM, not
+    # significance.
+    legend_handles = [
+        Line2D([], [], marker='o', linestyle='none', markerfacecolor='gray',
+               markeredgecolor='gray', label='significant (p ≤ 0.05)'),
+        Line2D([], [], marker='o', linestyle='none', markerfacecolor='none',
+               markeredgecolor='gray', label='non-significant (p > 0.05)'),
+    ]
+    ax.legend(handles=legend_handles, frameon=False, loc='upper right',
+              fontsize=TICKFONTSIZE)
 
     return ax.figure
 

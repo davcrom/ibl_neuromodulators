@@ -2653,18 +2653,42 @@ class TestPlotBaselineSlope:
         assert tuple(np.round(to_rgba(TARGETNM_COLORS['VTA-DA'])[:3], 5)) in sig_edges
         plt.close(fig)
 
-    def test_nonsignificant_dots_gray(self):
+    def test_nonsignificant_dots_open_target_color(self):
         from matplotlib.colors import to_rgba
+        from iblnm.config import TARGETNM_COLORS
         from iblnm.vis import plot_baseline_slope
         fig = plot_baseline_slope(self._results())
         ax = fig.axes[0]
-        # The VTA-DA non-significant session (slope 0.10) edge color = gray.
-        nonsig_edges = [
-            tuple(np.round(c.get_edgecolors()[0][:3], 5))
-            for c in ax.collections
+        # The VTA-DA non-significant session (slope 0.10): edge = target color,
+        # face unfilled (empty facecolor array).
+        nonsig = [
+            c for c in ax.collections
             if len(c.get_offsets()) and c.get_offsets()[0][1] == pytest.approx(0.10)
         ]
-        assert tuple(np.round(to_rgba('gray')[:3], 5)) in nonsig_edges
+        assert nonsig, "non-significant collection not found"
+        edge = tuple(np.round(nonsig[0].get_edgecolors()[0][:3], 5))
+        assert edge == tuple(np.round(to_rgba(TARGETNM_COLORS['VTA-DA'])[:3], 5))
+        assert len(nonsig[0].get_facecolors()) == 0  # unfilled
+        plt.close(fig)
+
+    def test_significant_dots_filled(self):
+        from iblnm.vis import plot_baseline_slope
+        fig = plot_baseline_slope(self._results())
+        ax = fig.axes[0]
+        # The VTA-DA significant session (slope 0.80) is filled (non-empty face).
+        sig = [
+            c for c in ax.collections
+            if len(c.get_offsets()) and c.get_offsets()[0][1] == pytest.approx(0.80)
+        ]
+        assert sig and len(sig[0].get_facecolors()) > 0
+        plt.close(fig)
+
+    def test_legend_labels_significance(self):
+        from iblnm.vis import plot_baseline_slope
+        fig = plot_baseline_slope(self._results())
+        ax = fig.axes[0]
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert labels == ['significant (p ≤ 0.05)', 'non-significant (p > 0.05)']
         plt.close(fig)
 
     def test_errored_rows_dropped(self):
