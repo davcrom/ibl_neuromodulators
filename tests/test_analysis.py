@@ -3049,3 +3049,88 @@ class TestEncodingConfig:
         mods = config.ENCODING_TERMS['stimOn_times']['modulators']
         assert mods['side'] == 'categorical'
         assert mods['contrast'] == 'continuous'
+
+
+def _synthetic_encoding_trials(n_trials=24, isi=2.5, seed=0):
+    """Synthetic trials table driving the default ENCODING_TERMS coding.
+
+    Trials are evenly spaced by ``isi`` seconds, each carrying the five model
+    events plus the categorical/parametric columns the term spec reads. Both
+    ``feedbackType`` levels appear so the feedback split yields two kernel sets,
+    and ``choice`` is never 0 so ``firstMovement_times`` and ``choice_side`` stay
+    defined. Returns the trials DataFrame.
+    """
+    rng = np.random.default_rng(seed)
+    onsets = 2.0 + isi * np.arange(n_trials)
+    stim_side = np.where(np.arange(n_trials) % 2 == 0, 'left', 'right')
+    contrast = np.tile([0.0, 0.0625, 0.25, 1.0], n_trials // 4 + 1)[:n_trials]
+    sign = np.where(stim_side == 'right', 1.0, -1.0)
+    return pd.DataFrame({
+        'stimOn_times': onsets,
+        'goCue_times': onsets + 0.1,
+        'firstMovement_times': onsets + 0.3,
+        'response_times': onsets + 0.5,
+        'feedback_times': onsets + 0.7,
+        'intervals_0': onsets - 0.5,
+        'intervals_1': onsets + 2.0,
+        'stim_side': stim_side,
+        'choice': rng.choice([-1, 1], n_trials),
+        'feedbackType': np.where(np.arange(n_trials) % 2 == 0, 1, -1),
+        'contrast': contrast,
+        'signed_contrast': contrast * sign,
+        'probabilityLeft': 0.5,
+    })
+
+
+class TestBuildEncodingDesign:
+    """The script's ONE-free build+code step composes the default term spec."""
+
+    def _design(self):
+        from scripts.encoding import build_encoding_design
+        from iblnm.analysis import make_lags, lag_expand
+        from iblnm.config import ENCODING_N_LAGS
+        from functools import partial
+
+        trials = _synthetic_encoding_trials()
+        t = np.arange(0.0, 60.0, 1 / 30)
+        target = pd.Series(np.sin(t) + 0.1 * np.arange(t.size) / t.size, index=t)
+        grid = np.arange(0.0, 60.0, 0.1)
+        continuous = {
+            'wheel_velocity': pd.Series(np.cos(grid), index=grid),
+            'paw_l_speed': pd.Series(np.abs(np.sin(grid)), index=grid),
+        }
+        expander = partial(lag_expand, lags=make_lags(ENCODING_N_LAGS))
+        design, slices, target_grid = build_encoding_design(
+            trials, target, hemisphere='l', expander=expander,
+            continuous=continuous)
+        return design, slices, target_grid
+
+    def test_default_spec_composes_finite_design(self):
+        from iblnm.config import ENCODING_N_LAGS
+        design, slices, target_grid = self._design()
+
+        # 13 event blocks (4 stimOn + 2 firstMovement + 2 response + 4 feedback
+        # + 1 goCue), each FIR-expanded to n_lags columns, plus the two unlagged
+        # continuous regressors.
+        event_blocks = {name for name in slices if '|' in name}
+        assert event_blocks == {
+            'stimOn_times|baseline', 'stimOn_times|side',
+            'stimOn_times|contrast', 'stimOn_times|side:contrast',
+            'firstMovement_times|baseline', 'firstMovement_times|choice',
+            'response_times|baseline', 'response_times|choice',
+            'feedback_times|feedbackType=1|baseline',
+            'feedback_times|feedbackType=1|contrast',
+            'feedback_times|feedbackType=-1|baseline',
+            'feedback_times|feedbackType=-1|contrast',
+            'goCue_times|baseline',
+        }
+        assert design.shape == (target_grid.size, 13 * ENCODING_N_LAGS + 2)
+        assert np.isfinite(design).all()
+
+    def test_fit_returns_finite_r2(self):
+        from iblnm.analysis import fit_encoding_model
+        from iblnm.config import ENCODING_ALPHAS, ENCODING_CV
+        design, slices, target_grid = self._design()
+        fit = fit_encoding_model(
+            design, target_grid, slices, ENCODING_ALPHAS, ENCODING_CV)
+        assert np.isfinite(fit.r2)
