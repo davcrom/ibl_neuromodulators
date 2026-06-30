@@ -28,7 +28,7 @@ from iblnm.config import (
     PERFORMANCE_FPATH, ERRORS_FPATH,
     SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
     TARGETNMS_TO_ANALYZE, POSE_FPATH,
-    SESSIONTYPE2FLOAT, SESSIONTYPE2COLOR,
+    SESSIONTYPE2FLOAT, SESSIONTYPE2COLOR, TARGETNM_COLORS,
     MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
 from iblnm.data import PhotometrySessionGroup
@@ -51,6 +51,13 @@ PROFICIENT_FLOAT_MAP = {
 PROFICIENT_COLOR_MAP = {
     'not_proficient': 'cornflowerblue',
     'proficient': 'hotpink',
+}
+# Opacity for target-colored session barplots in proficient split: proficient
+# (biased + ephys) full, training faded. Order sets the stack: training first
+# (bottom), proficient on top.
+PROFICIENT_ALPHA_MAP = {
+    'not_proficient': 0.5,
+    'proficient': 1.0,
 }
 
 # ---- Error filter sets ----
@@ -122,10 +129,14 @@ if args.session_split == 'proficient':
     split_col = 'proficient_label'
     float_map = PROFICIENT_FLOAT_MAP
     color_map = PROFICIENT_COLOR_MAP
+    # Color session barplots by target identity, fade by proficiency.
+    target_bar_kwargs = dict(bar_color_map=TARGETNM_COLORS,
+                             split_alpha_map=PROFICIENT_ALPHA_MAP)
 else:
     split_col = 'session_type'
     float_map = SESSION_TYPE_FLOAT_MAP
     color_map = SESSION_TYPE_COLOR_MAP
+    target_bar_kwargs = {}
 
 BAR_W, BAR_H = (12, 24) if args.horizontal else (24, 12)
 
@@ -258,7 +269,7 @@ n_ses = grp.sessions['eid'].nunique()
 
 if n_rec > 0:
     ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map,
-                                horizontal=args.horizontal)
+                                horizontal=args.horizontal, **target_bar_kwargs)
     ax.set_title(f'Recordings by target ({n_rec} recordings, {n_ses} sessions)')
     set_plotsize(w=BAR_W, h=BAR_H, ax=ax)
     ax.get_figure().savefig(figures_dir / '6_target_overview.svg',
@@ -283,7 +294,7 @@ n_ses_a = grp.sessions['eid'].nunique()
 
 if n_rec_a > 0:
     ax = target_overview_barplot(grp.recordings, color_by=split_col, split_color_map=color_map,
-                                horizontal=args.horizontal)
+                                horizontal=args.horizontal, **target_bar_kwargs)
     ax.set_title(f'Analysis-ready by target ({n_rec_a} recordings, {n_ses_a} sessions)')
     set_plotsize(w=BAR_W, h=BAR_H, ax=ax)
     ax.get_figure().savefig(figures_dir / '8_target_overview_analyze.svg',

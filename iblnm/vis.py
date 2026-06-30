@@ -6,7 +6,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib import colors
 from matplotlib.patches import Patch
-from matplotlib.ticker import FormatStrFormatter
+from matplotlib.ticker import FormatStrFormatter, MaxNLocator
 from scipy.stats import sem as scipy_sem
 from sklearn.preprocessing import quantile_transform
 
@@ -271,12 +271,11 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
         for target_NM in df_n.index
     ]
 
+    count_axis = ax.xaxis if horizontal else ax.yaxis
     if horizontal:
         ax.set_yticks(positions)
         ax.set_yticklabels(tick_labels)
         ax.invert_yaxis()
-        if max(cumulative) > 0:
-            ax.set_xticks(np.arange(0, np.ceil(max(cumulative) / 100) + 1) * 100)
         ax.set_xlabel('N Sessions')
         ax.set_ylabel('Target-NM')
     else:
@@ -284,10 +283,10 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
         ax.set_xticklabels(tick_labels)
         ax.set_xlim(right=max(positions) + barwidth)
         ax.tick_params(axis='x', rotation=90)
-        if max(cumulative) > 0:
-            ax.set_yticks(np.arange(0, np.ceil(max(cumulative) / 100) + 1) * 100)
         ax.set_ylabel('N Sessions')
         ax.set_xlabel('Target-NM')
+    # Let matplotlib pick a handful of round count ticks instead of one per 100.
+    count_axis.set_major_locator(MaxNLocator(nbins=6, integer=True))
 
     if bar_color_map is not None and split_alpha_map is not None:
         handles = [Patch(facecolor='gray', alpha=split_alpha_map[c], label=c)
