@@ -15,6 +15,7 @@ Usage:
     python scripts/example_session.py --body-parts nose_tip paw_l paw_r tongue_end_l tongue_end_r
 """
 import argparse
+import warnings
 from pathlib import Path
 
 import h5py
@@ -24,11 +25,10 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
-    WHEEL_FS, FIGURE_DPI, TARGETNM_COLORS,
+    WHEEL_FS, FIGURE_DPI, TARGETNM_COLORS, ANALYSIS_QC_BLOCKERS,
 )
-from iblnm.data import PhotometrySessionGroup
+from iblnm.data import PhotometrySessionGroup, _load_pose_xcorr
 from iblnm.io import _get_default_connection
-from iblnm.util import derive_target_nm
 
 plt.ion()
 
@@ -41,21 +41,44 @@ DEFAULT_BODY_PARTS = ['nose_tip', 'paw_r', 'tongue_end_l']
 # Session selection
 # =========================================================================
 
-def has_lightning_pose(one, eid):
-    """Check whether a session has lightning pose data on ONE."""
-    dsets = one.list_datasets(eid)
-    return any('lightningPose' in str(d) for d in dsets)
+def camera_timing_ok(pose_xcorr):
+    """Whether paw–wheel cross-correlation indicates correct camera frame timing.
+
+    Each row of ``pose_xcorr['functions']`` is one session-third's
+    cross-correlation curve over lags; a high peak in any third demonstrates
+    correct frame timing (a quiet third self-gates to a low peak). Returns True
+    when the largest per-third peak exceeds 0.5.
+
+    Parameters
+    ----------
+    pose_xcorr : dict
+        Loaded ``video/crosscorr`` payload; ``functions`` has shape
+        (3, n_lags) and may contain NaNs for low-movement thirds.
+
+    Returns
+    -------
+    bool
+        True if the max-across-thirds peak cross-correlation exceeds 0.5.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN third
+        peak = np.nanmax(np.nanmax(pose_xcorr['functions'], axis=1))
+    return bool(peak > 0.5)
 
 
-def select_example_session(group, one, target_nm=DEFAULT_TARGET_NM):
-    """Pick the best session: highest fraction_correct among those with LP data.
+def select_example_session(group, target_nm=DEFAULT_TARGET_NM):
+    """Pick the highest-performing analysis-ready recording for a target-NM.
+
+    Ranks target-NM recordings by fraction_correct (descending), then returns
+    the first whose H5 paw–wheel cross-correlation passes the camera-timing
+    gate. A present ``video/crosscorr`` group implies LightningPose was
+    extracted, so pose is loadable downstream.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Filtered recordings.
-    one : one.api.One
-        ONE connection.
+        Group already filtered to biased/ephys session type with no blocking
+        QC errors.
     target_nm : str
         Target-NM cohort to select from.
 
@@ -77,12 +100,15 @@ def select_example_session(group, one, target_nm=DEFAULT_TARGET_NM):
     else:
         candidates = candidates.sample(frac=1, random_state=42)
 
-    # Pick the first session that has lightning pose
+    # Pick the first candidate whose camera frame timing is correct
     for _, rec in candidates.iterrows():
-        if has_lightning_pose(one, rec['eid']):
+        h5_path = Path(SESSIONS_H5_DIR) / f"{rec['eid']}.h5"
+        with h5py.File(h5_path, 'r') as f:
+            pose_xcorr = _load_pose_xcorr(f['video']) if 'video' in f else None
+        if pose_xcorr is not None and camera_timing_ok(pose_xcorr):
             return rec
 
-    raise ValueError(f"No {target_nm} session found with lightning pose data")
+    raise ValueError(f"No {target_nm} session passed the camera-timing gate")
 
 
 # =========================================================================
@@ -468,24 +494,11 @@ if __name__ == '__main__':
     # Load sessions and filter
     # -----------------------------------------------------------------
     print(f"Loading sessions from {SESSIONS_FPATH}")
-    df_sessions = pd.read_parquet(SESSIONS_FPATH)
-    df_sessions = derive_target_nm(df_sessions)
-
-    _parallel_cols = ['target_NM', 'brain_region', 'hemisphere']
-    _lengths_match = df_sessions[_parallel_cols].apply(
-        lambda row: len(set(
-            len(v) if isinstance(v, (list, np.ndarray)) else 1
-            for v in row
-        )) == 1,
-        axis=1,
-    )
-    df_sessions = df_sessions[_lengths_match].copy()
-    df_recordings = df_sessions.explode(_parallel_cols).copy()
-    df_recordings['fiber_idx'] = df_recordings.groupby('eid').cumcount()
-
     one = _get_default_connection()
-    group = PhotometrySessionGroup(df_recordings, one=one)
-    group.filter_sessions(session_types=('biased', 'ephys'))
+    group = PhotometrySessionGroup.from_catalog(
+        pd.read_parquet(SESSIONS_FPATH), one=one, h5_dir=SESSIONS_H5_DIR)
+    group.filter_sessions(session_types=('biased', 'ephys'),
+                          qc_blockers=ANALYSIS_QC_BLOCKERS)
     print(f"  {len(group)} recordings after filtering")
 
     # -----------------------------------------------------------------
@@ -495,8 +508,8 @@ if __name__ == '__main__':
         rec = group.recordings[group.recordings['eid'] == args.eid].iloc[0]
         print(f"Using specified session: {rec['eid']} ({rec['subject']})")
     else:
-        print(f"Selecting best {args.target_nm} session with lightning pose...")
-        rec = select_example_session(group, one, target_nm=args.target_nm)
+        print(f"Selecting best analysis-ready {args.target_nm} session...")
+        rec = select_example_session(group, target_nm=args.target_nm)
         print(f"Selected: {rec['eid']} ({rec['subject']}, "
               f"{rec['brain_region']}, {rec['session_type']})")
 

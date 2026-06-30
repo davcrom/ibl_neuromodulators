@@ -6,7 +6,9 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
-from scripts.example_session import find_snippet_window, plot_example_snippet
+from scripts.example_session import (
+    camera_timing_ok, find_snippet_window, plot_example_snippet,
+)
 
 
 # =========================================================================
@@ -69,6 +71,36 @@ def snippet_data():
     })
 
     return photometry, wheel, pose_times, pose, trials, t_start, t_end
+
+
+# =========================================================================
+# camera_timing_ok
+# =========================================================================
+
+class TestCameraTimingOk:
+    def test_passes_when_one_third_exceeds_threshold(self):
+        functions = np.array([
+            [0.1, 0.7, 0.2],   # this third peaks at 0.7
+            [0.1, 0.1, 0.05],
+            [0.0, 0.1, 0.1],
+        ])
+        assert camera_timing_ok({'functions': functions}) is True
+
+    def test_fails_when_all_thirds_at_or_below_threshold(self):
+        functions = np.array([
+            [0.1, 0.5, 0.2],
+            [0.3, 0.4, 0.1],
+            [0.0, 0.5, 0.1],
+        ])
+        assert camera_timing_ok({'functions': functions}) is False
+
+    def test_all_nan_third_does_not_raise_or_pass(self):
+        functions = np.array([
+            [np.nan, np.nan, np.nan],  # quiet/dropped third
+            [0.1, 0.2, 0.3],
+            [0.0, 0.1, 0.1],
+        ])
+        assert camera_timing_ok({'functions': functions}) is False
 
 
 # =========================================================================
