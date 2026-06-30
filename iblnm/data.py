@@ -1733,6 +1733,7 @@ class PhotometrySession(PhotometrySessionLoader):
 
     def compare_response_models(self, brain_region, formulas,
                                 response_col='response', reference='full',
+                                events=RESPONSE_EVENTS,
                                 min_trials=MIN_TRIALS_PERSESSION,
                                 contrast_coding='log2'):
         """Fit a drop-one OLS family per event for one recording, return ΔR².
@@ -1783,7 +1784,8 @@ class PhotometrySession(PhotometrySessionLoader):
         df = self._response_modeling_frame(brain_region, response_col)
 
         dropone_frames, coef_frames = [], []
-        for event, df_event in df.groupby('event'):
+        for event in events:
+            df_event = df[df['event'] == event]
             df_event = analysis.code_predictors(df_event, contrast_coding)
             union_cols = analysis.formula_union_columns(
                 formulas.values(), df_event.columns)
@@ -2531,7 +2533,7 @@ class PhotometrySessionGroup:
             rows.append(row)
         return pd.DataFrame(rows)
 
-    def response_ols_dropone(self, formulas, response_col='response',
+    def response_ols_dropone(self, formulas, events=RESPONSE_EVENTS, response_col='response',
                              reference='full', min_trials=MIN_TRIALS_PERSESSION,
                              contrast_coding='log2'):
         """Per-recording drop-one OLS ΔR² over the whole group.
@@ -2583,7 +2585,7 @@ class PhotometrySessionGroup:
             ps.load_h5(Path(self.h5_dir) / f"{row['eid']}.h5",
                        groups=['photometry', 'trials', 'wheel'])
             rows, coefs = ps.compare_response_models(
-                brain_region=row['brain_region'], formulas=formulas,
+                events=events, brain_region=row['brain_region'], formulas=formulas,
                 response_col=response_col, reference=reference,
                 min_trials=min_trials, contrast_coding=contrast_coding)
             if rows.empty:
