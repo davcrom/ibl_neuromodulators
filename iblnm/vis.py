@@ -2724,7 +2724,7 @@ _VARCOMP_COLORS = {'V_mouse': '#1f6fb4', 'V_session': '#e08214'}
 _VARCOMP_HALF_WIDTH = 0.4  # x half-width of a full-amplitude violin half
 
 
-def _half_violin(ax, centre, side, x, density, color):
+def _half_violin(ax, centre, side, x, density, color, label):
     """Fill one half-violin against ``centre`` along the variance axis ``x``.
 
     The KDE outline ``density`` is normalized to ``_VARCOMP_HALF_WIDTH`` and laid
@@ -2732,7 +2732,7 @@ def _half_violin(ax, centre, side, x, density, color):
     two components share an x-slot as mirrored halves.
     """
     width = _VARCOMP_HALF_WIDTH * density / density.max()
-    ax.fill_betweenx(x, centre, centre + side * width, color=color, alpha=0.7)
+    ax.fill_betweenx(x, centre, centre + side * width, color=color, alpha=0.7, label=label)
 
 
 def plot_varcomp_violins(violin_df, title):
@@ -2786,9 +2786,10 @@ def plot_varcomp_violins(violin_df, title):
                     body = tcell[tcell['component'] == component]
                     if body.empty:
                         continue
-                    _half_violin(ax, slot, side, body['x'].values,
+                    _half_violin(ax, slot, side, np.log10(body['x'].values),
                                  body['density'].values,
-                                 _VARCOMP_COLORS[component])
+                                 _VARCOMP_COLORS[component],
+                                 component if (slot == 0) else '_nolegend_')
             if r == 0:
                 ax.set_title(event)
             if c == 0:
@@ -2796,6 +2797,7 @@ def plot_varcomp_violins(violin_df, title):
         axes[-1, c].set_xticks(range(len(targets)))
         axes[-1, c].set_xticklabels(targets, rotation=30, ha='right',
                                     fontsize=TICKFONTSIZE)
+    axes[0, 0].legend()
     fig.supylabel('variance (standardized)')
     fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
