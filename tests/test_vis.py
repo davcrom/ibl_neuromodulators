@@ -2625,3 +2625,54 @@ class TestPlotVarcompViolins:
             'empty vc')
         assert fig._suptitle.get_text() == 'empty vc'
         plt.close(fig)
+
+
+def _make_encoding_fit(dt=0.1, n_lags=3):
+    """Minimal EncodingFit with one FIR block for plotter tests."""
+    from types import SimpleNamespace
+    from iblnm.analysis import EncodingFit
+
+    tvec = np.arange(0.0, 1.0, dt)
+    coefficients = np.arange(n_lags, dtype=float)[:, None]
+    return EncodingFit(
+        tvec=tvec,
+        valid=np.ones(tvec.size, dtype=bool),
+        design=np.zeros((tvec.size, n_lags)),
+        target=np.zeros((tvec.size, 1)),
+        prediction=np.zeros((tvec.size, 1)),
+        coefficients=coefficients,
+        intercept=np.zeros(1),
+        slices={'stimOn_times|baseline': slice(0, n_lags)},
+        scaler=SimpleNamespace(scale_=np.ones(n_lags)),
+        r2=0.5,
+        alpha=1.0,
+        label='test',
+    )
+
+
+class TestPlotEncodingKernels:
+    def test_x_axis_is_lags_times_dt(self):
+        from iblnm.vis import plot_encoding_kernels
+        dt = 0.1
+        fit = _make_encoding_fit(dt=dt, n_lags=3)
+        lags = np.array([-1, 0, 1])
+        fig = plot_encoding_kernels(fit, ['stimOn_times|baseline'], lags)
+        ax = np.atleast_1d(fig.axes)[0]
+        line = ax.lines[0]
+        np.testing.assert_allclose(line.get_xdata(), lags * dt)
+        plt.close(fig)
+
+
+class TestPlotDeltaRSquared:
+    def test_largest_contribution_at_top(self):
+        from iblnm.vis import plot_delta_r_squared
+        deltas = pd.Series({'side': 0.30, 'contrast': 0.10, 'baseline': 0.02},
+                           name='delta_r2')
+        ax = plot_delta_r_squared(deltas)
+        bars = ax.containers[0]
+        # read bars top-to-bottom (descending y) -> widths must descend
+        order = np.argsort([b.get_y() for b in bars])[::-1]
+        widths_top_down = [bars[i].get_width() for i in order]
+        assert widths_top_down == sorted(widths_top_down, reverse=True)
+        assert widths_top_down[0] == deltas.max()
+        plt.close(ax.figure)

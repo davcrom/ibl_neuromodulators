@@ -16,6 +16,7 @@ from iblnm.config import (
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
 )
+from iblnm.analysis import raised_cosine_basis
 from iblnm.util import get_contrast_coding
 
 
@@ -3674,4 +3675,130 @@ def plot_rt_by_contrast(group, ax=None):
 
     _draw_rt_violins(df_trial, ax=ax)
     return fig
+
+
+def plot_encoding_prediction(fit, ax=None):
+    """Plot the measured signal and the model prediction over time.
+
+    Both traces are drawn over the valid grid samples (``fit.tvec[fit.valid]``).
+
+    Parameters
+    ----------
+    fit : iblnm.analysis.EncodingFit
+        A fitted encoding model.
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw on; created if None.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes with the data and model traces.
+    """
+    if ax is None:
+        _, ax = plt.subplots()
+    times = fit.tvec[fit.valid]
+    ax.plot(times, fit.target, label='data')
+    ax.plot(times, fit.prediction, 'r', label='model')
+    ax.set_xlabel('time (s)')
+    ax.set_title(f'{fit.label}  (R$^2$ = {fit.r2:.3f})')
+    ax.legend()
+    return ax
+
+
+def plot_encoding_kernels(fit, names, lags, sharey=True):
+    """Plot the fitted lagged kernel for each named event block.
+
+    Assumes the FIR (lagged) basis, where a block's back-transformed
+    coefficients are the kernel itself (one value per lag). Sample lags are
+    converted to seconds via the grid step ``dt = tvec[1] - tvec[0]``.
+
+    Parameters
+    ----------
+    fit : iblnm.analysis.EncodingFit
+        A fitted encoding model.
+    names : list of str
+        Event block names to plot (keys in ``fit.slices``).
+    lags : np.ndarray
+        Sample lags used to build the kernels.
+    sharey : bool, optional
+        Share the y-axis across panels (default True).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        One panel per name, kernel amplitude vs lag in seconds.
+    """
+    fig, axes = plt.subplots(
+        ncols=len(names), sharey=sharey, figsize=(3 * len(names), 3),
+        squeeze=False)
+    lag_seconds = lags * (fit.tvec[1] - fit.tvec[0])
+    for ax, name in zip(axes[0], names):
+        ax.plot(lag_seconds, fit.get_kernel(name))
+        ax.set_title(name, fontsize='small')
+        ax.axhline(0, linestyle=':', color='k', lw=1)
+        ax.axvline(0, linestyle=':', color='k', lw=1)
+        ax.set_xlabel('time (s)')
+    fig.tight_layout()
+    return fig
+
+
+def plot_delta_r_squared(deltas, ax=None):
+    """Horizontal bar chart of per-regressor ΔR² (largest contribution at top).
+
+    Parameters
+    ----------
+    deltas : pd.Series
+        ΔR² indexed by block name, sorted descending (as returned by
+        ``PhotometrySession.delta_r_squared``).
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw on; created if None.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes with one horizontal bar per block.
+    """
+    if ax is None:
+        _, ax = plt.subplots()
+    # reverse so the largest drop sits at the top of the horizontal bars
+    ax.barh(deltas.index[::-1], deltas.values[::-1])
+    ax.axvline(0, linestyle=':', color='k', lw=1)
+    ax.set_xlabel('ΔR² (drop when left out)')
+    ax.figure.tight_layout()
+    return ax
+
+
+def plot_cosine_basis(n_basis=10, rcos_duration=2.5, rcos_nloffset=0.2,
+                      dt=0.1, ax=None):
+    """Plot the log-raised-cosine bump basis for the given parameters.
+
+    Parameters
+    ----------
+    n_basis : int, optional
+        Number of bumps.
+    rcos_duration : float, optional
+        Kernel window in seconds.
+    rcos_nloffset : float, optional
+        Log-warp offset in seconds.
+    dt : float, optional
+        Time-grid resolution in seconds.
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw on; created if None.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes, with one line per bump.
+    """
+    if ax is None:
+        _, ax = plt.subplots()
+    basis = raised_cosine_basis(n_basis, rcos_duration, rcos_nloffset, dt)
+    times = np.arange(basis.shape[0]) * dt
+    ax.plot(times, basis)
+    ax.set_xlabel('time after event (s)')
+    ax.set_ylabel('basis weight')
+    ax.set_title(
+        f'raised-cosine basis (n_basis={n_basis}, dur={rcos_duration}s, '
+        f'offset={rcos_nloffset}s)')
+    return ax
 
