@@ -2829,6 +2829,33 @@ class TestInterpolateToGrid:
         assert np.isnan(out[-1])
 
 
+class TestBuildContinuousBlock:
+    def test_unlagged_matches_resampled_signal(self):
+        from iblnm.analysis import build_continuous_block, interpolate_to_grid
+        src_t = np.linspace(0.0, 1.0, 6)
+        series = pd.Series(2.0 * src_t + 1.0, index=src_t)
+        tvec = np.array([0.25, 0.5, 0.75])
+        out = build_continuous_block(series, tvec, lags=None)
+        assert out.shape == (tvec.size,)
+        np.testing.assert_allclose(out, interpolate_to_grid(series, tvec))
+
+    def test_lagged_shifts_resampled_signal_per_column(self):
+        from iblnm.analysis import build_continuous_block, interpolate_to_grid
+        src_t = np.linspace(0.0, 2.0, 21)
+        series = pd.Series(src_t**2, index=src_t)
+        tvec = np.linspace(0.2, 1.8, 9)
+        lags = np.array([-2, 0, 3])
+        resampled = interpolate_to_grid(series, tvec)
+        out = build_continuous_block(series, tvec, lags=lags)
+        assert out.shape == (tvec.size, lags.size)
+        # column j is the resampled signal shifted by lags[j] (zero-padded)
+        np.testing.assert_allclose(out[:3, 0], resampled[2:5])   # lag -2
+        np.testing.assert_allclose(out[:, 1], resampled)         # lag 0
+        np.testing.assert_allclose(out[3:, 2], resampled[:-3])   # lag +3
+        np.testing.assert_array_equal(out[-2:, 0], 0.0)          # vacated tail
+        np.testing.assert_array_equal(out[:3, 2], 0.0)           # vacated head
+
+
 class TestRaisedCosineExpand:
     def test_single_impulse_superposes_to_basis(self):
         from iblnm.analysis import raised_cosine_basis, raised_cosine_expand

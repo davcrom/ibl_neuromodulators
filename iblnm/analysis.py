@@ -2674,6 +2674,34 @@ def interpolate_to_grid(
     return interpolator(tvec)
 
 
+def build_continuous_block(
+    series: pd.Series, tvec: np.ndarray, lags: np.ndarray | None = None
+) -> np.ndarray:
+    """Resample a continuous session signal onto the model grid, optionally lagged.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Continuous signal indexed by time (s), e.g. wheel velocity or pose speed.
+    tvec : np.ndarray
+        Uniform model time grid to resample onto.
+    lags : np.ndarray | None
+        Integer sample lags. ``None`` (default) returns the resampled signal
+        unlagged; otherwise the resampled signal is lag-expanded, one column per
+        lag (see `lag_expand`).
+
+    Returns
+    -------
+    np.ndarray
+        1-D of length ``len(tvec)`` when ``lags is None``; otherwise
+        ``(len(tvec), len(lags))``.
+    """
+    resampled = interpolate_to_grid(series, tvec)
+    if lags is None:
+        return resampled
+    return lag_expand(resampled, lags)
+
+
 def deviation_code(labels: np.ndarray, positive: str) -> np.ndarray:
     """Deviation-code a 2-level categorical to ±0.5.
 
