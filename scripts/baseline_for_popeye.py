@@ -22,6 +22,17 @@ from iblnm.config import PREPROCESSING_PIPELINES
 
 from deploy.iblsdsc import OneSdsc
 
+from uuid import UUID
+
+
+def is_uuid(s):
+    try:
+        UUID(s)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
+
+
 # requires the unmerged PR #121 https://github.com/int-brain-lab/iblscripts/pull/121
 one = OneSdsc(location="popeye")
 
@@ -130,7 +141,10 @@ if __name__ == "__main__":
     # group has a list of all valid sessions
     # we are exluding all sessions except the session of interest
     assert args.eid is not None
-    exclude_eids = {group.sessions["eid"]} - args.eid
+    eids = group.sessions["eid"].values
+    eids = [str(eid) for eid in eids if is_uuid(eid)]
+
+    exclude_eids = list({*eids} - {args.eid})
 
     group.filter_sessions(
         exclude_eids=exclude_eids,
