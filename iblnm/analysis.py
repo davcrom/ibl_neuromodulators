@@ -2894,20 +2894,43 @@ class EncodingFit:
         )
 
 
-def _pooled_cv_r2(
-    design: np.ndarray, target: np.ndarray, alpha: float, cv: int
+def ridge_r2(
+    design: np.ndarray, target: np.ndarray, alpha: float, cv: int = None
 ) -> float:
-    """Pooled out-of-fold R² of a ridge fit over contiguous KFold splits.
+    """R² of a ridge fit of `target` on `design`, in-sample or cross-validated.
 
-    Concatenates each fold's held-out predictions, then scores them jointly
-    (one R² over all samples), rather than averaging per-fold R². KFold runs
-    without shuffling, so folds are contiguous in time.
+    With ``cv=None`` the model is fit and scored on the same rows (in-sample
+    R²). With an integer ``cv`` the score is the pooled out-of-fold R²: each
+    fold's held-out predictions are concatenated and scored jointly (one R²
+    over all samples), rather than averaging per-fold R². KFold runs without
+    shuffling, so folds are contiguous in time.
+
+    Parameters
+    ----------
+    design : np.ndarray
+        Design matrix, shape (n, n_features).
+    target : np.ndarray
+        Target signal, shape (n, 1).
+    alpha : float
+        Ridge regularisation strength.
+    cv : int, optional
+        Number of contiguous KFold splits; ``None`` (default) scores in sample.
+
+    Returns
+    -------
+    float
+        Coefficient of determination.
     """
     from sklearn.linear_model import Ridge
     from sklearn.model_selection import KFold, cross_val_predict
     from sklearn.metrics import r2_score
 
-    predictions = cross_val_predict(Ridge(alpha=alpha), design, target, cv=KFold(cv))
+    if cv is None:
+        model = Ridge(alpha=alpha).fit(design, target)
+        predictions = design @ model.coef_.T + model.intercept_
+    else:
+        predictions = cross_val_predict(
+            Ridge(alpha=alpha), design, target, cv=KFold(cv))
     return r2_score(target, predictions)
 
 
@@ -2961,7 +2984,7 @@ def fit_encoding_model(
     scaler = StandardScaler().fit(design[valid])
     design_scaled = scaler.transform(design[valid])
 
-    alpha = max(alphas, key=lambda a: _pooled_cv_r2(design_scaled, y_valid, a, cv))
+    alpha = max(alphas, key=lambda a: ridge_r2(design_scaled, y_valid, a, cv))
     model = Ridge(alpha=alpha).fit(design_scaled, y_valid)
 
     coefficients = model.coef_.T

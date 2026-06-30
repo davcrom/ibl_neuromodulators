@@ -1876,6 +1876,40 @@ class PhotometrySession(PhotometrySessionLoader):
         df = task.add_relative_contrast(df)
         return analysis.select_modeling_trials(df, response_col)
 
+    def delta_r_squared(self, fit, cv: int = None) -> pd.Series:
+        """Leave-one-regressor-out drop in R² for each block of an encoding fit.
+
+        For every block in ``fit.slices`` all of its columns are dropped from
+        the (already z-scored) design and the ridge model is refit at the same
+        ``fit.alpha``; the block's contribution is ΔR² = full R² − reduced R².
+
+        Parameters
+        ----------
+        fit : iblnm.analysis.EncodingFit
+            A fitted encoding model (see
+            :func:`iblnm.analysis.fit_encoding_model`).
+        cv : int, optional
+            ``None`` (default) scores in sample, using ``fit.r2`` as the full
+            reference; an int scores the pooled out-of-fold R² over that many
+            contiguous KFold splits, both for the full and the reduced models.
+
+        Returns
+        -------
+        pd.Series
+            ΔR² indexed by block name, sorted descending (largest contribution
+            first).
+        """
+        full_r2 = fit.r2 if cv is None else analysis.ridge_r2(
+            fit.design, fit.target, fit.alpha, cv)
+        deltas = {}
+        for name, span in fit.slices.items():
+            keep = np.ones(fit.design.shape[1], dtype=bool)
+            keep[span] = False
+            reduced_r2 = analysis.ridge_r2(
+                fit.design[:, keep], fit.target, fit.alpha, cv)
+            deltas[name] = full_r2 - reduced_r2
+        return pd.Series(deltas, name='delta_r2').sort_values(ascending=False)
+
 
 def _process_worker(eid, row_dict, h5_dir, fn, kwargs):
     """Worker function for parallel process(). Runs in a subprocess.

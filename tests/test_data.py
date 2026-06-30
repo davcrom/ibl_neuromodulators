@@ -5922,3 +5922,65 @@ class TestSessionPermutationTest:
                 fixed_var=['rt'], swapped_var=['signal'],
                 statistic_key='slope', n_iter=5,
             )
+
+
+def _two_block_encoding_fit():
+    """An EncodingFit on synthetic data: a 'signal' block carries all the
+    variance, a 'noise' block is pure noise uncorrelated with the target."""
+    from iblnm import analysis
+
+    rng = np.random.default_rng(0)
+    n = 600
+    tvec = np.linspace(0, 60, n)
+    signal = rng.standard_normal((n, 3))
+    noise = rng.standard_normal((n, 2))
+    weights = np.array([2.0, -1.5, 1.0])
+    y = signal @ weights + 0.05 * rng.standard_normal(n)
+    design = np.hstack([signal, noise])
+    slices = {'signal': slice(0, 3), 'noise': slice(3, 5)}
+    target = pd.Series(y, index=tvec)
+    return analysis.fit_encoding_model(design, target, slices,
+                                       alphas=[1.0], cv=3)
+
+
+class TestDeltaRSquared:
+    """PhotometrySession.delta_r_squared — leave-one-regressor-out ΔR²."""
+
+    def _session(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        return PhotometrySession(mock_session_series, one=MagicMock(),
+                                 load_data=False)
+
+    def test_signal_block_dominates_noise_block(self, mock_session_series):
+        """In-sample: the signal block has the largest ΔR², the noise block ~0."""
+        fit = _two_block_encoding_fit()
+        deltas = self._session(mock_session_series).delta_r_squared(fit)
+
+        assert list(deltas.index) == ['signal', 'noise']  # sorted descending
+        assert deltas['signal'] > 0.5
+        assert deltas['noise'] == pytest.approx(0.0, abs=1e-3)
+
+    def test_insample_full_reference_is_fit_r2(self, mock_session_series):
+        """cv=None uses fit.r2 as the full reference: ΔR² of a block equals
+        fit.r2 minus the independently refit reduced R²."""
+        from sklearn.linear_model import Ridge
+        from sklearn.metrics import r2_score
+
+        fit = _two_block_encoding_fit()
+        deltas = self._session(mock_session_series).delta_r_squared(fit)
+
+        span = fit.slices['noise']
+        keep = np.ones(fit.design.shape[1], dtype=bool)
+        keep[span] = False
+        reduced = fit.design[:, keep]
+        model = Ridge(alpha=fit.alpha).fit(reduced, fit.target)
+        reduced_r2 = r2_score(fit.target, reduced @ model.coef_.T + model.intercept_)
+
+        assert deltas['noise'] == pytest.approx(fit.r2 - reduced_r2)
+
+    def test_cv_returns_series_over_all_blocks(self, mock_session_series):
+        """cv=2 runs and returns a Series indexed by every block name."""
+        fit = _two_block_encoding_fit()
+        deltas = self._session(mock_session_series).delta_r_squared(fit, cv=2)
+
+        assert set(deltas.index) == set(fit.slices)
