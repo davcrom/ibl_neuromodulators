@@ -6064,3 +6064,83 @@ class TestAssemblePersessionPvalueTable:
 
         assert list(table['subject']) == ['m2']
         assert table.iloc[0]['n_sessions'] == 1
+
+
+class TestResponseOlsDroponePermutation:
+    """PhotometrySessionGroup.response_ols_dropone_permutation orchestration."""
+
+    def _group(self):
+        """Three single-region recordings, one target_NM, two mice (m1 has
+        e1+e2, m2 has e3)."""
+        from iblnm.data import PhotometrySessionGroup
+        rows = [{
+            'eid': eid, 'subject': subject, 'brain_region': 'VTA',
+            'hemisphere': 'l', 'target_NM': 'VTA-DA', 'NM': 'DA',
+            'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
+            'number': 1, 'task_protocol': 'biased_protocol',
+        } for eid, subject in [('e1', 'm1'), ('e2', 'm1'), ('e3', 'm2')]]
+        return PhotometrySessionGroup(pd.DataFrame(rows), one=MagicMock())
+
+    def _observed(self):
+        return pd.DataFrame(
+            [{'eid': eid, 'subject': subject, 'target_NM': 'VTA-DA',
+              'brain_region': 'VTA', 'event': 'feedback_times',
+              'predictor': 'reward', 'r2': 0.3, 'delta_r2': delta,
+              'n_trials': 100}
+             for eid, subject, delta in [('e1', 'm1', 0.10),
+                                         ('e2', 'm1', 0.06),
+                                         ('e3', 'm2', 0.20)]])
+
+    _FORMULAS = {'full': '{response} ~ reward + contrast',
+                 'reward': '{response} ~ contrast'}
+
+    def _patch(self, group, monkeypatch):
+        """Stub the H5-loading coded-frame gather and the null primitive so
+        neither H5 nor statsmodels is invoked. Each canned frame carries a
+        ``tag`` column equal to its eid. Returns the list each call records:
+        ``(focal_tag, donor_tags, predictor)``."""
+        scorable = [(eid, 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': [eid]}))
+                    for eid in ['e1', 'e2', 'e3']]
+        monkeypatch.setattr(group, '_gather_coded_frames',
+                            lambda *a, **k: scorable)
+        calls = []
+
+        def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
+                      predictor, response_col='response'):
+            calls.append((focal_df['tag'].iloc[0],
+                          {d['tag'].iloc[0] for d in donor_dfs}, predictor))
+            return np.array([0.01, 0.02])
+
+        monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
+                            fake_null)
+        return calls
+
+    def test_donors_are_other_same_targetnm_recordings(self, monkeypatch):
+        """A focal recording's donors are exactly the other same-target_NM
+        recordings (focal excluded)."""
+        group = self._group()
+        group.response_ols_dropone_results = self._observed()
+        calls = self._patch(group, monkeypatch)
+
+        group.response_ols_dropone_permutation(
+            self._FORMULAS, events=['feedback_times'])
+
+        donors_for_e1 = next(d for f, d, _ in calls if f == 'e1')
+        assert donors_for_e1 == {'e2', 'e3'}
+
+    def test_grain_and_columns(self, monkeypatch):
+        """Returned table has grain (target_NM, event, predictor, subject) and
+        the schema column order."""
+        from iblnm.data import RESPONSE_OLS_PERSESSION_PVAL_COLUMNS
+        group = self._group()
+        group.response_ols_dropone_results = self._observed()
+        self._patch(group, monkeypatch)
+
+        table = group.response_ols_dropone_permutation(
+            self._FORMULAS, events=['feedback_times'])
+
+        assert list(table.columns) == RESPONSE_OLS_PERSESSION_PVAL_COLUMNS
+        assert set(table['subject']) == {'m1', 'm2'}
+        assert set(zip(table['target_NM'], table['event'],
+                       table['predictor'])) == {
+            ('VTA-DA', 'feedback_times', 'reward')}
