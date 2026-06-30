@@ -62,6 +62,14 @@ RESPONSE_OLS_DROPONE_COLUMNS = [
     'delta_r2', 'n_trials',
 ]
 
+# Per-mouse drop-one significance table: one row per (target_NM, event,
+# predictor, subject) cell, pooling the cell's sessions via a synchronized
+# permutation test against per-session null ΔR² vectors.
+RESPONSE_OLS_PERSESSION_PVAL_COLUMNS = [
+    'target_NM', 'event', 'predictor', 'subject', 'mean_delta_r2', 'p_value',
+    'n_sessions', 'n_donors',
+]
+
 # Per-recording full-model main-effect coefficients (one row per event ×
 # regressor for a single recording). The group method tags these with
 # eid/subject to reach RESPONSE_OLS_COEFS_COLUMNS.
@@ -69,6 +77,62 @@ PERSESSION_COEFS_COLUMNS = [
     'brain_region', 'target_NM', 'event', 'regressor', 'coef', 'coef_se',
     'n_trials',
 ]
+
+
+def assemble_persession_pvalue_table(
+    observed: pd.DataFrame,
+    null_vectors: dict[tuple[str, str, str], np.ndarray],
+) -> pd.DataFrame:
+    """Pool per-session drop-one ΔR² into a per-mouse permutation p-value table.
+
+    Pure assembler: groups the observed drop-one frame by
+    ``(target_NM, event, predictor, subject)`` and tests each mouse's pooled
+    ΔR² against its sessions' synchronized-permutation null vectors.
+
+    Parameters
+    ----------
+    observed : pd.DataFrame
+        Observed drop-one frame (``RESPONSE_OLS_DROPONE_COLUMNS``), one row per
+        ``(eid, subject, target_NM, brain_region, event, predictor)`` carrying
+        the in-sample ``delta_r2``.
+    null_vectors : dict
+        Maps ``(eid, event, predictor)`` to that session's length-K null ΔR²
+        vector (synchronized-permutation columns shared across the cell's
+        sessions). Sessions absent from this mapping are not scorable and are
+        dropped from their group.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per scorable ``(target_NM, event, predictor, subject)`` cell in
+        ``RESPONSE_OLS_PERSESSION_PVAL_COLUMNS`` order. ``mean_delta_r2`` is the
+        pooled observed statistic, ``p_value`` the one-sided (greater)
+        permutation p, ``n_sessions`` the pooled session count, and ``n_donors``
+        the null length K.
+    """
+    rows = []
+    group_keys = ['target_NM', 'event', 'predictor', 'subject']
+    for (target_NM, event, predictor, subject), group in observed.groupby(
+            group_keys, sort=True):
+        scorable = [
+            (row['delta_r2'], null_vectors[(row['eid'], event, predictor)])
+            for _, row in group.iterrows()
+            if (row['eid'], event, predictor) in null_vectors
+        ]
+        if not scorable:
+            continue
+        observed_by_stratum = [delta_r2 for delta_r2, _ in scorable]
+        null_by_stratum = np.vstack([null for _, null in scorable])
+        mean_delta_r2, p_value = analysis.synchronized_permutation_pvalue(
+            observed_by_stratum, null_by_stratum,
+            statistic='mean', alternative='greater')
+        rows.append({
+            'target_NM': target_NM, 'event': event, 'predictor': predictor,
+            'subject': subject, 'mean_delta_r2': mean_delta_r2,
+            'p_value': p_value, 'n_sessions': len(scorable),
+            'n_donors': null_by_stratum.shape[1],
+        })
+    return pd.DataFrame(rows, columns=RESPONSE_OLS_PERSESSION_PVAL_COLUMNS)
 
 
 # =============================================================================

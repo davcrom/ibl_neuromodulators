@@ -5984,3 +5984,83 @@ class TestDeltaRSquared:
         deltas = self._session(mock_session_series).delta_r_squared(fit, cv=2)
 
         assert set(deltas.index) == set(fit.slices)
+
+
+class TestAssemblePersessionPvalueTable:
+    """assemble_persession_pvalue_table — per-mouse drop-one permutation p."""
+
+    def _observed(self, rows):
+        """Build an observed drop-one frame from (eid, subject, delta_r2) rows."""
+        return pd.DataFrame(
+            [{'eid': eid, 'subject': subject, 'target_NM': 'VTA-DA',
+              'brain_region': 'VTA', 'event': 'feedback', 'predictor': 'reward',
+              'r2': 0.3, 'delta_r2': delta_r2, 'n_trials': 100}
+             for eid, subject, delta_r2 in rows]
+        )
+
+    def test_single_mouse_two_sessions_matches_worked_example(self):
+        """Two sessions (ΔR² 0.10, 0.06) pooled against their null vectors give
+        mean 0.08, p 0.25, n_sessions 2, n_donors 3 (spec worked example)."""
+        from iblnm.data import assemble_persession_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)])
+        null_vectors = {
+            ('e1', 'feedback', 'reward'): np.array([0.02, 0.01, 0.03]),
+            ('e2', 'feedback', 'reward'): np.array([0.015, 0.005, 0.02]),
+        }
+
+        table = assemble_persession_pvalue_table(observed, null_vectors)
+
+        assert len(table) == 1
+        row = table.iloc[0]
+        assert row['mean_delta_r2'] == pytest.approx(0.08)
+        assert row['p_value'] == pytest.approx(0.25)
+        assert row['n_sessions'] == 2
+        assert row['n_donors'] == 3
+
+    def test_two_mice_pool_only_their_own_sessions(self):
+        """Two mice in the same cell yield two rows; each mouse's mean pools
+        only its own sessions."""
+        from iblnm.data import assemble_persession_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06),
+                                   ('e3', 'm2', 0.20)])
+        null_vectors = {
+            ('e1', 'feedback', 'reward'): np.array([0.02, 0.01, 0.03]),
+            ('e2', 'feedback', 'reward'): np.array([0.015, 0.005, 0.02]),
+            ('e3', 'feedback', 'reward'): np.array([0.04, 0.02, 0.05]),
+        }
+
+        table = assemble_persession_pvalue_table(observed, null_vectors)
+
+        by_subject = table.set_index('subject')
+        assert set(by_subject.index) == {'m1', 'm2'}
+        assert by_subject.loc['m1', 'mean_delta_r2'] == pytest.approx(0.08)
+        assert by_subject.loc['m1', 'n_sessions'] == 2
+        assert by_subject.loc['m2', 'mean_delta_r2'] == pytest.approx(0.20)
+        assert by_subject.loc['m2', 'n_sessions'] == 1
+
+    def test_output_columns_match_schema(self):
+        """Output columns equal RESPONSE_OLS_PERSESSION_PVAL_COLUMNS in order."""
+        from iblnm.data import (assemble_persession_pvalue_table,
+                                RESPONSE_OLS_PERSESSION_PVAL_COLUMNS)
+
+        observed = self._observed([('e1', 'm1', 0.10)])
+        null_vectors = {('e1', 'feedback', 'reward'): np.array([0.02, 0.01])}
+
+        table = assemble_persession_pvalue_table(observed, null_vectors)
+
+        assert list(table.columns) == RESPONSE_OLS_PERSESSION_PVAL_COLUMNS
+
+    def test_group_with_no_null_vectors_is_skipped(self):
+        """A cell whose sessions have no null vectors produces no row; sessions
+        that do have vectors still pool."""
+        from iblnm.data import assemble_persession_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm2', 0.20)])
+        null_vectors = {('e2', 'feedback', 'reward'): np.array([0.04, 0.05])}
+
+        table = assemble_persession_pvalue_table(observed, null_vectors)
+
+        assert list(table['subject']) == ['m2']
+        assert table.iloc[0]['n_sessions'] == 1

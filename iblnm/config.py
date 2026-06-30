@@ -23,6 +23,7 @@ RESPONSE_MATRIX_FPATH = RESPONSES_DIR / 'response_matrix.pqt'
 RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 MEAN_TRACES_FPATH = RESPONSES_DIR / 'mean_traces.pqt'
 RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.parquet'
+RESPONSE_OLS_PERSESSION_PVAL_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone_pvalues.parquet'
 RESPONSE_OLS_COEFS_FPATH = RESPONSES_DIR / 'response_ols_persession_coefs.parquet'
 # Group-level per-session coefficients frame: one row per (session, event,
 # regressor) carrying the full model's main-effect weight and its SE.
@@ -684,6 +685,9 @@ LMM_FORMULAS = {
 # and minimum recordings per mouse (per cell) for that mouse to be plotted.
 MIN_TRIALS_PERSESSION = 50
 MIN_RECORDINGS_PERMOUSE = 3
+# Per-mouse drop-one significance: a mouse with p_value >= this alpha is drawn
+# gray in the per-session ΔR² grid (not significant).
+PERSESSION_SIGNIFICANCE_ALPHA = 0.05
 
 # Coefficient-dispersion-vs-behavior scatter: a (subject, target_NM) unit is
 # plotted only when it has at least this many scorable sessions in both the
