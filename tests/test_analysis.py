@@ -2962,3 +2962,60 @@ class TestBuildEventBlocks:
         # the -1 group fires only at its single event (0.5 -> bin 5)
         neg = blocks['feedback_times|feedbackType=-1|baseline'][:, 0]
         assert neg[5] == 1.0 and neg.sum() == 1.0
+
+
+class TestFitEncodingModel:
+    def test_recovers_coefficients_and_unit_r2(self):
+        from iblnm.analysis import fit_encoding_model
+        rng = np.random.default_rng(0)
+        n = 400
+        design = rng.standard_normal((n, 4))
+        b_true = np.array([2.0, -1.0, 0.5, 3.0])
+        target = pd.Series(design @ b_true, index=np.arange(n) * 0.1)
+        slices = {'a': slice(0, 1), 'b': slice(1, 2),
+                  'c': slice(2, 3), 'd': slice(3, 4)}
+        fit = fit_encoding_model(design, target, slices, alphas=[1e-6], cv=5)
+        recovered = fit.coefficients.flatten() / fit.scaler.scale_
+        np.testing.assert_allclose(recovered, b_true, atol=1e-3)
+        assert fit.r2 > 0.999
+
+    def test_alpha_selected_from_grid(self):
+        from iblnm.analysis import fit_encoding_model
+        rng = np.random.default_rng(1)
+        n = 300
+        design = rng.standard_normal((n, 3))
+        signal = design @ np.array([1.0, 0.0, -2.0])
+        target = pd.Series(signal + rng.standard_normal(n),
+                           index=np.arange(n) * 0.1)
+        slices = {'a': slice(0, 1), 'b': slice(1, 2), 'c': slice(2, 3)}
+        alphas = [1e-3, 1.0, 1e3]
+        fit = fit_encoding_model(design, target, slices, alphas=alphas, cv=5)
+        assert fit.alpha in alphas
+
+    def test_kernels_to_frame_structure_and_backtransform(self):
+        from iblnm.analysis import fit_encoding_model
+        rng = np.random.default_rng(2)
+        n, dt = 300, 0.1
+        event = rng.standard_normal((n, 3))  # FIR event block, 3 lags
+        cont = rng.standard_normal((n, 1))   # continuous block, scalar
+        design = np.concatenate([event, cont], axis=1)
+        b_true = np.array([1.0, -0.5, 2.0, 0.7])
+        target = pd.Series(design @ b_true, index=np.arange(n) * dt)
+        slices = {'stimOn_times|baseline': slice(0, 3),
+                  'wheel_velocity': slice(3, 4)}
+        fit = fit_encoding_model(design, target, slices, alphas=[1e-6], cv=5)
+        frame = fit.kernels_to_frame()
+        assert list(frame.columns) == [
+            'term', 'level', 'modulator', 'lag', 'time', 'coef']
+        # FIR event block: one row per lag, time = lag * dt, baseline modulator
+        event_rows = frame[frame['term'] == 'stimOn_times']
+        assert len(event_rows) == 3
+        assert event_rows['modulator'].unique().tolist() == ['baseline']
+        np.testing.assert_allclose(
+            event_rows['time'].values, np.array([0, 1, 2]) * dt)
+        np.testing.assert_allclose(event_rows['coef'].values, b_true[:3], atol=1e-3)
+        # continuous block: a single scalar row with NaN lag/time
+        cont_rows = frame[frame['term'] == 'wheel_velocity']
+        assert len(cont_rows) == 1
+        assert cont_rows['lag'].isna().all() and cont_rows['time'].isna().all()
+        np.testing.assert_allclose(cont_rows['coef'].values, b_true[3:], atol=1e-3)

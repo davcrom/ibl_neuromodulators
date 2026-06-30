@@ -1,6 +1,7 @@
 import re
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -2795,6 +2796,190 @@ def build_event_blocks(
     for level in np.unique(labels):
         blocks.update(group_blocks(labels == level, f"{name}|{split.name}={level}"))
     return blocks
+
+
+@dataclass
+class EncodingFit:
+    """Result of fitting the ridge encoding model to one session.
+
+    Attributes
+    ----------
+    tvec : np.ndarray
+        Full model time grid (the target's time axis), length n_grid.
+    valid : np.ndarray
+        Boolean mask over `tvec` of grid samples kept (no NaN in design/target).
+    design : np.ndarray
+        Z-scored design matrix over the valid rows, shape (n_valid, n_features).
+    target : np.ndarray
+        Measured signal over the valid rows, shape (n_valid, 1).
+    prediction : np.ndarray
+        Model prediction over the valid rows, shape (n_valid, 1).
+    coefficients : np.ndarray
+        Fitted ridge coefficients in z-scored design space, shape
+        (n_features, 1). Divide by `scaler.scale_` to back-transform to raw
+        signal units (see `get_kernel` / `kernels_to_frame`).
+    intercept : np.ndarray
+        Fitted ridge intercept.
+    slices : dict[str, slice]
+        Block name -> column span in `design`.
+    scaler : StandardScaler
+        Fitted scaler that z-scored the design; its per-column `scale_`
+        back-transforms coefficients to raw signal units.
+    r2 : float
+        In-sample coefficient of determination.
+    alpha : float
+        Ridge regularisation strength selected by K-fold tuning.
+    label : str
+        Session label for plots.
+    """
+
+    tvec: np.ndarray
+    valid: np.ndarray
+    design: np.ndarray
+    target: np.ndarray
+    prediction: np.ndarray
+    coefficients: np.ndarray
+    intercept: np.ndarray
+    slices: dict[str, slice]
+    scaler: "StandardScaler"  # noqa: F821 (sklearn imported lazily)
+    r2: float
+    alpha: float
+    label: str = ""
+
+    def get_kernel(self, name: str) -> np.ndarray:
+        """Back-transformed coefficients for one block, in raw signal units.
+
+        For the FIR basis these are the kernel itself (one value per lag); for
+        the raised-cosine basis they are basis weights. Dividing by the scaler's
+        per-column scale undoes the z-scoring applied before the fit.
+        """
+        span = self.slices[name]
+        return self.coefficients[span].flatten() / self.scaler.scale_[span]
+
+    def kernels_to_frame(self) -> pd.DataFrame:
+        """Tidy long table of back-transformed kernel coefficients.
+
+        Event blocks (names containing ``'|'``, built by `build_event_blocks`)
+        emit one row per lag; continuous/tonic blocks emit a single scalar-coef
+        row with NaN ``level``/``lag``/``time``.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns ``term, level, modulator, lag, time, coef``. ``term``,
+            ``level`` and ``modulator`` are parsed from the block name
+            (``term|modulator`` or ``term|split=level|modulator``); ``coef`` is
+            back-transformed to raw signal units; ``time = lag * dt`` with ``dt``
+            read from `tvec`.
+        """
+        dt = self.tvec[1] - self.tvec[0]
+        rows = []
+        for name in self.slices:
+            coefs = self.get_kernel(name)
+            if "|" in name:
+                parts = name.split("|")
+                level = parts[1].split("=", 1)[1] if len(parts) == 3 else np.nan
+                rows += [
+                    {"term": parts[0], "level": level, "modulator": parts[-1],
+                     "lag": lag, "time": lag * dt, "coef": coef}
+                    for lag, coef in enumerate(coefs)
+                ]
+            else:
+                rows.append(
+                    {"term": name, "level": np.nan, "modulator": np.nan,
+                     "lag": np.nan, "time": np.nan, "coef": coefs[0]}
+                )
+        return pd.DataFrame(
+            rows, columns=["term", "level", "modulator", "lag", "time", "coef"]
+        )
+
+
+def _pooled_cv_r2(
+    design: np.ndarray, target: np.ndarray, alpha: float, cv: int
+) -> float:
+    """Pooled out-of-fold R² of a ridge fit over contiguous KFold splits.
+
+    Concatenates each fold's held-out predictions, then scores them jointly
+    (one R² over all samples), rather than averaging per-fold R². KFold runs
+    without shuffling, so folds are contiguous in time.
+    """
+    from sklearn.linear_model import Ridge
+    from sklearn.model_selection import KFold, cross_val_predict
+    from sklearn.metrics import r2_score
+
+    predictions = cross_val_predict(Ridge(alpha=alpha), design, target, cv=KFold(cv))
+    return r2_score(target, predictions)
+
+
+def fit_encoding_model(
+    design: np.ndarray,
+    target: pd.Series,
+    slices: dict[str, slice],
+    alphas,
+    cv: int,
+    label: str = "",
+) -> EncodingFit:
+    """Fit ridge regression of `target` on a prebuilt `design`, tuning alpha.
+
+    Builds nothing — assemble `design`/`slices` with the block helpers plus
+    `build_design_matrix`. Predictors are z-scored before fitting so ridge
+    penalises columns of different native scales fairly; the fitted scaler is
+    stored so coefficients back-transform to raw units. Rows with NaNs
+    (interpolation edges / missing support) in design or target are dropped.
+    Alpha is tuned over `alphas` by contiguous K-fold, picking the value with
+    the best pooled out-of-fold R².
+
+    Parameters
+    ----------
+    design : np.ndarray
+        Design matrix, rows aligned to `target`'s time grid.
+    target : pd.Series
+        Measured signal indexed by time (s); its index sets `tvec`.
+    slices : dict[str, slice]
+        Block name -> column span in `design`.
+    alphas : sequence of float
+        Ridge alpha grid to search.
+    cv : int
+        Number of contiguous KFold splits for alpha selection.
+    label : str
+        Session label for plots.
+
+    Returns
+    -------
+    EncodingFit
+        Fitted model over the valid rows, with selected alpha and in-sample R².
+    """
+    from sklearn.linear_model import Ridge
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import r2_score
+
+    tvec = target.index.values
+    y = target.values[:, None]
+    valid = ~np.isnan(design).any(axis=1) & ~np.isnan(y).any(axis=1)
+    y_valid = y[valid]
+
+    scaler = StandardScaler().fit(design[valid])
+    design_scaled = scaler.transform(design[valid])
+
+    alpha = max(alphas, key=lambda a: _pooled_cv_r2(design_scaled, y_valid, a, cv))
+    model = Ridge(alpha=alpha).fit(design_scaled, y_valid)
+
+    coefficients = model.coef_.T
+    prediction = design_scaled @ coefficients + model.intercept_
+    return EncodingFit(
+        tvec=tvec,
+        valid=valid,
+        design=design_scaled,
+        target=y_valid,
+        prediction=prediction,
+        coefficients=coefficients,
+        intercept=model.intercept_,
+        slices=slices,
+        scaler=scaler,
+        r2=r2_score(y_valid, prediction),
+        alpha=alpha,
+        label=label,
+    )
 
 
 def fit_measurement_error_varcomp(
