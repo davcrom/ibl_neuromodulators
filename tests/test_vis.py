@@ -1677,12 +1677,12 @@ class TestPlotMeanResponseTraces:
 
     def test_filters_low_trial_counts(self):
         from iblnm.vis import plot_mean_response_traces
-        # Make traces where one contrast has < 10 trials per subject
+        # Make traces where one contrast has < 5 trials per subject
         traces = _make_traces_df(n_targets=1, events=['stimOn_times'])
         target = traces['target_NM'].iloc[0]
-        # Set n_trials=5 for contrast=0.0 → should be excluded
+        # Set n_trials=3 for contrast=0.0 → should be excluded
         mask = traces['contrast'] == 0.0
-        traces.loc[mask, 'n_trials'] = 5
+        traces.loc[mask, 'n_trials'] = 3
         fig = plot_mean_response_traces(traces, target)
         ax = fig.axes[0]
         # Should have 2 contrasts plotted (0.25, 1.0) + 1 vline = 3 lines
