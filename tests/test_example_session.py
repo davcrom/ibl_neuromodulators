@@ -175,12 +175,20 @@ class TestNormalizeWindow:
 # =========================================================================
 
 class TestBuildTraces:
-    def test_six_traces_in_order_with_colors(self, snippet_data):
+    def test_six_traces_in_order_with_labels(self, snippet_data):
         phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
         traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
         assert len(traces) == 6
+        assert [t['label'] for t in traces] == [
+            'Photometry', 'Wheel', 'Left paw', 'Right paw', 'Nose', 'Tongue']
+
+    def test_photometry_keeps_target_color_rest_unique(self, snippet_data):
+        phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
+        traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
         assert traces[0]['color'] == TARGETNM_COLORS['VTA-DA']
-        assert all(t['color'] == 'black' for t in traces[1:])
+        movement_colors = [t['color'] for t in traces[1:]]
+        assert movement_colors == list(plt.cm.Set1.colors[1:6])
+        assert len({to_rgba(t['color']) for t in traces}) == 6
 
     def test_pose_trace_lengths_match_pose_times(self, snippet_data):
         phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
@@ -244,6 +252,15 @@ class TestPlotExampleSession:
             lbl.get_text() == '' for lbl in ax.get_xticklabels())
         assert len(ax.get_yticklabels()) == 0 or all(
             lbl.get_text() == '' for lbl in ax.get_yticklabels())
+        plt.close(fig)
+
+    def test_each_trace_labeled(self, snippet_data):
+        *_, trials, t0, t1 = snippet_data
+        traces = self._traces(snippet_data)
+        fig = plot_example_session(traces, trials, t0, t1)
+        ax = fig.axes[0]
+        texts = {t.get_text() for t in ax.texts}
+        assert {tr['label'] for tr in traces} <= texts
         plt.close(fig)
 
     def test_six_data_lines_non_overlapping(self, snippet_data):

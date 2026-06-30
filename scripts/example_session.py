@@ -21,6 +21,7 @@ import h5py
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+from matplotlib.transforms import blended_transform_factory
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
@@ -316,27 +317,31 @@ def build_traces(photometry, wheel, pose_df, pose_times, target_nm):
     Returns
     -------
     list of dict
-        Six entries, each ``{'times', 'values', 'color'}``: photometry, wheel,
-        left-paw speed, right-paw speed, nose speed, tongue likelihood.
+        Six entries, each ``{'times', 'values', 'color', 'label'}``: photometry,
+        wheel, left-paw speed, right-paw speed, nose speed, tongue likelihood.
+        Photometry carries the target-NM color; the five movement traces take
+        distinct ``Set1`` colors, skipping ``Set1``'s red (index 0) so they stay
+        distinguishable from the red VTA-DA photometry trace.
     """
+    movement_colors = plt.cm.Set2.colors[0:5]
     return [
         {'times': photometry.index.values, 'values': photometry.values,
-         'color': TARGETNM_COLORS[target_nm]},
+         'color': TARGETNM_COLORS[target_nm], 'label': 'Photometry'},
         {'times': wheel.index.values, 'values': wheel.values,
-         'color': 'black'},
+         'color': movement_colors[0], 'label': 'Wheel'},
         {'times': pose_times,
          'values': movement_trace(pose_df, ['paw_l'], 'speed'),
-         'color': 'black'},
+         'color': movement_colors[1], 'label': 'Left paw'},
         {'times': pose_times,
          'values': movement_trace(pose_df, ['paw_r'], 'speed'),
-         'color': 'black'},
+         'color': movement_colors[2], 'label': 'Right paw'},
         {'times': pose_times,
          'values': movement_trace(pose_df, ['nose_tip'], 'speed'),
-         'color': 'black'},
+         'color': movement_colors[3], 'label': 'Nose'},
         {'times': pose_times,
          'values': movement_trace(pose_df, ['tongue_end_l', 'tongue_end_r'],
                                   'max_likelihood'),
-         'color': 'black'},
+         'color': movement_colors[4], 'label': 'Tongue'},
     ]
 
 
@@ -345,7 +350,8 @@ def plot_example_session(traces, trials, t_start, t_end):
 
     Each trace is sliced to ``[t_start, t_end]``, normalized to its in-window
     ``[0, 1]`` range, and stacked top → bottom at non-overlapping unit-height
-    offsets. Vertical gray lines mark each in-window stimulus onset and
+    offsets, each tagged at the left edge with its label in the trace color.
+    Vertical gray lines mark each in-window stimulus onset and
     feedback. A marker strip on a single shared ``y`` just above the top band
     shows, at each event's x-position, a stimulus circle whose grayscale encodes
     the trial's contrast rank (lowest = white, highest = black; black edge) and a
@@ -368,6 +374,7 @@ def plot_example_session(traces, trials, t_start, t_end):
     """
     fig, ax = plt.subplots(figsize=(14, 8))
 
+    label_trans = blended_transform_factory(ax.transAxes, ax.transData)
     n = len(traces)
     step = 1 + GAP
     for k, trace in enumerate(traces):
@@ -376,6 +383,8 @@ def plot_example_session(traces, trials, t_start, t_end):
         y = _normalize_window(trace['values'], t, t_start, t_end)
         offset = (n - 1 - k) * step
         ax.plot(t[mask], y + offset, color=trace['color'], linewidth=TRACE_LW)
+        ax.text(-0.01, offset + 0.5, trace['label'], transform=label_trans,
+                ha='right', va='center', color=trace['color'])
 
     event_times = np.concatenate([
         trials['stimOn_times'].values, trials['feedback_times'].values])
