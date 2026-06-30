@@ -5,8 +5,8 @@ information about behaviour. Each --model is one independent analysis; run them
 as separate processes to parallelize.
 
 Usage:
-    python scripts/baseline.py --model performance
-    python scripts/baseline.py --model reaction_time
+    python scripts/baseline.py --model performance              # plot from saved parquet
+    python scripts/baseline.py --model performance --reprocess  # rerun ~10h test, then plot
 """
 import argparse
 from pathlib import Path
@@ -68,15 +68,14 @@ if __name__ == '__main__':
     parser.add_argument('--model', choices=MODELS, required=True,
                         help='which baseline analysis to run')
     parser.add_argument('--reprocess', action='store_true',
-                        help='load the saved parquet and re-plot without '
-                             'rerunning the ~10h permutation test')
+                        help='rerun the ~10h permutation test and overwrite the '
+                             'saved parquet; default re-plots from the saved '
+                             'parquet')
     args = parser.parse_args()
     model_fn, fixed_var, fname = MODELS[args.model]
     out_dir = Path('results/baseline')
 
     if args.reprocess:
-        results = pd.read_parquet(out_dir / fname)
-    else:
         group = PhotometrySessionGroup.from_catalog(
             pd.read_parquet(SESSIONS_FPATH),
             one=_get_default_connection()
@@ -97,6 +96,8 @@ if __name__ == '__main__':
             n_iter=1000
             )
         results.to_parquet(out_dir / fname)
+    else:
+        results = pd.read_parquet(out_dir / fname)
 
     fig_dir = PROJECT_ROOT / 'figures/baseline'
     fig_dir.mkdir(parents=True, exist_ok=True)
