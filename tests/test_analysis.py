@@ -2616,6 +2616,67 @@ class TestDroponeDeltaR2:
         assert (out['delta_r2'] >= 0).all()
 
 
+class TestPermutationNullDeltaR2:
+    @staticmethod
+    def _focal_frame(n, rng):
+        """Focal frame where response is a strong linear function of x."""
+        x = rng.normal(0, 1, n)
+        z = rng.normal(0, 1, n)
+        return pd.DataFrame(
+            {'x': x, 'z': z, 'response': 2 * x + 0.3 * z + rng.normal(0, 0.1, n)})
+
+    def test_unrelated_donors_give_small_null_well_below_focal(self):
+        """Three donors whose x is unrelated to the focal response yield a
+        length-3 null whose every value is far below the focal in-sample ΔR²."""
+        from iblnm.analysis import fit_ols, permutation_null_delta_r2
+        rng = np.random.default_rng(0)
+        focal = self._focal_frame(200, rng)
+        donors = [pd.DataFrame({'x': rng.normal(0, 1, 200)}) for _ in range(3)]
+        focal_delta = (fit_ols('response ~ x + z', focal).rsquared
+                       - fit_ols('response ~ z', focal).rsquared)
+        null = permutation_null_delta_r2(
+            focal, donors, '{response} ~ x + z', '{response} ~ z', 'x')
+        assert null.shape == (3,)
+        assert (null < 0.1 * focal_delta).all()
+
+    def test_truncates_to_min_length_and_fits_those_rows(self):
+        """A donor longer and a donor shorter than the focal both fit on
+        L = min rows: each null delta equals the delta from a hand-built swap on
+        the first L rows (proving the fit saw exactly L rows, no length error)."""
+        from iblnm.analysis import fit_ols, permutation_null_delta_r2
+        rng = np.random.default_rng(1)
+        focal = self._focal_frame(100, rng)
+        long_donor = pd.DataFrame({'x': rng.normal(0, 1, 160)})
+        short_donor = pd.DataFrame({'x': rng.normal(0, 1, 40)})
+        null = permutation_null_delta_r2(
+            focal, [long_donor, short_donor],
+            '{response} ~ x + z', '{response} ~ z', 'x')
+
+        expected = []
+        for donor in (long_donor, short_donor):
+            length = min(len(focal), len(donor))
+            swapped = focal.iloc[:length].copy()
+            swapped['x'] = donor['x'].iloc[:length].to_numpy()
+            expected.append(fit_ols('response ~ x + z', swapped).rsquared
+                            - fit_ols('response ~ z', swapped).rsquared)
+        assert null == pytest.approx(expected)
+
+    def test_degenerate_donor_is_skipped(self):
+        """A donor whose swapped predictor column is constant gives a rank-
+        deficient design; that donor is dropped, shortening the null by one."""
+        from iblnm.analysis import permutation_null_delta_r2
+        rng = np.random.default_rng(2)
+        focal = self._focal_frame(120, rng)
+        donors = [
+            pd.DataFrame({'x': rng.normal(0, 1, 120)}),
+            pd.DataFrame({'x': np.ones(120)}),
+            pd.DataFrame({'x': rng.normal(0, 1, 120)}),
+        ]
+        null = permutation_null_delta_r2(
+            focal, donors, '{response} ~ x + z', '{response} ~ z', 'x')
+        assert null.shape == (2,)
+
+
 class TestComputeFeatureDispersion:
     def test_identical_across_sessions_gives_zero(self):
         """A unit whose feature value is identical across its sessions has zero

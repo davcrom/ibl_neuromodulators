@@ -1797,6 +1797,66 @@ def dropone_delta_r2(r2_by_name, reference: str = 'full') -> pd.DataFrame:
     return pd.DataFrame(rows, columns=['predictor', 'r2', 'delta_r2'])
 
 
+def permutation_null_delta_r2(
+    focal_df: pd.DataFrame,
+    donor_dfs: list[pd.DataFrame],
+    full_formula: str,
+    reduced_formula: str,
+    predictor: str,
+    response_col: str = 'response',
+) -> np.ndarray:
+    """Cross-session swap null drop-one ΔR² for one focal recording-event.
+
+    Variable-agnostic permutation primitive. For each donor session, the focal
+    frame's ``predictor`` column is overwritten by that donor's same-named coded
+    column (truncating both to the shorter length), and the full and reduced
+    models are refit on the swapped frame. The dropped predictor's null unique
+    contribution is ΔR²* = R²_full* − R²_reduced* on those rows. Swapping only
+    the raw column lets patsy recompute the predictor's interactions from the
+    swapped values while every other column stays at its real focal value, so
+    the reduced model remains the real baseline.
+
+    Parameters
+    ----------
+    focal_df : pd.DataFrame
+        Focal recording-event coded frame (post ``code_predictors``,
+        complete-case) carrying ``response_col`` and the predictor columns the
+        formulas reference. Row order encodes trial order; swaps truncate to the
+        first ``L`` rows.
+    donor_dfs : list[pd.DataFrame]
+        Donor coded frames for the same event, one per donor session. Only the
+        ``predictor`` column of each is read.
+    full_formula, reduced_formula : str
+        Wilkinson formula templates with a ``{response}`` placeholder; the
+        reduced formula drops ``predictor`` and all its interactions.
+    predictor : str
+        Name of the raw predictor column swapped in from each donor.
+    response_col : str
+        Response column substituted into both formula templates.
+
+    Returns
+    -------
+    np.ndarray
+        The null ΔR² values, one per scorable donor. A donor whose swapped full
+        or reduced fit is degenerate (``fit_ols`` returns ``None``) is skipped,
+        so the length is the number of scorable donors (≤ ``len(donor_dfs)``).
+    """
+    full_formula = full_formula.format(response=response_col)
+    reduced_formula = reduced_formula.format(response=response_col)
+
+    null_deltas = []
+    for donor_df in donor_dfs:
+        length = min(len(focal_df), len(donor_df))
+        swapped = focal_df.iloc[:length].copy()
+        swapped[predictor] = donor_df[predictor].iloc[:length].to_numpy()
+        full = fit_ols(full_formula, swapped)
+        reduced = fit_ols(reduced_formula, swapped)
+        if full is None or reduced is None:
+            continue
+        null_deltas.append(full.rsquared - reduced.rsquared)
+    return np.array(null_deltas)
+
+
 def compute_feature_dispersion(
     df: pd.DataFrame,
     unit_cols: list[str],
