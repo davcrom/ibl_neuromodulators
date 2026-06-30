@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib import colors
+from matplotlib.patches import Patch
 from matplotlib.ticker import FormatStrFormatter
 from scipy.stats import sem as scipy_sem
 from sklearn.preprocessing import quantile_transform
@@ -176,8 +177,39 @@ def session_overview_matrix(group, columns='session_n', ax=None,
 
 def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
                             color_by='session_type', split_color_map=None,
+                            bar_color_map=None, split_alpha_map=None,
                             horizontal=False):
-    """Stacked bar plot of session counts per target region, by session type."""
+    """Stacked bar plot of session counts per target region.
+
+    Each bar stacks the categories of ``color_by``. By default a segment's fill
+    comes from ``split_color_map[category]`` at full opacity. Pass
+    ``bar_color_map`` (keyed by ``target_NM``) to instead color every segment by
+    its target identity, and ``split_alpha_map`` (keyed by category) to fade
+    segments by category — e.g. proficient at 1.0, not-proficient at 0.5. When
+    both are given the legend shows neutral gray swatches per category, since
+    fill color then encodes target, not category.
+
+    Parameters
+    ----------
+    df_sessions : pandas.DataFrame
+        One row per recording, with ``target_NM``, ``subject``, ``eid``, and the
+        ``color_by`` column.
+    ax : matplotlib.axes.Axes, optional
+    barwidth : float
+    color_by : str
+        Column whose categories are stacked within each target's bar.
+    split_color_map : dict, optional
+        Maps ``color_by`` category to fill color. Defaults to SESSIONTYPE2COLOR.
+        Ignored when ``bar_color_map`` is given.
+    bar_color_map : dict, optional
+        Maps ``target_NM`` to fill color. When set, segments are colored by
+        target identity instead of by category.
+    split_alpha_map : dict, optional
+        Maps ``color_by`` category to opacity. Defaults to opaque. Also fixes the
+        stacking order of categories when set.
+    horizontal : bool
+        If True, draw horizontal bars.
+    """
     _color_map = split_color_map or SESSIONTYPE2COLOR
 
     if len(df_sessions) == 0:
@@ -203,21 +235,27 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
     positions = list(range(len(df_n)))
     cumulative = np.zeros(len(df_n))
 
-    # Loop over categories present in data (canonical order from color map)
-    session_types = [c for c in _color_map.keys() if c in df_n.columns]
-    for session_type in session_types:
-        ns = df_n[session_type]
-        color = _color_map[session_type]
+    # Stacking order: alpha map when given, else the color map's canonical order.
+    category_order = split_alpha_map or _color_map
+    categories = [c for c in category_order if c in df_n.columns]
+    for category in categories:
+        ns = df_n[category]
+        if bar_color_map is not None:
+            color = [bar_color_map[target] for target in df_n.index]
+        else:
+            color = _color_map[category]
+        alpha = split_alpha_map.get(category, 1.0) if split_alpha_map else 1.0
+        label = None if bar_color_map is not None else category
         if horizontal:
             ax.barh(positions, ns, left=cumulative, height=barwidth,
-                    color=color, label=session_type)
+                    color=color, alpha=alpha, label=label)
             for y, n, x_left in zip(positions, ns, cumulative):
                 if n > 0:
                     ax.text(x_left + n/2, y, str(n), ha='center', va='center',
                             fontweight='bold', color='white')
         else:
             ax.bar(positions, ns, bottom=cumulative, width=barwidth,
-                   color=color, label=session_type)
+                   color=color, alpha=alpha, label=label)
             for x, n, y_bottom in zip(positions, ns, cumulative):
                 if n > 0:
                     ax.text(x, y_bottom + n/2, str(n), ha='center', va='center',
@@ -251,7 +289,12 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
         ax.set_ylabel('N Sessions')
         ax.set_xlabel('Target-NM')
 
-    ax.legend()
+    if bar_color_map is not None and split_alpha_map is not None:
+        handles = [Patch(facecolor='gray', alpha=split_alpha_map[c], label=c)
+                   for c in categories]
+        ax.legend(handles=handles)
+    else:
+        ax.legend()
 
     n_recordings = len(df_sessions)
     n_sessions = df_sessions['eid'].nunique()
@@ -3456,15 +3499,52 @@ def _draw_rt_violins(df, ax=None):
 # Group-based task performance figures
 # =============================================================================
 
-def plot_psychometric_grid(group, axes=None):
-    """2x3 grid of 50-50 block psychometric curves, one panel per target-NM.
+def _assemble_rt_trials(group):
+    """Build the 50-50 unbiased trial table for RT violins from a group.
+
+    Joins ``group.response_magnitudes`` to ``group.trial_regressors`` on
+    (eid, trial), keeps 50-50 block trials with a recorded choice, and
+    restricts to the analysed target-NMs. Returns an empty frame (with the
+    columns ``_draw_rt_violins`` expects) when either source is missing.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have ``group.performance`` loaded.
+        May have ``response_magnitudes`` and ``trial_regressors`` loaded.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns include ``response_time``, ``contrast``, ``target_NM``.
+    """
+    if group.response_magnitudes is None or group.trial_regressors is None:
+        return pd.DataFrame(columns=['response_time', 'contrast', 'target_NM'])
+    df_resp = group.response_magnitudes.drop_duplicates(
+        subset=['eid', 'trial', 'target_NM'])
+    df_trial = df_resp.merge(
+        group.trial_regressors[['eid', 'trial', 'response_time',
+                                'contrast', 'probabilityLeft', 'choice']],
+        on=['eid', 'trial'], how='inner',
+    )
+    df_trial = df_trial.query('probabilityLeft == 0.5 and choice != 0').copy()
+    return df_trial[df_trial['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
+
+
+def plot_performance_grid(group, axes=None):
+    """Grid of task-performance panels, one row per target-NM.
+
+    Column 0 holds the 50-50 block psychometric curves (thin line per session,
+    thick grand mean); column 1 holds response-time violins by contrast. Both
+    columns reuse the per-target drawing helpers, so styling matches the
+    standalone figures.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        Must have ``group.performance`` loaded; ``response_magnitudes`` and
+        ``trial_regressors`` are needed for the RT column (empty otherwise).
     axes : np.ndarray of Axes, optional
-        Shape (2, 3). Created if None.
+        Shape (n_targets, 2). Created if None.
 
     Returns
     -------
@@ -3474,27 +3554,29 @@ def plot_psychometric_grid(group, axes=None):
         group.recordings[['eid', 'subject', 'target_NM']]
         .drop_duplicates()
     )
-    df = group.performance.merge(rec_meta, on='eid', how='inner')
+    df_psych = group.performance.merge(rec_meta, on='eid', how='inner')
+    df_rt = _assemble_rt_trials(group)
 
-    targets = [t for t in TARGETNMS_TO_ANALYZE if t in df['target_NM'].values]
+    targets = [t for t in TARGETNMS_TO_ANALYZE
+               if t in df_psych['target_NM'].values]
 
     if axes is None:
-        fig, axes = plt.subplots(2, 3, figsize=(12, 8), squeeze=False)
+        fig, axes = plt.subplots(
+            len(targets), 2, figsize=(10, 4 * len(targets)), squeeze=False)
     else:
         fig = axes.flat[0].figure
 
-    for i, target_nm in enumerate(targets[:6]):
-        ax = axes[i // 3, i % 3]
-        df_target = df[df['target_NM'] == target_nm]
-        plot_psychometric_curves_50(df_target, target_nm=target_nm, ax=ax)
+    for i, target_nm in enumerate(targets):
+        ax_psych = axes[i, 0]
+        df_target = df_psych[df_psych['target_NM'] == target_nm]
+        plot_psychometric_curves_50(df_target, target_nm=target_nm, ax=ax_psych)
         n_sessions = len(df_target)
         n_subjects = df_target['subject'].nunique()
-        ax.text(0.05, 0.85, f'{n_sessions} sessions\n{n_subjects} mice',
-                transform=ax.transAxes)
-        ax.set_title(target_nm)
+        ax_psych.text(0.05, 0.85, f'{n_sessions} sessions\n{n_subjects} mice',
+                      transform=ax_psych.transAxes)
+        ax_psych.set_title(target_nm)
 
-    for i in range(len(targets), 6):
-        axes[i // 3, i % 3].set_visible(False)
+        _draw_rt_violins(df_rt[df_rt['target_NM'] == target_nm], ax=axes[i, 1])
 
     fig.tight_layout()
     return fig
@@ -3630,50 +3712,6 @@ def plot_target_comparison(group, params, labels, axes=None):
                 ha='center', va='bottom', fontsize=TICKFONTSIZE)
 
     fig.tight_layout()
-    return fig
-
-
-def plot_rt_by_contrast(group, ax=None):
-    """Response time by contrast from a PhotometrySessionGroup.
-
-    Builds the trial DataFrame from ``group.response_magnitudes`` and
-    ``group.trial_regressors``, filters to 50-50 block unbiased trials, and
-    draws RT violins.
-
-    Parameters
-    ----------
-    group : PhotometrySessionGroup
-        Must have ``response_magnitudes`` and ``trial_regressors`` loaded.
-    ax : plt.Axes, optional
-        Axes to draw on.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(5, 5))
-    else:
-        fig = ax.figure
-
-    if group.response_magnitudes is None or group.trial_regressors is None:
-        ax.set_xlabel('Response time (s)')
-        ax.set_ylabel('Contrast (%)')
-        return fig
-
-    df_resp = group.response_magnitudes.drop_duplicates(
-        subset=['eid', 'trial', 'target_NM'])
-    df_trial = df_resp.merge(
-        group.trial_regressors[['eid', 'trial', 'response_time',
-                                'contrast', 'probabilityLeft', 'choice']],
-        on=['eid', 'trial'], how='inner',
-    )
-    df_trial = df_trial.query(
-        'probabilityLeft == 0.5 and choice != 0'
-    ).copy()
-    df_trial = df_trial[df_trial['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
-
-    _draw_rt_violins(df_trial, ax=ax)
     return fig
 
 

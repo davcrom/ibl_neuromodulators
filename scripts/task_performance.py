@@ -8,7 +8,7 @@ Includes biased, ephys, and qualifying training sessions (>70% performance
 with the full contrast set).
 
 Input:  metadata/sessions.pqt, data/performance.pqt
-Output: figures/task_performance/psychometric_50.svg
+Output: figures/task_performance/performance_grid.svg
 """
 import pandas as pd
 from matplotlib import pyplot as plt
@@ -21,7 +21,7 @@ from iblnm.config import (
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.vis import (
-    plot_psychometric_grid, plot_target_comparison, plot_rt_by_contrast,
+    plot_performance_grid, plot_target_comparison,
 )
 
 plt.ion()
@@ -68,12 +68,12 @@ if __name__ == '__main__':
     output_dir = PROJECT_ROOT / 'figures/task_performance'
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Psychometric curves (2x3 grid) ---
-    print("\nGenerating 50-50 psychometric figure...")
-    fig1 = plot_psychometric_grid(group)
-    fig1.savefig(output_dir / 'psychometric_50.svg',
+    # --- Performance grid: psychometric curves + RT by contrast per target-NM ---
+    print("\nGenerating performance grid (psychometric + RT by contrast)...")
+    fig1 = plot_performance_grid(group)
+    fig1.savefig(output_dir / 'performance_grid.svg',
                  dpi=FIGURE_DPI, bbox_inches='tight')
-    print(f"Saved: {output_dir / 'psychometric_50.svg'}")
+    print(f"Saved: {output_dir / 'performance_grid.svg'}")
 
     # --- Target-NM comparison boxplots ---
     summary_params = ['fraction_correct'] + [f'psych_50_{p}' for p in PSYCH_PARAMS]
@@ -83,16 +83,6 @@ if __name__ == '__main__':
     fig2.savefig(output_dir / 'target_comparison.svg',
                  dpi=FIGURE_DPI, bbox_inches='tight')
     print(f"Saved: {output_dir / 'target_comparison.svg'}")
-
-    # --- RT distributions by contrast ---
-    if group.response_magnitudes is not None and group.trial_regressors is not None:
-        print("\nGenerating RT-by-contrast figure...")
-        fig3 = plot_rt_by_contrast(group)
-        fig3.savefig(output_dir / 'rt_by_contrast.svg',
-                     dpi=FIGURE_DPI, bbox_inches='tight')
-        print(f"Saved: {output_dir / 'rt_by_contrast.svg'}")
-    else:
-        print("\nSkipping RT figure: responses.pqt or trial_regressors.pqt not found.")
 
     # =====================================================================
     # Variance stabilization analysis — at what training performance level

@@ -2040,7 +2040,7 @@ class TestSessionOverviewMatrixSubjectOrder:
 
 
 # =============================================================================
-# plot_psychometric_grid
+# plot_performance_grid / plot_target_comparison
 # =============================================================================
 
 def _make_mock_group_with_performance():
@@ -2124,22 +2124,77 @@ def _make_mock_group_with_performance_multi():
     return group
 
 
-class TestPlotPsychometricGrid:
+def _make_mock_group_with_performance_and_rt():
+    """Mock group carrying both performance and RT trial data.
+
+    Reuses the performance fixture's six eids (VTA-DA for 0-2, LC-NE for 3-5)
+    and attaches matching ``response_magnitudes`` / ``trial_regressors`` so the
+    combined grid can draw both columns.
+    """
+    group = _make_mock_group_with_performance()
+    rng = np.random.default_rng(7)
+    resp_rows = []
+    regressor_rows = []
+    for i in range(6):
+        tnm = 'VTA-DA' if i < 3 else 'LC-NE'
+        for t in range(20):
+            resp_rows.append({
+                'eid': f'eid-{i}',
+                'subject': f'subj-{i % 3}',
+                'target_NM': tnm,
+                'trial': t,
+                'event': 'stimOn_times',
+            })
+            regressor_rows.append({
+                'eid': f'eid-{i}',
+                'trial': t,
+                'contrast': rng.choice([6.25, 25.0, 100.0]),
+                'choice': rng.choice([-1, 1]),
+                'probabilityLeft': rng.choice([0.2, 0.5, 0.8]),
+                'response_time': rng.uniform(0.1, 2.0),
+            })
+    group.response_magnitudes = pd.DataFrame(resp_rows)
+    group.trial_regressors = pd.DataFrame(regressor_rows)
+    return group
+
+
+class TestPlotPerformanceGrid:
 
     def test_returns_figure(self):
-        from iblnm.vis import plot_psychometric_grid
-        group = _make_mock_group_with_performance()
-        fig = plot_psychometric_grid(group)
+        from iblnm.vis import plot_performance_grid
+        group = _make_mock_group_with_performance_and_rt()
+        fig = plot_performance_grid(group)
         assert isinstance(fig, plt.Figure)
         plt.close('all')
 
-    def test_panels_match_target_nms(self):
-        from iblnm.vis import plot_psychometric_grid
-        group = _make_mock_group_with_performance()
-        fig = plot_psychometric_grid(group)
+    def test_one_row_per_target_nm(self):
+        """Two target-NMs → a 2x2 axes grid, psychometric titled per row."""
+        from iblnm.vis import plot_performance_grid
+        group = _make_mock_group_with_performance_and_rt()
+        fig = plot_performance_grid(group)
+        assert len(fig.axes) == 4
         titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
         assert 'VTA-DA' in titles
         assert 'LC-NE' in titles
+        plt.close('all')
+
+    def test_rt_column_draws_violins(self):
+        """Column 1 of each row holds RT violins (PolyCollection bodies)."""
+        from matplotlib.collections import PolyCollection
+        from iblnm.vis import plot_performance_grid
+        group = _make_mock_group_with_performance_and_rt()
+        fig = plot_performance_grid(group)
+        rt_axes = [fig.axes[row * 2 + 1] for row in range(2)]
+        for ax in rt_axes:
+            assert any(isinstance(c, PolyCollection) for c in ax.collections)
+        plt.close('all')
+
+    def test_missing_rt_data_still_returns_figure(self):
+        from iblnm.vis import plot_performance_grid
+        group = _make_mock_group_with_performance_and_rt()
+        group.trial_regressors = None
+        fig = plot_performance_grid(group)
+        assert isinstance(fig, plt.Figure)
         plt.close('all')
 
 
@@ -2183,80 +2238,6 @@ class TestPlotTargetComparison:
                                if isinstance(c, ErrorbarContainer)]
         # 2 target_NMs, 3 subjects each → 6 errorbar containers
         assert len(errorbar_containers) == 6
-        plt.close('all')
-
-
-# =============================================================================
-# plot_rt_by_contrast (group-based)
-# =============================================================================
-
-def _make_mock_group_with_rt():
-    """Build a mock group with response_magnitudes and trial_regressors."""
-    from iblnm.data import PhotometrySessionGroup
-    rng = np.random.default_rng(42)
-    rows = []
-    for i in range(4):
-        tnm = 'VTA-DA' if i < 2 else 'LC-NE'
-        rows.append({
-            'eid': f'eid-{i}',
-            'subject': f'subj-{i % 2}',
-            'brain_region': [tnm.split('-')[0]],
-            'hemisphere': ['l'],
-            'target_NM': [tnm],
-            'NM': tnm.split('-')[1],
-            'session_type': 'biased',
-            'start_time': '2024-01-01T10:00:00',
-            'number': 1,
-            'task_protocol': 'biased_protocol',
-        })
-    df = pd.DataFrame(rows)
-    group = PhotometrySessionGroup(df, one=MagicMock())
-    group.filter_sessions(
-        session_types=False, qc_blockers=set(), targetnms=False,
-        min_performance=False, required_contrasts=False,
-    )
-
-    # response_magnitudes carries recording keys + event only
-    resp_rows = []
-    regressor_rows = []
-    for i in range(4):
-        tnm = 'VTA-DA' if i < 2 else 'LC-NE'
-        for t in range(20):
-            resp_rows.append({
-                'eid': f'eid-{i}',
-                'subject': f'subj-{i % 2}',
-                'target_NM': tnm,
-                'trial': t,
-                'event': 'stimOn_times',
-            })
-            regressor_rows.append({
-                'eid': f'eid-{i}',
-                'trial': t,
-                'contrast': rng.choice([6.25, 25.0, 100.0]),
-                'choice': rng.choice([-1, 1]),
-                'probabilityLeft': rng.choice([0.2, 0.5, 0.8]),
-                'response_time': rng.uniform(0.1, 2.0),
-            })
-    group.response_magnitudes = pd.DataFrame(resp_rows)
-    group.trial_regressors = pd.DataFrame(regressor_rows)
-    return group
-
-
-class TestPlotRtByContrastGroup:
-
-    def test_returns_figure(self):
-        from iblnm.vis import plot_rt_by_contrast
-        group = _make_mock_group_with_rt()
-        fig = plot_rt_by_contrast(group)
-        assert isinstance(fig, plt.Figure)
-        plt.close('all')
-
-    def test_none_timing_returns_empty(self):
-        from iblnm.vis import plot_rt_by_contrast
-        group = _make_mock_group_with_rt()
-        group.trial_regressors = None
-        fig = plot_rt_by_contrast(group)
-        assert isinstance(fig, plt.Figure)
         plt.close('all')
 
 
@@ -2450,6 +2431,50 @@ class TestTargetOverviewBarplotHorizontal:
         ax = target_overview_barplot(df, horizontal=True)
         assert 'Target' in ax.get_ylabel() or 'target' in ax.get_ylabel().lower()
         assert 'Session' in ax.get_xlabel() or 'session' in ax.get_xlabel().lower()
+        plt.close('all')
+
+
+def _make_proficient_recordings():
+    """Recordings with a proficient_label column: one row per (target, label)."""
+    return pd.DataFrame({
+        'eid': ['e0', 'e1', 'e2', 'e3'],
+        'subject': ['s1', 's1', 's2', 's2'],
+        'target_NM': ['VTA-DA', 'VTA-DA', 'DR-5HT', 'DR-5HT'],
+        'proficient_label': ['proficient', 'not_proficient',
+                             'proficient', 'not_proficient'],
+        'hemisphere': ['l', 'r', 'l', 'r'],
+    })
+
+
+class TestTargetOverviewBarplotTargetColoring:
+
+    def test_bars_colored_by_target_with_proficiency_alpha(self):
+        """bar_color_map colors each bar by its target_NM; split_alpha_map sets
+        per-category opacity (proficient full, not_proficient faded)."""
+        import matplotlib.colors as mcolors
+        from iblnm.vis import target_overview_barplot
+        from iblnm.config import TARGETNM_COLORS
+
+        df = _make_proficient_recordings()
+        alpha_map = {'proficient': 1.0, 'not_proficient': 0.5}
+        ax = target_overview_barplot(
+            df, color_by='proficient_label',
+            bar_color_map=TARGETNM_COLORS, split_alpha_map=alpha_map,
+        )
+        sorted_targets = ['VTA-DA', 'DR-5HT']  # TARGETNM2POSITION order
+        seen_alpha = {}
+        for patch in (p for c in ax.containers for p in c):
+            if patch.get_height() == 0:
+                continue
+            pos = round(patch.get_x() + patch.get_width() / 2)
+            target = sorted_targets[pos]
+            r, g, b, a = patch.get_facecolor()
+            expected = mcolors.to_rgb(TARGETNM_COLORS[target])
+            assert tuple(round(v, 5) for v in (r, g, b)) == \
+                tuple(round(v, 5) for v in expected)
+            seen_alpha.setdefault(target, set()).add(round(a, 3))
+        assert seen_alpha['VTA-DA'] == {1.0, 0.5}
+        assert seen_alpha['DR-5HT'] == {1.0, 0.5}
         plt.close('all')
 
 
