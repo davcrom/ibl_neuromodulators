@@ -82,7 +82,7 @@ if __name__ == '__main__':
             one=_get_default_connection()
             )
         group.filter_sessions(
-            session_types=('biased', 'ephys',),
+            session_types=('biased', 'ephys',)
         )
         _ = group.deduplicate()
 

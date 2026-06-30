@@ -32,7 +32,6 @@ from iblnm.config import (
     VARCOMP_MCMC, VARCOMP_TAU_PRIOR, VARCOMP_MIN_MICE,
     VARCOMP_MIN_SESSIONS_PER_MOUSE, VARCOMP_KDE_GRID, VARCOMP_HDI_PROB,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
-    ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
     MOVEMENT_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
 )
 from iblnm.data import PhotometrySessionGroup
@@ -476,9 +475,7 @@ if __name__ == '__main__':
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
     group.filter_sessions(
-        session_types=('biased', 'ephys'),
-        qc_blockers=ANALYSIS_QC_BLOCKERS,
-        targetnms=TARGETNMS_TO_ANALYZE,
+        session_types=('biased', 'ephys')
     )
     dup_log = group.deduplicate()
     print(f"  Deduplicated ({len(dup_log)} true-duplicate groups resolved)")
