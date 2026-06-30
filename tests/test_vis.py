@@ -1289,7 +1289,7 @@ class TestPlotOlsDropone:
         assert len(fig.axes) == 1  # single event column, single R² row
         assert fig.axes[0].get_ylabel() == 'full model R²'
         ys = self._points(fig.axes[0])[:, 1]
-        # Two sessions (0.4, 0.6) + their median (0.5) — not 4 session points.
+        # Two sessions (0.4, 0.6) + their mean (0.5) — not 4 session points.
         assert sorted(np.round(ys, 6)) == [0.4, 0.5, 0.6]
         plt.close(fig)
 
@@ -1311,13 +1311,13 @@ class TestPlotOlsDropone:
             'VTA-DA', 'DR-5HT']
         plt.close(fig)
 
-    def test_subjects_ordered_by_median_within_group(self):
+    def test_subjects_ordered_by_mean_within_group(self):
         """Within a target-NM group, subjects are placed left to right by
-        ascending median — not by name."""
+        ascending mean — not by name."""
         from iblnm.vis import plot_ols_dropone
         from matplotlib.collections import PathCollection
-        # Name order ('hi' < 'lo') is the opposite of median order, so a pass
-        # proves ordering is by median, not name.
+        # Name order ('hi' < 'lo') is the opposite of mean order, so a pass
+        # proves ordering is by mean, not name.
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': subj,
              'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
@@ -1326,17 +1326,17 @@ class TestPlotOlsDropone:
         ]
         fig = plot_ols_dropone(pd.DataFrame(rows), 't')
         ax = fig.axes[0]  # contrast ΔR² row, one event
-        medians = sorted((c.get_offsets()[0][0], c.get_offsets()[0][1])
-                         for c in ax.collections
-                         if isinstance(c, PathCollection)
-                         and len(c.get_offsets()) == 1)
-        ys_left_to_right = [round(y, 6) for _, y in medians]
+        means = sorted((c.get_offsets()[0][0], c.get_offsets()[0][1])
+                       for c in ax.collections
+                       if isinstance(c, PathCollection)
+                       and len(c.get_offsets()) == 1)
+        ys_left_to_right = [round(y, 6) for _, y in means]
         assert ys_left_to_right == [0.1, 0.4]  # lo (0.1) left of hi (0.4)
         plt.close(fig)
 
-    def test_one_median_dash_per_subject_colored_by_targetnm(self):
-        """Each subject gets exactly one '_' median marker, colored by its
-        target-NM (not black), at its own median ΔR²."""
+    def test_one_mean_dash_per_subject_colored_by_targetnm(self):
+        """Each subject gets exactly one '_' mean marker, colored by its
+        target-NM (not black), at its own mean ΔR²."""
         from iblnm.vis import plot_ols_dropone
         from iblnm.config import TARGETNM_COLORS
         from matplotlib.collections import PathCollection
@@ -1349,15 +1349,15 @@ class TestPlotOlsDropone:
         ]
         fig = plot_ols_dropone(pd.DataFrame(rows), 't')
         ax = fig.axes[0]  # one event → 1 column; contrast ΔR² row (row 0)
-        # Median markers carry a single point (sessions come in 2s here).
-        medians = [c for c in ax.collections
-                   if isinstance(c, PathCollection) and len(c.get_offsets()) == 1]
-        assert len(medians) == 2  # one per subject, not per session
-        ys = sorted(round(float(c.get_offsets()[0][1]), 6) for c in medians)
-        assert ys == [0.2, 0.5]  # each at its subject's median
+        # Mean markers carry a single point (sessions come in 2s here).
+        means = [c for c in ax.collections
+                 if isinstance(c, PathCollection) and len(c.get_offsets()) == 1]
+        assert len(means) == 2  # one per subject, not per session
+        ys = sorted(round(float(c.get_offsets()[0][1]), 6) for c in means)
+        assert ys == [0.2, 0.5]  # each at its subject's mean
         vta = mcolors.to_rgb(TARGETNM_COLORS['VTA-DA'])
         assert all(np.allclose(np.asarray(c.get_edgecolors())[0][:3], vta)
-                   for c in medians)
+                   for c in means)
         plt.close(fig)
 
     def test_empty_frame_returns_titled_figure(self):
@@ -1365,6 +1365,79 @@ class TestPlotOlsDropone:
         fig = plot_ols_dropone(self._df().iloc[0:0], 'Empty')
         assert isinstance(fig, plt.Figure)
         assert fig._suptitle.get_text() == 'Empty'
+        plt.close(fig)
+
+    def test_subject_marker_is_mean_not_median(self):
+        """The central '_' marker sits at the subject's mean ΔR² (not median).
+
+        Three sessions [0.0, 0.0, 0.3] give mean 0.1 ≠ median 0.0, so the
+        marker's y pins the statistic to the mean.
+        """
+        from iblnm.vis import plot_ols_dropone
+        from matplotlib.collections import PathCollection
+        rows = [
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+            for v in (0.0, 0.0, 0.3)
+        ]
+        fig = plot_ols_dropone(pd.DataFrame(rows), 't')
+        ax = fig.axes[0]  # contrast ΔR² row, one event
+        marker = [c for c in ax.collections
+                  if isinstance(c, PathCollection) and len(c.get_offsets()) == 1]
+        assert len(marker) == 1
+        assert round(float(marker[0].get_offsets()[0][1]), 6) == 0.1
+        plt.close(fig)
+
+    @staticmethod
+    def _marker_color_by_y(ax):
+        """Map each subject's mean-marker rounded y to its marker edge color."""
+        from matplotlib.collections import PathCollection
+        return {round(float(c.get_offsets()[0][1]), 6):
+                tuple(np.asarray(c.get_edgecolors())[0][:3])
+                for c in ax.collections
+                if isinstance(c, PathCollection) and len(c.get_offsets()) == 1}
+
+    def test_significant_mouse_colored_nonsignificant_gray(self):
+        """With a p-value table, a mouse with p < alpha keeps its target-NM
+        color; a mouse with p >= alpha is grayed out (marker and dots)."""
+        from iblnm.vis import plot_ols_dropone
+        from iblnm.config import TARGETNM_COLORS
+        import matplotlib.colors as mcolors
+        rows = [
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': subj,
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+            for subj, vals in [('m_sig', [0.1, 0.3]), ('m_ns', [0.4, 0.6])]
+            for v in vals
+        ]
+        pvalues = pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+             'predictor': 'contrast', 'subject': 'm_sig', 'p_value': 0.01},
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+             'predictor': 'contrast', 'subject': 'm_ns', 'p_value': 0.5},
+        ])
+        fig = plot_ols_dropone(pd.DataFrame(rows), 't', pvalues=pvalues,
+                               alpha=0.05)
+        colors = self._marker_color_by_y(fig.axes[0])
+        vta = mcolors.to_rgb(TARGETNM_COLORS['VTA-DA'])
+        gray = mcolors.to_rgb('gray')
+        assert np.allclose(colors[0.2], vta)   # m_sig mean 0.2
+        assert np.allclose(colors[0.5], gray)  # m_ns mean 0.5
+        plt.close(fig)
+
+    def test_mouse_absent_from_pvalues_is_gray(self):
+        """A mouse with no p-value row for the cell renders gray."""
+        from iblnm.vis import plot_ols_dropone
+        import matplotlib.colors as mcolors
+        rows = [
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+            for v in (0.1, 0.3)
+        ]
+        pvalues = pd.DataFrame(columns=['target_NM', 'event', 'predictor',
+                                        'subject', 'p_value'])
+        fig = plot_ols_dropone(pd.DataFrame(rows), 't', pvalues=pvalues)
+        colors = self._marker_color_by_y(fig.axes[0])
+        assert np.allclose(colors[0.2], mcolors.to_rgb('gray'))
         plt.close(fig)
 
 

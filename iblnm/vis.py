@@ -13,6 +13,7 @@ from sklearn.preprocessing import quantile_transform
 
 from iblnm.config import (
     ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP,
+    PERSESSION_SIGNIFICANCE_ALPHA,
     RESPONSE_EVENTS, RESPONSE_WINDOWS,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
@@ -2669,8 +2670,8 @@ _PERSESSION_DROPONE_PREDICTORS = ['contrast', 'side', 'reward', 'choice_side',
 _SUBJECT_SPACING = 0.7       # x between consecutive subjects within a target-NM
 _TARGETNM_GAP = 1.0          # blank x between consecutive target-NM groups
 _SESSION_MARKER_SIZE = 40    # open-dot marker size for a single session
-_MEDIAN_MARKER_SIZE = 260    # '_' marker size for a subject's median dash
-_MEDIAN_LINEWIDTH = 3.0      # '_' median dash thickness
+_MEAN_MARKER_SIZE = 260      # '_' marker size for a subject's mean dash
+_MEAN_LINEWIDTH = 3.0        # '_' mean dash thickness
 
 
 def _group_xslots(df, targets):
@@ -2713,11 +2714,12 @@ def _group_xslots(df, targets):
 
 
 def _scatter_subject(ax, x, deltas, color):
-    """Plot one subject's sessions and its median at ``x``.
+    """Plot one subject's sessions and its mean at ``x``.
 
-    Each session is a translucent open dot edge-colored by target-NM (no fill)
-    stacked at the subject's x; the subject's median is a single thicker ``'_'``
-    marker in the same target-NM color on top.
+    Each session is a translucent open dot edge-colored by ``color`` (no fill)
+    stacked at the subject's x; the subject's mean is a single thicker ``'_'``
+    marker in the same color on top. ``color`` is gray for a subject grayed out
+    as non-significant (see ``_subject_significance_color``).
 
     Parameters
     ----------
@@ -2727,27 +2729,61 @@ def _scatter_subject(ax, x, deltas, color):
     deltas : np.ndarray
         That subject's per-session ΔR² in one cell.
     color : color
-        Marker color (the subject's target-NM color).
+        Marker color (the subject's target-NM color, or gray).
     """
     ax.scatter(np.full(len(deltas), x), deltas, marker='o', facecolors='none',
                edgecolors=color, s=_SESSION_MARKER_SIZE, alpha=0.5, zorder=3)
-    ax.scatter(x, np.median(deltas), marker='_', color=color,
-               s=_MEDIAN_MARKER_SIZE, linewidths=_MEDIAN_LINEWIDTH, zorder=4)
+    ax.scatter(x, np.mean(deltas), marker='_', color=color,
+               s=_MEAN_MARKER_SIZE, linewidths=_MEAN_LINEWIDTH, zorder=4)
 
 
-def _plot_persession_grid(df, title, rows, supylabel):
+def _subject_significance_color(base_color, pvalues, event, predictor, subject,
+                                alpha):
+    """Resolve a subject's marker color from its drop-one significance.
+
+    Returns ``base_color`` (the target-NM color) when ``pvalues`` is ``None``
+    (no significance routing, e.g. ``plot_ols_total_r2``) or the subject's
+    ``p_value`` for this ``(event, predictor)`` cell is below ``alpha``.
+    Otherwise returns ``'gray'`` — including when the subject has no p-value row
+    for the cell.
+
+    Parameters
+    ----------
+    base_color : color
+        The subject's target-NM color, used when significant.
+    pvalues : pd.DataFrame or None
+        Per-mouse permutation p-values with columns ``event``, ``predictor``,
+        ``subject``, ``p_value`` (the ticket-03 table). ``None`` disables fading.
+    event, predictor, subject : str
+        The cell and subject to look up.
+    alpha : float
+        Significance threshold; ``p_value < alpha`` keeps the color.
+    """
+    if pvalues is None:
+        return base_color
+    row = pvalues[(pvalues['event'] == event)
+                  & (pvalues['predictor'] == predictor)
+                  & (pvalues['subject'] == subject)]
+    if len(row) and row['p_value'].iloc[0] < alpha:
+        return base_color
+    return 'gray'
+
+
+def _plot_persession_grid(df, title, rows, supylabel, pvalues=None,
+                          alpha=PERSESSION_SIGNIFICANCE_ALPHA):
     """Per-session scatter grid: ``rows`` by event columns, sharing one y-axis.
 
     Shared layout for the per-session figures. Each entry of ``rows`` is one
     grid row; columns are events (``_sort_events`` order). Within a panel each
     subject occupies its own x position (sessions as translucent open dots
     edge-colored by target-NM, one thicker target-NM-colored ``'_'`` marker at
-    the subject's median), grouped by target-NM with a gap so a target-NM's width
+    the subject's mean), grouped by target-NM with a gap so a target-NM's width
     scales with its subject count (see ``_group_xslots``). Within each group,
-    subjects are ordered left to right by ascending median in that panel (so the
+    subjects are ordered left to right by ascending mean in that panel (so the
     order can differ across panels). One x-tick per target-NM is centred on its
     subjects. All panels share one y-axis; the figure size scales with the total
-    subject count and the number of rows.
+    subject count and the number of rows. When ``pvalues`` is given, a subject
+    that is not significant in a panel is grayed out (dots and mean marker).
 
     Parameters
     ----------
@@ -2762,6 +2798,11 @@ def _plot_persession_grid(df, title, rows, supylabel):
         predictors, dedupes a per-session value to one row).
     supylabel : str
         Shared y-axis label.
+    pvalues : pd.DataFrame or None
+        Per-mouse permutation p-values (see ``_subject_significance_color``).
+        ``None`` draws every subject in its target-NM color.
+    alpha : float
+        Significance threshold for the gray fade.
 
     Returns
     -------
@@ -2799,15 +2840,17 @@ def _plot_persession_grid(df, title, rows, supylabel):
                 vals_by_subject = {
                     s: df_cell.loc[df_cell['subject'] == s, value_col].values
                     for s in subjects}
-                # Order this panel's subjects left to right by ascending median;
+                # Order this panel's subjects left to right by ascending mean;
                 # subjects with no data here sort last (their slot stays empty).
                 ordered = sorted(subjects, key=lambda s: (
-                    np.median(vals_by_subject[s]) if len(vals_by_subject[s])
+                    np.mean(vals_by_subject[s]) if len(vals_by_subject[s])
                     else np.inf))
                 for subject, x in zip(ordered, slots_by_target[tnm]):
                     vals = vals_by_subject[subject]
                     if len(vals):
-                        _scatter_subject(ax, x, vals, color)
+                        subject_color = _subject_significance_color(
+                            color, pvalues, event, predictor, subject, alpha)
+                        _scatter_subject(ax, x, vals, subject_color)
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
                 ax.set_title(event)
@@ -2821,16 +2864,31 @@ def _plot_persession_grid(df, title, rows, supylabel):
     return fig
 
 
-def plot_ols_dropone(df, title):
+def plot_ols_dropone(df, title, pvalues=None,
+                     alpha=PERSESSION_SIGNIFICANCE_ALPHA):
     """Per-session drop-one ΔR² — dropped-regressor rows × event columns.
 
     One row per dropped regressor (``_PERSESSION_DROPONE_PREDICTORS`` order),
     each plotting that regressor's ``delta_r2``. See ``_plot_persession_grid``
     for the shared layout.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-form per-session drop-one fits.
+    title : str
+        Figure suptitle.
+    pvalues : pd.DataFrame or None
+        Per-mouse permutation p-values (ticket-03 table). A mouse with
+        ``p_value >= alpha`` (or no row) in a panel is grayed out. ``None``
+        draws every mouse in its target-NM color.
+    alpha : float
+        Significance threshold.
     """
     rows = [(p, 'delta_r2', p) for p in _PERSESSION_DROPONE_PREDICTORS]
     return _plot_persession_grid(df, title, rows,
-                                 'ΔR² (per-session, in-sample)')
+                                 'ΔR² (per-session, in-sample)',
+                                 pvalues=pvalues, alpha=alpha)
 
 
 def plot_ols_total_r2(df, title):
