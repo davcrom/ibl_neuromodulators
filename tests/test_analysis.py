@@ -3019,3 +3019,33 @@ class TestFitEncodingModel:
         assert len(cont_rows) == 1
         assert cont_rows['lag'].isna().all() and cont_rows['time'].isna().all()
         np.testing.assert_allclose(cont_rows['coef'].values, b_true[3:], atol=1e-3)
+
+
+class TestEncodingConfig:
+    """Structural checks on the encoding-model constants and default term spec."""
+
+    def test_scalar_constants(self):
+        from iblnm import config
+        assert config.ENCODING_DT == 0.1
+        assert config.ENCODING_CV == 5
+        assert config.ENCODING_POSE_KEYPOINTS == ['paw_l', 'paw_r', 'nose']
+
+    def test_term_spec_events(self):
+        from iblnm import config
+        assert set(config.ENCODING_TERMS) == {
+            'stimOn_times', 'firstMovement_times', 'response_times',
+            'feedback_times', 'goCue_times'}
+
+    def test_stimon_interaction(self):
+        from iblnm import config
+        assert ('side', 'contrast') in config.ENCODING_TERMS['stimOn_times']['interactions']
+
+    def test_feedback_split_by(self):
+        from iblnm import config
+        assert config.ENCODING_TERMS['feedback_times']['split_by'] == 'feedbackType'
+
+    def test_modulator_types(self):
+        from iblnm import config
+        mods = config.ENCODING_TERMS['stimOn_times']['modulators']
+        assert mods['side'] == 'categorical'
+        assert mods['contrast'] == 'continuous'

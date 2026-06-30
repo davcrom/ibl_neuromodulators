@@ -479,6 +479,52 @@ POSE_MEASURES = {
 MOTION_ENERGY_EVENT = 'stimOn_times'
 
 
+# Single-session photometry encoding model (kernel-based ridge regression).
+# The model grid, bases, ridge tuning, and default term spec read by
+# scripts/encoding.py and passed down to the analysis.py builders/fit.
+ENCODING_DT = 0.1                   # s, uniform model grid step
+ENCODING_N_LAGS = 50               # FIR lags per event block (default basis)
+ENCODING_N_BASIS = 10              # raised-cosine bumps (alternative basis)
+ENCODING_RCOS_DURATION = 2.5       # s, raised-cosine basis span
+ENCODING_RCOS_NLOFFSET = 0.2       # raised-cosine log-stretch offset
+ENCODING_ALPHAS = np.logspace(-3, 3, 10)  # ridge alpha grid (1e-3–1e3)
+ENCODING_CV = 5                    # contiguous K-fold count for alpha tuning / ΔR²
+ENCODING_POSE_KEYPOINTS = ['paw_l', 'paw_r', 'nose']  # continuous pose regressors
+
+# Default event term spec consumed by the modulator block builder and the script.
+# Per event: `split_by` (categorical column splitting the event into separate
+# kernel sets, or None), `modulators` (column -> 'continuous' [mean-centered] or
+# 'categorical' [deviation-coded ±0.5 contra/ipsi]), `interactions` (modulator
+# tuples coded as the product). Every event also emits its baseline kernel.
+ENCODING_TERMS = {
+    'stimOn_times': {
+        'split_by': None,
+        'modulators': {'side': 'categorical', 'contrast': 'continuous'},
+        'interactions': [('side', 'contrast')],
+    },
+    'firstMovement_times': {
+        'split_by': None,
+        'modulators': {'choice': 'categorical'},
+        'interactions': [],
+    },
+    'response_times': {
+        'split_by': None,
+        'modulators': {'choice': 'categorical'},
+        'interactions': [],
+    },
+    'feedback_times': {
+        'split_by': 'feedbackType',
+        'modulators': {'contrast': 'continuous'},
+        'interactions': [],
+    },
+    'goCue_times': {
+        'split_by': None,
+        'modulators': {},
+        'interactions': [],
+    },
+}
+
+
 # LMM formula templates: the single source of every model formula. Each family
 # maps a model name to a Wilkinson formula with `{response}` as the only
 # placeholder (filled with the response column at fit time). In a nested
