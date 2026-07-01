@@ -9,6 +9,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import FormatStrFormatter, MaxNLocator
 from scipy.stats import sem as scipy_sem
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import quantile_transform
 
 from iblnm.config import (
@@ -497,6 +498,141 @@ def plot_baseline_r2(results: pd.DataFrame, ax=None) -> plt.Figure:
     ax.set_ylabel('Observed R²')
 
     return ax.figure
+
+
+# Presentation config per baseline model: the y-axis label for the behavior
+# variable and whether it is binary (0/1 outcome fit with a logistic curve) or
+# continuous (fit with a line).
+_BASELINE_MODEL_DISPLAY = {
+    'performance': {'behavior_label': 'correct', 'binary': True},
+    'reaction_time': {'behavior_label': 'log RT', 'binary': False},
+}
+
+
+def plot_baseline_schematic(baseline: np.ndarray, behavior: np.ndarray,
+                            model: str, seed: int = 0) -> plt.Figure:
+    """Method-schematic strip for the baseline-coding analysis.
+
+    Single row of four panels reading left to right as the analysis narrative:
+    (1) the two modelled per-trial variables as traces over trial index,
+    (2) their scatter with a display fit curve, (3) a drawn cartoon of the
+    donor-swap, and (4) a drawn cartoon of the resulting null distribution with
+    the observed statistic marked. Only panels 1-2 use real data; panels 3-4 are
+    synthetic illustrations seeded by ``seed``.
+
+    Parameters
+    ----------
+    baseline : numpy.ndarray
+        Per-trial z-scored pre-stimulus baseline, one value per trial.
+    behavior : numpy.ndarray
+        Per-trial behavior aligned to ``baseline``: 0/1 correctness for the
+        ``performance`` model, log reaction time for ``reaction_time``.
+    model : str
+        ``'performance'`` or ``'reaction_time'``; selects the behavior label and
+        whether the scatter fit is logistic (binary) or linear (continuous).
+    seed : int, optional
+        Seed for the synthetic cartoon panels (default 0), so the figure is
+        reproducible.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The four-panel schematic figure.
+    """
+    display = _BASELINE_MODEL_DISPLAY[model]
+    keep = ~(np.isnan(baseline) | np.isnan(behavior))
+    baseline, behavior = baseline[keep], behavior[keep]
+    color = TARGETNM_COLORS.get('VTA-DA', 'gray')
+    rng = np.random.default_rng(seed)
+
+    fig, axes = plt.subplots(1, 4, figsize=(16, 3.2))
+    _schematic_traces(axes[0], baseline, behavior, display, color)
+    _schematic_scatter(axes[1], baseline, behavior, display, color, rng)
+    _schematic_swap(axes[2], rng, color)
+    _schematic_null(axes[3], color)
+    fig.tight_layout()
+    return fig
+
+
+def _schematic_traces(ax, baseline: np.ndarray, behavior: np.ndarray,
+                      display: dict, color: str) -> None:
+    """Panel 1: baseline (left axis) and behavior (right axis) over trial index."""
+    trials = np.arange(len(baseline))
+    ax.plot(trials, baseline, color=color, lw=0.8)
+    ax.set_xlabel('trial')
+    ax.set_ylabel('baseline (z)', color=color)
+    behavior_ax = ax.twinx()
+    if display['binary']:
+        behavior_ax.plot(trials, behavior, 'o', color='gray', ms=3, alpha=0.5)
+    else:
+        behavior_ax.plot(trials, behavior, color='gray', lw=0.8, alpha=0.7)
+    behavior_ax.set_ylabel(display['behavior_label'], color='gray')
+
+
+def _schematic_scatter(ax, baseline: np.ndarray, behavior: np.ndarray,
+                       display: dict, color: str, rng: np.random.Generator) -> None:
+    """Panel 2: baseline-vs-behavior points plus a single-predictor display fit.
+
+    The fit ignores the contrast covariate used by the real model; it is a
+    logistic curve for the binary outcome and a regression line otherwise.
+    """
+    y = behavior + rng.uniform(-0.06, 0.06, len(behavior)) if display['binary'] \
+        else behavior
+    ax.scatter(baseline, y, s=12, color=color, alpha=0.4, edgecolors='none')
+    grid = np.linspace(baseline.min(), baseline.max(), 100)
+    if display['binary']:
+        fit = LogisticRegression().fit(baseline[:, None], behavior)
+        curve = fit.predict_proba(grid[:, None])[:, 1]
+    else:
+        slope, intercept = np.polyfit(baseline, behavior, 1)
+        curve = slope * grid + intercept
+    ax.plot(grid, curve, color='k', lw=1.5)
+    ax.set_xlabel('baseline (z)')
+    ax.set_ylabel(display['behavior_label'])
+
+
+def _bleach_trace(t: np.ndarray, rate: float, rng: np.random.Generator) -> np.ndarray:
+    """Synthetic photometry-like trace: exponential photobleaching + drift noise."""
+    return np.exp(-rate * t) + 0.06 * rng.standard_normal(t.size).cumsum() / np.sqrt(t.size)
+
+
+def _schematic_swap(ax, rng: np.random.Generator, color: str) -> None:
+    """Panel 3: drawn cartoon of the donor-swap — focal trace + behavior vs pool.
+
+    A synthetic photometry-like focal trace with mild photobleaching carries an
+    overlaid fake behavior series; a stacked pool of donor traces below stands in
+    for the sessions the focal baseline is swapped with. Illustration only.
+    """
+    t = np.linspace(0, 1, 200)
+    ax.plot(t, _bleach_trace(t, 1.2, rng) + 3, color=color, lw=1.0)
+    ax.plot(t, 3 + 0.4 * (rng.integers(0, 2, t.size) - 0.5), color='gray',
+            lw=0.5, alpha=0.5)
+    ax.annotate('behavior', (t[-1], 3), color='gray', fontsize=TICKFONTSIZE,
+                va='center')
+    for i in range(4):
+        donor = _bleach_trace(t, rng.uniform(0.8, 1.6), rng)
+        ax.plot(t, donor - i * 1.1, color='gray', lw=0.8, alpha=0.6)
+    ax.annotate('donor pool', (0.02, -3.3), color='gray', fontsize=TICKFONTSIZE)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel('swap baseline across sessions')
+
+
+def _schematic_null(ax, color: str) -> None:
+    """Panel 4: drawn cartoon null distribution with the observed statistic marked.
+
+    A stylized Gaussian null with a vertical line for the observed statistic out
+    in the right tail. Illustration only — no real permutation values.
+    """
+    x = np.linspace(-3.5, 4.5, 200)
+    null = np.exp(-0.5 * x ** 2)
+    ax.fill_between(x, null, color='gray', alpha=0.4)
+    observed = 3.2
+    ax.axvline(observed, color=color, lw=1.5)
+    ax.annotate('observed', (observed, 0.9), color=color,
+                fontsize=TICKFONTSIZE, ha='center')
+    ax.set_yticks([])
+    ax.set_xlabel(r'null $\Delta R^2$')
 
 
 def plot_dispersion_scatter(df, events, blocks):

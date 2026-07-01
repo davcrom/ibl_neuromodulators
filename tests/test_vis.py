@@ -2909,3 +2909,41 @@ class TestPlotDeltaRSquared:
         assert widths_top_down == sorted(widths_top_down, reverse=True)
         assert widths_top_down[0] == deltas.max()
         plt.close(ax.figure)
+
+
+class TestPlotBaselineSchematic:
+    @staticmethod
+    def _baseline_scatter(fig, baseline):
+        """Return the scatter offsets whose x-column equals ``baseline``."""
+        for ax in fig.axes:
+            for coll in ax.collections:
+                offs = coll.get_offsets()
+                if offs.shape[0] == len(baseline) and np.allclose(
+                        offs[:, 0], baseline):
+                    return offs
+        return None
+
+    def test_performance_scatter_maps_baseline_to_behavior(self):
+        """Binary scatter: x is baseline, y jitters around 0/1 correctness."""
+        from iblnm.vis import plot_baseline_schematic
+        rng = np.random.default_rng(1)
+        baseline = rng.normal(0, 1, 40)
+        behavior = rng.integers(0, 2, 40).astype(float)
+        fig = plot_baseline_schematic(baseline, behavior, 'performance')
+        offs = self._baseline_scatter(fig, baseline)
+        assert offs is not None, "no scatter panel maps baseline to x"
+        assert np.all(np.abs(offs[:, 1] - behavior) < 0.3), \
+            "scatter y should sit within a jitter band of the 0/1 outcome"
+        plt.close(fig)
+
+    def test_reaction_time_scatter_maps_behavior_unjittered(self):
+        """Continuous scatter maps behavior straight to y, no jitter."""
+        from iblnm.vis import plot_baseline_schematic
+        rng = np.random.default_rng(2)
+        baseline = rng.normal(0, 1, 40)
+        behavior = rng.normal(0, 0.3, 40)
+        fig = plot_baseline_schematic(baseline, behavior, 'reaction_time')
+        offs = self._baseline_scatter(fig, baseline)
+        assert offs is not None, "no scatter panel maps baseline to x"
+        assert np.allclose(offs[:, 1], behavior)
+        plt.close(fig)

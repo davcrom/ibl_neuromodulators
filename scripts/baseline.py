@@ -15,12 +15,19 @@ import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
 
-from iblnm.config import SESSIONS_FPATH, PROJECT_ROOT, FIGURE_DPI
+from iblnm.config import SESSIONS_FPATH, SESSION_SCHEMA, PROJECT_ROOT, FIGURE_DPI
 from iblnm.io import _get_default_connection
-from iblnm.data import PhotometrySessionGroup
-from iblnm.vis import plot_baseline_propsig, plot_baseline_r2, plot_baseline_slope
+from iblnm.util import enforce_schema
+from iblnm.data import PhotometrySession, PhotometrySessionGroup
+from iblnm.vis import (plot_baseline_propsig, plot_baseline_r2,
+                       plot_baseline_slope, plot_baseline_schematic)
 
 from iblphotometry import processing
+
+# VTA-DA recording used for the schematic intro figure. Chosen as the strongest
+# dominant-direction session in both models (performance slope < 0, RT slope > 0;
+# both p < 0.01). Hardcoded; not derived in code.
+EXAMPLE_EID = '732d928a-eb3a-466a-b30e-d59b27024233'
 
 PIPELINE = [
         dict(
@@ -62,10 +69,10 @@ PIPELINE = [
 
 def prepare_session(ps):
     assert len(ps.brain_region) == 1
-    ps.load_photometry()
-    ps.preprocess(pipeline=PIPELINE)
-    ps.load_trials()
-    # ~ ps.load_h5(groups=['trials', 'photometry'])
+    # ~ ps.load_photometry()
+    # ~ ps.preprocess(pipeline=PIPELINE)
+    # ~ ps.load_trials()
+    ps.load_h5(groups=['trials', 'photometry'])
     ps.trials = ps.trials[
         (ps.trials['choice'] != 0)
         & ((ps.trials['firstMovement_times'] - ps.trials['stimOn_times']) >= 0.05)
@@ -170,3 +177,15 @@ if __name__ == '__main__':
     slope_fig = plot_baseline_slope(results)
     slope_fig.savefig(fig_dir / f'{args.model}_slope.svg',
                       dpi=FIGURE_DPI, bbox_inches='tight')
+
+    # Schematic intro figure: recompute the example session from the ONE cache
+    # (the H5 preprocessing differs from PIPELINE) and draw its modelled traces,
+    # scatter, and the permutation cartoon. fixed_var[0] names the behavior
+    # attribute prepare_session sets ('correct' or 'log_rt').
+    sessions = enforce_schema(pd.read_parquet(SESSIONS_FPATH), SESSION_SCHEMA)
+    row = sessions[sessions['eid'] == EXAMPLE_EID].iloc[0]
+    ps = prepare_session(PhotometrySession(row, one=_get_default_connection()))
+    schematic_fig = plot_baseline_schematic(
+        ps.baseline, getattr(ps, fixed_var[0]), args.model)
+    schematic_fig.savefig(fig_dir / f'{args.model}_schematic.svg',
+                          dpi=FIGURE_DPI, bbox_inches='tight')
