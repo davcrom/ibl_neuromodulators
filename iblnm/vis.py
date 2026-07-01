@@ -641,7 +641,7 @@ def _schematic_swap(ax, rng: np.random.Generator, color: str) -> None:
     ax.set_xlim(0, 1)
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.set_xlabel('swap pre-trial fluorescence across sessions')
+    ax.set_xlabel('swap photometry across sessions')
 
 
 def _schematic_null(ax, color: str) -> None:
@@ -658,6 +658,7 @@ def _schematic_null(ax, color: str) -> None:
     ax.annotate('observed R²', (observed, 0.9), color=color,
                 fontsize=TICKFONTSIZE, ha='center')
     ax.set_yticks([])
+    ax.set_xticks([])
     ax.set_xlabel(r'null $R^2$')
 
 
