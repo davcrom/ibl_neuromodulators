@@ -24,10 +24,11 @@ from iblnm.vis import (plot_baseline_propsig, plot_baseline_r2,
 
 from iblphotometry import processing
 
-# VTA-DA recording used for the schematic intro figure. Chosen as the strongest
-# dominant-direction session in both models (performance slope < 0, RT slope > 0;
-# both p < 0.01). Hardcoded; not derived in code.
-EXAMPLE_EID = '732d928a-eb3a-466a-b30e-d59b27024233'
+# VTA-DA recording used for the schematic intro figure. Dominant-direction and
+# significant in both models (performance slope < 0, RT slope > 0; both p < 0.05)
+# with a flat, non-drifting z-scored baseline across trials. Hardcoded; not
+# derived in code.
+EXAMPLE_EID = '26d93d1d-97f1-40f0-b84c-28229135f6fa'
 
 PIPELINE = [
         dict(
