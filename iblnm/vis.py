@@ -591,26 +591,36 @@ def _schematic_scatter(ax, baseline: np.ndarray, behavior: np.ndarray,
     ax.set_ylabel(display['behavior_label'])
 
 
-def _bleach_trace(t: np.ndarray, rate: float, rng: np.random.Generator) -> np.ndarray:
-    """Synthetic photometry-like trace: exponential photobleaching + drift noise."""
-    return np.exp(-rate * t) + 0.06 * rng.standard_normal(t.size).cumsum() / np.sqrt(t.size)
+def _signal_trace(t: np.ndarray, rate: float, rng: np.random.Generator) -> np.ndarray:
+    """Synthetic photometry-like trace: photobleaching, drift, and calcium transients.
+
+    Overlays a decaying baseline (``exp(-rate * t)``) with a slow random-walk
+    drift and several sharp positive transients so the cartoon reads as signal,
+    not bleaching alone.
+    """
+    bleach = np.exp(-rate * t)
+    drift = 0.12 * rng.standard_normal(t.size).cumsum() / np.sqrt(t.size)
+    transients = sum(
+        rng.uniform(0.06, 0.16) * np.exp(-0.5 * ((t - rng.uniform(0, 1)) / 0.02) ** 2)
+        for _ in range(rng.integers(5, 9)))
+    return bleach + drift + transients + 0.03 * rng.standard_normal(t.size)
 
 
 def _schematic_swap(ax, rng: np.random.Generator, color: str) -> None:
-    """Panel 3: drawn cartoon of the donor-swap — focal trace + behavior vs pool.
+    """Panel 3: drawn cartoon of the donor-swap — behavior + focal trace vs pool.
 
-    A synthetic photometry-like focal trace with mild photobleaching carries an
-    overlaid fake behavior series; a stacked pool of donor traces below stands in
-    for the sessions the focal baseline is swapped with. Illustration only.
+    A fake behavior series sits on top; below it the focal photometry-like signal
+    (photobleaching plus transients); below that a stacked pool of donor traces
+    standing in for the sessions the focal baseline is swapped with. Cartoon only.
     """
     t = np.linspace(0, 1, 200)
-    ax.plot(t, _bleach_trace(t, 1.2, rng) + 3, color=color, lw=1.0)
-    ax.plot(t, 3 + 0.4 * (rng.integers(0, 2, t.size) - 0.5), color='gray',
-            lw=0.5, alpha=0.5)
-    ax.annotate('behavior', (t[-1], 3), color='gray', fontsize=TICKFONTSIZE,
-                va='center')
+    ax.plot(t, 4.5 + 0.35 * (rng.integers(0, 2, t.size) - 0.5), color='gray',
+            lw=0.9, alpha=0.9)
+    ax.annotate('behavior', (0.02, 4.9), color='gray', fontsize=TICKFONTSIZE)
+    ax.plot(t, _signal_trace(t, 1.2, rng) + 3, color=color, lw=1.0)
+    ax.annotate('observed', (0.02, 3.5), color=color, fontsize=TICKFONTSIZE)
     for i in range(4):
-        donor = _bleach_trace(t, rng.uniform(0.8, 1.6), rng)
+        donor = _signal_trace(t, rng.uniform(0.8, 1.6), rng)
         ax.plot(t, donor - i * 1.1, color='gray', lw=0.8, alpha=0.6)
     ax.annotate('donor pool', (0.02, -3.3), color='gray', fontsize=TICKFONTSIZE)
     ax.set_xticks([])
