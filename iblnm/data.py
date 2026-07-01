@@ -2786,11 +2786,14 @@ class PhotometrySessionGroup:
             Per-mouse p-value table at grain ``(target_NM, event, predictor,
             subject)``, columns ``RESPONSE_OLS_PERSESSION_PVAL_COLUMNS``.
         """
+        from tqdm import tqdm
+
         predictors = [name for name in formulas if name != reference]
         scorable = self._gather_coded_frames(formulas, events, response_col,
                                              min_trials, contrast_coding)
         null_vectors = {}
-        for eid, target_NM, event, focal in scorable:
+        for eid, target_NM, event, focal in tqdm(
+                scorable, desc="Permutation null (per recording-event)"):
             donors = [frame for d_eid, d_nm, d_event, frame in scorable
                       if d_nm == target_NM and d_event == event
                       and d_eid != eid]
