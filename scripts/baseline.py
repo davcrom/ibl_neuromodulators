@@ -90,43 +90,34 @@ def prepare_session(ps):
     ps.baseline = (baseline - np.nanmean(baseline)) / np.nanstd(baseline)
     return ps
 
-def linear_regression(log_rt, contrast, baseline):
-    """OLS fit of log RT on baseline, controlling for contrast.
+def linear_regression(outcome, contrast, baseline):
+    """OLS fit of a behavioral outcome on baseline, controlling for contrast.
+
+    Serves both models: continuous ``log_rt`` and the binary ``correct`` as a
+    linear probability model (LPM). OLS on a 0/1 outcome is used deliberately —
+    the permutation null supplies inference, so the logit link buys nothing,
+    and OLS cannot fail to converge under the perfect separation a ceiling
+    (all-correct) contrast level induces in a logistic fit.
 
     Contrast enters as a categorical covariate ``C(contrast)`` so the baseline
-    term measures deviation in RT beyond what the trial's visual contrast
-    predicts. ``r2`` is baseline's incremental R^2 over the contrast-only model
-    (full minus contrast-only), isolating baseline's unique contribution.
-    """
-    data = pd.DataFrame(
-        {'log_rt': log_rt, 'contrast': contrast, 'baseline': baseline}
-        ).dropna()
-    reduced = smf.ols('log_rt ~ C(contrast)', data=data).fit()
-    full = smf.ols('log_rt ~ C(contrast) + baseline', data=data).fit()
-    return {'slope': full.params['baseline'], 'r2': full.rsquared - reduced.rsquared}
-
-def logistic_regression(correct, contrast, baseline):
-    """Logistic fit of correctness on baseline, controlling for contrast.
-
-    Contrast enters as a categorical covariate ``C(contrast)`` so the baseline
-    term measures deviation in accuracy beyond what the trial's visual contrast
-    predicts. ``r2`` is baseline's incremental McFadden pseudo-R^2 over the
+    term measures deviation in the outcome beyond what the trial's visual
+    contrast predicts. ``r2`` is baseline's incremental R^2 over the
     contrast-only model (full minus contrast-only), isolating baseline's unique
     contribution.
     """
     data = pd.DataFrame(
-        {'correct': correct, 'contrast': contrast, 'baseline': baseline}
+        {'outcome': outcome, 'contrast': contrast, 'baseline': baseline}
         ).dropna()
-    reduced = smf.logit('correct ~ C(contrast)', data=data).fit(disp=0)
-    full = smf.logit('correct ~ C(contrast) + baseline', data=data).fit(disp=0)
-    return {'slope': full.params['baseline'], 'r2': full.prsquared - reduced.prsquared}
+    reduced = smf.ols('outcome ~ C(contrast)', data=data).fit()
+    full = smf.ols('outcome ~ C(contrast) + baseline', data=data).fit()
+    return {'slope': full.params['baseline'], 'r2': full.rsquared - reduced.rsquared}
 
 
 # Each model is one independent permutation analysis; run them as separate
 # processes (one per --model) to parallelize. Maps the selector to its
 # (statistic function, fixed regressor, output filename).
 MODELS = {
-    'performance': (logistic_regression, ['correct', 'contrast'], 'performance.pqt'),
+    'performance': (linear_regression, ['correct', 'contrast'], 'performance.pqt'),
     'reaction_time': (linear_regression, ['log_rt', 'contrast'], 'reaction_time.pqt'),
 }
 
@@ -162,6 +153,7 @@ if __name__ == '__main__':
             statistic_key='r2',
             alternative='greater',
             n_iter=1000,
+            # ~ eids_to_process=pd.read_csv('eids4parallel.csv').iloc[:10, 0].to_list()
             )
         results.to_parquet(out_dir / fname)
     else:
