@@ -3699,6 +3699,30 @@ class TestLoaderMethods:
         group.load_response_varcomp_summary(tmp_path / 'nonexistent.parquet')
         assert group.response_varcomp_summary is None
 
+    def test_load_response_ols_persession_pvalues(self, tmp_path):
+        from iblnm.data import RESPONSE_OLS_PERSESSION_PVAL_COLUMNS
+        group = self._make_group()
+        df = pd.DataFrame([
+            {'target_NM': 'target-0', 'event': 'stimOn_times',
+             'predictor': 'contrast', 'subject': 'subj-0',
+             'mean_delta_r2': 0.12, 'p_value': 0.01, 'n_sessions': 3,
+             'n_donors': 20},
+            {'target_NM': 'target-0', 'event': 'feedback_times',
+             'predictor': 'reward', 'subject': 'subj-1',
+             'mean_delta_r2': 0.08, 'p_value': 0.30, 'n_sessions': 2,
+             'n_donors': 20},
+        ])[RESPONSE_OLS_PERSESSION_PVAL_COLUMNS]
+        path = tmp_path / 'response_ols_persession_dropone_pvalues.parquet'
+        df.to_parquet(path, index=False)
+
+        group.load_response_ols_persession_pvalues(path)
+        # No eid column: the loader reads and assigns the frame verbatim.
+        pd.testing.assert_frame_equal(group.response_ols_persession_pvalues, df)
+
+        group.load_response_ols_persession_pvalues(
+            tmp_path / 'nonexistent.parquet')
+        assert group.response_ols_persession_pvalues is None
+
     def test_load_response_varcomp_violin(self, tmp_path):
         from iblnm.config import RESPONSE_VARCOMP_VIOLIN_COLUMNS
         group = self._make_group()

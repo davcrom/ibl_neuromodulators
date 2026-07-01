@@ -2136,6 +2136,7 @@ class PhotometrySessionGroup:
         self.mean_traces = None
         self.response_magnitudes = None
         self.response_ols_dropone_results = None
+        self.response_ols_persession_pvalues = None
         self.response_ols_coefficients = None
         self.response_varcomp_summary = None
         self.response_varcomp_violin = None
@@ -2910,6 +2911,14 @@ class PhotometrySessionGroup:
     def load_response_ols_coefficients(self, path):
         """Load per-session coefficients from parquet, filtered to current recordings."""
         self.response_ols_coefficients = self._load_parquet(path)
+
+    def load_response_ols_persession_pvalues(self, path):
+        """Load the per-mouse drop-one permutation p-value table from parquet.
+
+        Keyed by ``(target_NM, event, predictor, subject)`` with no ``eid``
+        column, so it is a plain read — not the eid-filtered ``_load_parquet``.
+        """
+        self.response_ols_persession_pvalues = self._read_parquet(path)
 
     @staticmethod
     def _read_parquet(path):
