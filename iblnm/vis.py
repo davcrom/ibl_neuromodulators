@@ -564,6 +564,7 @@ def _schematic_traces(ax, baseline: np.ndarray, behavior: np.ndarray,
     behavior_ax = ax.twinx()
     if display['binary']:
         behavior_ax.plot(trials, behavior, 'o', color='gray', ms=3, alpha=0.5)
+        behavior_ax.set_yticks([0, 1])
     else:
         behavior_ax.plot(trials, behavior, color='gray', lw=0.8, alpha=0.7)
     behavior_ax.set_ylabel(display['behavior_label'], color='gray')
@@ -583,6 +584,7 @@ def _schematic_scatter(ax, baseline: np.ndarray, behavior: np.ndarray,
     if display['binary']:
         fit = LogisticRegression().fit(baseline[:, None], behavior)
         curve = fit.predict_proba(grid[:, None])[:, 1]
+        ax.set_yticks([0, 1])
     else:
         slope, intercept = np.polyfit(baseline, behavior, 1)
         curve = slope * grid + intercept
