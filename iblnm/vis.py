@@ -618,11 +618,13 @@ def _schematic_swap(ax, rng: np.random.Generator, color: str) -> None:
             lw=0.9, alpha=0.9)
     ax.annotate('behavior', (0.02, 4.9), color='gray', fontsize=TICKFONTSIZE)
     ax.plot(t, _signal_trace(t, 1.2, rng) + 3, color=color, lw=1.0)
-    ax.annotate('observed', (0.02, 3.5), color=color, fontsize=TICKFONTSIZE)
+    ax.annotate('observed photometry', (0.02, 3.5), color=color,
+                fontsize=TICKFONTSIZE)
     for i in range(4):
         donor = _signal_trace(t, rng.uniform(0.8, 1.6), rng)
         ax.plot(t, donor - i * 1.1, color='gray', lw=0.8, alpha=0.6)
-    ax.annotate('donor pool', (0.02, -3.3), color='gray', fontsize=TICKFONTSIZE)
+    ax.annotate('permuted photometry', (0.02, -3.3), color='gray',
+                fontsize=TICKFONTSIZE)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_xlabel('swap baseline across sessions')
@@ -639,10 +641,10 @@ def _schematic_null(ax, color: str) -> None:
     ax.fill_between(x, null, color='gray', alpha=0.4)
     observed = 3.2
     ax.axvline(observed, color=color, lw=1.5)
-    ax.annotate('observed', (observed, 0.9), color=color,
+    ax.annotate('observed R²', (observed, 0.9), color=color,
                 fontsize=TICKFONTSIZE, ha='center')
     ax.set_yticks([])
-    ax.set_xlabel(r'null $\Delta R^2$')
+    ax.set_xlabel(r'null $R^2$')
 
 
 def plot_dispersion_scatter(df, events, blocks):
