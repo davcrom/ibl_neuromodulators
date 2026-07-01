@@ -557,7 +557,11 @@ def plot_baseline_schematic(baseline: np.ndarray, behavior: np.ndarray,
 def _schematic_traces(ax, baseline: np.ndarray, behavior: np.ndarray,
                       display: dict, color: str) -> None:
     """Panel 1: baseline (left axis) and behavior (right axis) over trial index."""
-    trials = np.arange(len(baseline))
+    # Show only the middle 100 trials so individual fluctuations stay legible.
+    mid = len(baseline) // 2
+    window = slice(max(0, mid - 50), mid + 50)
+    trials = np.arange(len(baseline))[window]
+    baseline, behavior = baseline[window], behavior[window]
     ax.plot(trials, baseline, color=color, lw=0.8)
     ax.set_xlabel('trial')
     ax.set_ylabel('pre-trial fluorescence (z)', color=color)
