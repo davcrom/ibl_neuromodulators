@@ -747,9 +747,12 @@ def permutation_pvalue(observed: float, null, alternative: str = 'two-sided') ->
     -------
     float
         p-value in ``(0, 1]``, floored at ``1 / (n_iter + 1)`` by the add-one
-        correction (matches the ``fit_cca`` convention).
+        correction (matches the ``fit_cca`` convention). ``n_iter`` counts only
+        the non-NaN null draws; failed draws (NaN) are dropped rather than
+        counted as non-exceeding, which would bias the p-value downward.
     """
     null = np.asarray(null)
+    null = null[~np.isnan(null)]
     n = len(null)
     p_greater = (np.sum(null >= observed) + 1) / (n + 1)
     p_less = (np.sum(null <= observed) + 1) / (n + 1)

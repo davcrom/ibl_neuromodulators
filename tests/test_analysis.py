@@ -2555,6 +2555,20 @@ class TestPermutationPvalue:
         with pytest.raises(ValueError):
             permutation_pvalue(1.0, np.zeros(10), 'bogus')
 
+    def test_nan_draws_dropped(self):
+        """Failed (NaN) null draws are excluded, not counted as non-exceeding.
+
+        A null padded with NaNs must yield the same p-value as the clean null;
+        otherwise NaNs inflate the denominator and bias p downward.
+        """
+        from iblnm.analysis import permutation_pvalue
+        rng = np.random.default_rng(0)
+        clean = rng.standard_normal(200)
+        padded = np.concatenate([clean, np.full(50, np.nan)])
+        for alt in ('greater', 'less', 'two-sided'):
+            assert permutation_pvalue(0.5, padded, alt) == \
+                permutation_pvalue(0.5, clean, alt)
+
 
 class TestSynchronizedPermutationPvalue:
     def test_worked_example(self):
