@@ -550,7 +550,7 @@ def plot_baseline_schematic(baseline: np.ndarray, behavior: np.ndarray,
     _schematic_scatter(axes[1], baseline, behavior, display, color, rng)
     _schematic_swap(axes[2], rng, color)
     _schematic_null(axes[3], color)
-    fig.tight_layout()
+    fig.tight_layout(w_pad=3.0)
     return fig
 
 
@@ -560,14 +560,14 @@ def _schematic_traces(ax, baseline: np.ndarray, behavior: np.ndarray,
     trials = np.arange(len(baseline))
     ax.plot(trials, baseline, color=color, lw=0.8)
     ax.set_xlabel('trial')
-    ax.set_ylabel('baseline (z)', color=color)
+    ax.set_ylabel('pre-trial fluorescence (z)', color=color)
     behavior_ax = ax.twinx()
     if display['binary']:
-        behavior_ax.plot(trials, behavior, 'o', color='gray', ms=3, alpha=0.5)
+        behavior_ax.plot(trials, behavior, 'o', color='k', ms=3, alpha=0.5)
         behavior_ax.set_yticks([0, 1])
     else:
-        behavior_ax.plot(trials, behavior, color='gray', lw=0.8, alpha=0.7)
-    behavior_ax.set_ylabel(display['behavior_label'], color='gray')
+        behavior_ax.plot(trials, behavior, color='k', lw=0.8, alpha=0.7)
+    behavior_ax.set_ylabel(display['behavior_label'], color='k')
 
 
 def _schematic_scatter(ax, baseline: np.ndarray, behavior: np.ndarray,
@@ -589,7 +589,7 @@ def _schematic_scatter(ax, baseline: np.ndarray, behavior: np.ndarray,
         slope, intercept = np.polyfit(baseline, behavior, 1)
         curve = slope * grid + intercept
     ax.plot(grid, curve, color='k', lw=1.5)
-    ax.set_xlabel('baseline (z)')
+    ax.set_xlabel('pre-trial fluorescence (z)')
     ax.set_ylabel(display['behavior_label'])
 
 
@@ -609,27 +609,39 @@ def _signal_trace(t: np.ndarray, rate: float, rng: np.random.Generator) -> np.nd
 
 
 def _schematic_swap(ax, rng: np.random.Generator, color: str) -> None:
-    """Panel 3: drawn cartoon of the donor-swap — behavior + focal trace vs pool.
+    """Panel 3: drawn cartoon of the donor-swap keeping behavior fixed.
 
-    A fake behavior series sits on top; below it the focal photometry-like signal
-    (photobleaching plus transients); below that a stacked pool of donor traces
-    standing in for the sessions the focal baseline is swapped with. Cartoon only.
+    The same fake behavior series is drawn above the observed photometry-like
+    trace and again above the permuted pool, since the swap replaces the
+    fluorescence but not the behavior. A small arrow to an R² sits outside the
+    panel beside each photometry trace (observed in the target colour, permuted
+    in grey) for the statistic each swap produces. Cartoon only.
     """
     t = np.linspace(0, 1, 200)
-    ax.plot(t, 4.5 + 0.35 * (rng.integers(0, 2, t.size) - 0.5), color='gray',
-            lw=0.9, alpha=0.9)
-    ax.annotate('behavior', (0.02, 4.9), color='gray', fontsize=TICKFONTSIZE)
-    ax.plot(t, _signal_trace(t, 1.2, rng) + 3, color=color, lw=1.0)
-    ax.annotate('observed photometry', (0.02, 3.5), color=color,
-                fontsize=TICKFONTSIZE)
-    for i in range(4):
-        donor = _signal_trace(t, rng.uniform(0.8, 1.6), rng)
-        ax.plot(t, donor - i * 1.1, color='gray', lw=0.8, alpha=0.6)
-    ax.annotate('permuted photometry', (0.02, -3.3), color='gray',
-                fontsize=TICKFONTSIZE)
+    behavior = 0.35 * (rng.integers(0, 2, t.size) - 0.5)
+    permuted_y = [-i * 1.1 for i in range(4)]
+
+    ax.plot(t, behavior + 4.6, color='k', lw=0.9)
+    ax.annotate('behavior', (0.02, 5.0), color='k', fontsize=TICKFONTSIZE)
+    ax.plot(t, _signal_trace(t, 1.2, rng) + 3.2, color=color, lw=1.0)
+    ax.annotate('observed photometry', (0.02, 3.7), color=color, fontsize=TICKFONTSIZE)
+    ax.plot(t, behavior + 1.4, color='k', lw=0.9)
+    ax.annotate('behavior', (0.02, 1.8), color='k', fontsize=TICKFONTSIZE)
+    for y in permuted_y:
+        ax.plot(t, _signal_trace(t, rng.uniform(0.8, 1.6), rng) + y, color='gray',
+                lw=0.8, alpha=0.6)
+    ax.annotate('permuted photometry', (0.02, -3.6), color='gray', fontsize=TICKFONTSIZE)
+
+    for y, c in [(3.2, color)] + [(py, 'gray') for py in permuted_y]:
+        ax.annotate('', xy=(1.13, y), xytext=(1.02, y), annotation_clip=False,
+                    arrowprops=dict(arrowstyle='->', color=c))
+        ax.text(1.16, y, r'$R^2$', color=c, va='center', fontsize=TICKFONTSIZE,
+                clip_on=False)
+
+    ax.set_xlim(0, 1)
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.set_xlabel('swap baseline across sessions')
+    ax.set_xlabel('swap pre-trial fluorescence across sessions')
 
 
 def _schematic_null(ax, color: str) -> None:
