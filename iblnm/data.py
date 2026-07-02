@@ -3123,9 +3123,10 @@ class PhotometrySessionGroup:
         """Canonical trial selection shared by every model and plot.
 
         Merges ``response_magnitudes`` with ``trial_regressors``, adds
-        hemisphere-relative contrast/side, then keeps unbiased-block go trials
-        (``probabilityLeft == 0.5``, ``choice != 0``) with a real response
-        (``response_time > 0.05`` and non-null ``response_col``). Adds a
+        hemisphere-relative contrast/side, then keeps go trials
+        (``choice != 0``) with a real response (``response_time > 0.05`` and
+        non-null ``response_col``). All blocks are kept regardless of
+        ``probabilityLeft``. Adds a
         ``log_<var>`` column (base-10 log, NaN where the value is ≤ 0) for each
         ``config.TIMING_VARS`` entry present, so movement models can reference
         them; the NaN rows are dropped per family at fit time. Every model and

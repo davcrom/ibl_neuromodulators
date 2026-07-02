@@ -4189,11 +4189,12 @@ class TestAnovaResponseMagnitudes:
 
 
 def _make_group_with_planted_trials():
-    """Group with one kept trial and three that each violate one filter.
+    """Group with kept trials and two that each violate one filter.
 
-    Single eid, single recording, single event. Trial 0 passes all filters;
-    trials 1-3 each break exactly one of response_time>0.05, choice!=0,
-    probabilityLeft==0.5.
+    Single eid, single recording, single event. Trials 0 and 3 pass the modeling
+    filters; trial 1 breaks response_time>0.05 (false start) and trial 2 breaks
+    choice!=0 (no-go). Trial 3 sits in a biased block (probabilityLeft==0.8),
+    which _modeling_frame keeps by default.
     """
     from iblnm.data import PhotometrySessionGroup
 
@@ -4238,9 +4239,12 @@ def _make_group_with_planted_trials():
 class TestModelingFrame:
 
     def test_excludes_filtered_trials(self):
+        # Trial 1 (false start) and trial 2 (no-go) are dropped. Trial 3
+        # (biased block) is kept: _modeling_frame includes all blocks by
+        # default, filtering only on response_time and choice.
         group = _make_group_with_planted_trials()
         df = group._modeling_frame()
-        assert df['trial'].tolist() == [0]
+        assert df['trial'].tolist() == [0, 3]
 
     def test_includes_derived_columns(self):
         group = _make_group_with_planted_trials()
