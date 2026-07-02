@@ -3142,6 +3142,16 @@ class TestPlotBaselineTercileDifference:
                    for y in sessions)
         plt.close(fig)
 
+    def test_yaxis_shared_across_targets(self):
+        from iblnm.vis import plot_baseline_tercile_difference
+        lv = [-25.0, 0.0, 25.0]
+        mk = lambda l, h: pd.DataFrame({'low': l, 'high': h}, index=lv)
+        curves = {'VTA-DA': [mk([0.2, 0.5, 0.8], [0.9, 0.6, 0.3])],
+                  'DR-5HT': [mk([0.5, 0.5, 0.5], [0.51, 0.5, 0.49])]}
+        fig = plot_baseline_tercile_difference(curves, 'performance')
+        assert fig.axes[0].get_ylim() == fig.axes[1].get_ylim()
+        plt.close(fig)
+
     def test_mean_line_is_nanmean_of_differences(self):
         from iblnm.vis import plot_baseline_tercile_difference
         fig = plot_baseline_tercile_difference(self._curves(), 'performance')

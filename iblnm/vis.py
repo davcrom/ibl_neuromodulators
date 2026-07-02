@@ -638,7 +638,7 @@ def plot_baseline_tercile_difference(
         key=lambda t: TARGETNM2POSITION.get(t, len(TARGETNM2POSITION))
     )
     fig, axes = plt.subplots(1, len(targets), figsize=(4 * len(targets), 4),
-                             squeeze=False)
+                             squeeze=False, sharey=True)
     for ax, target in zip(axes[0], targets):
         color = TARGETNM_COLORS.get(target, 'gray')
         diffs = [(df['high'] - df['low']).to_frame('diff')
