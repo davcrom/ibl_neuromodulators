@@ -1941,11 +1941,12 @@ def permutation_null_delta_r2(
     """Cross-session swap null drop-one ΔR² for one focal recording-event.
 
     Variable-agnostic permutation primitive. For each donor session, the focal
-    frame's ``predictor`` column is overwritten by that donor's same-named coded
+    frame's ``predictor`` column is swapped for that donor's same-named coded
     column (truncating both to the shorter length), and the full and reduced
-    models are refit on the swapped frame. The dropped predictor's null unique
-    contribution is ΔR²* = R²_full* − R²_reduced* on those rows. Swapping only
-    the raw column lets patsy recompute the predictor's interactions from the
+    models are refit via a shared ``SubstitutableOLS`` engine built once from the
+    focal frame. The dropped predictor's null unique contribution is
+    ΔR²* = R²_full* − R²_reduced* on those rows. Substituting only the raw column
+    makes the engine recompute the predictor's interaction columns from the
     swapped values while every other column stays at its real focal value, so
     the reduced model remains the real baseline.
 
@@ -1971,22 +1972,24 @@ def permutation_null_delta_r2(
     -------
     np.ndarray
         The null ΔR² values, one per scorable donor. A donor whose swapped full
-        or reduced fit is degenerate (``fit_ols`` returns ``None``) is skipped,
-        so the length is the number of scorable donors (≤ ``len(donor_dfs)``).
+        or reduced fit is degenerate (``SubstitutableOLS.r2`` returns ``None``)
+        is skipped, so the length is the number of scorable donors
+        (≤ ``len(donor_dfs)``).
     """
     full_formula = full_formula.format(response=response_col)
     reduced_formula = reduced_formula.format(response=response_col)
+    full = SubstitutableOLS(full_formula, focal_df)
+    reduced = SubstitutableOLS(reduced_formula, focal_df)
 
     null_deltas = []
     for donor_df in donor_dfs:
         length = min(len(focal_df), len(donor_df))
-        swapped = focal_df.iloc[:length].copy()
-        swapped[predictor] = donor_df[predictor].iloc[:length].to_numpy()
-        full = fit_ols(full_formula, swapped)
-        reduced = fit_ols(reduced_formula, swapped)
-        if full is None or reduced is None:
+        swap = {predictor: donor_df[predictor].iloc[:length].to_numpy()}
+        full_r2 = full.r2(substitution=swap, n_rows=length)
+        reduced_r2 = reduced.r2(n_rows=length)
+        if full_r2 is None or reduced_r2 is None:
             continue
-        null_deltas.append(full.rsquared - reduced.rsquared)
+        null_deltas.append(full_r2 - reduced_r2)
     return np.array(null_deltas)
 
 
