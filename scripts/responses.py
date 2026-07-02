@@ -46,7 +46,11 @@ from iblnm.vis import (
     plot_mean_response_traces,
     plot_movement_r2_bars,
     plot_ols_dropone,
+    plot_ols_dropone_subject,
+    plot_ols_dropone_violin,
     plot_ols_total_r2,
+    plot_ols_total_r2_subject,
+    plot_ols_total_r2_violin,
     plot_varcomp_violins,
 )
 from iblnm.analysis import (
@@ -401,37 +405,53 @@ def plot_movement_figures(group, fig_dirs, data_dir):
 # Per-recording OLS drop-one
 # =========================================================================
 
-def plot_persession_figures(group, figures_dir):
+# display mode → (drop-one figure fn, full-model R² figure fn)
+_PERSESSION_DISPLAY_FNS = {
+    'session': (plot_ols_dropone, plot_ols_total_r2),
+    'subject': (plot_ols_dropone_subject, plot_ols_total_r2_subject),
+    'target': (plot_ols_dropone_violin, plot_ols_total_r2_violin),
+}
+
+
+def plot_persession_figures(group, figures_dir, display='session'):
     """Save the per-session drop-one ΔR² and full-model R² figures.
 
     Reads ``group.response_ols_dropone_results`` (computed under ``--reprocess``
     or loaded from cache in the default run), scopes it to ``RESPONSE_EVENTS``
     (a cached frame may carry events since dropped from the analysis), and saves
-    two figures from it: the ``plot_ols_dropone`` ΔR² grid (dropped-regressor
-    rows × event columns) and the ``plot_ols_total_r2`` full-model R² figure
-    (its own y-axis), every session a point in both. The drop-one grid grays
-    out mice whose per-mouse permutation p-value
-    (``group.response_ols_persession_pvalues``) is non-significant.
+    two figures from it: a drop-one ΔR² grid (dropped-regressor rows × event
+    columns) and a full-model R² figure (its own y-axis). ``display`` selects
+    how each session's values are drawn — per-session dots (``session``),
+    per-subject median+IQR (``subject``), or a per-target violin (``target``) —
+    via ``_PERSESSION_DISPLAY_FNS``; the SVG filenames are the same in every
+    mode. ``pvalues`` (``group.response_ols_persession_pvalues``, per-mouse
+    permutation) is threaded into the ``session`` drop-one figure only.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have ``response_ols_dropone_results`` and
-        ``response_ols_persession_pvalues`` populated.
+        Must have ``response_ols_dropone_results`` populated, and
+        ``response_ols_persession_pvalues`` when ``display='session'``.
     figures_dir : Path
-        Output directory for the SVG figure.
+        Output directory for the SVG figures.
+    display : {'session', 'subject', 'target'}
+        Per-session value display mode.
     """
+    dropone_fn, total_r2_fn = _PERSESSION_DISPLAY_FNS[display]
     results = group.response_ols_dropone_results
     results = results[results['event'].isin(RESPONSE_EVENTS)]
-    fig = plot_ols_dropone(
+
+    dropone_kwargs = ({'pvalues': group.response_ols_persession_pvalues}
+                      if display == 'session' else {})
+    fig = dropone_fn(
         results,
         title='Per-session OLS drop-one ΔR²\nevery session is a point',
-        pvalues=group.response_ols_persession_pvalues)
+        **dropone_kwargs)
     fig.savefig(figures_dir / 'response_ols_persession_dropone.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
 
-    fig = plot_ols_total_r2(
+    fig = total_r2_fn(
         results,
         title='Per-session full-model R²\nevery session is a point')
     fig.savefig(figures_dir / 'response_ols_persession_total_r2.svg',
@@ -448,6 +468,12 @@ if __name__ == '__main__':
     parser.add_argument('--reprocess', action='store_true',
                         help='re-extract responses and re-fit per-session models; '
                              'default plots from existing parquet files')
+    parser.add_argument('--persession-display', choices=('session', 'subject',
+                                                         'target'),
+                        default='session',
+                        help='per-session OLS figure display mode: per-session '
+                             'dots (session), per-subject median+IQR (subject), '
+                             'or per-target violin (target)')
     args = parser.parse_args()
 
     # Create output directories
@@ -636,7 +662,8 @@ if __name__ == '__main__':
     # Per-session OLS drop-one
     # =====================================================================
     print("\nGenerating per-session OLS drop-one figure...")
-    plot_persession_figures(group, fig_dirs['persession'])
+    plot_persession_figures(group, fig_dirs['persession'],
+                            display=args.persession_display)
     print(f"Per-session OLS figures saved to {fig_dirs['persession']}")
 
     # =====================================================================

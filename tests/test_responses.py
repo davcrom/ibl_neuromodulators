@@ -1,8 +1,10 @@
 """Tests for scripts/responses.py movement-encoding wiring."""
-from unittest.mock import MagicMock
+from contextlib import ExitStack
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
+import pytest
 
 
 def _make_group(response_magnitudes, trial_regressors):
@@ -223,6 +225,47 @@ class TestPlotPersessionFigures:
         svg = fig_dir / 'response_ols_persession_dropone.svg'
         assert svg.exists() and svg.stat().st_size > 0
 
+    @pytest.mark.parametrize('display, dropone_name, total_r2_name', [
+        ('session', 'plot_ols_dropone', 'plot_ols_total_r2'),
+        ('subject', 'plot_ols_dropone_subject', 'plot_ols_total_r2_subject'),
+        ('target', 'plot_ols_dropone_violin', 'plot_ols_total_r2_violin'),
+    ])
+    def test_display_maps_to_function_pair(self, display, dropone_name,
+                                           total_r2_name):
+        """The dispatch table pairs each display mode with its matching
+        (drop-one, full-model R²) vis functions."""
+        from scripts import responses
+        from iblnm import vis
+        dropone_fn, total_r2_fn = responses._PERSESSION_DISPLAY_FNS[display]
+        assert dropone_fn is getattr(vis, dropone_name)
+        assert total_r2_fn is getattr(vis, total_r2_name)
+
+    def test_invokes_mapped_pair_and_threads_pvalues(self, tmp_path):
+        """Each mode calls the pair from the dispatch table; ``pvalues`` reaches
+        the drop-one call only in ``session`` mode (subject/violin take none)."""
+        import matplotlib.pyplot as plt
+        from scripts import responses
+        group = MagicMock()
+        group.response_ols_dropone_results = self._stub_frame()
+
+        fig_dir = tmp_path / 'persession'
+        fig_dir.mkdir()
+        mocks = {mode: (MagicMock(return_value=plt.figure()),
+                        MagicMock(return_value=plt.figure()))
+                 for mode in ('session', 'subject', 'target')}
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.dict(responses._PERSESSION_DISPLAY_FNS, mocks))
+            for mode in ('session', 'subject', 'target'):
+                responses.plot_persession_figures(group, fig_dir, display=mode)
+
+        for mode, (dropone_mock, total_r2_mock) in mocks.items():
+            dropone_mock.assert_called_once()
+            total_r2_mock.assert_called_once()
+        assert 'pvalues' in mocks['session'][0].call_args.kwargs
+        assert 'pvalues' not in mocks['subject'][0].call_args.kwargs
+        assert 'pvalues' not in mocks['target'][0].call_args.kwargs
+
 
 def _responses_source():
     """Return (full source, __main__ block) of scripts/responses.py."""
@@ -253,6 +296,11 @@ class TestReprocessWiring:
         src, _ = _responses_source()
         assert 'def plot_lmm_figures(' in src
         assert 'def plot_movement_figures(' in src
+
+    def test_persession_display_flag_wired_to_figures(self):
+        _, main_block = _responses_source()
+        assert "'--persession-display'" in main_block
+        assert 'display=args.persession_display' in main_block
 
 
 def _reprocess_and_default_branches():
