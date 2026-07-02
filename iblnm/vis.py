@@ -607,6 +607,55 @@ def plot_baseline_tercile_curves(curves_by_target: dict[str, list[pd.DataFrame]]
     return fig
 
 
+def plot_baseline_tercile_difference(
+        curves_by_target: dict[str, list[pd.DataFrame]], model: str) -> plt.Figure:
+    """Per-session high-minus-low tercile difference, one axes per target-NM.
+
+    Makes each session its own control: for every significant session it plots
+    the per-contrast ``high - low`` tercile difference as a thin translucent line
+    in the target-NM color, overlaid with a bold cross-session mean line
+    (:func:`_aggregate_tercile_curves` on the difference) and a dashed zero
+    reference. Axes are ordered by ``TARGETNM2POSITION`` in a single row.
+
+    Parameters
+    ----------
+    curves_by_target : dict of str to list of pandas.DataFrame
+        Maps each ``target_NM`` to its sessions' curves, each DataFrame indexed
+        by signed contrast with ``low`` and ``high`` mean-outcome columns (the
+        ticket-01 interchange format).
+    model : str
+        Baseline model name; selects the y-axis label from
+        ``_BASELINE_MODEL_DISPLAY`` (``'P(right)'`` / ``'log RT'``).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The row of difference axes.
+    """
+    ylabel = f"Δ {_BASELINE_MODEL_DISPLAY[model]['curve_label']} (high − low)"
+    targets = sorted(
+        curves_by_target,
+        key=lambda t: TARGETNM2POSITION.get(t, len(TARGETNM2POSITION))
+    )
+    fig, axes = plt.subplots(1, len(targets), figsize=(4 * len(targets), 4),
+                             squeeze=False)
+    for ax, target in zip(axes[0], targets):
+        color = TARGETNM_COLORS.get(target, 'gray')
+        diffs = [(df['high'] - df['low']).to_frame('diff')
+                 for df in curves_by_target[target]]
+        for diff in diffs:
+            ax.plot(diff.index, diff['diff'], color=color, lw=0.5, alpha=0.3,
+                    label='session', zorder=2)
+        levels, mean, _ = _aggregate_tercile_curves(diffs, 'diff')
+        ax.plot(levels, mean, color=color, lw=2, label='mean', zorder=3)
+        ax.axhline(0, ls='--', color='gray', lw=0.5, zorder=1)
+        ax.set_xlabel('signed contrast (%)')
+        ax.set_title(target)
+
+    axes[0][0].set_ylabel(ylabel)
+    return fig
+
+
 def plot_baseline_schematic(baseline: np.ndarray, behavior: np.ndarray,
                             model: str, seed: int = 0) -> plt.Figure:
     """Method-schematic strip for the baseline-coding analysis.

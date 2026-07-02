@@ -23,7 +23,8 @@ from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm import analysis
 from iblnm.vis import (plot_baseline_propsig, plot_baseline_r2,
                        plot_baseline_slope, plot_baseline_schematic,
-                       plot_baseline_tercile_curves)
+                       plot_baseline_tercile_curves,
+                       plot_baseline_tercile_difference)
 
 from iblphotometry import processing
 
@@ -219,6 +220,9 @@ if __name__ == '__main__':
     tercile_fig = plot_baseline_tercile_curves(curves_by_target, model=args.model)
     tercile_fig.savefig(fig_dir / f'{args.model}_tercile.svg',
                         dpi=FIGURE_DPI, bbox_inches='tight')
+    diff_fig = plot_baseline_tercile_difference(curves_by_target, model=args.model)
+    diff_fig.savefig(fig_dir / f'{args.model}_tercile_diff.svg',
+                     dpi=FIGURE_DPI, bbox_inches='tight')
 
     # Schematic intro figure: recompute the example session from the ONE cache
     # (the H5 preprocessing differs from PIPELINE) and draw its modelled traces,

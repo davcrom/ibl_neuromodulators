@@ -3115,3 +3115,38 @@ class TestPlotBaselineTercileCurves:
         from iblnm.vis import _BASELINE_MODEL_DISPLAY
         for model in ('performance', 'reaction_time'):
             assert 'curve_label' in _BASELINE_MODEL_DISPLAY[model]
+
+
+class TestPlotBaselineTercileDifference:
+    """Per-session high-minus-low tercile difference curves."""
+
+    def _curves(self):
+        """Two synthetic sessions for VTA-DA; a NaN high-cell in session B."""
+        levels = [-25.0, 0.0, 25.0]
+        session_a = pd.DataFrame(
+            {'low': [0.2, 0.5, 0.8], 'high': [0.3, 0.6, 0.9]}, index=levels)
+        session_b = pd.DataFrame(
+            {'low': [0.4, 0.5, 0.6], 'high': [0.1, 0.6, np.nan]}, index=levels)
+        session_a.index.name = 'signed_contrast'
+        session_b.index.name = 'signed_contrast'
+        return {'VTA-DA': [session_a, session_b]}
+
+    def test_individual_lines_are_high_minus_low(self):
+        from iblnm.vis import plot_baseline_tercile_difference
+        fig = plot_baseline_tercile_difference(self._curves(), 'performance')
+        sessions = [ln.get_ydata() for ln in fig.axes[0].lines
+                    if ln.get_label() == 'session']
+        # session A: high-low = [0.1, 0.1, 0.1]; session B: [-0.3, 0.1, nan].
+        assert any(np.allclose(y, [0.1, 0.1, 0.1]) for y in sessions)
+        assert any(np.allclose(y, [-0.3, 0.1, np.nan], equal_nan=True)
+                   for y in sessions)
+        plt.close(fig)
+
+    def test_mean_line_is_nanmean_of_differences(self):
+        from iblnm.vis import plot_baseline_tercile_difference
+        fig = plot_baseline_tercile_difference(self._curves(), 'performance')
+        mean = next(ln for ln in fig.axes[0].lines
+                    if ln.get_label() == 'mean')
+        # nanmean of [0.1,-0.3], [0.1,0.1], [0.1,nan] = [-0.1, 0.1, 0.1].
+        assert np.allclose(mean.get_ydata(), [-0.1, 0.1, 0.1])
+        plt.close(fig)
