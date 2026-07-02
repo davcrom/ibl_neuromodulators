@@ -3102,6 +3102,33 @@ def _total_r2_rows():
             'R² (per-session, in-sample)')
 
 
+def _pool_by_target(df_cell, value_col, targets):
+    """Pool a cell's per-session values by target-NM.
+
+    Collects ``value_col`` across every session (all subjects) of each target-NM
+    in ``targets``, dropping targets with no rows in this cell.
+
+    Parameters
+    ----------
+    df_cell : pd.DataFrame
+        One (event, predictor) cell's rows; needs ``target_NM`` and
+        ``value_col``. Each row is one session.
+    value_col : str
+        Column of per-session values to pool (e.g. ``delta_r2`` or ``r2``).
+    targets : sequence of str
+        Target-NMs in plot order.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        ``target_NM -> pooled per-session values``, in ``targets`` order,
+        omitting targets with no values in this cell.
+    """
+    pooled = {tnm: df_cell.loc[df_cell['target_NM'] == tnm, value_col].values
+              for tnm in targets}
+    return {tnm: vals for tnm, vals in pooled.items() if len(vals)}
+
+
 def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
                              pvalues=None, alpha=PERSESSION_SIGNIFICANCE_ALPHA):
     """Per-subject-slot grid: ``rows`` by event columns, sharing one y-axis.
@@ -3248,6 +3275,114 @@ def plot_ols_total_r2_subject(df, title):
     rows, supylabel = _total_r2_rows()
     return _persession_subject_grid(df, title, rows, supylabel,
                                     draw_mark=_median_iqr_subject)
+
+
+def _target_violin(ax, slot, vals, color):
+    """Draw one target-NM's pooled per-session values as a violin at ``slot``.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    slot : float
+        The target-NM's x position (its index in the target order).
+    vals : np.ndarray
+        Pooled per-session values across the target's subjects in one cell.
+    color : color
+        Violin face/edge color (the target-NM color).
+    """
+    parts = ax.violinplot([vals], positions=[slot], showextrema=False)
+    for body in parts['bodies']:
+        body.set_facecolor(color)
+        body.set_edgecolor(color)
+        body.set_alpha(0.7)
+
+
+def _persession_target_grid(df, title, rows, supylabel):
+    """Per-target-slot grid: ``rows`` by event columns, sharing one y-axis.
+
+    Shared layout for the per-session figures that use a target-slot x-axis.
+    Each entry of ``rows`` is one grid row; columns are events (``_sort_events``
+    order). Within a panel each target-NM occupies one x-slot (``TARGETNM2POSITION``
+    order, mirroring ``plot_varcomp_violins``) drawn as a violin of the pooled
+    per-session values across all its subjects (see ``_pool_by_target``), faced
+    in ``TARGETNM_COLORS[target_NM]``. One x-tick per target-NM. All panels share
+    one y-axis. An empty frame returns a titled figure.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-form per-session fits: ``target_NM``, ``event``, ``subject``,
+        ``predictor``, and the value columns named in ``rows``.
+    title : str
+        Figure suptitle.
+    rows : list[tuple[str, str, str]]
+        ``(row_label, value_column, predictor)`` per grid row. ``predictor``
+        selects the frame rows to read.
+    supylabel : str
+        Shared y-axis label.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    has_data = len(df) > 0
+    events = _sort_events(df['event'].unique()) if has_data else []
+    n_rows, n_cols = len(rows), max(len(events), 1)
+
+    if not has_data:
+        fig, _ = plt.subplots(n_rows, n_cols, squeeze=False,
+                              layout='constrained')
+        fig.suptitle(title, fontsize=LABELFONTSIZE)
+        return fig
+
+    targets = sorted(df['target_NM'].unique(),
+                     key=lambda t: TARGETNM2POSITION.get(t, 999))
+    fig, axes = plt.subplots(
+        n_rows, n_cols, squeeze=False, sharex=True, sharey=True,
+        layout='constrained',
+        figsize=(1.2 * len(targets) * n_cols + 1, 2.0 * n_rows + 1))
+
+    for c, event in enumerate(events):
+        for r, (label, value_col, predictor) in enumerate(rows):
+            ax = axes[r, c]
+            df_cell = df[(df['event'] == event) & (df['predictor'] == predictor)]
+            pooled = _pool_by_target(df_cell, value_col, targets)
+            for slot, tnm in enumerate(targets):
+                if tnm in pooled:
+                    _target_violin(ax, slot, pooled[tnm],
+                                   TARGETNM_COLORS.get(tnm, 'gray'))
+            ax.axhline(0, ls='--', color='gray', lw=0.5)
+            if r == 0:
+                ax.set_title(event)
+            if c == 0:
+                ax.set_ylabel(label, fontsize=TICKFONTSIZE)
+        axes[-1, c].set_xticks(range(len(targets)))
+        axes[-1, c].set_xticklabels(targets, rotation=30, ha='right',
+                                    fontsize=TICKFONTSIZE)
+    fig.supylabel(supylabel)
+    fig.suptitle(title, fontsize=LABELFONTSIZE)
+    return fig
+
+
+def plot_ols_dropone_violin(df, title):
+    """Per-session drop-one ΔR² — one violin per target-NM of pooled sessions.
+
+    Same grid as ``plot_ols_dropone`` (dropped-regressor rows × event columns)
+    but each target-NM is drawn as a violin of the pooled per-session ΔR² across
+    all its subjects, instead of per-subject marks. See ``_persession_target_grid``.
+    """
+    rows, supylabel = _dropone_rows()
+    return _persession_target_grid(df, title, rows, supylabel)
+
+
+def plot_ols_total_r2_violin(df, title):
+    """Per-session full-model R² — one violin per target-NM of pooled sessions.
+
+    Same figure as ``plot_ols_total_r2`` but each target-NM is drawn as a violin
+    of its pooled per-session full-model R². See ``_persession_target_grid``.
+    """
+    rows, supylabel = _total_r2_rows()
+    return _persession_target_grid(df, title, rows, supylabel)
 
 
 _VARCOMP_COLORS = {'V_mouse': '#1f6fb4', 'V_session': '#e08214'}

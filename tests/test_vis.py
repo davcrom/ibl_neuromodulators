@@ -1456,6 +1456,100 @@ class TestPlotOlsDroponeSubjectMode:
         plt.close(fig)
 
 
+class TestPlotOlsDroponeTargetMode:
+    """Target-mode per-session grid: each target a violin of pooled sessions."""
+
+    def test_pool_by_target_maps_sessions_to_targets(self):
+        """``_pool_by_target`` pools every subject's per-session values under the
+        right target-NM, dropping targets absent from the cell."""
+        from iblnm.vis import _pool_by_target
+        rows = [
+            {'target_NM': 'VTA-DA', 'subject': 'm_a', 'delta_r2': 0.1},
+            {'target_NM': 'VTA-DA', 'subject': 'm_a', 'delta_r2': 0.3},
+            {'target_NM': 'VTA-DA', 'subject': 'm_b', 'delta_r2': 0.5},
+            {'target_NM': 'DR-5HT', 'subject': 'm_c', 'delta_r2': 0.2},
+            {'target_NM': 'DR-5HT', 'subject': 'm_c', 'delta_r2': 0.4},
+        ]
+        pooled = _pool_by_target(pd.DataFrame(rows), 'delta_r2',
+                                 ['VTA-DA', 'DR-5HT', 'SNc-DA'])
+        assert set(pooled) == {'VTA-DA', 'DR-5HT'}  # SNc-DA absent, dropped
+        assert sorted(pooled['VTA-DA']) == [0.1, 0.3, 0.5]  # both subjects pooled
+        assert sorted(pooled['DR-5HT']) == [0.2, 0.4]
+
+    @staticmethod
+    def _two_target_cell():
+        """One event × 'contrast' cell: VTA-DA (2 subjects) and DR-5HT."""
+        rows = []
+        for tnm, subs in [('VTA-DA', {'m_a': [0.1, 0.3], 'm_b': [0.5, 0.5]}),
+                          ('DR-5HT', {'m_c': [0.2, 0.4]})]:
+            for subj, vals in subs.items():
+                for v in vals:
+                    rows.append({'target_NM': tnm, 'event': 'stimOn_times',
+                                 'subject': subj, 'predictor': 'contrast',
+                                 'r2': 0.55, 'delta_r2': v})
+        return pd.DataFrame(rows)
+
+    def test_violin_mode_one_body_per_target_colored_by_targetnm(self):
+        """Each target-NM present in a panel gets exactly one violin body, faced
+        in its target-NM color."""
+        from iblnm.vis import plot_ols_dropone_violin
+        from iblnm.config import TARGETNM_COLORS
+        from matplotlib.collections import PolyCollection
+        import matplotlib.colors as mcolors
+        fig = plot_ols_dropone_violin(self._two_target_cell(), 't')
+        assert len(fig.axes) == 6  # 6 predictor rows × 1 event column
+        ax = fig.axes[0]  # 'contrast' row (index 0), stimOn column
+        bodies = [c for c in ax.collections if isinstance(c, PolyCollection)]
+        assert len(bodies) == 2  # one violin per target, not per subject
+        # x order follows TARGETNM2POSITION: VTA-DA at slot 0, DR-5HT at slot 1.
+        face_by_slot = sorted(
+            (round(float(b.get_paths()[0].vertices[:, 0].mean())),
+             tuple(np.asarray(b.get_facecolor())[0][:3]))
+            for b in bodies)
+        assert np.allclose(face_by_slot[0][1], mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))
+        assert np.allclose(face_by_slot[1][1], mcolors.to_rgb(TARGETNM_COLORS['DR-5HT']))
+        plt.close(fig)
+
+    def test_violin_mode_pools_sessions_across_subjects(self):
+        """A target's violin spans the pooled per-session values of all its
+        subjects — VTA-DA's body covers m_b's 0.5, not just m_a's [0.1, 0.3]."""
+        from iblnm.vis import plot_ols_dropone_violin
+        from matplotlib.collections import PolyCollection
+        fig = plot_ols_dropone_violin(self._two_target_cell(), 't')
+        ax = fig.axes[0]
+        vta = min((c for c in ax.collections if isinstance(c, PolyCollection)),
+                  key=lambda b: b.get_paths()[0].vertices[:, 0].mean())  # slot 0
+        ys = vta.get_paths()[0].vertices[:, 1]
+        assert ys.min() <= 0.1 and ys.max() >= 0.5  # spans full pooled range
+        plt.close(fig)
+
+    def test_violin_mode_total_r2_single_row(self):
+        """``plot_ols_total_r2_violin`` is a one-row figure of full-model R²
+        violins, one per target-NM."""
+        from iblnm.vis import plot_ols_total_r2_violin
+        from matplotlib.collections import PolyCollection
+        rows = [
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
+             'predictor': pred, 'r2': r2, 'delta_r2': 0.05}
+            for pred in ('contrast', 'side')  # r2 repeats across predictors
+            for r2 in (0.4, 0.6)
+        ]
+        fig = plot_ols_total_r2_violin(pd.DataFrame(rows), 't')
+        assert len(fig.axes) == 1  # single R² row, single event column
+        assert fig.axes[0].get_ylabel() == 'full model R²'
+        bodies = [c for c in fig.axes[0].collections
+                  if isinstance(c, PolyCollection)]
+        assert len(bodies) == 1  # one target
+        plt.close(fig)
+
+    def test_violin_mode_empty_frame_returns_titled_figure(self):
+        from iblnm.vis import plot_ols_dropone_violin
+        fig = plot_ols_dropone_violin(self._two_target_cell().iloc[0:0], 'Empty')
+        assert isinstance(fig, plt.Figure)
+        assert fig._suptitle.get_text() == 'Empty'
+        plt.close(fig)
+
+
 # =============================================================================
 # plot_within_target_similarity Tests
 # =============================================================================
