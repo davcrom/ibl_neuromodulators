@@ -19,8 +19,10 @@ from iblnm.config import SESSIONS_FPATH, SESSION_SCHEMA, PROJECT_ROOT, FIGURE_DP
 from iblnm.io import _get_default_connection
 from iblnm.util import enforce_schema
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
+from iblnm import analysis, task
 from iblnm.vis import (plot_baseline_propsig, plot_baseline_r2,
-                       plot_baseline_slope, plot_baseline_schematic)
+                       plot_baseline_slope, plot_baseline_schematic,
+                       plot_baseline_tercile_curves)
 
 from iblphotometry import processing
 
@@ -83,6 +85,10 @@ def prepare_session(ps):
     ps.correct = ps.trials['feedbackType'].apply(lambda x: 1 if x > 0 else 0).to_numpy()
     ps.log_rt = ps.trials['log_rt'].to_numpy()
     ps.contrast = ps.trials['contrast'].to_numpy()
+    # Signed contrast (percent, negative = left) for the tercile curves. Derived
+    # after the trial filter so it stays aligned with ps.baseline and the
+    # per-trial outcome selectors.
+    ps.signed_contrast = task.compute_trial_contrasts(ps.trials)['signed_contrast'].to_numpy()
     responses = ps.extract_responses(events=['stimOn_times'], window=[-0.4, -0.1])
     baseline = responses[ps.brain_region[0]].sel(event='stimOn_times').mean(axis=1).to_numpy()
     # z-score within session so the slope is comparable across recordings and
@@ -119,6 +125,14 @@ def linear_regression(outcome, contrast, baseline):
 MODELS = {
     'performance': (linear_regression, ['correct', 'contrast'], 'performance.pqt'),
     'reaction_time': (linear_regression, ['log_rt', 'contrast'], 'reaction_time.pqt'),
+}
+
+# Per-model per-trial outcome for the tercile behavioral curves (analysis choice,
+# so it lives in the script). ``performance`` -> rightward-choice indicator
+# (IBL choice == -1 = chose right); ``reaction_time`` -> log reaction time.
+TERCILE_OUTCOME = {
+    'performance': lambda ps: (ps.trials['choice'] == -1).to_numpy(),
+    'reaction_time': lambda ps: ps.log_rt,
 }
 
 
@@ -170,6 +184,27 @@ if __name__ == '__main__':
     slope_fig = plot_baseline_slope(results)
     slope_fig.savefig(fig_dir / f'{args.model}_slope.svg',
                       dpi=FIGURE_DPI, bbox_inches='tight')
+
+    # Tercile behavioral curves: reload the significant sessions through the
+    # group object, split each session's behavior into low/high baseline
+    # terciles per signed-contrast level, and aggregate across sessions by target.
+    sig_eids = set(results.loc[results['p_value'] <= 0.05, 'eid'])
+    group = PhotometrySessionGroup.from_catalog(
+        pd.read_parquet(SESSIONS_FPATH), one=_get_default_connection())
+    group.filter_sessions(session_types=('biased', 'ephys',))
+    _ = group.deduplicate()
+    outcome_selector = TERCILE_OUTCOME[args.model]
+    curves_by_target = {}
+    for rec, ps in group:
+        if rec['eid'] not in sig_eids:
+            continue
+        prepare_session(ps)
+        curve = analysis.tercile_split_curves(
+            ps.baseline, ps.signed_contrast, outcome_selector(ps), min_count=5)
+        curves_by_target.setdefault(rec['target_NM'], []).append(curve)
+    tercile_fig = plot_baseline_tercile_curves(curves_by_target, model=args.model)
+    tercile_fig.savefig(fig_dir / f'{args.model}_tercile.svg',
+                        dpi=FIGURE_DPI, bbox_inches='tight')
 
     # Schematic intro figure: recompute the example session from the ONE cache
     # (the H5 preprocessing differs from PIPELINE) and draw its modelled traces,

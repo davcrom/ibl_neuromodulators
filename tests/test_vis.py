@@ -3015,3 +3015,9 @@ class TestPlotBaselineTercileCurves:
         assert not np.allclose(lines['high'].get_ydata(),
                                lines['low'].get_ydata())
         plt.close(fig)
+
+    def test_both_models_have_curve_label(self):
+        """Every baseline model the script plots resolves a curve y-label."""
+        from iblnm.vis import _BASELINE_MODEL_DISPLAY
+        for model in ('performance', 'reaction_time'):
+            assert 'curve_label' in _BASELINE_MODEL_DISPLAY[model]
