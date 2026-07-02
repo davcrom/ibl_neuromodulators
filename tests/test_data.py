@@ -3705,12 +3705,10 @@ class TestLoaderMethods:
         df = pd.DataFrame([
             {'target_NM': 'target-0', 'event': 'stimOn_times',
              'predictor': 'contrast', 'subject': 'subj-0',
-             'mean_delta_r2': 0.12, 'p_value': 0.01, 'n_sessions': 3,
-             'n_donors': 20},
+             'mean_delta_r2': 0.12, 'p_value': 0.01, 'n_sessions': 3},
             {'target_NM': 'target-0', 'event': 'feedback_times',
              'predictor': 'reward', 'subject': 'subj-1',
-             'mean_delta_r2': 0.08, 'p_value': 0.30, 'n_sessions': 2,
-             'n_donors': 20},
+             'mean_delta_r2': 0.08, 'p_value': 0.30, 'n_sessions': 2},
         ])[RESPONSE_OLS_PERSESSION_PVAL_COLUMNS]
         path = tmp_path / 'response_ols_persession_dropone_pvalues.parquet'
         df.to_parquet(path, index=False)
@@ -6029,8 +6027,8 @@ class TestAssemblePersessionPvalueTable:
     def test_single_mouse_two_sessions_pool_by_resampling(self):
         """Two sessions (ΔR² 0.10, 0.06) with ragged, constant null vectors pool
         to mean 0.08; every bootstrap draw is mean(0.02, 0.01) = 0.015 < 0.08, so
-        p hits its floor 1/(n_bootstrap+1). n_donors is the pooled donor-draw
-        count (3+2). Ragged lengths do not raise (the crash this fixes)."""
+        p hits its floor 1/(n_bootstrap+1). Ragged lengths do not raise (the
+        crash this fixes)."""
         from iblnm.data import assemble_persession_pvalue_table
 
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)])
@@ -6047,7 +6045,7 @@ class TestAssemblePersessionPvalueTable:
         assert row['mean_delta_r2'] == pytest.approx(0.08)
         assert row['p_value'] == pytest.approx(1 / 100)
         assert row['n_sessions'] == 2
-        assert row['n_donors'] == 5
+        assert 'n_donors' not in table.columns
 
     def test_two_mice_pool_only_their_own_sessions(self):
         """Two mice in the same cell yield two rows; each mouse's mean pools

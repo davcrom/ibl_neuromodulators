@@ -63,11 +63,11 @@ RESPONSE_OLS_DROPONE_COLUMNS = [
 ]
 
 # Per-mouse drop-one significance table: one row per (target_NM, event,
-# predictor, subject) cell, pooling the cell's sessions via a synchronized
-# permutation test against per-session null ΔR² vectors.
+# predictor, subject) cell, pooling the cell's sessions by bootstrap resampling
+# their per-session donor null ΔR² vectors.
 RESPONSE_OLS_PERSESSION_PVAL_COLUMNS = [
     'target_NM', 'event', 'predictor', 'subject', 'mean_delta_r2', 'p_value',
-    'n_sessions', 'n_donors',
+    'n_sessions',
 ]
 
 # Per-recording full-model main-effect coefficients (one row per event ×
@@ -116,8 +116,7 @@ def assemble_persession_pvalue_table(
         One row per scorable ``(target_NM, event, predictor, subject)`` cell in
         ``RESPONSE_OLS_PERSESSION_PVAL_COLUMNS`` order. ``mean_delta_r2`` is the
         pooled observed statistic, ``p_value`` the one-sided (greater) bootstrap
-        p, ``n_sessions`` the pooled session count, and ``n_donors`` the total
-        donor draws pooled across the mouse (summed session null lengths).
+        p, and ``n_sessions`` the pooled session count.
     """
     rng = np.random.default_rng(random_state)
     rows = []
@@ -140,7 +139,6 @@ def assemble_persession_pvalue_table(
             'target_NM': target_NM, 'event': event, 'predictor': predictor,
             'subject': subject, 'mean_delta_r2': mean_delta_r2,
             'p_value': p_value, 'n_sessions': len(scorable),
-            'n_donors': sum(len(null) for null in null_by_stratum),
         })
     return pd.DataFrame(rows, columns=RESPONSE_OLS_PERSESSION_PVAL_COLUMNS)
 
