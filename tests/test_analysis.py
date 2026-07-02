@@ -2571,39 +2571,40 @@ class TestPermutationPvalue:
                 permutation_pvalue(0.5, clean, alt)
 
 
-class TestSynchronizedPermutationPvalue:
-    def test_worked_example(self):
-        """Spec worked example: pooled mean, column-wise mouse null, add-one p."""
-        from iblnm.analysis import synchronized_permutation_pvalue
+class TestBootstrapPooledPvalue:
+    def test_pools_by_resampling_one_draw_per_stratum(self):
+        """Observed statistic is the strata mean; the pooled null resamples one
+        draw per stratum. Constant strata nulls make the pooled null a single
+        value, so p is deterministic regardless of the rng."""
+        from iblnm.analysis import bootstrap_pooled_pvalue
         observed_by_stratum = [0.10, 0.06]
-        null_by_stratum = [[0.02, 0.01, 0.03], [0.015, 0.005, 0.02]]
-        observed_stat, p_value = synchronized_permutation_pvalue(
+        null_by_stratum = [np.full(3, 0.02), np.full(2, 0.01)]  # ragged, constant
+        observed_stat, p_value = bootstrap_pooled_pvalue(
             observed_by_stratum, null_by_stratum,
-            statistic='mean', alternative='greater',
+            rng=np.random.default_rng(0), n_bootstrap=99, alternative='greater',
         )
         assert observed_stat == pytest.approx(0.08)
-        assert p_value == pytest.approx((1 + 0) / (3 + 1))
+        # every pooled draw = mean(0.02, 0.01) = 0.015 < 0.08, so p = 1 / (99+1)
+        assert p_value == pytest.approx(1 / 100)
 
-    def test_smallest_p_when_observed_exceeds_every_null_column(self):
-        """p hits its floor 1 / (K + 1) when obs beats all pooled null columns."""
-        from iblnm.analysis import synchronized_permutation_pvalue
-        observed_by_stratum = [1.0, 1.0]
-        null_by_stratum = [[0.0, 0.1, 0.2, 0.3], [0.0, 0.1, 0.2, 0.3]]
-        _, p_value = synchronized_permutation_pvalue(
-            observed_by_stratum, null_by_stratum,
-            statistic='mean', alternative='greater',
+    def test_ragged_strata_nulls_do_not_raise(self):
+        """Unequal-length strata nulls pool without error (the crash fixed)."""
+        from iblnm.analysis import bootstrap_pooled_pvalue
+        observed_stat, p_value = bootstrap_pooled_pvalue(
+            [0.1, 0.06], [np.array([0.02, 0.01, 0.03]), np.array([0.015, 0.005])],
+            rng=np.random.default_rng(0), n_bootstrap=100, alternative='greater',
         )
-        k = len(null_by_stratum[0])
-        assert p_value == pytest.approx(1 / (k + 1))
+        assert 0.0 < p_value <= 1.0
 
-    def test_ragged_null_raises(self):
-        """Unequal row lengths cannot form synchronized columns."""
-        from iblnm.analysis import synchronized_permutation_pvalue
-        with pytest.raises(ValueError):
-            synchronized_permutation_pvalue(
-                [0.1, 0.06], [[0.02, 0.01, 0.03], [0.015, 0.005]],
-                statistic='mean', alternative='greater',
-            )
+    def test_p_floor_set_by_n_bootstrap(self):
+        """When the observed statistic beats every pooled draw, p hits its floor
+        1 / (n_bootstrap + 1)."""
+        from iblnm.analysis import bootstrap_pooled_pvalue
+        _, p_value = bootstrap_pooled_pvalue(
+            [1.0, 1.0], [np.full(4, 0.0), np.full(2, 0.0)],
+            rng=np.random.default_rng(0), n_bootstrap=999, alternative='greater',
+        )
+        assert p_value == pytest.approx(1 / 1000)
 
 
 class TestFitOls:

@@ -34,6 +34,7 @@ from iblnm.config import (
     VARCOMP_MIN_SESSIONS_PER_MOUSE, VARCOMP_KDE_GRID, VARCOMP_HDI_PROB,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     MOVEMENT_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
+    PERSESSION_PVAL_N_BOOTSTRAP, PERSESSION_PVAL_SEED,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -533,7 +534,10 @@ if __name__ == '__main__':
         # --- Per-mouse drop-one permutation significance ---
         print("Computing per-mouse drop-one permutation p-values...")
         group.response_ols_persession_pvalues = (
-            group.response_ols_dropone_permutation(LMM_FORMULAS['persession']))
+            group.response_ols_dropone_permutation(
+                LMM_FORMULAS['persession'],
+                n_bootstrap=PERSESSION_PVAL_N_BOOTSTRAP,
+                random_state=PERSESSION_PVAL_SEED))
         group.response_ols_persession_pvalues.to_parquet(
             RESPONSE_OLS_PERSESSION_PVAL_FPATH, index=False)
         print(f"Saved per-mouse drop-one p-values to "

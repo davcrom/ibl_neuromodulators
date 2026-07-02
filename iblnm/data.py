@@ -82,12 +82,18 @@ PERSESSION_COEFS_COLUMNS = [
 def assemble_persession_pvalue_table(
     observed: pd.DataFrame,
     null_vectors: dict[tuple[str, str, str], np.ndarray],
+    n_bootstrap: int = 1000,
+    random_state: int | None = 0,
 ) -> pd.DataFrame:
     """Pool per-session drop-one ΔR² into a per-mouse permutation p-value table.
 
     Pure assembler: groups the observed drop-one frame by
     ``(target_NM, event, predictor, subject)`` and tests each mouse's pooled
-    ΔR² against its sessions' synchronized-permutation null vectors.
+    ΔR² against its sessions' donor null vectors by bootstrap resampling
+    (:func:`iblnm.analysis.bootstrap_pooled_pvalue`). A mouse's sessions can
+    carry different-length null vectors — each is an arbitrarily ordered donor
+    set — so the pooling resamples one draw per session rather than aligning
+    columns; the vectors need not share a length.
 
     Parameters
     ----------
@@ -96,20 +102,24 @@ def assemble_persession_pvalue_table(
         ``(eid, subject, target_NM, brain_region, event, predictor)`` carrying
         the in-sample ``delta_r2``.
     null_vectors : dict
-        Maps ``(eid, event, predictor)`` to that session's length-K null ΔR²
-        vector (synchronized-permutation columns shared across the cell's
-        sessions). Sessions absent from this mapping are not scorable and are
-        dropped from their group.
+        Maps ``(eid, event, predictor)`` to that session's donor null ΔR²
+        vector (lengths may differ across sessions). Sessions absent from this
+        mapping are not scorable and are dropped from their group.
+    n_bootstrap : int
+        Pooled-null draws per cell; sets the p-value floor 1 / (n_bootstrap+1).
+    random_state : int or None
+        Seed for the bootstrap rng, created once and reused across cells.
 
     Returns
     -------
     pd.DataFrame
         One row per scorable ``(target_NM, event, predictor, subject)`` cell in
         ``RESPONSE_OLS_PERSESSION_PVAL_COLUMNS`` order. ``mean_delta_r2`` is the
-        pooled observed statistic, ``p_value`` the one-sided (greater)
-        permutation p, ``n_sessions`` the pooled session count, and ``n_donors``
-        the null length K.
+        pooled observed statistic, ``p_value`` the one-sided (greater) bootstrap
+        p, ``n_sessions`` the pooled session count, and ``n_donors`` the total
+        donor draws pooled across the mouse (summed session null lengths).
     """
+    rng = np.random.default_rng(random_state)
     rows = []
     group_keys = ['target_NM', 'event', 'predictor', 'subject']
     for (target_NM, event, predictor, subject), group in observed.groupby(
@@ -122,15 +132,15 @@ def assemble_persession_pvalue_table(
         if not scorable:
             continue
         observed_by_stratum = [delta_r2 for delta_r2, _ in scorable]
-        null_by_stratum = np.vstack([null for _, null in scorable])
-        mean_delta_r2, p_value = analysis.synchronized_permutation_pvalue(
-            observed_by_stratum, null_by_stratum,
-            statistic='mean', alternative='greater')
+        null_by_stratum = [null for _, null in scorable]
+        mean_delta_r2, p_value = analysis.bootstrap_pooled_pvalue(
+            observed_by_stratum, null_by_stratum, rng=rng,
+            n_bootstrap=n_bootstrap, alternative='greater')
         rows.append({
             'target_NM': target_NM, 'event': event, 'predictor': predictor,
             'subject': subject, 'mean_delta_r2': mean_delta_r2,
             'p_value': p_value, 'n_sessions': len(scorable),
-            'n_donors': null_by_stratum.shape[1],
+            'n_donors': sum(len(null) for null in null_by_stratum),
         })
     return pd.DataFrame(rows, columns=RESPONSE_OLS_PERSESSION_PVAL_COLUMNS)
 
@@ -2749,7 +2759,8 @@ class PhotometrySessionGroup:
                                          response_col='response',
                                          reference='full',
                                          min_trials=MIN_TRIALS_PERSESSION,
-                                         contrast_coding='log2'):
+                                         contrast_coding='log2',
+                                         n_bootstrap=1000, random_state=0):
         """Per-mouse permutation p-values for the per-session drop-one ΔR² grid.
 
         For each ``(target_NM, event)`` the donor pool is every scorable
@@ -2779,6 +2790,11 @@ class PhotometrySessionGroup:
             both focal and donor.
         contrast_coding : str
             Passed to :func:`iblnm.analysis.code_predictors`.
+        n_bootstrap : int
+            Pooled-null bootstrap draws per mouse cell; sets the p-value floor
+            1 / (n_bootstrap+1).
+        random_state : int or None
+            Seed for the bootstrap rng.
 
         Returns
         -------
@@ -2803,7 +2819,8 @@ class PhotometrySessionGroup:
                         focal, donors, formulas[reference], formulas[predictor],
                         predictor, response_col)
         return assemble_persession_pvalue_table(
-            self.response_ols_dropone_results, null_vectors)
+            self.response_ols_dropone_results, null_vectors,
+            n_bootstrap=n_bootstrap, random_state=random_state)
 
     def response_varcomp(self, coefficients, *, mcmc, tau_prior, min_mice,
                          min_sessions_per_mouse, grid_size, hdi_prob):

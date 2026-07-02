@@ -688,6 +688,10 @@ MIN_RECORDINGS_PERMOUSE = 3
 # Per-mouse drop-one significance: a mouse with p_value >= this alpha is drawn
 # gray in the per-session ΔR² grid (not significant).
 PERSESSION_SIGNIFICANCE_ALPHA = 0.05
+# Per-mouse drop-one p-value: bootstrap draws for the pooled donor null (one
+# draw resampled per session per iteration) and the rng seed for reproducibility.
+PERSESSION_PVAL_N_BOOTSTRAP = 1000
+PERSESSION_PVAL_SEED = 0
 
 # Coefficient-dispersion-vs-behavior scatter: a (subject, target_NM) unit is
 # plotted only when it has at least this many scorable sessions in both the

@@ -6026,25 +6026,28 @@ class TestAssemblePersessionPvalueTable:
              for eid, subject, delta_r2 in rows]
         )
 
-    def test_single_mouse_two_sessions_matches_worked_example(self):
-        """Two sessions (ΔR² 0.10, 0.06) pooled against their null vectors give
-        mean 0.08, p 0.25, n_sessions 2, n_donors 3 (spec worked example)."""
+    def test_single_mouse_two_sessions_pool_by_resampling(self):
+        """Two sessions (ΔR² 0.10, 0.06) with ragged, constant null vectors pool
+        to mean 0.08; every bootstrap draw is mean(0.02, 0.01) = 0.015 < 0.08, so
+        p hits its floor 1/(n_bootstrap+1). n_donors is the pooled donor-draw
+        count (3+2). Ragged lengths do not raise (the crash this fixes)."""
         from iblnm.data import assemble_persession_pvalue_table
 
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)])
         null_vectors = {
-            ('e1', 'feedback', 'reward'): np.array([0.02, 0.01, 0.03]),
-            ('e2', 'feedback', 'reward'): np.array([0.015, 0.005, 0.02]),
+            ('e1', 'feedback', 'reward'): np.full(3, 0.02),
+            ('e2', 'feedback', 'reward'): np.full(2, 0.01),
         }
 
-        table = assemble_persession_pvalue_table(observed, null_vectors)
+        table = assemble_persession_pvalue_table(
+            observed, null_vectors, n_bootstrap=99, random_state=0)
 
         assert len(table) == 1
         row = table.iloc[0]
         assert row['mean_delta_r2'] == pytest.approx(0.08)
-        assert row['p_value'] == pytest.approx(0.25)
+        assert row['p_value'] == pytest.approx(1 / 100)
         assert row['n_sessions'] == 2
-        assert row['n_donors'] == 3
+        assert row['n_donors'] == 5
 
     def test_two_mice_pool_only_their_own_sessions(self):
         """Two mice in the same cell yield two rows; each mouse's mean pools
