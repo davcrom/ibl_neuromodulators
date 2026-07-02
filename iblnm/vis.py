@@ -2937,6 +2937,7 @@ _TARGETNM_GAP = 1.0          # blank x between consecutive target-NM groups
 _SESSION_MARKER_SIZE = 40    # open-dot marker size for a single session
 _MEAN_MARKER_SIZE = 260      # '_' marker size for a subject's mean dash
 _MEAN_LINEWIDTH = 3.0        # '_' mean dash thickness
+_MEDIAN_MARKER_SIZE = 6      # errorbar median-point diameter (points)
 
 
 def _group_xslots(df, targets):
@@ -3000,6 +3001,45 @@ def _scatter_subject(ax, x, deltas, color):
                edgecolors=color, s=_SESSION_MARKER_SIZE, alpha=0.5, zorder=3)
     ax.scatter(x, np.mean(deltas), marker='_', color=color,
                s=_MEAN_MARKER_SIZE, linewidths=_MEAN_LINEWIDTH, zorder=4)
+
+
+def _median_iqr_subject(ax, x, vals, color):
+    """Draw one subject as a median point with a Q1–Q3 whisker at ``x``.
+
+    The median is a filled point in ``color``; the whisker spans the subject's
+    interquartile range (25th–75th percentile of its per-session ``vals``).
+    Mirrors ``_scatter_subject``'s zorder conventions.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    x : float
+        The subject's x position.
+    vals : np.ndarray
+        That subject's per-session values in one cell.
+    color : color
+        Marker and whisker color (the subject's target-NM color).
+    """
+    median, q1, q3 = _median_iqr(vals)
+    ax.errorbar(x, median, yerr=[[median - q1], [q3 - median]], fmt='o',
+                color=color, markersize=_MEDIAN_MARKER_SIZE, zorder=4)
+
+
+def _median_iqr(vals):
+    """Median and interquartile range of a subject's per-session values.
+
+    Parameters
+    ----------
+    vals : array-like
+        One subject's per-session values in a cell.
+
+    Returns
+    -------
+    tuple[float, float, float]
+        ``(median, q1, q3)`` — the median and the 25th/75th percentiles.
+    """
+    q1, q3 = np.percentile(vals, [25, 75])
+    return float(np.median(vals)), float(q1), float(q3)
 
 
 def _subject_significance_color(base_color, pvalues, event, predictor, subject,
@@ -3185,6 +3225,29 @@ def plot_ols_total_r2(df, title):
     rows, supylabel = _total_r2_rows()
     return _persession_subject_grid(df, title, rows, supylabel,
                                     draw_mark=_scatter_subject)
+
+
+def plot_ols_dropone_subject(df, title):
+    """Per-session drop-one ΔR² — one median + Q1–Q3 whisker per subject.
+
+    Same grid as ``plot_ols_dropone`` (dropped-regressor rows × event columns)
+    but each subject is drawn as its median with an interquartile whisker
+    instead of per-session dots. See ``_persession_subject_grid``.
+    """
+    rows, supylabel = _dropone_rows()
+    return _persession_subject_grid(df, title, rows, supylabel,
+                                    draw_mark=_median_iqr_subject)
+
+
+def plot_ols_total_r2_subject(df, title):
+    """Per-session full-model R² — one median + Q1–Q3 whisker per subject.
+
+    Same figure as ``plot_ols_total_r2`` but each subject is drawn as its
+    median with an interquartile whisker. See ``_persession_subject_grid``.
+    """
+    rows, supylabel = _total_r2_rows()
+    return _persession_subject_grid(df, title, rows, supylabel,
+                                    draw_mark=_median_iqr_subject)
 
 
 _VARCOMP_COLORS = {'V_mouse': '#1f6fb4', 'V_session': '#e08214'}

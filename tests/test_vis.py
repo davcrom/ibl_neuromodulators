@@ -1424,6 +1424,38 @@ class TestPlotOlsDropone:
         plt.close(fig)
 
 
+class TestPlotOlsDroponeSubjectMode:
+    """Subject-mode per-session grid: each subject a median + Q1–Q3 whisker."""
+
+    def test_median_iqr_reduction(self):
+        """``_median_iqr`` returns the median and the 25th/75th percentiles."""
+        from iblnm.vis import _median_iqr
+        assert _median_iqr([0.0, 0.0, 0.3, 0.9]) == (0.15, 0.0, 0.45)
+
+    def test_subject_mode_point_at_median_whisker_spans_iqr(self):
+        """A subject's point sits at its median and the whisker spans Q1–Q3.
+
+        Sessions [0.0, 0.0, 0.3] give median 0.0 (≠ mean 0.1) with Q1=0.0,
+        Q3=0.15, so the drawn point and whisker pin the statistic to the IQR.
+        """
+        from iblnm.vis import plot_ols_dropone_subject
+        from matplotlib.container import ErrorbarContainer
+        rows = [
+            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+            for v in (0.0, 0.0, 0.3)
+        ]
+        fig = plot_ols_dropone_subject(pd.DataFrame(rows), 't')
+        ax = fig.axes[0]  # contrast ΔR² row, one event
+        bars = [c for c in ax.containers if isinstance(c, ErrorbarContainer)]
+        assert len(bars) == 1  # one subject
+        data_line = bars[0].lines[0]
+        assert round(float(data_line.get_ydata()[0]), 6) == 0.0  # median
+        whisker = bars[0].lines[2][0].get_segments()[0]
+        assert sorted(np.round(whisker[:, 1], 6)) == [0.0, 0.15]  # Q1..Q3
+        plt.close(fig)
+
+
 # =============================================================================
 # plot_within_target_similarity Tests
 # =============================================================================
