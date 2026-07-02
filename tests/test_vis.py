@@ -2930,3 +2930,56 @@ class TestPlotBaselineSchematic:
         assert offs is not None, "no scatter panel maps baseline to x"
         assert np.allclose(offs[:, 1], behavior)
         plt.close(fig)
+
+
+class TestPlotBaselineTercileCurves:
+    """Cross-session mean±SD aggregation of tercile behavioral curves."""
+
+    def _curves(self):
+        """Two synthetic sessions for VTA-DA; a NaN high-cell in session B."""
+        levels = [-25.0, 0.0, 25.0]
+        session_a = pd.DataFrame(
+            {'low': [0.2, 0.5, 0.8], 'high': [0.3, 0.6, 0.9]}, index=levels)
+        session_b = pd.DataFrame(
+            {'low': [0.4, 0.5, 0.6], 'high': [0.1, 0.6, np.nan]}, index=levels)
+        session_a.index.name = 'signed_contrast'
+        session_b.index.name = 'signed_contrast'
+        return {'VTA-DA': [session_a, session_b]}, levels
+
+    def _band_halfwidth(self, collection, levels):
+        """Per-x half-width of a fill_between band from its polygon vertices."""
+        verts = collection.get_paths()[0].vertices
+        return {
+            x: (verts[np.isclose(verts[:, 0], x), 1].max()
+                - verts[np.isclose(verts[:, 0], x), 1].min()) / 2
+            for x in levels
+        }
+
+    def test_mean_line_is_nanmean_across_sessions(self):
+        from iblnm.vis import plot_baseline_tercile_curves
+        curves, _ = self._curves()
+        fig = plot_baseline_tercile_curves(curves, 'performance')
+        lines = {ln.get_label(): ln for ln in fig.axes[0].lines}
+        # high at +25 excludes session B's NaN cell -> mean of the single 0.9.
+        assert np.allclose(lines['high'].get_ydata(), [0.2, 0.6, 0.9])
+        assert np.allclose(lines['low'].get_ydata(), [0.3, 0.5, 0.7])
+        plt.close(fig)
+
+    def test_band_halfwidth_is_nanstd(self):
+        from iblnm.vis import plot_baseline_tercile_curves
+        curves, levels = self._curves()
+        fig = plot_baseline_tercile_curves(curves, 'performance')
+        high_band = self._band_halfwidth(fig.axes[0].collections[0], levels)
+        assert np.isclose(high_band[-25.0], 0.1)  # nanstd([0.3, 0.1]) = 0.1
+        assert np.isclose(high_band[0.0], 0.0)
+        assert np.isclose(high_band[25.0], 0.0)   # single non-NaN value
+        plt.close(fig)
+
+    def test_terciles_map_to_distinct_curves(self):
+        from iblnm.vis import plot_baseline_tercile_curves
+        curves, _ = self._curves()
+        fig = plot_baseline_tercile_curves(curves, 'performance')
+        lines = {ln.get_label(): ln for ln in fig.axes[0].lines}
+        assert not np.allclose(lines['high'].get_ydata(),
+                               lines['low'].get_ydata())
+        plt.close(fig)

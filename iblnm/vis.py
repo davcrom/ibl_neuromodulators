@@ -1,4 +1,5 @@
 import re
+import warnings
 from collections.abc import Iterable
 
 import numpy as np
@@ -504,9 +505,106 @@ def plot_baseline_r2(results: pd.DataFrame, ax=None) -> plt.Figure:
 # variable and whether it is binary (0/1 outcome fit with a logistic curve) or
 # continuous (fit with a line).
 _BASELINE_MODEL_DISPLAY = {
-    'performance': {'behavior_label': 'correct', 'binary': True},
-    'reaction_time': {'behavior_label': 'log RT', 'binary': False},
+    'performance': {'behavior_label': 'correct', 'binary': True,
+                    'curve_label': 'P(right)'},
+    'reaction_time': {'behavior_label': 'log RT', 'binary': False,
+                      'curve_label': 'log RT'},
 }
+
+
+def _lighten(color, amount: float = 0.55) -> tuple:
+    """Blend ``color`` toward white by ``amount`` (0 = unchanged, 1 = white)."""
+    rgb = np.array(colors.to_rgb(color))
+    return tuple(rgb + (1.0 - rgb) * amount)
+
+
+def _aggregate_tercile_curves(session_curves: list[pd.DataFrame], tercile: str):
+    """Cross-session mean±SD of one tercile's per-contrast curve.
+
+    Reindexes each session's ``tercile`` column onto the union of signed-contrast
+    levels, then reduces across sessions with ``nanmean``/``nanstd``. Levels that
+    are all-NaN (no session contributed a cell) are dropped.
+
+    Parameters
+    ----------
+    session_curves : list of pandas.DataFrame
+        One DataFrame per session, indexed by signed contrast with ``low`` and
+        ``high`` columns of mean outcome (NaN where guarded/absent).
+    tercile : str
+        Column to aggregate, ``'low'`` or ``'high'``.
+
+    Returns
+    -------
+    levels : numpy.ndarray
+        Signed-contrast levels retained (those with a finite mean).
+    mean : numpy.ndarray
+        Per-level ``nanmean`` of the tercile across sessions.
+    sd : numpy.ndarray
+        Per-level ``nanstd`` (population, ``ddof=0``) across sessions.
+    """
+    levels = np.array(sorted(set().union(*(df.index for df in session_curves))))
+    stacked = np.vstack([df[tercile].reindex(levels).to_numpy()
+                         for df in session_curves])
+    with warnings.catch_warnings():
+        # All-NaN levels yield NaN here; we drop them below rather than warn.
+        warnings.simplefilter('ignore', RuntimeWarning)
+        mean = np.nanmean(stacked, axis=0)
+        sd = np.nanstd(stacked, axis=0)
+    keep = ~np.isnan(mean)
+    return levels[keep], mean[keep], sd[keep]
+
+
+def plot_baseline_tercile_curves(curves_by_target: dict[str, list[pd.DataFrame]],
+                                 model: str) -> plt.Figure:
+    """Low- vs high-baseline behavioral curves, one axes per target-NM.
+
+    For each ``target_NM`` group, aggregates its significant sessions'
+    tercile-split curves into a mean line with a shaded ±SD band per tercile
+    (:func:`_aggregate_tercile_curves`). The high tercile is a solid line in the
+    target-NM color (``TARGETNM_COLORS``); the low tercile is the same hue
+    lightened. Axes are ordered by ``TARGETNM2POSITION`` in a single row.
+
+    Parameters
+    ----------
+    curves_by_target : dict of str to list of pandas.DataFrame
+        Maps each ``target_NM`` to its sessions' curves, each DataFrame indexed
+        by signed contrast with ``low`` and ``high`` mean-outcome columns (the
+        ticket-01 interchange format).
+    model : str
+        Baseline model name; selects the y-axis label from
+        ``_BASELINE_MODEL_DISPLAY`` (``'P(right)'`` / ``'log RT'``).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The row of tercile-curve axes.
+    """
+    ylabel = _BASELINE_MODEL_DISPLAY[model]['curve_label']
+    targets = sorted(
+        curves_by_target,
+        key=lambda t: TARGETNM2POSITION.get(t, len(TARGETNM2POSITION))
+    )
+
+    fig, axes = plt.subplots(1, len(targets), figsize=(4 * len(targets), 4),
+                             squeeze=False)
+    for ax, target in zip(axes[0], targets):
+        color = TARGETNM_COLORS.get(target, 'gray')
+        for tercile, hue in (('high', color), ('low', _lighten(color))):
+            levels, mean, sd = _aggregate_tercile_curves(
+                curves_by_target[target], tercile)
+            ax.plot(levels, mean, color=hue, label=tercile, zorder=3)
+            ax.fill_between(levels, mean - sd, mean + sd, color=hue, alpha=0.25)
+        ax.set_xlabel('signed contrast (%)')
+        ax.set_title(target)
+
+    axes[0][0].set_ylabel(ylabel)
+    legend_handles = [
+        Line2D([], [], color='gray', label='high'),
+        Line2D([], [], color=_lighten('gray'), label='low'),
+    ]
+    fig.legend(handles=legend_handles, frameon=False, loc='upper right',
+               fontsize=TICKFONTSIZE)
+    return fig
 
 
 def plot_baseline_schematic(baseline: np.ndarray, behavior: np.ndarray,
