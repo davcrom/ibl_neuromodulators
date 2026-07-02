@@ -1982,6 +1982,9 @@ def permutation_null_delta_r2(
     reduced_formula: str,
     predictor: str,
     response_col: str = 'response',
+    *,
+    rng: np.random.Generator,
+    n_bootstrap: int = 1000,
 ) -> np.ndarray:
     """Cross-session swap null drop-one ΔR² for one focal recording-event.
 
@@ -2012,14 +2015,22 @@ def permutation_null_delta_r2(
         Name of the raw predictor column swapped in from each donor.
     response_col : str
         Response column substituted into both formula templates.
+    rng : np.random.Generator
+        Source of the donor-pool bootstrap draws; the caller owns the seed.
+    n_bootstrap : int
+        Length of the returned bootstrap vector. The scorable-donor ΔR² set is
+        resampled with replacement to this fixed length so every session's null
+        has a uniform length; resampling adds no donor information.
 
     Returns
     -------
     np.ndarray
-        The null ΔR² values, one per scorable donor. A donor whose swapped full
-        or reduced fit is degenerate (``SubstitutableOLS.r2`` returns ``None``)
-        is skipped, so the length is the number of scorable donors
-        (≤ ``len(donor_dfs)``).
+        A length-``n_bootstrap`` bootstrap resample (with replacement) of the
+        scorable-donor ΔR² set, giving every session a uniform-length,
+        smoothed null. A donor whose swapped full or reduced fit is degenerate
+        (``SubstitutableOLS.r2`` returns ``None``) is skipped before resampling.
+        When no donor is scorable the set is empty and an empty array is
+        returned (the caller drops such a session).
     """
     full_formula = full_formula.format(response=response_col)
     reduced_formula = reduced_formula.format(response=response_col)
@@ -2035,7 +2046,9 @@ def permutation_null_delta_r2(
         if full_r2 is None or reduced_r2 is None:
             continue
         null_deltas.append(full_r2 - reduced_r2)
-    return np.array(null_deltas)
+    if not null_deltas:
+        return np.array([])
+    return rng.choice(np.asarray(null_deltas), size=n_bootstrap, replace=True)
 
 
 def compute_feature_dispersion(

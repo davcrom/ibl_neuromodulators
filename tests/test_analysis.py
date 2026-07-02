@@ -2741,9 +2741,60 @@ class TestPermutationNullDeltaR2:
         return pd.DataFrame(
             {'x': x, 'z': z, 'response': 2 * x + 0.3 * z + rng.normal(0, 0.1, n)})
 
+    @staticmethod
+    def _scorable_deltas(focal, donors):
+        """Hand-built scorable-donor ΔR² set: for each donor, swap its x into the
+        first ``L = min`` focal rows and take the full−reduced ΔR²."""
+        from iblnm.analysis import fit_ols
+        deltas = []
+        for donor in donors:
+            length = min(len(focal), len(donor))
+            swapped = focal.iloc[:length].copy()
+            swapped['x'] = donor['x'].iloc[:length].to_numpy()
+            deltas.append(fit_ols('response ~ x + z', swapped).rsquared
+                          - fit_ols('response ~ z', swapped).rsquared)
+        return deltas
+
+    @staticmethod
+    def _drawn_from(values, expected, tol=1e-9):
+        """Every distinct value in ``values`` matches some ``expected`` within
+        ``tol`` (bootstrap draws are copies of the scorable-donor deltas)."""
+        return all(min(abs(v - e) for e in expected) < tol
+                   for v in np.unique(values))
+
+    def test_bootstrap_length_and_membership(self):
+        """With two scorable donors and n_bootstrap=500 the returned vector has
+        length 500 and every value is one of the two scorable-donor ΔR²."""
+        from iblnm.analysis import permutation_null_delta_r2
+        rng = np.random.default_rng(0)
+        focal = self._focal_frame(100, rng)
+        donors = [pd.DataFrame({'x': rng.normal(0, 1, 100)}) for _ in range(2)]
+        expected = self._scorable_deltas(focal, donors)
+        null = permutation_null_delta_r2(
+            focal, donors, '{response} ~ x + z', '{response} ~ z', 'x',
+            rng=np.random.default_rng(5), n_bootstrap=500)
+        assert null.shape == (500,)
+        assert self._drawn_from(null, expected)
+
+    def test_truncates_to_min_length(self):
+        """A donor longer and a donor shorter than the focal both fit on the
+        first L = min rows: every returned value matches a scorable delta built
+        on those L rows (proving the fit saw exactly L rows, no length error)."""
+        from iblnm.analysis import permutation_null_delta_r2
+        rng = np.random.default_rng(1)
+        focal = self._focal_frame(100, rng)
+        donors = [pd.DataFrame({'x': rng.normal(0, 1, 160)}),
+                  pd.DataFrame({'x': rng.normal(0, 1, 40)})]
+        expected = self._scorable_deltas(focal, donors)
+        null = permutation_null_delta_r2(
+            focal, donors, '{response} ~ x + z', '{response} ~ z', 'x',
+            rng=np.random.default_rng(0), n_bootstrap=300)
+        assert null.shape == (300,)
+        assert self._drawn_from(null, expected)
+
     def test_unrelated_donors_give_small_null_well_below_focal(self):
-        """Three donors whose x is unrelated to the focal response yield a
-        length-3 null whose every value is far below the focal in-sample ΔR²."""
+        """Donors whose x is unrelated to the focal response yield a null whose
+        every value is far below the focal in-sample ΔR²."""
         from iblnm.analysis import fit_ols, permutation_null_delta_r2
         rng = np.random.default_rng(0)
         focal = self._focal_frame(200, rng)
@@ -2751,46 +2802,55 @@ class TestPermutationNullDeltaR2:
         focal_delta = (fit_ols('response ~ x + z', focal).rsquared
                        - fit_ols('response ~ z', focal).rsquared)
         null = permutation_null_delta_r2(
-            focal, donors, '{response} ~ x + z', '{response} ~ z', 'x')
-        assert null.shape == (3,)
+            focal, donors, '{response} ~ x + z', '{response} ~ z', 'x',
+            rng=np.random.default_rng(0), n_bootstrap=500)
+        assert null.shape == (500,)
         assert (null < 0.1 * focal_delta).all()
 
-    def test_truncates_to_min_length_and_fits_those_rows(self):
-        """A donor longer and a donor shorter than the focal both fit on
-        L = min rows: each null delta equals the delta from a hand-built swap on
-        the first L rows (proving the fit saw exactly L rows, no length error)."""
-        from iblnm.analysis import fit_ols, permutation_null_delta_r2
-        rng = np.random.default_rng(1)
-        focal = self._focal_frame(100, rng)
-        long_donor = pd.DataFrame({'x': rng.normal(0, 1, 160)})
-        short_donor = pd.DataFrame({'x': rng.normal(0, 1, 40)})
-        null = permutation_null_delta_r2(
-            focal, [long_donor, short_donor],
-            '{response} ~ x + z', '{response} ~ z', 'x')
-
-        expected = []
-        for donor in (long_donor, short_donor):
-            length = min(len(focal), len(donor))
-            swapped = focal.iloc[:length].copy()
-            swapped['x'] = donor['x'].iloc[:length].to_numpy()
-            expected.append(fit_ols('response ~ x + z', swapped).rsquared
-                            - fit_ols('response ~ z', swapped).rsquared)
-        assert null == pytest.approx(expected)
-
-    def test_degenerate_donor_is_skipped(self):
-        """A donor whose swapped predictor column is constant gives a rank-
-        deficient design; that donor is dropped, shortening the null by one."""
+    def test_degenerate_donor_adds_no_value(self):
+        """A donor whose swapped predictor column is constant is rank-deficient
+        and dropped, so the bootstrap draws only from the two scorable donors."""
         from iblnm.analysis import permutation_null_delta_r2
         rng = np.random.default_rng(2)
         focal = self._focal_frame(120, rng)
-        donors = [
-            pd.DataFrame({'x': rng.normal(0, 1, 120)}),
-            pd.DataFrame({'x': np.ones(120)}),
-            pd.DataFrame({'x': rng.normal(0, 1, 120)}),
-        ]
+        scorable = [pd.DataFrame({'x': rng.normal(0, 1, 120)}) for _ in range(2)]
+        donors = [scorable[0], pd.DataFrame({'x': np.ones(120)}), scorable[1]]
+        expected = self._scorable_deltas(focal, scorable)
         null = permutation_null_delta_r2(
-            focal, donors, '{response} ~ x + z', '{response} ~ z', 'x')
-        assert null.shape == (2,)
+            focal, donors, '{response} ~ x + z', '{response} ~ z', 'x',
+            rng=np.random.default_rng(0), n_bootstrap=500)
+        assert len(np.unique(null)) == 2
+        assert self._drawn_from(null, expected)
+
+    def test_no_scorable_donor_returns_empty(self):
+        """When every donor's swapped column is constant (all rank-deficient),
+        no donor is scorable and the returned vector is empty."""
+        from iblnm.analysis import permutation_null_delta_r2
+        rng = np.random.default_rng(2)
+        focal = self._focal_frame(120, rng)
+        donors = [pd.DataFrame({'x': np.ones(120)}),
+                  pd.DataFrame({'x': np.full(120, 3.0)})]
+        null = permutation_null_delta_r2(
+            focal, donors, '{response} ~ x + z', '{response} ~ z', 'x',
+            rng=np.random.default_rng(0), n_bootstrap=500)
+        assert null.shape == (0,)
+
+    def test_seed_reproduces_vector(self):
+        """The same rng seed reproduces the bootstrap vector; a different seed
+        generally does not."""
+        from iblnm.analysis import permutation_null_delta_r2
+        rng = np.random.default_rng(1)
+        focal = self._focal_frame(100, rng)
+        donors = [pd.DataFrame({'x': rng.normal(0, 1, 100)}) for _ in range(3)]
+        args = (focal, donors, '{response} ~ x + z', '{response} ~ z', 'x')
+        first = permutation_null_delta_r2(
+            *args, rng=np.random.default_rng(7), n_bootstrap=200)
+        same = permutation_null_delta_r2(
+            *args, rng=np.random.default_rng(7), n_bootstrap=200)
+        other = permutation_null_delta_r2(
+            *args, rng=np.random.default_rng(8), n_bootstrap=200)
+        assert np.array_equal(first, same)
+        assert not np.array_equal(first, other)
 
 
 class TestComputeFeatureDispersion:
