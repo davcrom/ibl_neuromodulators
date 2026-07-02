@@ -1311,13 +1311,13 @@ class TestPlotOlsDropone:
             'VTA-DA', 'DR-5HT']
         plt.close(fig)
 
-    def test_subjects_ordered_by_mean_within_group(self):
-        """Within a target-NM group, subjects are placed left to right by
-        ascending mean — not by name."""
+    def test_subjects_ordered_alphanumerically_within_group(self):
+        """Within a target-NM group, subjects are placed left to right by name
+        — not by mean."""
         from iblnm.vis import plot_ols_dropone
         from matplotlib.collections import PathCollection
         # Name order ('hi' < 'lo') is the opposite of mean order, so a pass
-        # proves ordering is by mean, not name.
+        # proves ordering is by name, not mean.
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': subj,
              'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
@@ -1331,7 +1331,7 @@ class TestPlotOlsDropone:
                        if isinstance(c, PathCollection)
                        and len(c.get_offsets()) == 1)
         ys_left_to_right = [round(y, 6) for _, y in means]
-        assert ys_left_to_right == [0.1, 0.4]  # lo (0.1) left of hi (0.4)
+        assert ys_left_to_right == [0.4, 0.1]  # 'hi' (0.4) left of 'lo' (0.1)
         plt.close(fig)
 
     def test_one_mean_dash_per_subject_colored_by_targetnm(self):
@@ -1397,9 +1397,9 @@ class TestPlotOlsDropone:
                 for c in ax.collections
                 if isinstance(c, PathCollection) and len(c.get_offsets()) == 1}
 
-    def test_significant_mouse_colored_nonsignificant_gray(self):
-        """With a p-value table, a mouse with p < alpha keeps its target-NM
-        color; a mouse with p >= alpha is grayed out (marker and dots)."""
+    def test_pvalues_leave_every_subject_in_targetnm_color(self):
+        """Graying is disabled: passing a p-value table (even marking a subject
+        non-significant) still draws every subject in its target-NM color."""
         from iblnm.vis import plot_ols_dropone
         from iblnm.config import TARGETNM_COLORS
         import matplotlib.colors as mcolors
@@ -1419,25 +1419,8 @@ class TestPlotOlsDropone:
                                alpha=0.05)
         colors = self._marker_color_by_y(fig.axes[0])
         vta = mcolors.to_rgb(TARGETNM_COLORS['VTA-DA'])
-        gray = mcolors.to_rgb('gray')
-        assert np.allclose(colors[0.2], vta)   # m_sig mean 0.2
-        assert np.allclose(colors[0.5], gray)  # m_ns mean 0.5
-        plt.close(fig)
-
-    def test_mouse_absent_from_pvalues_is_gray(self):
-        """A mouse with no p-value row for the cell renders gray."""
-        from iblnm.vis import plot_ols_dropone
-        import matplotlib.colors as mcolors
-        rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
-            for v in (0.1, 0.3)
-        ]
-        pvalues = pd.DataFrame(columns=['target_NM', 'event', 'predictor',
-                                        'subject', 'p_value'])
-        fig = plot_ols_dropone(pd.DataFrame(rows), 't', pvalues=pvalues)
-        colors = self._marker_color_by_y(fig.axes[0])
-        assert np.allclose(colors[0.2], mcolors.to_rgb('gray'))
+        assert np.allclose(colors[0.2], vta)  # m_sig mean 0.2
+        assert np.allclose(colors[0.5], vta)  # m_ns mean 0.5 — not gray
         plt.close(fig)
 
 
