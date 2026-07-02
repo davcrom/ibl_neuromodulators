@@ -54,9 +54,11 @@ def _format(family):
 
 
 def test_task_reliability_formulas():
-    # Per-event sets: reward is only known at feedback, so stimOn and
-    # firstMovement drop it (identical, contrast*side only); feedback keeps it.
+    # Per-event sets: only stimOn and feedback are modeled (firstMovement is
+    # disabled). Reward is known only at feedback, so stimOn drops it
+    # (contrast*side only); feedback keeps it.
     event_sets = LMM_FORMULAS['task_reliability']
+    assert set(event_sets) == {'stimOn_times', 'feedback_times'}
     no_reward = {
         'full': 'response ~ contrast * side',
         'contrast': 'response ~ side',
@@ -64,7 +66,6 @@ def test_task_reliability_formulas():
         'interactions': 'response ~ contrast + side',
     }
     assert _format(event_sets['stimOn_times']) == no_reward
-    assert _format(event_sets['firstMovement_times']) == no_reward
     # 2nd-order only, no side:reward (that interaction encodes choice).
     assert _format(event_sets['feedback_times']) == {
         'full': 'response ~ contrast * side + contrast * reward',

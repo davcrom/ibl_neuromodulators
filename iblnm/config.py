@@ -617,8 +617,8 @@ LMM_FORMULAS = {
     # of the remaining pair); `interactions` drops the whole interaction block
     # (additive model), testing whether the coding is interactive at all. Keyed
     # by event because the reward outcome is only known at feedback, so stimOn
-    # and firstMovement drop the reward predictor entirely (identical sets); the
-    # feedback set keeps it.
+    # drops the reward predictor entirely (contrast*side only); the feedback set
+    # keeps it. firstMovement is currently disabled (see below).
     'task_reliability': {
         'stimOn_times': {
             'full': '{response} ~ contrast * side',
