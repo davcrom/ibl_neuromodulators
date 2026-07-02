@@ -320,8 +320,8 @@ def build_traces(photometry, wheel, pose_df, pose_times, target_nm):
         Six entries, each ``{'times', 'values', 'color', 'label'}``: photometry,
         wheel, left-paw speed, right-paw speed, nose speed, tongue likelihood.
         Photometry carries the target-NM color; the five movement traces take
-        distinct ``Set1`` colors, skipping ``Set1``'s red (index 0) so they stay
-        distinguishable from the red VTA-DA photometry trace.
+        the first five distinct ``Set2`` colors so they stay distinguishable
+        from the photometry trace.
     """
     movement_colors = plt.cm.Set2.colors[0:5]
     return [

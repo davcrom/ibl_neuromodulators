@@ -187,7 +187,7 @@ class TestBuildTraces:
         traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
         assert traces[0]['color'] == TARGETNM_COLORS['VTA-DA']
         movement_colors = [t['color'] for t in traces[1:]]
-        assert movement_colors == list(plt.cm.Set1.colors[1:6])
+        assert movement_colors == list(plt.cm.Set2.colors[0:5])
         assert len({to_rgba(t['color']) for t in traces}) == 6
 
     def test_pose_trace_lengths_match_pose_times(self, snippet_data):
