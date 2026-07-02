@@ -9,6 +9,7 @@ from iblnm.analysis import (
     normalize_responses,
     resample_signal,
     summarize_posterior,
+    tercile_split_curves,
 )
 from iblnm.util import contrast_transform
 
@@ -3309,3 +3310,62 @@ class TestBuildEncodingDesign:
         fit = fit_encoding_model(
             design, target_grid, slices, ENCODING_ALPHAS, ENCODING_CV)
         assert np.isfinite(fit.r2)
+
+
+def test_tercile_split_curves_mean_aggregation():
+    """A cell's value is the arithmetic mean of its trials' outcomes."""
+    baseline = np.arange(9, dtype=float)  # bottom third {0,1,2}, top third {6,7,8}
+    signed_contrast = np.full(9, 100.0)
+    # middle-tercile outcomes (9s) would blow up the mean if not excluded
+    outcome = np.array([1, 1, 0, 9, 9, 9, 1, 0, 0], dtype=float)
+    curves = tercile_split_curves(baseline, signed_contrast, outcome, min_count=1)
+    assert curves.loc[100.0, 'low'] == pytest.approx(2 / 3)
+    assert curves.loc[100.0, 'high'] == pytest.approx(1 / 3)
+
+
+def test_tercile_split_curves_middle_third_excluded():
+    """Only bottom/top thirds populate low/high; middle-tercile trials are dropped."""
+    baseline = np.arange(9, dtype=float)
+    # middle-tercile trials {3,4,5} are the sole occupants of contrast 50
+    signed_contrast = np.array([25, 25, 25, 50, 50, 50, 25, 25, 25], dtype=float)
+    outcome = np.ones(9)
+    curves = tercile_split_curves(baseline, signed_contrast, outcome, min_count=1)
+    assert 50.0 not in curves.index
+    assert curves.loc[25.0, 'low'] == 1.0
+    assert curves.loc[25.0, 'high'] == 1.0
+
+
+def test_tercile_split_curves_min_count_guard():
+    """A cell with 4 trials is NaN at min_count=5 but finite at min_count=4."""
+    baseline = np.arange(12, dtype=float)  # bottom third {0..3}, top third {8..11}
+    signed_contrast = np.full(12, 100.0)
+    outcome = np.ones(12)
+    guarded = tercile_split_curves(baseline, signed_contrast, outcome, min_count=5)
+    assert np.isnan(guarded.loc[100.0, 'low'])
+    assert np.isnan(guarded.loc[100.0, 'high'])
+    passed = tercile_split_curves(baseline, signed_contrast, outcome, min_count=4)
+    assert passed.loc[100.0, 'low'] == 1.0
+    assert passed.loc[100.0, 'high'] == 1.0
+
+
+def test_tercile_split_curves_signed_zero_collapses():
+    """Trials at -0.0 and 0.0 signed contrast land in a single 0.0 index row."""
+    baseline = np.arange(6, dtype=float)  # bottom third {0,1}, top third {4,5}
+    signed_contrast = np.array([-0.0, 0.0, 100.0, 100.0, -0.0, 0.0])
+    outcome = np.ones(6)
+    curves = tercile_split_curves(baseline, signed_contrast, outcome, min_count=1)
+    assert [c for c in curves.index if c == 0.0] == [0.0]
+    assert curves.loc[0.0, 'low'] == 1.0
+    assert curves.loc[0.0, 'high'] == 1.0
+
+
+def test_tercile_split_curves_drops_nan_before_terciles():
+    """NaN outcome/baseline trials are dropped and do not shift the percentiles."""
+    # extreme-baseline trials carry NaN outcome; a NaN-baseline trial carries a
+    # finite outcome. If any survived, the percentiles (and means) would shift.
+    baseline = np.concatenate([np.arange(9, dtype=float), [np.nan, 1000.0, 2000.0]])
+    signed_contrast = np.full(12, 100.0)
+    outcome = np.array([1, 1, 0, 9, 9, 9, 1, 0, 0, 0.5, np.nan, np.nan])
+    curves = tercile_split_curves(baseline, signed_contrast, outcome, min_count=1)
+    assert curves.loc[100.0, 'low'] == pytest.approx(2 / 3)
+    assert curves.loc[100.0, 'high'] == pytest.approx(1 / 3)

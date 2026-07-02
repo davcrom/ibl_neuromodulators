@@ -162,6 +162,51 @@ def compute_response_magnitude(response, tpts, window):
     return np.nanmean(response[..., i0:i1], axis=-1)
 
 
+def tercile_split_curves(baseline, signed_contrast, outcome, min_count=5):
+    """Per-contrast mean outcome, split into low- vs high-baseline terciles.
+
+    Variable-agnostic: takes one session's per-trial arrays and returns the mean
+    ``outcome`` at each signed-contrast level, computed separately for the bottom
+    and top terciles of ``baseline``. The middle tercile is discarded.
+
+    Parameters
+    ----------
+    baseline : 1D array
+        Per-trial continuous covariate to split on (e.g. z-scored pre-stimulus
+        fluorescence). Terciles are its 33.3rd/66.7th percentiles, computed
+        within this array (i.e. per session).
+    signed_contrast : 1D array
+        Per-trial signed-contrast level (percent, negative = left). Signed-zero
+        (``-0.0`` / ``0.0``) collapses to a single ``0.0`` level under groupby.
+    outcome : 1D array
+        Per-trial behavior to average (e.g. rightward-choice indicator or
+        ``log_rt``). Same length as the other arrays, aligned per trial.
+    min_count : int
+        A (tercile x contrast) cell with fewer than this many trials yields NaN.
+
+    Returns
+    -------
+    pd.DataFrame
+        Indexed by signed-contrast level (name ``signed_contrast``), with columns
+        ``low`` and ``high`` holding the mean ``outcome`` per cell (NaN where a
+        cell is guarded by ``min_count`` or absent). Trials with NaN ``baseline``
+        or ``outcome`` are dropped before tercile assignment.
+    """
+    trials = pd.DataFrame({
+        'baseline': baseline,
+        'signed_contrast': signed_contrast,
+        'outcome': outcome,
+    }).dropna(subset=['baseline', 'outcome'])
+    low_edge, high_edge = np.nanpercentile(trials['baseline'], [100 / 3, 200 / 3])
+    trials['tercile'] = np.where(
+        trials['baseline'] < low_edge, 'low',
+        np.where(trials['baseline'] > high_edge, 'high', None))
+    trials = trials.dropna(subset=['tercile'])
+    grouped = trials.groupby(['signed_contrast', 'tercile'])['outcome']
+    cells = grouped.mean().where(grouped.count() >= min_count)
+    return cells.unstack('tercile').reindex(columns=['low', 'high'])
+
+
 def keypoint_speed(x, y, likelihood, threshold=LIKELIHOOD_THRESHOLD):
     """Frame-to-frame keypoint speed, gated by tracking likelihood.
 
