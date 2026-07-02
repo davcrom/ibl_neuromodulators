@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
+from tqdm import tqdm
 
 from iblnm.config import SESSIONS_FPATH, SESSION_SCHEMA, PROJECT_ROOT, FIGURE_DPI
 from iblnm.io import _get_default_connection
@@ -204,10 +205,13 @@ if __name__ == '__main__':
     group.filter_sessions(session_types=('biased', 'ephys',))
     _ = group.deduplicate()
     outcome_selector = TERCILE_OUTCOME[args.model]
+    recordings = group.recordings[
+        [(e, r) in sig_recordings
+         for e, r in zip(group.recordings['eid'], group.recordings['brain_region'])]
+    ]
     curves_by_target = {}
-    for _, rec in group.recordings.iterrows():
-        if (rec['eid'], rec['brain_region']) not in sig_recordings:
-            continue
+    for _, rec in tqdm(recordings.iterrows(), total=len(recordings),
+                       desc='Tercile curves'):
         ps = prepare_session(PhotometrySession(rec, one=one))
         curve = analysis.tercile_split_curves(
             ps.baseline, ps.signed_contrast, outcome_selector(ps), min_count=5)
