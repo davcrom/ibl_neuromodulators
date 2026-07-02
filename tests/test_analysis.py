@@ -2665,6 +2665,71 @@ class TestDroponeDeltaR2:
         assert (out['delta_r2'] >= 0).all()
 
 
+class TestSubstitutableOLS:
+    @staticmethod
+    def _frame(n, rng):
+        """Frame with two continuous predictors and a linear-plus-interaction
+        response, the design SubstitutableOLS is built to refit."""
+        x = rng.normal(0, 1, n)
+        s = rng.normal(0, 1, n)
+        return pd.DataFrame(
+            {'x': x, 's': s,
+             'response': 2 * x + 0.5 * s + 0.7 * x * s + rng.normal(0, 0.1, n)})
+
+    def test_matches_fit_ols_rsquared(self):
+        """With no substitution or truncation, r2() equals statsmodels'
+        .rsquared on the same formula and frame."""
+        from iblnm.analysis import SubstitutableOLS, fit_ols
+        rng = np.random.default_rng(0)
+        df = self._frame(200, rng)
+        formula = 'response ~ x + s + x:s'
+        assert (SubstitutableOLS(formula, df).r2()
+                == pytest.approx(fit_ols(formula, df).rsquared, abs=1e-10))
+
+    def test_substitution_recomputes_interaction(self):
+        """Swapping x matches a fit_ols on the frame with x overwritten,
+        proving the x:s interaction column was recomputed from swapped x."""
+        from iblnm.analysis import SubstitutableOLS, fit_ols
+        rng = np.random.default_rng(1)
+        df = self._frame(200, rng)
+        vals = rng.normal(0, 1, 200)
+        formula = 'response ~ x + s + x:s'
+        got = SubstitutableOLS(formula, df).r2(substitution={'x': vals})
+        swapped = df.copy()
+        swapped['x'] = vals
+        assert got == pytest.approx(fit_ols(formula, swapped).rsquared, abs=1e-10)
+
+    def test_n_rows_fits_leading_prefix(self):
+        """r2(n_rows=L) equals a fit_ols on the first L rows only."""
+        from iblnm.analysis import SubstitutableOLS, fit_ols
+        rng = np.random.default_rng(2)
+        df = self._frame(200, rng)
+        formula = 'response ~ x + s + x:s'
+        got = SubstitutableOLS(formula, df).r2(n_rows=80)
+        assert got == pytest.approx(
+            fit_ols(formula, df.iloc[:80]).rsquared, abs=1e-10)
+
+    def test_rank_deficient_substitution_returns_none(self):
+        """A constant substituted column collapses x and x:s, making the design
+        rank-deficient; r2 returns None rather than raising."""
+        from iblnm.analysis import SubstitutableOLS
+        rng = np.random.default_rng(3)
+        df = self._frame(120, rng)
+        engine = SubstitutableOLS('response ~ x + s + x:s', df)
+        assert engine.r2(substitution={'x': np.ones(120)}) is None
+
+    def test_substituting_transform_token_raises(self):
+        """A predictor whose interaction partner is an in-formula transform is
+        not a data column, so substituting the raw predictor raises."""
+        from iblnm.analysis import SubstitutableOLS
+        rng = np.random.default_rng(4)
+        df = self._frame(100, rng)
+        df['z'] = rng.uniform(1, 5, 100)
+        engine = SubstitutableOLS('response ~ x + np.log(z) + x:np.log(z)', df)
+        with pytest.raises(ValueError):
+            engine.r2(substitution={'x': rng.normal(0, 1, 100)})
+
+
 class TestPermutationNullDeltaR2:
     @staticmethod
     def _focal_frame(n, rng):

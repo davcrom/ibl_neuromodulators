@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+import patsy
 from scipy.stats import gaussian_kde
 from tqdm import tqdm
 
@@ -1814,6 +1815,86 @@ def fit_ols(formula: str, df: pd.DataFrame):
     if result.model.rank < result.model.exog.shape[1]:
         return None
     return result
+
+
+class SubstitutableOLS:
+    """Reusable OLS design that refits fast with variables swapped or truncated.
+
+    Builds the numeric design once from a Wilkinson formula, then answers
+    ``r2`` queries that swap one or more raw predictor columns for new arrays
+    and/or restrict the fit to a leading row-prefix, recomputing only the
+    design columns whose terms involve a swapped variable. Every design column
+    is assumed to be the elementwise product of its ``':'``-joined factor
+    arrays (patsy's numeric product for continuous predictors and their
+    interactions); a term whose factor is an in-formula transform or otherwise
+    not a column of ``data`` cannot be swapped and raises on substitution.
+
+    R² is the centered coefficient of determination, matching statsmodels'
+    ``.rsquared`` for an intercept model. Mirrors ``fit_ols``'s
+    None-on-degenerate contract: a rank-deficient (sub)design returns ``None``
+    rather than raising, so a refit loop can skip the unit cleanly.
+    """
+
+    def __init__(self, formula: str, data: pd.DataFrame):
+        y, X = patsy.dmatrices(formula, data, return_type='dataframe')
+        self._y = y.to_numpy(dtype=float).ravel()
+        self._X = X.to_numpy(dtype=float)
+        self._column_terms = [
+            name.split(':') for name in X.design_info.column_names
+        ]
+        tokens = {tok for terms in self._column_terms for tok in terms}
+        self._factors = {
+            tok: data[tok].to_numpy(dtype=float)
+            for tok in tokens
+            if tok in data.columns
+        }
+
+    def r2(
+        self,
+        substitution: dict[str, np.ndarray] | None = None,
+        n_rows: int | None = None,
+    ) -> float | None:
+        """Centered R² of the model with columns swapped and/or truncated.
+
+        Parameters
+        ----------
+        substitution : dict of str to np.ndarray, optional
+            Maps a raw predictor name to a replacement array (length ``n_rows``
+            or the full data length) substituted for that variable everywhere it
+            appears, including interaction columns. A key that names no stored
+            factor raises ``ValueError``.
+        n_rows : int, optional
+            Fit only the first ``n_rows`` rows of the design. Defaults to all
+            rows.
+
+        Returns
+        -------
+        float or None
+            The centered R², or ``None`` if the (sub)design is rank-deficient.
+        """
+        substitution = substitution or {}
+        m = n_rows if n_rows is not None else len(self._y)
+        ym = self._y[:m]
+        Xm = self._X[:m].copy()
+        for j, terms in enumerate(self._column_terms):
+            if not set(terms) & substitution.keys():
+                continue
+            column = np.ones(m)
+            for tok in terms:
+                if tok in substitution:
+                    column = column * substitution[tok][:m]
+                elif tok in self._factors:
+                    column = column * self._factors[tok][:m]
+                else:
+                    raise ValueError(
+                        f"cannot substitute term {tok!r}: not a data column"
+                    )
+            Xm[:, j] = column
+        beta, _, rank, _ = np.linalg.lstsq(Xm, ym, rcond=None)
+        if rank < Xm.shape[1]:
+            return None
+        resid = ym - Xm @ beta
+        return 1 - resid @ resid / ((ym - ym.mean()) ** 2).sum()
 
 
 def dropone_delta_r2(r2_by_name, reference: str = 'full') -> pd.DataFrame:
