@@ -182,11 +182,15 @@ class TestSaveWheelToH5:
             assert f['wheel/responses/velocity'].shape == (3, 200)
 
     def test_uses_default_path_from_config(self, mock_session_series, tmp_path):
-        """Without fpath arg, saves to SESSIONS_H5_DIR / {eid}.h5."""
-        ps = _make_session(mock_session_series)
-        ps.wheel_velocity = np.ones((1, 10), dtype=np.float32)
-        ps.wheel_fs = 1000
+        """Without fpath arg, saves to SESSIONS_H5_DIR / {eid}.h5.
+
+        ``self.filepath`` is computed from SESSIONS_H5_DIR at construction, so
+        the patch must precede ``_make_session``.
+        """
         with patch('iblnm.data.SESSIONS_H5_DIR', tmp_path):
+            ps = _make_session(mock_session_series)
+            ps.wheel_velocity = np.ones((1, 10), dtype=np.float32)
+            ps.wheel_fs = 1000
             ps.save_h5(mode='a')
             saved = tmp_path / f'{ps.eid}.h5'
             assert saved.exists()
