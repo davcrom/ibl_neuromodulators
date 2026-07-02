@@ -6135,10 +6135,11 @@ class TestResponseOlsDroponePermutation:
         calls = []
 
         def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
-                      predictor, response_col='response'):
+                      predictor, response_col='response', *, rng,
+                      n_bootstrap=1000):
             calls.append((focal_df['tag'].iloc[0],
                           {d['tag'].iloc[0] for d in donor_dfs}, predictor))
-            return np.array([0.01, 0.02])
+            return np.full(n_bootstrap, 0.01)
 
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
                             fake_null)
@@ -6173,3 +6174,66 @@ class TestResponseOlsDroponePermutation:
         assert set(zip(table['target_NM'], table['event'],
                        table['predictor'])) == {
             ('VTA-DA', 'feedback_times', 'reward')}
+
+    def test_empty_null_session_excluded(self, monkeypatch):
+        """A recording whose primitive returns an empty null vector is dropped
+        from its mouse's pooled cell (``n_sessions`` counts only scorable
+        sessions)."""
+        group = self._group()
+        group.response_ols_dropone_results = self._observed()
+        scorable = [(eid, 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': [eid]}))
+                    for eid in ['e1', 'e2', 'e3']]
+        monkeypatch.setattr(group, '_gather_coded_frames',
+                            lambda *a, **k: scorable)
+
+        def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
+                      predictor, response_col='response', *, rng,
+                      n_bootstrap=1000):
+            if focal_df['tag'].iloc[0] == 'e2':
+                return np.array([])
+            return np.full(n_bootstrap, 0.01)
+
+        monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
+                            fake_null)
+
+        table = group.response_ols_dropone_permutation(
+            self._FORMULAS, events=['feedback_times'], n_bootstrap=50)
+
+        m1_sessions = table.loc[table['subject'] == 'm1', 'n_sessions']
+        assert m1_sessions.tolist() == [1]
+
+    def test_rng_created_once_and_reproducible(self, monkeypatch):
+        """A single rng is threaded through every primitive call — so per-call
+        draws differ — and reruns with the same seed reproduce the table."""
+        group = self._group()
+        group.response_ols_dropone_results = self._observed()
+        scorable = [(eid, 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': [eid]}))
+                    for eid in ['e1', 'e2', 'e3']]
+        monkeypatch.setattr(group, '_gather_coded_frames',
+                            lambda *a, **k: scorable)
+        draws = {}
+
+        def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
+                      predictor, response_col='response', *, rng,
+                      n_bootstrap=1000):
+            vector = rng.random(n_bootstrap)
+            draws.setdefault(focal_df['tag'].iloc[0], []).append(vector)
+            return vector
+
+        monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
+                            fake_null)
+
+        table1 = group.response_ols_dropone_permutation(
+            self._FORMULAS, events=['feedback_times'], n_bootstrap=32,
+            random_state=7)
+        first_draws = {eid: v[0] for eid, v in draws.items()}
+        draws.clear()
+        table2 = group.response_ols_dropone_permutation(
+            self._FORMULAS, events=['feedback_times'], n_bootstrap=32,
+            random_state=7)
+
+        # One advancing rng: the three per-recording draws are all distinct.
+        stacked = np.vstack(list(first_draws.values()))
+        assert len({tuple(row) for row in stacked}) == len(first_draws)
+        # Same seed reproduces the table.
+        pd.testing.assert_frame_equal(table1, table2)

@@ -2805,6 +2805,7 @@ class PhotometrySessionGroup:
         predictors = [name for name in formulas if name != reference]
         scorable = self._gather_coded_frames(formulas, events, response_col,
                                              min_trials, contrast_coding)
+        rng = np.random.default_rng(random_state)
         null_vectors = {}
         for eid, target_NM, event, focal in tqdm(
                 scorable, desc="Permutation null (per recording-event)"):
@@ -2812,10 +2813,11 @@ class PhotometrySessionGroup:
                       if d_nm == target_NM and d_event == event
                       and d_eid != eid]
             for predictor in predictors:
-                null_vectors[(eid, event, predictor)] = \
-                    analysis.permutation_null_delta_r2(
-                        focal, donors, formulas[reference], formulas[predictor],
-                        predictor, response_col)
+                null = analysis.permutation_null_delta_r2(
+                    focal, donors, formulas[reference], formulas[predictor],
+                    predictor, response_col, rng=rng, n_bootstrap=n_bootstrap)
+                if null.size:
+                    null_vectors[(eid, event, predictor)] = null
         return assemble_persession_pvalue_table(
             self.response_ols_dropone_results, null_vectors,
             n_bootstrap=n_bootstrap, random_state=random_state)
