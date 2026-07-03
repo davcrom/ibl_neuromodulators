@@ -20,6 +20,7 @@ own time axis (`nap.Tsd` / `nap.TsdFrame`). A function only takes a separate
 `tvec` argument when its input is NOT already on the grid (event times, trial
 intervals, a native-time-base series).
 """
+
 import re
 from dataclasses import dataclass
 
@@ -240,9 +241,7 @@ def raised_cosine_expand(
     return nap.TsdFrame(t=tvec, d=block)
 
 
-def make_trial_constant(
-    trials: pd.DataFrame, column: str, tvec: np.ndarray
-) -> nap.Tsd:
+def make_trial_constant(trials: pd.DataFrame, column: str, tvec: np.ndarray) -> nap.Tsd:
     """Step regressor: `column` held constant across each trial interval.
 
     Args:
@@ -293,7 +292,9 @@ def interpolate_to_grid(
 
 
 def split_event(
-    trials: pd.DataFrame, event_name: str, split_by: str
+    trials: pd.DataFrame,
+    event_name: str,
+    split_by: str | None = None,
 ) -> dict[str, nap.Ts]:
     """Split one event's times into separate regressors by a trial column.
 
@@ -309,9 +310,15 @@ def split_event(
         dict[str, nap.Ts]: per-group event timestamps (NaNs dropped).
     """
     events = {}
-    for value, group in trials.groupby(split_by):
-        times = group[event_name].values
-        events[f"{event_name}:{split_by}={value}"] = nap.Ts(t=times[~np.isnan(times)])
+    if split_by is None:
+        times = trials[event_name].values
+        events[event_name] = nap.Ts(t=times[~np.isnan(times)])
+    else:
+        for value, group in trials.groupby(split_by):
+            times = group[event_name].values
+            events[f"{event_name}:{split_by}={value}"] = nap.Ts(
+                t=times[~np.isnan(times)]
+            )
     return events
 
 
@@ -333,9 +340,9 @@ def events_from_trials(
     event_splits = DEFAULT_EVENTS if event_splits is None else event_splits
     events = {}
     for name, split_by in event_splits.items():
-        if split_by is None:
-            times = trials[name].values
-            events[name] = nap.Ts(t=times[~np.isnan(times)])
+        if type(split_by) is list:
+            for split in split_by:
+                events.update(split_event(trials, name, split))
         else:
             events.update(split_event(trials, name, split_by))
     return events
@@ -405,6 +412,7 @@ def continuous_blocks(
     """
     return {name: interpolate_to_grid(reg, tvec) for name, reg in continuous.items()}
 
+
 def split_pose(pose: nap.TsdFrame) -> dict[str, nap.TsdFrame]:
     """Split a pose frame into one (x, y) block per keypoint.
 
@@ -436,9 +444,7 @@ def split_pose(pose: nap.TsdFrame) -> dict[str, nap.TsdFrame]:
     for keypoint, columns in coordinates.items():
         if "x" not in columns or "y" not in columns:
             continue
-        values = np.column_stack(
-            [pose[columns["x"]].values, pose[columns["y"]].values]
-        )
+        values = np.column_stack([pose[columns["x"]].values, pose[columns["y"]].values])
         blocks[keypoint] = nap.TsdFrame(t=times, d=values, columns=["x", "y"])
     return blocks
 

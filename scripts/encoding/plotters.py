@@ -5,6 +5,7 @@ prediction-vs-data traces, fitted kernels, the raised-cosine basis and
 per-regressor ΔR² bars. All computation lives in `encoding_model`; these
 functions only render its results.
 """
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -31,6 +32,7 @@ def plot_kernels(
     lags: np.ndarray,
     how: str = "line",
     fontsize: float | str = "small",
+    names_map: dict[str, str] | None = None,
 ) -> plt.Figure:
     """Plot the fitted lagged kernel for each named event block.
 
@@ -66,12 +68,19 @@ def plot_kernels(
             -0.5,
         ]
         image = axes.matshow(
-            kernels, aspect="auto", cmap="RdBu_r", vmin=-limit, vmax=limit, extent=extent
+            kernels,
+            aspect="auto",
+            cmap="RdBu_r",
+            vmin=-limit,
+            vmax=limit,
+            extent=extent,
         )
         # move the time axis to the bottom (matshow defaults it to the top)
         axes.xaxis.set_ticks_position("bottom")
         axes.xaxis.set_label_position("bottom")
         axes.axvline(0, linestyle=":", color="k", lw=1)
+        if names_map is not None:
+            names = [names_map[name] for name in names]
         axes.set_yticks(range(len(names)))
         axes.set_yticklabels(names, fontsize=fontsize)
         axes.set_xlabel("time (s)", fontsize=fontsize)
@@ -82,15 +91,18 @@ def plot_kernels(
         fig.tight_layout()
         return fig
 
-    fig, axes = plt.subplots(ncols=len(names), sharey=True, figsize=[3 * len(names), 3])
-    for ax, name in zip(np.atleast_1d(axes), names):
-        ax.plot(lag_seconds, get_kernel(fit, name))
-        ax.set_title(name, fontsize=fontsize)
-        ax.axhline(0, linestyle=":", color="k", lw=1)
-        ax.axvline(0, linestyle=":", color="k", lw=1)
-        ax.set_xlabel("time (s)", fontsize=fontsize)
-        ax.tick_params(labelsize=fontsize)
-    fig.tight_layout()
+    if how == "panels":
+        fig, axes = plt.subplots(
+            ncols=len(names), sharey=True, figsize=[3 * len(names), 3]
+        )
+        for ax, name in zip(np.atleast_1d(axes), names):
+            ax.plot(lag_seconds, get_kernel(fit, name))
+            ax.set_title(name, fontsize=fontsize)
+            ax.axhline(0, linestyle=":", color="k", lw=1)
+            ax.axvline(0, linestyle=":", color="k", lw=1)
+            ax.set_xlabel("time (s)", fontsize=fontsize)
+            ax.tick_params(labelsize=fontsize)
+        fig.tight_layout()
     return fig
 
 

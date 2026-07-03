@@ -12,7 +12,8 @@ from iblphotometry.plotters import plot_psths_from_trace
 import seaborn as sns
 import matplotlib as mpl
 from pathlib import Path
-mpl.rcParams['figure.dpi'] = 284 # screen dpi adjustment
+
+mpl.rcParams["figure.dpi"] = 284  # screen dpi adjustment
 
 from data_loaders import load_session_data
 from encoding_model import (
@@ -38,70 +39,59 @@ from plotters import (
 
 one = ONE()
 
-PLOT_FOLDER = Path(__file__).parent / 'plots'
-PLOT_FOLDER.mkdir(parents=True,exist_ok=True)
+PLOT_FOLDER = Path(__file__).parent / "plots"
+PLOT_FOLDER.mkdir(parents=True, exist_ok=True)
 
-# %% DA
-eid = "6931684c-a721-4db8-9698-e3101d0e4a1b" # first session
-label = 'early'
+NM = "5HT"
+WHEN = "late"
 
-eid = "5e57fcd0-8743-41c8-8360-d846a4e0469d" # last session
-label = 'late'
-brain_region = "SNc-l"  # TODO dataset-specific
+# %% session selection
+if NM == "DA":
+    if WHEN == "early":
+        eid = "6931684c-a721-4db8-9698-e3101d0e4a1b"  # first session
+    if WHEN == "late":
+        eid = "5e57fcd0-8743-41c8-8360-d846a4e0469d"  # last session
+    brain_region = "SNc-l"  # TODO dataset-specific
+    subject = one.eid2ref(eid)["subject"]
 
-# %% 5-HT
-eid = '5c5a5e99-d353-496c-9c84-7aa657d81e44'
-label = 'early'
-brain_region = "DRN"  # TODO dataset-specific
-print(one.eid2ref(eid)['date'])
+if NM == "5HT":
+    if WHEN == "early":
+        eid = "5c5a5e99-d353-496c-9c84-7aa657d81e44"
+        brain_region = "DRN"  # TODO dataset-specific
+    if WHEN == "late":
+        eid = "9880ac8a-3efe-485f-bea4-bc3450c64e81"
+        brain_region = "DR"  # TODO dataset-specific
+        ...
 
-# %%
-eid = 'a3a3c3f1-78c3-4dda-ad25-59184989ed1f' # has tracking
-# eid = "234b622f-12ac-4c49-a89a-077d01df9ce3"
+# %% common
+subject = one.eid2ref(eid)["subject"]
+genotype = one.alyx.rest("subjects", "read", subject)["line"]
+label = WHEN
 
-label = 'late'
-brain_region = "DR"  # TODO dataset-specific
-print(one.eid2ref(eid)['date'])
-
-
-# %%
-from iblphotometry.fpio import PhotometrySessionLoader
-psl = PhotometrySessionLoader(one=one, eid=eid)
-psl.load_photometry()
-print(psl.photometry['GCaMP'].columns)
-from iblphotometry.plotters import plot_photometry_traces_from_eid
-plot_photometry_traces_from_eid(eid=eid, one=one)
-brain_region = "DR"
-
-# %%
-subject = one.eid2ref(eid)['subject']
-genotype = one.alyx.rest('subjects','read', subject)['line']
-
-# model config
+# %% model config
 DT = 0.1
-N_LAGS = 50
-
-# %% preview the cosine-bump basis (to choose design_cosine parameters)
-# plot_cosine_basis(n_basis=10, rcos_duration=2.5, rcos_nloffset=0.2, dt=DT)
+N_LAGS = 30
 
 # %% load and fit a single session
-# To use raised-cosine kernels instead, `from encoding_model import design_cosine`
-# and swap `design_lagged(events, tvec, n_lags=N_LAGS)` for
-# `design_cosine(events, tvec, n_basis=10, rcos_duration=2.5, rcos_nloffset=0.2)`.
-# eid = eids[-1]
 fluorescence, trials, continuous = load_session_data(one, eid, brain_region)
-pose = continuous.pop('pose')
+pose = continuous.pop("pose")
 continuous.update(split_pose(pose))
 
 tvec = make_time_grid(fluorescence.times()[0], fluorescence.times()[-1], DT)
 EVENTS = {
-    "stimOn_times": 'signed_contrast',
-    "response_times": 'choice',
-    "firstMovement_times": 'choice',
-    "intervals_0": None,
-    # "intervals_1": None,
-    "feedback_times": "feedbackType",
+    "stimOn_times": [None, "signed_contrast"],
+    "response_times": [None, "choice"],
+    "firstMovement_times": [None, "choice", "feedbackType"],
+    "feedback_times": [None, "feedbackType"],
 }
+
+# EVENTS = {
+#     "stimOn_times": "signed_contrast",
+#     "response_times": "choice",
+#     "firstMovement_times": "choice",
+#     "feedback_times": "feedbackType",
+# }
+
 events = events_from_trials(trials, event_splits=EVENTS)
 blocks = {
     **continuous_blocks(continuous, tvec),
@@ -111,20 +101,74 @@ blocks = {
 }
 design, slices = build_design_matrix(blocks)
 target = interpolate_to_grid(fluorescence, tvec)
-fit = fit_encoding_model(design, target, slices, label=f"{subject}:{eid}")
+fit = fit_encoding_model(design, target, slices, label=f"{subject}:{eid}", alpha=200)
 print(f"R^2 = {fit.r2:.3f}")
 
 # %% inspect the fit
 axes = plot_prediction(fit)
 axes.set_title(f"{subject}:{genotype}, R^2 = {fit.r2:.3f}")
 sns.despine(axes.figure)
-axes.set_xlim(500,600)
-axes.set_ylabel('fluorescence (mad-scored)')
-axes.figure.savefig(PLOT_FOLDER / f'{subject}-{label}_fit_model_trace_comparison.pdf', dpi=300)
+axes.set_xlim(500, 600)
+axes.set_ylabel("fluorescence (mad-scored)")
+axes.figure.savefig(
+    PLOT_FOLDER / f"{subject}-{label}_fit_model_trace_comparison.pdf", dpi=300
+)
+
+
+# %% alpha brute force
+from tqdm import tqdm
+from encoding_model import _cv_r_squared
+import numpy as np
+import matplotlib.pyplot as plt
+
+alphas = np.logspace(-2, 3, 20)
+rsqs = []
+for alpha in tqdm(alphas):
+    # drop rows with NaNs from interpolation edges or missing support
+    y = target.values[:, None]
+    valid = ~np.isnan(design).any(axis=1) & ~np.isnan(y).any(axis=1)
+    rsqs.append(_cv_r_squared(design[valid], target[valid], alpha, 5))
+
+
+fig, axes = plt.subplots()
+axes.plot(alphas, rsqs)
+
+# %% plot kernels
+axes = plot_kernels(
+    fit, list(events), make_lags(N_LAGS), how="matshow", fontsize="large"
+)
+
 
 # %%
-axes = plot_kernels(fit, list(events), make_lags(N_LAGS), how='matshow', fontsize='large')
-axes.figure.savefig(PLOT_FOLDER / f'{subject}-{label}_kernels.pdf', dpi=300)
+import matplotlib.pyplot as plt
+import numpy as np
+from encoding_model import get_kernel
+import seaborn as sns
+
+event_groups = ["stim", "Movement", "feedback"]
+lags = make_lags(N_LAGS)
+for event_group in event_groups:
+    fig, axes = plt.subplots()
+    for event_name in events.keys():
+        if event_group in event_name.split(":")[0]:
+            axes.plot(lags, get_kernel(fit, event_name), label=event_name, lw=1)
+    kwargs = dict(lw=1, linestyle=":", alpha=0.5, color="k")
+    axes.axhline(0, **kwargs)
+    axes.axvline(0, **kwargs)
+    axes.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
+    sns.despine(fig)
+
+# %%
+# fig, axes = plt.subplots(ncols=len(names), sharey=True, figsize=[3 * len(names), 3])
+# for ax, name in zip(np.atleast_1d(axes), names):
+#     ax.plot(lag_seconds, get_kernel(fit, name))
+#     ax.set_title(name, fontsize=fontsize)
+#     ax.axhline(0, linestyle=":", color="k", lw=1)
+#     ax.axvline(0, linestyle=":", color="k", lw=1)
+#     ax.set_xlabel("time (s)", fontsize=fontsize)
+#     ax.tick_params(labelsize=fontsize)
+# fig.tight_layout()
+
 
 # %% per-regressor contribution (leave-one-regressor-out)
 deltas = delta_r_squared(fit, cv=None)  # in-sample; pass cv=5 for cross-validated
@@ -136,22 +180,7 @@ axes = plot_delta_r_squared(deltas, order_by_magnitude=False)
 axes.figure.suptitle(f"{subject}:{genotype}")
 sns.despine(axes.figure)
 axes.figure.tight_layout()
-axes.figure.savefig(PLOT_FOLDER / f'{subject}-{label}_rsq_drops.pdf', dpi=300)
+axes.figure.savefig(PLOT_FOLDER / f"{subject}-{label}_rsq_drops.pdf", dpi=300)
 
 # %% PSTH of the signal for visual inspection
-plot_psths_from_trace(pd.Series(fluorescence.d, index=fluorescence.t), trials)
-
-# %% fit every session of the subject
-# fits = {}
-# for eid in eids:
-#     fluorescence, trials, continuous = load_session_data(one, eid, brain_region)
-#     tvec = make_time_grid(fluorescence.times()[0], fluorescence.times()[-1], DT)
-#     blocks = {
-#         **continuous_blocks(continuous, tvec),
-#         **trial_constant_blocks(trials, tvec),
-#         **design_lagged(events_from_trials(trials), tvec, n_lags=N_LAGS),
-#     }
-#     design, slices = build_design_matrix(blocks)
-#     target = interpolate_to_grid(fluorescence, tvec)
-#     fits[eid] = fit_encoding_model(design, target, slices, label=f"{subject}:{eid}")
-#     print(eid, f"R^2 = {fits[eid].r2:.3f}")
+# plot_psths_from_trace(pd.Series(fluorescence.d, index=fluorescence.t), trials)
