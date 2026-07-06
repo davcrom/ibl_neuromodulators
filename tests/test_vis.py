@@ -3170,3 +3170,43 @@ class TestPlotBaselineTercileDifference:
         # nanmean of [0.1,-0.3], [0.1,0.1], [0.1,nan] = [-0.1, 0.1, 0.1].
         assert np.allclose(mean.get_ydata(), [-0.1, 0.1, 0.1])
         plt.close(fig)
+
+
+class TestPlotOlsDroponeCounts:
+    """plot_ols_dropone counts annotation — donor-pool size on x-tick labels."""
+
+    def _df(self):
+        # Two targets at one event; VTA-DA has 3 recordings / 2 mice,
+        # DR-5HT has 1 recording / 1 mouse.
+        rows = [
+            ('A', 'm1', 'VTA-DA'), ('B', 'm1', 'VTA-DA'), ('C', 'm2', 'VTA-DA'),
+            ('D', 'm3', 'DR-5HT'),
+        ]
+        return pd.DataFrame([
+            {'eid': eid, 'subject': subj, 'target_NM': tnm,
+             'event': 'stimOn_times', 'predictor': 'contrast', 'delta_r2': 0.01}
+            for eid, subj, tnm in rows
+        ])
+
+    def test_counts_appended_to_xticklabels(self):
+        from iblnm.vis import plot_ols_dropone
+        from iblnm.util import count_population_by_target_event
+        df = self._df()
+        counts = count_population_by_target_event(df)
+        fig = plot_ols_dropone(df, 'title', counts=counts)
+        # Bottom-row panel of the single event column carries the target ticks.
+        labels = [t.get_text() for t in fig.axes[-1].get_xticklabels()]
+        vta = next(l for l in labels if l.startswith('VTA-DA'))
+        dr = next(l for l in labels if l.startswith('DR-5HT'))
+        assert 'n=3' in vta and 'm=2' in vta
+        assert 'n=1' in dr and 'm=1' in dr
+        plt.close(fig)
+
+    def test_no_counts_leaves_labels_bare(self):
+        from iblnm.vis import plot_ols_dropone
+        df = self._df()
+        fig = plot_ols_dropone(df, 'title')
+        labels = [t.get_text() for t in fig.axes[-1].get_xticklabels()]
+        assert 'VTA-DA' in labels   # bare target name, no 'n='
+        assert all('n=' not in l for l in labels)
+        plt.close(fig)

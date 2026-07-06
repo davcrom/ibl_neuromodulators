@@ -3178,8 +3178,21 @@ def _pool_by_target(df_cell, value_col, targets):
     return {tnm: vals for tnm, vals in pooled.items() if len(vals)}
 
 
+def _target_tick_label(tnm, event, counts_lookup):
+    """Target-NM x-tick label, with a ``n=<rec>, m=<mice>`` line if counts given.
+
+    ``counts_lookup`` maps ``(target_NM, event)`` to ``(n_recordings, n_mice)``;
+    a missing key (or ``None`` lookup) yields the bare target name.
+    """
+    if counts_lookup is None or (tnm, event) not in counts_lookup:
+        return tnm
+    n_recordings, n_mice = counts_lookup[(tnm, event)]
+    return f'{tnm}\nn={n_recordings}, m={n_mice}'
+
+
 def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
-                             pvalues=None, alpha=PERSESSION_SIGNIFICANCE_ALPHA):
+                             pvalues=None, alpha=PERSESSION_SIGNIFICANCE_ALPHA,
+                             counts=None):
     """Per-subject-slot grid: ``rows`` by event columns, sharing one y-axis.
 
     Shared layout for the per-session figures that use a subject-slot x-axis.
@@ -3213,11 +3226,19 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
         rendering (graying is disabled; see ``_subject_significance_color``).
     alpha : float
         Significance threshold, threaded through but unused for color.
+    counts : pd.DataFrame or None
+        Donor-pool sizes per ``(target_NM, event)`` (columns ``n_recordings``,
+        ``n_mice``). When given, each target's x-tick label gains a
+        ``n=<recordings>, m=<mice>`` line (see ``_target_tick_label``).
 
     Returns
     -------
     plt.Figure
     """
+    counts_lookup = None if counts is None else {
+        (row['target_NM'], row['event']): (row['n_recordings'], row['n_mice'])
+        for _, row in counts.iterrows()
+    }
     has_data = len(df) > 0
     events = _sort_events(df['event'].unique()) if has_data else []
     n_rows, n_cols = len(rows), max(len(events), 1)
@@ -3258,15 +3279,16 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
             if c == 0:
                 ax.set_ylabel(label, fontsize=TICKFONTSIZE)
         axes[-1, c].set_xticks([centre for _, centre in ticks])
-        axes[-1, c].set_xticklabels([tnm for tnm, _ in ticks], rotation=30,
-                                    ha='right', fontsize=TICKFONTSIZE)
+        axes[-1, c].set_xticklabels(
+            [_target_tick_label(tnm, event, counts_lookup) for tnm, _ in ticks],
+            rotation=30, ha='right', fontsize=TICKFONTSIZE)
     fig.supylabel(supylabel)
     fig.suptitle(title, fontsize=LABELFONTSIZE)
     return fig
 
 
 def plot_ols_dropone(df, title, pvalues=None,
-                     alpha=PERSESSION_SIGNIFICANCE_ALPHA):
+                     alpha=PERSESSION_SIGNIFICANCE_ALPHA, counts=None):
     """Per-session drop-one ΔR² — dropped-regressor rows × event columns.
 
     One row per dropped regressor (``_PERSESSION_DROPONE_PREDICTORS`` order),
@@ -3284,11 +3306,15 @@ def plot_ols_dropone(df, title, pvalues=None,
         rendering (graying disabled).
     alpha : float
         Significance threshold, threaded through but unused for color.
+    counts : pd.DataFrame or None
+        Donor-pool sizes per ``(target_NM, event)`` (columns ``n_recordings``,
+        ``n_mice``, e.g. from ``count_population_by_target_event``). When given,
+        each target's x-tick label gains a ``n=<recordings>, m=<mice>`` line.
     """
     rows, supylabel = _dropone_rows()
     return _persession_subject_grid(df, title, rows, supylabel,
                                     draw_mark=_scatter_subject,
-                                    pvalues=pvalues, alpha=alpha)
+                                    pvalues=pvalues, alpha=alpha, counts=counts)
 
 
 def plot_ols_total_r2(df, title):
