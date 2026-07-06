@@ -3116,6 +3116,16 @@ class TestPlotBaselineTercileCurves:
         for model in ('performance', 'reaction_time'):
             assert 'curve_label' in _BASELINE_MODEL_DISPLAY[model]
 
+    def test_yaxis_shared_across_targets(self):
+        from iblnm.vis import plot_baseline_tercile_curves
+        lv = [-25.0, 0.0, 25.0]
+        mk = lambda l, h: pd.DataFrame({'low': l, 'high': h}, index=lv)
+        curves = {'VTA-DA': [mk([0.2, 0.5, 0.8], [0.3, 0.6, 0.9])],
+                  'DR-5HT': [mk([1.5, 2.0, 2.5], [1.6, 2.1, 2.6])]}
+        fig = plot_baseline_tercile_curves(curves, 'reaction_time')
+        assert fig.axes[0].get_ylim() == fig.axes[1].get_ylim()
+        plt.close(fig)
+
 
 class TestPlotBaselineTercileDifference:
     """Per-session high-minus-low tercile difference curves."""

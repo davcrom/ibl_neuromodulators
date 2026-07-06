@@ -586,7 +586,7 @@ def plot_baseline_tercile_curves(curves_by_target: dict[str, list[pd.DataFrame]]
     )
 
     fig, axes = plt.subplots(1, len(targets), figsize=(4 * len(targets), 4),
-                             squeeze=False)
+                             squeeze=False, sharey=True)
     for ax, target in zip(axes[0], targets):
         color = TARGETNM_COLORS.get(target, 'gray')
         for tercile, hue in (('high', color), ('low', _lighten(color))):
