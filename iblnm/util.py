@@ -1053,4 +1053,35 @@ def derive_target_nm(df, brain_region_col='brain_region'):
     return df
 
 
+def count_population_by_target_event(df: pd.DataFrame) -> pd.DataFrame:
+    """Count distinct recordings and mice per ``(target_NM, event)``.
+
+    Summarizes the donor pool backing the per-session permutation null: for each
+    target neuromodulator and event, how many distinct recordings (``eid``) and
+    mice (``subject``) contribute. A recording appearing under several predictor
+    rows is counted once.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-form per-session frame with ``eid``, ``subject``, ``target_NM`` and
+        ``event`` columns (e.g. the drop-one ΔR² results, one row per
+        ``(eid, ..., predictor)``).
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per ``(target_NM, event)``, columns ``target_NM``, ``event``,
+        ``n_recordings`` (distinct ``eid``) and ``n_mice`` (distinct
+        ``subject``), sorted by ``target_NM`` then ``event``.
+    """
+    return (
+        df.groupby(['target_NM', 'event'])
+        .agg(n_recordings=('eid', 'nunique'), n_mice=('subject', 'nunique'))
+        .reset_index()
+        .sort_values(['target_NM', 'event'])
+        .reset_index(drop=True)
+    )
+
+
 
