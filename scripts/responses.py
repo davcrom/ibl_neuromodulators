@@ -28,6 +28,7 @@ from iblnm.config import (
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     MEAN_TRACES_FPATH,
     RESPONSE_OLS_PERSESSION_FPATH, RESPONSE_OLS_PERSESSION_PVAL_FPATH,
+    RESPONSE_OLS_PERSESSION_POPULATION_FPATH,
     RESPONSE_OLS_COEFS_FPATH,
     RESPONSE_VARCOMP_SUMMARY_FPATH, RESPONSE_VARCOMP_VIOLIN_FPATH,
     VARCOMP_MCMC, VARCOMP_TAU_PRIOR, VARCOMP_MIN_MICE,
@@ -56,6 +57,7 @@ from iblnm.vis import (
 from iblnm.analysis import (
     split_features_by_event,
 )
+from iblnm.util import count_population_by_target_event
 
 
 # =========================================================================
@@ -427,6 +429,10 @@ def plot_persession_figures(group, figures_dir, display='session'):
     mode. ``pvalues`` (``group.response_ols_persession_pvalues``, per-mouse
     permutation) is threaded into the ``session`` drop-one figure only.
 
+    Also writes the donor-pool sizes (recordings and mice per
+    ``(target_NM, event)``) to ``RESPONSE_OLS_PERSESSION_POPULATION_FPATH`` and,
+    in ``session`` mode, annotates the drop-one figure's x-ticks with them.
+
     Parameters
     ----------
     group : PhotometrySessionGroup
@@ -441,7 +447,14 @@ def plot_persession_figures(group, figures_dir, display='session'):
     results = group.response_ols_dropone_results
     results = results[results['event'].isin(RESPONSE_EVENTS)]
 
-    dropone_kwargs = ({'pvalues': group.response_ols_persession_pvalues}
+    counts = count_population_by_target_event(results)
+    counts.to_csv(RESPONSE_OLS_PERSESSION_POPULATION_FPATH, index=False)
+    print("\n  Donor-pool size per target-NM x event (recordings, mice):")
+    print(counts.to_string(index=False))
+    print(f"  Saved to {RESPONSE_OLS_PERSESSION_POPULATION_FPATH}")
+
+    dropone_kwargs = ({'pvalues': group.response_ols_persession_pvalues,
+                       'counts': counts}
                       if display == 'session' else {})
     fig = dropone_fn(
         results,
