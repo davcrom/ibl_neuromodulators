@@ -4640,3 +4640,51 @@ def plot_state_posterior_histograms(
         ax.axis('off')
     return fig
 
+
+def plot_state_dwell_times(
+    dwell_by_mouse: dict[str, pd.DataFrame], n_bins: int = 20
+) -> plt.Figure:
+    """Per-state dwell-time distributions, one axes per mouse.
+
+    For each mouse, overlays a step histogram of run-lengths (dwell times in
+    trial units) per state, on a shared bin grid spanning that mouse's observed
+    range. States are colored consistently within a mouse by ``plt.cm.tab10``;
+    state labels are unaligned across mice.
+
+    Parameters
+    ----------
+    dwell_by_mouse : dict of str to pandas.DataFrame
+        Maps each subject to its pooled dwell-time frame with integer columns
+        ``['state', 'length']`` (one row per run), as assembled by the
+        orchestration script from :func:`iblnm.analysis.state_dwell_times`
+        applied per eid.
+    n_bins : int, optional
+        Number of histogram bins spanning [0, max dwell] per mouse (default 20).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Grid of per-mouse axes; unused grid cells are hidden.
+    """
+    mice = list(dwell_by_mouse)
+    ncols = min(4, len(mice))
+    nrows = int(np.ceil(len(mice) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
+                             squeeze=False)
+    for ax, mouse in zip(axes.flat, mice):
+        dwell = dwell_by_mouse[mouse]
+        bins = np.linspace(0, dwell['length'].max(), n_bins + 1)
+        by_state = dwell.groupby('state')['length']
+        state_colors = plt.cm.tab10(np.arange(by_state.ngroups))
+        for (label, lengths), color in zip(by_state, state_colors):
+            counts, _ = np.histogram(lengths, bins=bins)
+            ax.stairs(counts, bins, color=color, label=f'state {label}')
+        ax.set_xlabel('dwell time (trials)')
+        ax.set_ylabel('runs')
+        ax.set_title(mouse)
+        ax.legend(fontsize=TICKFONTSIZE, frameon=False)
+
+    for ax in axes.flat[len(mice):]:
+        ax.axis('off')
+    return fig
+

@@ -3398,3 +3398,44 @@ def summarize_posterior(
     x_grid = np.linspace(0, samples.max(), grid_size)
     density = gaussian_kde(samples)(x_grid)
     return mean, hdi_low, hdi_high, x_grid, density
+
+
+def state_dwell_times(states, reset_labels=None):
+    """Run-lengths of a state sequence, reset at grouping boundaries.
+
+    A run is a maximal constant stretch of ``states``. A run never spans two
+    different ``reset_labels`` values even when the state label is unchanged, so
+    passing per-trial eids as ``reset_labels`` yields per-eid dwell times.
+
+    Variable-agnostic: no state or eid names are baked in.
+
+    Parameters
+    ----------
+    states : 1-D array-like
+        State label per element (e.g. per-trial ``map_state``), in order.
+    reset_labels : 1-D array-like or None
+        Equal-length grouping label (e.g. eid). A change in value forces a run
+        boundary regardless of the state label. If None, no boundaries are
+        imposed beyond state changes.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per run, columns ``['state', 'length']``, in order of
+        occurrence. ``length`` is the run's element count (trial units).
+    """
+    states = np.asarray(states)
+    if len(states) == 0:
+        return pd.DataFrame({'state': [], 'length': []})
+    reset_labels = np.zeros(len(states)) if reset_labels is None \
+        else np.asarray(reset_labels)
+
+    new_run = np.empty(len(states), dtype=bool)
+    new_run[0] = True
+    new_run[1:] = (states[1:] != states[:-1]) | (reset_labels[1:] != reset_labels[:-1])
+    run_id = np.cumsum(new_run)
+
+    runs = pd.DataFrame({'state': states, 'run': run_id})
+    dwell = runs.groupby('run', sort=True).agg(
+        state=('state', 'first'), length=('state', 'size'))
+    return dwell.reset_index(drop=True)

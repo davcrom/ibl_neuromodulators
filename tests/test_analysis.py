@@ -8,6 +8,7 @@ from iblnm.analysis import (
     get_responses,
     normalize_responses,
     resample_signal,
+    state_dwell_times,
     summarize_posterior,
     tercile_split_curves,
 )
@@ -3430,3 +3431,15 @@ def test_tercile_split_curves_drops_nan_before_terciles():
     curves = tercile_split_curves(baseline, signed_contrast, outcome, min_count=1)
     assert curves.loc[100.0, 'low'] == pytest.approx(2 / 3)
     assert curves.loc[100.0, 'high'] == pytest.approx(1 / 3)
+
+
+class TestStateDwellTimes:
+    def test_no_reset_labels_gives_state_runs(self):
+        runs = state_dwell_times([1, 1, 2, 2, 2, 1])
+        assert list(zip(runs['state'], runs['length'])) == [(1, 2), (2, 3), (1, 1)]
+
+    def test_reset_label_splits_run_at_boundary(self):
+        runs = state_dwell_times(
+            [1, 1, 2, 2, 2, 1], reset_labels=['a', 'a', 'a', 'b', 'b', 'b'])
+        assert list(zip(runs['state'], runs['length'])) == \
+            [(1, 2), (2, 1), (2, 2), (1, 1)]
