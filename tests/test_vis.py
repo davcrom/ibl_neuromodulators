@@ -3256,3 +3256,77 @@ class TestStatePosteriorHistograms:
         titles = {ax.get_title() for ax in fig.axes if ax.get_title()}
         assert {'ZFM-A', 'ZFM-B'} <= titles
         plt.close(fig)
+
+
+class TestStatePsychometricChronometric:
+    """Goal-3 figure: per-state psychometric + chronometric curves per mouse."""
+
+    def _psychometric(self):
+        """Two states, three signed-contrast points each with known P(right)."""
+        return pd.DataFrame({
+            'state': [1, 1, 1, 2, 2, 2],
+            'signed_contrast': [-100.0, 0.0, 100.0, -100.0, 0.0, 100.0],
+            'p_right': [0.1, 0.5, 0.9, 0.3, 0.5, 0.7],
+            'bias': [0.0, 0.0, 0.0, 5.0, 5.0, 5.0],
+            'threshold': [20.0, 20.0, 20.0, 25.0, 25.0, 25.0],
+            'lapse_left': [0.05, 0.05, 0.05, 0.05, 0.05, 0.05],
+            'lapse_right': [0.05, 0.05, 0.05, 0.05, 0.05, 0.05],
+        })
+
+    def _chronometric(self):
+        """Two states, three |contrast| points each with known median RT."""
+        return pd.DataFrame({
+            'state': [1, 1, 1, 2, 2, 2],
+            'contrast': [0.0, 25.0, 100.0, 0.0, 25.0, 100.0],
+            'median_rt': [0.50, 0.42, 0.34, 0.60, 0.48, 0.36],
+            'slope': [-0.0016, -0.0016, -0.0016, -0.0024, -0.0024, -0.0024],
+            'intercept': [0.50, 0.50, 0.50, 0.60, 0.60, 0.60],
+        })
+
+    def _curves(self):
+        return {'ZFM-A': {'psychometric': self._psychometric(),
+                          'chronometric': self._chronometric()}}
+
+    def test_psychometric_points_at_known_positions(self):
+        from iblnm.vis import plot_state_psychometric_chronometric
+        fig = plot_state_psychometric_chronometric(self._curves())
+        psych = self._psychometric()
+        ax = fig.axes[0]  # column 0 = psychometric for the single mouse
+        # One scatter collection per state; union of offsets = the input points.
+        assert len(ax.collections) == psych['state'].nunique()
+        offsets = np.vstack([c.get_offsets() for c in ax.collections])
+        expected = psych[['signed_contrast', 'p_right']].to_numpy()
+        got = offsets[np.lexsort(offsets.T)]
+        exp = expected[np.lexsort(expected.T)]
+        assert np.allclose(got, exp)
+        plt.close(fig)
+
+    def test_chronometric_points_at_known_positions(self):
+        from iblnm.vis import plot_state_psychometric_chronometric
+        fig = plot_state_psychometric_chronometric(self._curves())
+        chrono = self._chronometric()
+        ax = fig.axes[1]  # column 1 = chronometric for the single mouse
+        assert len(ax.collections) == chrono['state'].nunique()
+        offsets = np.vstack([c.get_offsets() for c in ax.collections])
+        expected = chrono[['contrast', 'median_rt']].to_numpy()
+        got = offsets[np.lexsort(offsets.T)]
+        exp = expected[np.lexsort(expected.T)]
+        assert np.allclose(got, exp)
+        plt.close(fig)
+
+    def test_nan_fit_params_skip_overlay_without_error(self):
+        from iblnm.vis import plot_state_psychometric_chronometric
+        curves = self._curves()
+        # State 2's fit failed (all params NaN): its points still plot, but no
+        # psychometric/chronometric overlay line is drawn for it.
+        psych = curves['ZFM-A']['psychometric']
+        chrono = curves['ZFM-A']['chronometric']
+        psych.loc[psych['state'] == 2,
+                  ['bias', 'threshold', 'lapse_left', 'lapse_right']] = np.nan
+        chrono.loc[chrono['state'] == 2, ['slope', 'intercept']] = np.nan
+        fig = plot_state_psychometric_chronometric(curves)
+        # Two states scatter on each panel; only state 1 adds an overlay line.
+        assert len(fig.axes[0].collections) == 2
+        assert len(fig.axes[0].lines) == 2  # 1 overlay + axhline
+        assert len(fig.axes[1].lines) == 1  # 1 overlay, no axhline on chrono
+        plt.close(fig)

@@ -4688,3 +4688,80 @@ def plot_state_dwell_times(
         ax.axis('off')
     return fig
 
+
+def plot_state_psychometric_chronometric(
+    curves_by_mouse: dict[str, dict[str, pd.DataFrame]],
+    contrast_range: tuple = (-100, 100),
+) -> plt.Figure:
+    """Per-state psychometric + chronometric curves, one mouse per row.
+
+    Each mouse gets two axes: a psychometric panel (P(rightward choice) vs
+    signed contrast) and a chronometric panel (median RT vs |contrast|). Every
+    inferred state is overlaid with a consistent colour within a mouse
+    (``plt.cm.tab10``, keyed by sorted state label). Empirical points are drawn
+    as markers; the fitted psychometric (``psychofit.erf_psycho_2gammas``) and
+    linear chronometric overlays are drawn where their parameters are finite and
+    skipped otherwise (low-trial states return NaN fits). State labels are
+    unaligned across mice.
+
+    Parameters
+    ----------
+    curves_by_mouse : dict of str to dict of str to pandas.DataFrame
+        Maps each subject to a ``{'psychometric', 'chronometric'}`` pair of long
+        frames assembled by the orchestration script. The psychometric frame has
+        columns ``['state', 'signed_contrast', 'p_right', 'bias', 'threshold',
+        'lapse_left', 'lapse_right']`` (fit params constant within a state); the
+        chronometric frame has ``['state', 'contrast', 'median_rt', 'slope',
+        'intercept']`` (``contrast`` is ``|contrast|`` in percent).
+    contrast_range : tuple of float, optional
+        Signed-contrast span (percent) over which the psychometric overlay is
+        drawn (default ``(-100, 100)``).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Grid of ``len(curves_by_mouse)`` rows by 2 columns (psychometric,
+        chronometric).
+    """
+    import psychofit as psy
+
+    mice = list(curves_by_mouse)
+    fig, axes = plt.subplots(len(mice), 2, figsize=(8, 3 * len(mice)),
+                             squeeze=False)
+    grid = np.linspace(contrast_range[0], contrast_range[1], 200)
+    for (ax_psych, ax_chrono), mouse in zip(axes, mice):
+        psych = curves_by_mouse[mouse]['psychometric']
+        chrono = curves_by_mouse[mouse]['chronometric']
+        states = sorted(set(psych['state']) | set(chrono['state']))
+        state_colors = dict(zip(states, plt.cm.tab10(np.arange(len(states)))))
+
+        for state, points in psych.groupby('state'):
+            color = state_colors[state]
+            ax_psych.scatter(points['signed_contrast'], points['p_right'],
+                             color=color, label=f'state {state}')
+            params = points[['bias', 'threshold',
+                             'lapse_right', 'lapse_left']].iloc[0].to_numpy()
+            if np.all(np.isfinite(params)):
+                ax_psych.plot(grid, psy.erf_psycho_2gammas(params, grid),
+                              color=color, linewidth=1.5)
+
+        for state, points in chrono.groupby('state'):
+            color = state_colors[state]
+            ax_chrono.scatter(points['contrast'], points['median_rt'],
+                              color=color, label=f'state {state}')
+            slope, intercept = points[['slope', 'intercept']].iloc[0]
+            if np.isfinite(slope) and np.isfinite(intercept):
+                x = np.sort(points['contrast'].to_numpy())
+                ax_chrono.plot(x, intercept + slope * x,
+                               color=color, linewidth=1.5)
+
+        ax_psych.axhline(0.5, color='gray', linestyle='--', alpha=0.5)
+        ax_psych.set_xlabel('signed contrast (%)')
+        ax_psych.set_ylabel('P(choose right)')
+        ax_psych.set_title(mouse)
+        ax_psych.legend(fontsize=TICKFONTSIZE, frameon=False)
+        ax_chrono.set_xlabel('|contrast| (%)')
+        ax_chrono.set_ylabel('median RT (s)')
+        ax_chrono.set_title(mouse)
+    return fig
+
