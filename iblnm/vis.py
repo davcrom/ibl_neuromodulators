@@ -4846,3 +4846,61 @@ def plot_state_pca(scores: np.ndarray, labels: Iterable, ax=None) -> plt.Figure:
     ax.legend(fontsize=TICKFONTSIZE, frameon=False, loc='best')
     return ax.figure
 
+
+def plot_state_block_transitions(
+    aligned_by_mouse: dict[str, dict[str, np.ndarray]], window: int = 15
+) -> plt.Figure:
+    """Per-state posterior traces around block transitions, one mouse per axes (goal 5).
+
+    For each mouse, overlays the mean per-state posterior aligned to block
+    transitions: state is encoded by color (``plt.cm.tab10``), transition type
+    (e.g. L->R vs R->L) by line style. A dashed vertical line marks the
+    transition trial. State labels are unaligned across mice.
+
+    Parameters
+    ----------
+    aligned_by_mouse : dict of str to dict of str to numpy.ndarray
+        Maps each subject to a ``{transition_type: mean_trace}`` dict, where
+        ``mean_trace`` has shape ``(2*window+1, K)`` — the per-position mean
+        posterior across that mouse's transitions, one column per state (the
+        ``mean`` output of :func:`iblnm.analysis.align_traces_at_transitions`).
+        Transition-type keys are shared across mice and drawn in a fixed style
+        order.
+    window : int, optional
+        Half-window in trials; the x-axis spans ``[-window, window]``
+        (default 15).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Grid of per-mouse axes; unused grid cells are hidden.
+    """
+    mice = list(aligned_by_mouse)
+    transition_types = list(dict.fromkeys(
+        t for traces in aligned_by_mouse.values() for t in traces))
+    linestyles = dict(zip(transition_types, itertools.cycle(['-', '--', ':'])))
+    lag = np.arange(-window, window + 1)
+
+    ncols = min(4, len(mice))
+    nrows = int(np.ceil(len(mice) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
+                             squeeze=False)
+    for ax, mouse in zip(axes.flat, mice):
+        for transition, trace in aligned_by_mouse[mouse].items():
+            state_colors = plt.cm.tab10(np.arange(trace.shape[1]))
+            for state, color in enumerate(state_colors):
+                ax.plot(lag, trace[:, state], color=color,
+                        linestyle=linestyles[transition])
+        ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
+        ax.set_xlabel('trial from transition')
+        ax.set_ylabel('P(state)')
+        ax.set_title(mouse)
+
+    handles = [Line2D([], [], color='gray', linestyle=linestyles[t], label=t)
+               for t in transition_types]
+    axes.flat[0].legend(handles=handles, fontsize=TICKFONTSIZE, frameon=False,
+                        loc='best')
+    for ax in axes.flat[len(mice):]:
+        ax.axis('off')
+    return fig
+

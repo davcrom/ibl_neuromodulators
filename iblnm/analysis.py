@@ -3441,6 +3441,56 @@ def state_dwell_times(states, reset_labels=None):
     return dwell.reset_index(drop=True)
 
 
+def align_traces_at_transitions(
+    values: np.ndarray, transition_idx, window: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Slice fixed windows around transition rows and average them.
+
+    For each index in ``transition_idx``, extract the rows
+    ``[idx - window, idx + window]`` (width ``2 * window + 1``) from ``values``.
+    Rows falling outside ``[0, len(values))`` at a sequence edge are NaN-padded,
+    so every window keeps the same width and stays centered on its index. The
+    per-position mean across transitions ignores those padded cells
+    (``numpy.nanmean``).
+
+    Variable-agnostic: no state, eid, or transition-type names are baked in; the
+    caller supplies already-detected transition indices.
+
+    Parameters
+    ----------
+    values : array-like, shape (n, ...)
+        Per-row values to slice, ordered along the first axis (e.g. per-trial
+        state posteriors, trials x states). Trailing axes are preserved.
+    transition_idx : sequence of int
+        Row indices to center windows on.
+    window : int
+        Half-window in rows; each window spans ``2 * window + 1`` rows.
+
+    Returns
+    -------
+    windows : np.ndarray, shape (len(transition_idx), 2*window+1, ...)
+        Stacked per-transition windows, NaN where a row is off the edge.
+    mean : np.ndarray, shape (2*window+1, ...)
+        Per-position ``nanmean`` across transitions. All-NaN if
+        ``transition_idx`` is empty.
+    """
+    values = np.asarray(values, dtype=float)
+    n = len(values)
+    width = 2 * window + 1
+    windows = np.full((len(transition_idx), width) + values.shape[1:], np.nan)
+    for i, idx in enumerate(transition_idx):
+        src_lo, src_hi = max(idx - window, 0), min(idx + window + 1, n)
+        dst_lo = src_lo - (idx - window)
+        windows[i, dst_lo:dst_lo + (src_hi - src_lo)] = values[src_lo:src_hi]
+
+    if len(transition_idx) == 0:
+        return windows, np.full((width,) + values.shape[1:], np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        mean = np.nanmean(windows, axis=0)
+    return windows, mean
+
+
 def pca_2d(feature_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Z-score columns and project onto the first two principal components.
 

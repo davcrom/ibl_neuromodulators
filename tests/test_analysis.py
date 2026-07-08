@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from iblnm.analysis import (
+    align_traces_at_transitions,
     fit_measurement_error_varcomp,
     get_responses,
     normalize_responses,
@@ -3444,6 +3445,38 @@ class TestStateDwellTimes:
             [1, 1, 2, 2, 2, 1], reset_labels=['a', 'a', 'a', 'b', 'b', 'b'])
         assert list(zip(runs['state'], runs['length'])) == \
             [(1, 2), (2, 1), (2, 2), (1, 1)]
+
+
+class TestAlignTracesAtTransitions:
+    def test_windows_centered_padded_and_mean(self):
+        # Two state columns, values = row index and 10 * row index, so each
+        # sliced window is trivially predictable.
+        values = np.column_stack([np.arange(10.0), 10 * np.arange(10.0)])
+        windows, mean = align_traces_at_transitions(
+            values, transition_idx=[5, 1], window=2)
+
+        # Width 2*window+1 = 5, one window per transition, per state column.
+        assert windows.shape == (2, 5, 2)
+        assert mean.shape == (5, 2)
+
+        # Interior transition (idx=5): rows 3..7, no padding.
+        np.testing.assert_array_equal(windows[0, :, 0], [3, 4, 5, 6, 7])
+        np.testing.assert_array_equal(windows[0, :, 1], [30, 40, 50, 60, 70])
+
+        # Left-edge transition (idx=1): row -1 is out of range -> NaN at pos 0.
+        assert np.isnan(windows[1, 0, 0])
+        np.testing.assert_array_equal(windows[1, 1:, 0], [0, 1, 2, 3])
+
+        # Mean ignores the NaN-padded cell (nanmean across transitions).
+        np.testing.assert_array_equal(mean[:, 0], [3, 2, 3, 4, 5])
+
+    def test_right_edge_padding(self):
+        values = np.arange(6.0)
+        windows, _ = align_traces_at_transitions(
+            values, transition_idx=[5], window=2)
+        # idx=5, window=2: rows 3,4,5,(6),(7) -> last two out of range.
+        np.testing.assert_array_equal(windows[0, :3], [3, 4, 5])
+        assert np.isnan(windows[0, 3:]).all()
 
 
 class TestPca2d:
