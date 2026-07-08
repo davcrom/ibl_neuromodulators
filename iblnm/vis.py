@@ -4553,3 +4553,90 @@ def plot_cosine_basis(n_basis=10, rcos_duration=2.5, rcos_nloffset=0.2,
         f'offset={rcos_nloffset}s)')
     return ax
 
+
+def _summarize_state_posteriors(
+    states: pd.DataFrame, bins: np.ndarray
+) -> tuple[pd.Series, dict[int, np.ndarray]]:
+    """Occupancy fractions and per-state posterior histograms for one mouse.
+
+    Parameters
+    ----------
+    states : pandas.DataFrame
+        One mouse's per-trial DDM-HMM state frame: integer ``map_state`` (NaN on
+        trials dropped from the fit) and float posterior columns
+        ``state_1``…``state_K`` (each in [0, 1], summing to ~1 on kept trials).
+    bins : numpy.ndarray
+        Histogram bin edges spanning [0, 1].
+
+    Returns
+    -------
+    occupancy : pandas.Series
+        Indexed by integer state label (1…K); fraction of MAP-assigned trials
+        (non-NaN ``map_state``) in each state. Sums to 1.
+    histograms : dict of int to numpy.ndarray
+        Maps each state label to the counts of that state's posterior column
+        across ``bins`` (dropped-trial NaNs excluded).
+    """
+    state_cols = sorted((c for c in states.columns if c.startswith('state_')),
+                        key=lambda c: int(c.split('_')[1]))
+    labels = [int(c.split('_')[1]) for c in state_cols]
+    assigned = states['map_state'].dropna().astype(int)
+    occupancy = assigned.value_counts().reindex(labels, fill_value=0) / len(assigned)
+    histograms = {label: np.histogram(states[col].dropna(), bins=bins)[0]
+                  for label, col in zip(labels, state_cols)}
+    return occupancy, histograms
+
+
+def plot_state_posterior_histograms(
+    states_by_mouse: dict[str, pd.DataFrame], n_bins: int = 20
+) -> plt.Figure:
+    """Per-state posterior histograms and MAP occupancy, one axes per mouse.
+
+    For each mouse, overlays a step histogram of every state's posterior column
+    (``state_1``…``state_K``) on [0, 1]: crisp assignments concentrate mass near
+    0 and 1. A companion inset bar in the upper-left shows each state's MAP
+    occupancy (fraction of assigned trials), recomputed here via
+    :func:`_summarize_state_posteriors`. States are colored consistently within a
+    mouse by ``plt.cm.tab10``; state labels are unaligned across mice.
+
+    Parameters
+    ----------
+    states_by_mouse : dict of str to pandas.DataFrame
+        Maps each subject to its per-trial state frame (``map_state`` plus
+        ``state_1``…``state_K`` posteriors; NaN on trials dropped from the fit),
+        as assembled by the orchestration script from
+        :meth:`PhotometrySession.load_states`.
+    n_bins : int, optional
+        Number of histogram bins spanning [0, 1] (default 20).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Grid of per-mouse axes; unused grid cells are hidden.
+    """
+    bins = np.linspace(0, 1, n_bins + 1)
+    mice = list(states_by_mouse)
+    ncols = min(4, len(mice))
+    nrows = int(np.ceil(len(mice) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
+                             squeeze=False)
+    for ax, mouse in zip(axes.flat, mice):
+        occupancy, histograms = _summarize_state_posteriors(
+            states_by_mouse[mouse], bins)
+        state_colors = plt.cm.tab10(np.arange(len(occupancy)))
+        for (label, counts), color in zip(histograms.items(), state_colors):
+            ax.stairs(counts, bins, color=color, label=f'state {label}')
+        inset = ax.inset_axes([0.08, 0.62, 0.3, 0.32])
+        inset.bar(range(len(occupancy)), occupancy.to_numpy(), color=state_colors)
+        inset.set_ylim(0, 1)
+        inset.set_xticks([])
+        inset.set_title('occupancy', fontsize=TICKFONTSIZE)
+        ax.set_xlabel('posterior probability')
+        ax.set_ylabel('trials')
+        ax.set_title(mouse)
+        ax.legend(fontsize=TICKFONTSIZE, frameon=False)
+
+    for ax in axes.flat[len(mice):]:
+        ax.axis('off')
+    return fig
+

@@ -3210,3 +3210,49 @@ class TestPlotOlsDroponeCounts:
         assert 'VTA-DA' in labels   # bare target name, no 'n='
         assert all('n=' not in l for l in labels)
         plt.close(fig)
+
+
+class TestStatePosteriorHistograms:
+    """Goal-1 data-prep: state occupancy + posterior histograms per mouse."""
+
+    def _states(self):
+        """10-trial frame: state 1 on 6 trials, state 2 on 2, two dropped.
+
+        Posteriors are crisp (~0/1) on kept trials and NaN on the two dropped
+        (no-go / long-RT) trials, mirroring ``PhotometrySession.load_states``.
+        """
+        map_state = [1, 1, 1, 1, 1, 1, 2, 2, np.nan, np.nan]
+        state_1 = [1.0, 0.99, 1.0, 0.98, 1.0, 0.99, 0.0, 0.01, np.nan, np.nan]
+        state_2 = [0.0, 0.01, 0.0, 0.02, 0.0, 0.01, 1.0, 0.99, np.nan, np.nan]
+        return pd.DataFrame(
+            {'map_state': map_state, 'state_1': state_1, 'state_2': state_2})
+
+    def test_occupancy_matches_known_fractions(self):
+        from iblnm.vis import _summarize_state_posteriors
+        bins = np.linspace(0, 1, 11)
+        occupancy, _ = _summarize_state_posteriors(self._states(), bins)
+        # 8 MAP-assigned trials: 6 in state 1, 2 in state 2 -> 0.75 / 0.25.
+        assert list(occupancy.index) == [1, 2]
+        assert np.isclose(occupancy[1], 0.75)
+        assert np.isclose(occupancy[2], 0.25)
+        assert np.isclose(occupancy.sum(), 1.0)
+
+    def test_histograms_put_mass_in_extreme_bins(self):
+        from iblnm.vis import _summarize_state_posteriors
+        bins = np.linspace(0, 1, 11)
+        _, histograms = _summarize_state_posteriors(self._states(), bins)
+        # 8 kept trials per column; near-0/1 posteriors land in the edge bins,
+        # nothing in the interior. NaN (dropped) trials are excluded.
+        for counts in histograms.values():
+            assert counts.sum() == 8
+            assert counts[1:-1].sum() == 0
+            assert counts[0] + counts[-1] == 8
+
+    def test_returns_figure_with_axes_per_mouse(self):
+        from iblnm.vis import plot_state_posterior_histograms
+        states_by_mouse = {'ZFM-A': self._states(), 'ZFM-B': self._states()}
+        fig = plot_state_posterior_histograms(states_by_mouse)
+        assert isinstance(fig, plt.Figure)
+        titles = {ax.get_title() for ax in fig.axes if ax.get_title()}
+        assert {'ZFM-A', 'ZFM-B'} <= titles
+        plt.close(fig)
