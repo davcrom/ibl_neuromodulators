@@ -298,6 +298,38 @@ def compute_trial_contrasts(trials: pd.DataFrame) -> pd.DataFrame:
     }, index=trials.index)
 
 
+def reconstruct_contrast_sides(trials: pd.DataFrame) -> pd.DataFrame:
+    """Rebuild contrastLeft/contrastRight from stim_side and contrast.
+
+    Inverse of :func:`compute_trial_contrasts`. Stored H5 trials carry
+    ``stim_side`` and ``contrast`` but not the ``contrastLeft``/``contrastRight``
+    columns that :func:`fit_psychometric` requires. This reconstructs them,
+    placing the fractional contrast on the stimulus side and NaN on the other.
+
+    Parameters
+    ----------
+    trials : pd.DataFrame
+        Must contain 'stim_side' ('left'/'right') and 'contrast' (percent, e.g.
+        0, 6.25, 12.5, 25, 100). ``stim_side`` is authoritative for zero-contrast
+        trials (the sign of ``signed_contrast`` is not used, per the signed-zero
+        caveat in CLAUDE.md).
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns 'contrastLeft' and 'contrastRight' as fractions in [0, 1], each
+        NaN on trials where the stimulus was on the other side. Indexed like
+        ``trials``.
+    """
+    is_left = trials['stim_side'].values == 'left'
+    contrast_frac = trials['contrast'].values / 100
+
+    return pd.DataFrame({
+        'contrastLeft': np.where(is_left, contrast_frac, np.nan),
+        'contrastRight': np.where(is_left, np.nan, contrast_frac),
+    }, index=trials.index)
+
+
 def add_relative_contrast(df):
     """Add hemisphere-relative contrast, stimulus-side, and choice-side columns.
 
