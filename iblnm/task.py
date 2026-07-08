@@ -371,6 +371,57 @@ def compute_nogo_fraction(trials: pd.DataFrame) -> float:
     return (trials['choice'] == 0).mean()
 
 
+def fit_chronometric(
+    trials: pd.DataFrame,
+    rt_col: str = 'rt',
+    contrast_col: str = 'contrast',
+) -> dict:
+    """Summarize the chronometric relationship as a single linear RT slope.
+
+    Computes median reaction time at each unique absolute-contrast level, then
+    fits an ordinary-least-squares line of median-RT on ``|contrast|``. The
+    median (not the trial-level mean) is used because RT is heavy-tailed
+    (median ~0.39 s, max <10 s), matching how chronometric curves are drawn.
+
+    Parameters
+    ----------
+    trials : pd.DataFrame
+        Trials frame carrying a reaction-time column and a contrast column.
+    rt_col : str
+        Name of the reaction-time column, in seconds.
+    contrast_col : str
+        Name of the contrast column. Its absolute value defines the levels, so
+        either a signed or an unsigned contrast column works.
+
+    Returns
+    -------
+    dict
+        Keys ``slope`` (seconds per unit ``|contrast|``), ``intercept``
+        (seconds), ``n_levels`` (number of non-empty ``|contrast|`` levels),
+        and ``n_trials`` (number of trials with a finite RT). ``slope`` and
+        ``intercept`` are NaN when fewer than 2 non-empty levels are present.
+    """
+    finite = trials[np.isfinite(trials[rt_col])]
+    levels_col = np.abs(finite[contrast_col])
+    medians = finite[rt_col].groupby(levels_col).median()
+
+    if len(medians) < 2:
+        return {
+            'slope': np.nan,
+            'intercept': np.nan,
+            'n_levels': len(medians),
+            'n_trials': len(finite),
+        }
+
+    slope, intercept = np.polyfit(medians.index.values, medians.values, 1)
+    return {
+        'slope': slope,
+        'intercept': intercept,
+        'n_levels': len(medians),
+        'n_trials': len(finite),
+    }
+
+
 # =============================================================================
 # Psychometric Fitting
 # =============================================================================

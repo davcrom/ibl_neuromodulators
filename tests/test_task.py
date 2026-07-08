@@ -13,6 +13,7 @@ from iblnm.task import (
     compute_fraction_correct,
     compute_nogo_fraction,
     fit_psychometric,
+    fit_chronometric,
     fit_psychometric_by_block,
     compute_bias_shift,
     add_relative_contrast,
@@ -416,6 +417,41 @@ class TestFitPsychometric:
         """R-squared should be between 0 and 1."""
         result = fit_psychometric(mock_trials_training)
         assert 0 <= result['r_squared'] <= 1
+
+
+class TestFitChronometric:
+    def test_recovers_known_slope(self):
+        """Median RT decreasing linearly with |contrast| recovers the slope."""
+        levels = np.array([0.0, 6.25, 12.5, 25.0, 100.0])
+        true_slope, true_intercept = -0.002, 0.5
+        # Three trials per level, symmetric jitter so the median equals the line.
+        trials = pd.DataFrame({
+            'contrast': np.repeat(levels, 3),
+            'rt': np.concatenate([
+                true_intercept + true_slope * c + np.array([-0.01, 0.0, 0.01])
+                for c in levels
+            ]),
+        })
+
+        result = fit_chronometric(trials)
+
+        assert result['n_levels'] == 5
+        assert result['n_trials'] == 15
+        assert result['slope'] == pytest.approx(true_slope, abs=1e-6)
+        assert result['intercept'] == pytest.approx(true_intercept, abs=1e-6)
+
+    def test_single_level_returns_nan_slope(self):
+        """A single contrast level cannot define a slope."""
+        trials = pd.DataFrame({
+            'contrast': [12.5, 12.5, 12.5],
+            'rt': [0.4, 0.5, 0.6],
+        })
+
+        result = fit_chronometric(trials)
+
+        assert result['n_levels'] == 1
+        assert np.isnan(result['slope'])
+        assert np.isnan(result['intercept'])
 
 
 class TestFitPsychometricByBlock:
