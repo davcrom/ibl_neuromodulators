@@ -6237,3 +6237,93 @@ class TestResponseOlsDroponePermutation:
         assert len({tuple(row) for row in stacked}) == len(first_draws)
         # Same seed reproduces the table.
         pd.testing.assert_frame_equal(table1, table2)
+
+
+# =============================================================================
+# load_states Tests
+# =============================================================================
+
+class TestLoadStates:
+    """Tests for PhotometrySession.load_states."""
+
+    def _write_posteriors(self, ddm_dir, subject, rows):
+        """Write a `{subject}_K2_posteriors.csv` with `rows` (list of dicts)."""
+        fpath = ddm_dir / f'{subject}_K2_posteriors.csv'
+        pd.DataFrame(rows).to_csv(fpath, index=False)
+        return fpath
+
+    def _trials(self):
+        """Six trials: one no-go (choice==0), one RT>=10 s, four kept."""
+        return pd.DataFrame({
+            'choice':         [ 1,   0,   -1,   1,    -1,   1  ],
+            'stimOn_times':   [ 0.0, 1.0, 2.0,  3.0,  4.0,  5.0],
+            'response_times': [ 0.5, 1.4, 2.3,  13.5, 4.7,  5.2],
+        })
+
+    def _kept_rows(self, eid):
+        """CSV block for the four kept trials, shuffled by trial_in_dataset.
+
+        Kept order (by stimOn_times) is trials 0, 2, 4, 5 with rt 0.5, 0.3,
+        0.7, 0.2; trial_in_dataset encodes that chronological order.
+        """
+        return [
+            {'eid': eid, 'trial_in_dataset': 2, 'rt': 0.7,
+             'map_state': 2, 'state_1': 0.1, 'state_2': 0.9},
+            {'eid': eid, 'trial_in_dataset': 0, 'rt': 0.5,
+             'map_state': 2, 'state_1': 0.1, 'state_2': 0.9},
+            {'eid': eid, 'trial_in_dataset': 3, 'rt': 0.2,
+             'map_state': 1, 'state_1': 0.6, 'state_2': 0.4},
+            {'eid': eid, 'trial_in_dataset': 1, 'rt': 0.3,
+             'map_state': 1, 'state_1': 0.6, 'state_2': 0.4},
+        ]
+
+    def test_aligns_states_to_kept_trials(self, mock_photometry_session,
+                                          tmp_path, monkeypatch):
+        """States land on kept trials (by stimOn order), NaN on dropped ones."""
+        ps = mock_photometry_session
+        ps.trials = self._trials()
+        monkeypatch.setattr('iblnm.data.DDM_HMM_DIR', tmp_path)
+        rows = self._kept_rows(ps.eid) + [
+            # A row for a different eid that must be ignored.
+            {'eid': 'other-eid', 'trial_in_dataset': 0, 'rt': 9.9,
+             'map_state': 1, 'state_1': 0.5, 'state_2': 0.5},
+        ]
+        self._write_posteriors(tmp_path, ps.subject, rows)
+
+        ps.load_states()
+
+        assert list(ps.states.index) == list(ps.trials.index)
+        assert list(ps.states.columns) == ['map_state', 'state_1', 'state_2']
+        # Kept trials 0, 2, 4, 5 carry map_state in stimOn order (0.5→2,
+        # 0.3→1... but here mapped by trial_in_dataset: t0→2, t2→1, t4→2, t5→1).
+        assert ps.states.loc[[0, 2, 4, 5], 'map_state'].tolist() == [2, 1, 2, 1]
+        assert ps.states.loc[0, 'state_2'] == 0.9
+        assert ps.states.loc[5, 'state_1'] == 0.6
+        # Dropped trials 1 (no-go) and 3 (RT>=10) are NaN.
+        assert ps.states.loc[[1, 3]].isna().all().all()
+
+    def test_rt_mismatch_raises(self, mock_photometry_session, tmp_path,
+                                monkeypatch):
+        """A corrupted CSV rt (filter reconstruction wrong) fails loud."""
+        ps = mock_photometry_session
+        ps.trials = self._trials()
+        monkeypatch.setattr('iblnm.data.DDM_HMM_DIR', tmp_path)
+        rows = self._kept_rows(ps.eid)
+        rows[0]['rt'] = 99.0  # corrupt one value
+        self._write_posteriors(tmp_path, ps.subject, rows)
+
+        with pytest.raises(ValueError):
+            ps.load_states()
+
+    def test_eid_absent_leaves_states_none(self, mock_photometry_session,
+                                           tmp_path, monkeypatch):
+        """A posteriors file with no rows for this eid leaves states None."""
+        ps = mock_photometry_session
+        ps.trials = self._trials()
+        monkeypatch.setattr('iblnm.data.DDM_HMM_DIR', tmp_path)
+        self._write_posteriors(tmp_path, ps.subject,
+                               self._kept_rows('other-eid'))
+
+        ps.load_states()
+
+        assert ps.states is None

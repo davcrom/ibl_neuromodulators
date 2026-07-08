@@ -16,7 +16,7 @@ from iblphotometry.qc import qc_signals
 from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
-    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, EIDS_TO_DROP,
+    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, DDM_HMM_DIR, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
     LOGGED_ERRORS_FPATH, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION, MOTION_ENERGY_EVENT,
@@ -656,6 +656,7 @@ class PhotometrySession(PhotometrySessionLoader):
         if not isinstance(self.photometry, dict):
             self.photometry = {}
         self.responses = {}
+        self.states = None
         self.ols_fits = {}
         self.qc = pd.DataFrame()
         self.pose = None
@@ -924,6 +925,64 @@ class PhotometrySession(PhotometrySessionLoader):
         self.trials['stim_side'] = contrasts['stim_side']
         self.trials['signed_contrast'] = contrasts['signed_contrast']
         self.trials['contrast'] = contrasts['contrast']
+
+    def load_states(self) -> None:
+        """Attach per-trial DDM-HMM state posteriors to ``self.states``.
+
+        Locates this mouse's ``{subject}_K*_posteriors.csv`` in
+        ``config.DDM_HMM_DIR`` and aligns its rows for this eid to the canonical
+        H5 trials. The fit kept only trials with ``choice != 0`` and RT
+        (``response_times - stimOn_times``) < 10 s; those are matched
+        positionally in chronological (``stimOn_times``) order to the CSV block
+        (ordered by ``trial_in_dataset``).
+
+        Sets ``self.states`` to a DataFrame indexed like ``self.trials`` with
+        columns ``map_state, state_1 … state_K`` filled on the kept trials and
+        NaN on the dropped ones. Leaves it ``None`` when the mouse was not
+        modeled or this session is absent from the fit.
+
+        Raises
+        ------
+        ValueError
+            If ``self.trials`` is not loaded, or the reconstructed kept-trial
+            count or RT sequence does not match the CSV block (fail loud — the
+            filter reconstruction is wrong).
+        """
+        matches = sorted(DDM_HMM_DIR.glob(f'{self.subject}_K*_posteriors.csv'))
+        if not matches:
+            self.states = None
+            return
+        posteriors = pd.read_csv(matches[0])
+        block = posteriors[posteriors['eid'] == self.eid].sort_values(
+            'trial_in_dataset')
+        if block.empty:
+            self.states = None
+            return
+
+        if self.trials is None:
+            raise ValueError(
+                f"load_states requires loaded trials (eid {self.eid})")
+
+        rt = self.trials['response_times'] - self.trials['stimOn_times']
+        kept = self.trials[(self.trials['choice'] != 0) & (rt < 10.0)]
+        kept = kept.sort_values('stimOn_times')
+        if len(kept) != len(block):
+            raise ValueError(
+                f"kept-trial count {len(kept)} != CSV block length "
+                f"{len(block)} for eid {self.eid}")
+
+        kept_rt = (kept['response_times'] - kept['stimOn_times']).to_numpy()
+        if not np.allclose(kept_rt, block['rt'].to_numpy(), atol=1e-3):
+            raise ValueError(
+                f"RT sequence mismatch between trials and CSV for eid "
+                f"{self.eid}")
+
+        state_cols = ['map_state'] + [c for c in block.columns
+                                      if c.startswith('state_')]
+        states = pd.DataFrame(np.nan, index=self.trials.index,
+                              columns=state_cols)
+        states.loc[kept.index, state_cols] = block[state_cols].to_numpy()
+        self.states = states
 
     def load_photometry(
         self,
