@@ -1,3 +1,4 @@
+import itertools
 import re
 import warnings
 from collections.abc import Iterable
@@ -4764,4 +4765,84 @@ def plot_state_psychometric_chronometric(
         ax_chrono.set_ylabel('median RT (s)')
         ax_chrono.set_title(mouse)
     return fig
+
+
+def plot_state_param_scatter(
+    params_df: pd.DataFrame, params: tuple = ('B', 'k', 'a0')
+) -> plt.Figure:
+    """Pairwise scatter of per-state DDM parameters, colored by mouse (goal 4a).
+
+    One point per (mouse, state); each axes shows one parameter pair, so three
+    parameters give three panels (B-k, B-a0, k-a0). Mice are colored consistently
+    by ``plt.cm.tab10`` keyed by sorted subject label, so a state signature that
+    recurs across mice reads as a cluster spanning colors.
+
+    Parameters
+    ----------
+    params_df : pandas.DataFrame
+        One row per (mouse, state), with a ``mouse`` column and the columns named
+        in ``params`` (per-state DDM parameters from
+        ``all_mice_bestK_params.csv``).
+    params : tuple of str, optional
+        Parameter columns to cross pairwise (default ``('B', 'k', 'a0')``).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        One axes per parameter pair.
+    """
+    pairs = list(itertools.combinations(params, 2))
+    mice = sorted(params_df['mouse'].unique())
+    mouse_colors = dict(zip(mice, plt.cm.tab10(np.arange(len(mice)))))
+    point_colors = list(params_df['mouse'].map(mouse_colors))
+
+    fig, axes = plt.subplots(1, len(pairs), figsize=(4 * len(pairs), 4),
+                             squeeze=False)
+    for ax, (x_param, y_param) in zip(axes.flat, pairs):
+        ax.scatter(params_df[x_param], params_df[y_param], c=point_colors)
+        ax.set_xlabel(x_param)
+        ax.set_ylabel(y_param)
+
+    handles = [Line2D([], [], marker='o', linestyle='none', color=mouse_colors[m],
+                      label=m) for m in mice]
+    axes.flat[-1].legend(handles=handles, fontsize=TICKFONTSIZE, frameon=False,
+                         loc='best')
+    return fig
+
+
+def plot_state_pca(scores: np.ndarray, labels: Iterable, ax=None) -> plt.Figure:
+    """PC1xPC2 scatter of per-state behavioral features, colored by mouse (goal 4b).
+
+    One point per state, positioned by its first two principal-component scores
+    (from :func:`iblnm.analysis.pca_2d` on the z-scored behavioral feature matrix)
+    and colored by mouse (``plt.cm.tab10`` keyed by sorted label).
+
+    Parameters
+    ----------
+    scores : numpy.ndarray, shape (n_states, 2)
+        PC1/PC2 coordinates per state.
+    labels : iterable of str, length n_states
+        Mouse label per state, used to color points.
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw into; a new figure/axes is created when omitted.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure containing the PCA scatter.
+    """
+    labels = np.asarray(labels)
+    mice = sorted(set(labels))
+    mouse_colors = dict(zip(mice, plt.cm.tab10(np.arange(len(mice)))))
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 5))
+    for mouse in mice:
+        mask = labels == mouse
+        ax.scatter(scores[mask, 0], scores[mask, 1],
+                   color=mouse_colors[mouse], label=mouse)
+    ax.set_xlabel('PC1')
+    ax.set_ylabel('PC2')
+    ax.legend(fontsize=TICKFONTSIZE, frameon=False, loc='best')
+    return ax.figure
 

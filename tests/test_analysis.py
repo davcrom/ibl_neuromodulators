@@ -8,6 +8,7 @@ from iblnm.analysis import (
     get_responses,
     normalize_responses,
     resample_signal,
+    pca_2d,
     state_dwell_times,
     summarize_posterior,
     tercile_split_curves,
@@ -3443,3 +3444,26 @@ class TestStateDwellTimes:
             [1, 1, 2, 2, 2, 1], reset_labels=['a', 'a', 'a', 'b', 'b', 'b'])
         assert list(zip(runs['state'], runs['length'])) == \
             [(1, 2), (2, 1), (2, 2), (1, 1)]
+
+
+class TestPca2d:
+    def test_pc1_aligns_with_planted_axis(self):
+        # Two strongly correlated columns define the dominant axis; a third
+        # column is near-pure noise and should barely load on PC1.
+        rng = np.random.default_rng(0)
+        axis = rng.normal(size=200)
+        feature_matrix = np.column_stack([
+            axis,
+            axis + 0.01 * rng.normal(size=200),
+            0.01 * rng.normal(size=200),
+        ])
+        scores, loadings = pca_2d(feature_matrix)
+
+        assert scores.shape == (200, 2)
+        assert loadings.shape == (3, 2)
+        # PC1 carries more variance than PC2.
+        assert scores[:, 0].var() > scores[:, 1].var()
+        # PC1 loads on the correlated pair, not on the noise column.
+        assert abs(loadings[0, 0]) > 0.6
+        assert abs(loadings[1, 0]) > 0.6
+        assert abs(loadings[2, 0]) < 0.1

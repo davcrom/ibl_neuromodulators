@@ -3439,3 +3439,34 @@ def state_dwell_times(states, reset_labels=None):
     dwell = runs.groupby('run', sort=True).agg(
         state=('state', 'first'), length=('state', 'size'))
     return dwell.reset_index(drop=True)
+
+
+def pca_2d(feature_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Z-score columns and project onto the first two principal components.
+
+    Variable-agnostic: the input is an already-assembled numeric matrix with no
+    baked-in column meanings. Each column is standardized (zero mean, unit
+    variance) before the decomposition, so features on different scales
+    contribute equally. Components are found via the SVD of the standardized
+    matrix and ordered by descending explained variance, matching the sign
+    convention of ``numpy.linalg.svd``.
+
+    Parameters
+    ----------
+    feature_matrix : np.ndarray, shape (n_samples, n_features)
+        Numeric feature matrix. ``n_features`` must be >= 2.
+
+    Returns
+    -------
+    scores : np.ndarray, shape (n_samples, 2)
+        Sample coordinates on PC1 and PC2.
+    loadings : np.ndarray, shape (n_features, 2)
+        Unit-norm feature weights defining PC1 and PC2.
+    """
+    feature_matrix = np.asarray(feature_matrix, dtype=float)
+    standardized = (feature_matrix - feature_matrix.mean(axis=0)) \
+        / feature_matrix.std(axis=0)
+    _, _, vt = np.linalg.svd(standardized, full_matrices=False)
+    loadings = vt[:2].T
+    scores = standardized @ loadings
+    return scores, loadings
