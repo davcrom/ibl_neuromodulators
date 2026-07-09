@@ -6253,27 +6253,36 @@ class TestLoadStates:
         return fpath
 
     def _trials(self):
-        """Six trials: one no-go (choice==0), one RT>=10 s, four kept."""
+        """Six trials; two (indices 1, 3) are absent from the fit CSV.
+
+        Kept trials 0, 2, 4, 5 have RTs 0.5, 0.3, 0.7, 0.2 s and |contrast|
+        100, 12.5, 25, 6.25 %; the two dropped trials carry RTs (0.4, 10.5)
+        that appear in no CSV row, so the ordered rt-alignment skips them.
+        H5 ``signed_contrast`` is in percent.
+        """
         return pd.DataFrame({
-            'choice':         [ 1,   0,   -1,   1,    -1,   1  ],
-            'stimOn_times':   [ 0.0, 1.0, 2.0,  3.0,  4.0,  5.0],
-            'response_times': [ 0.5, 1.4, 2.3,  13.5, 4.7,  5.2],
+            'choice':          [ 1,    0,     -1,    1,     -1,    1   ],
+            'stimOn_times':    [ 0.0,  1.0,   2.0,   3.0,   4.0,   5.0 ],
+            'response_times':  [ 0.5,  1.4,   2.3,   13.5,  4.7,   5.2 ],
+            'signed_contrast': [ 100,  25.0,  -12.5, 6.25,  -25.0, 6.25],
         })
 
     def _kept_rows(self, eid):
         """CSV block for the four kept trials, shuffled by trial_in_dataset.
 
         Kept order (by stimOn_times) is trials 0, 2, 4, 5 with rt 0.5, 0.3,
-        0.7, 0.2; trial_in_dataset encodes that chronological order.
+        0.7, 0.2; trial_in_dataset encodes that chronological order. CSV
+        ``signed_contrast`` is a fraction (|value|*100 must equal the H5
+        percent |contrast|); its sign may differ from H5 (collaborator coding).
         """
         return [
-            {'eid': eid, 'trial_in_dataset': 2, 'rt': 0.7,
+            {'eid': eid, 'trial_in_dataset': 2, 'rt': 0.7, 'signed_contrast': 0.25,
              'map_state': 2, 'state_1': 0.1, 'state_2': 0.9},
-            {'eid': eid, 'trial_in_dataset': 0, 'rt': 0.5,
+            {'eid': eid, 'trial_in_dataset': 0, 'rt': 0.5, 'signed_contrast': 1.0,
              'map_state': 2, 'state_1': 0.1, 'state_2': 0.9},
-            {'eid': eid, 'trial_in_dataset': 3, 'rt': 0.2,
+            {'eid': eid, 'trial_in_dataset': 3, 'rt': 0.2, 'signed_contrast': 0.0625,
              'map_state': 1, 'state_1': 0.6, 'state_2': 0.4},
-            {'eid': eid, 'trial_in_dataset': 1, 'rt': 0.3,
+            {'eid': eid, 'trial_in_dataset': 1, 'rt': 0.3, 'signed_contrast': -0.125,
              'map_state': 1, 'state_1': 0.6, 'state_2': 0.4},
         ]
 
@@ -6302,14 +6311,27 @@ class TestLoadStates:
         # Dropped trials 1 (no-go) and 3 (RT>=10) are NaN.
         assert ps.states.loc[[1, 3]].isna().all().all()
 
-    def test_rt_mismatch_raises(self, mock_photometry_session, tmp_path,
+    def test_rt_no_match_raises(self, mock_photometry_session, tmp_path,
                                 monkeypatch):
-        """A corrupted CSV rt (filter reconstruction wrong) fails loud."""
+        """A CSV rt with no ordered match in the trials fails loud."""
         ps = mock_photometry_session
         ps.trials = self._trials()
         monkeypatch.setattr('iblnm.data.DDM_HMM_DIR', tmp_path)
         rows = self._kept_rows(ps.eid)
-        rows[0]['rt'] = 99.0  # corrupt one value
+        rows[0]['rt'] = 99.0  # no trial has this RT
+        self._write_posteriors(tmp_path, ps.subject, rows)
+
+        with pytest.raises(ValueError):
+            ps.load_states()
+
+    def test_contrast_mismatch_raises(self, mock_photometry_session, tmp_path,
+                                      monkeypatch):
+        """An rt-matched trial whose |contrast| disagrees fails loud."""
+        ps = mock_photometry_session
+        ps.trials = self._trials()
+        monkeypatch.setattr('iblnm.data.DDM_HMM_DIR', tmp_path)
+        rows = self._kept_rows(ps.eid)
+        rows[0]['signed_contrast'] = 0.5  # 50 % vs H5 25 % on the same trial
         self._write_posteriors(tmp_path, ps.subject, rows)
 
         with pytest.raises(ValueError):

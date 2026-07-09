@@ -596,6 +596,56 @@ _LOAD_HANDLERS = {
 }
 
 
+def _align_posteriors_to_trials(
+    block: pd.DataFrame, trials: pd.DataFrame, atol: float = 1e-3
+) -> np.ndarray:
+    """Match each DDM-HMM posterior row to its canonical trial by ordered RT.
+
+    The posteriors CSV is a chronological subsequence of the session's trials
+    (the fit dropped some trials by a preprocessing rule not recoverable from
+    the trial columns). Both are walked in order — ``block`` by
+    ``trial_in_dataset``, ``trials`` by ``stimOn_times`` — matching each block
+    ``rt`` to the next trial whose ``response_times - stimOn_times`` equals it.
+    Order preservation makes RT collisions harmless.
+
+    Parameters
+    ----------
+    block : pandas.DataFrame
+        Posterior rows for one eid, sorted by ``trial_in_dataset``; needs an
+        ``rt`` column (seconds).
+    trials : pandas.DataFrame
+        Session trials sorted by ``stimOn_times``; needs ``response_times`` and
+        ``stimOn_times`` (seconds).
+    atol : float
+        RT match tolerance in seconds.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``trials`` index labels, one per ``block`` row, in block order.
+
+    Raises
+    ------
+    ValueError
+        If a block row has no ordered RT match (the CSV is not a subsequence of
+        these trials — fail loud).
+    """
+    block_rt = block['rt'].to_numpy()
+    trial_rt = (trials['response_times'] - trials['stimOn_times']).to_numpy()
+    trial_labels = trials.index.to_numpy()
+    matched = np.empty(len(block_rt), dtype=trial_labels.dtype)
+    j = 0
+    for i, rt in enumerate(block_rt):
+        while j < len(trial_rt) and abs(trial_rt[j] - rt) > atol:
+            j += 1
+        if j >= len(trial_rt):
+            raise ValueError(
+                f"posteriors row {i} (rt={rt}) has no ordered RT match in trials")
+        matched[i] = trial_labels[j]
+        j += 1
+    return matched
+
+
 class PhotometrySession(PhotometrySessionLoader):
     """Data class for an IBL photometry session."""
 
@@ -931,22 +981,22 @@ class PhotometrySession(PhotometrySessionLoader):
 
         Locates this mouse's ``{subject}_K*_posteriors.csv`` in
         ``config.DDM_HMM_DIR`` and aligns its rows for this eid to the canonical
-        H5 trials. The fit kept only trials with ``choice != 0`` and RT
-        (``response_times - stimOn_times``) < 10 s; those are matched
-        positionally in chronological (``stimOn_times``) order to the CSV block
-        (ordered by ``trial_in_dataset``).
+        H5 trials by ordered RT-subsequence matching (see
+        :func:`_align_posteriors_to_trials`). The match is verified by requiring
+        ``|signed_contrast|`` to agree on every matched trial (CSV as a fraction,
+        H5 as a percent), which catches any RT-collision misalignment.
 
         Sets ``self.states`` to a DataFrame indexed like ``self.trials`` with
-        columns ``map_state, state_1 … state_K`` filled on the kept trials and
-        NaN on the dropped ones. Leaves it ``None`` when the mouse was not
-        modeled or this session is absent from the fit.
+        columns ``map_state, state_1 … state_K`` filled on the trials that are in
+        the fit and NaN on those the fit dropped. Leaves it ``None`` when the
+        mouse was not modeled or this session is absent from the fit.
 
         Raises
         ------
         ValueError
-            If ``self.trials`` is not loaded, or the reconstructed kept-trial
-            count or RT sequence does not match the CSV block (fail loud — the
-            filter reconstruction is wrong).
+            If ``self.trials`` is not loaded, a CSV row has no ordered RT match,
+            or a matched trial's ``|contrast|`` disagrees with the CSV (fail
+            loud — the alignment is wrong).
         """
         matches = sorted(DDM_HMM_DIR.glob(f'{self.subject}_K*_posteriors.csv'))
         if not matches:
@@ -963,25 +1013,21 @@ class PhotometrySession(PhotometrySessionLoader):
             raise ValueError(
                 f"load_states requires loaded trials (eid {self.eid})")
 
-        rt = self.trials['response_times'] - self.trials['stimOn_times']
-        kept = self.trials[(self.trials['choice'] != 0) & (rt < 10.0)]
-        kept = kept.sort_values('stimOn_times')
-        if len(kept) != len(block):
-            raise ValueError(
-                f"kept-trial count {len(kept)} != CSV block length "
-                f"{len(block)} for eid {self.eid}")
+        trials = self.trials.sort_values('stimOn_times')
+        matched = _align_posteriors_to_trials(block, trials)
 
-        kept_rt = (kept['response_times'] - kept['stimOn_times']).to_numpy()
-        if not np.allclose(kept_rt, block['rt'].to_numpy(), atol=1e-3):
+        csv_abs_contrast = block['signed_contrast'].abs().to_numpy() * 100
+        h5_abs_contrast = self.trials.loc[matched, 'signed_contrast'].abs().to_numpy()
+        if not np.allclose(csv_abs_contrast, h5_abs_contrast, atol=1e-2):
             raise ValueError(
-                f"RT sequence mismatch between trials and CSV for eid "
-                f"{self.eid}")
+                f"|contrast| mismatch between posteriors and trials for eid "
+                f"{self.eid} (RT-collision misalignment)")
 
         state_cols = ['map_state'] + [c for c in block.columns
                                       if c.startswith('state_')]
         states = pd.DataFrame(np.nan, index=self.trials.index,
                               columns=state_cols)
-        states.loc[kept.index, state_cols] = block[state_cols].to_numpy()
+        states.loc[matched, state_cols] = block[state_cols].to_numpy()
         self.states = states
 
     def load_photometry(

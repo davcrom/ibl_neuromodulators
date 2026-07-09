@@ -87,6 +87,9 @@ def build_mouse_states_frame(
     for _, row in rows.iterrows():
         ps = PhotometrySession(row, one=one)
         ps.load_h5(groups=['trials'])
+        if ps.trials is None or ps.trials.empty:
+            print(f"  {ps.eid}: no stored trials — skipped")
+            continue
         ps.load_states()
         if ps.states is None:
             continue
