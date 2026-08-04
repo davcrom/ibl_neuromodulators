@@ -25,18 +25,25 @@ from iblnm.config import (
 from iblnm.io import _get_default_connection
 from iblnm.lp_viewer import LPViewer, LPViewerModel
 
-# Session-metadata columns the viewer needs: session_type for the cohort filter,
-# subject/start_time/number to construct a PhotometrySession for the frame viewer.
-META_COLS = ['eid', 'subject', 'start_time', 'number', 'session_type']
+# Session-metadata columns the viewer needs that the pose roll-up does not
+# already carry: subject/start_time/number construct a PhotometrySession for the
+# frame viewer. session_type (the cohort filter) comes from pose.pqt itself.
+META_COLS = ['eid', 'subject', 'start_time', 'number']
 
 
 def build_cohort(df_pose: pd.DataFrame, df_sessions: pd.DataFrame) -> pd.DataFrame:
     """Enrich the pose roll-up with session metadata, keyed by ``eid``.
 
     Left-joins ``META_COLS`` from the session catalog onto the pose roll-up, so
-    every pose-extracted session gains ``session_type`` (for filtering) and the
-    fields needed to load frames. Returns one row per ``df_pose`` eid.
+    every pose-extracted session gains the fields needed to load frames. Raises
+    if the two tables share a column beyond ``eid`` — a silent ``_x``/``_y``
+    rename would strip the viewer of the name it looks up. Returns one row per
+    ``df_pose`` eid.
     """
+    overlap = set(META_COLS) & set(df_pose.columns) - {'eid'}
+    if overlap:
+        raise ValueError(
+            f"pose roll-up already carries {sorted(overlap)}; drop from META_COLS")
     meta = df_sessions[META_COLS].drop_duplicates('eid')
     return df_pose.merge(meta, on='eid', how='left')
 

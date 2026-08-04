@@ -677,10 +677,12 @@ def test_session_panels_fraction_correct_none_when_nan(cohort_model):
 # build_cohort (launcher glue)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_build_cohort_enriches_with_session_metadata():
-    import scripts.lp_viewer as launcher
-
-    df_pose = pd.DataFrame({'eid': ['a', 'b'], 'paw': [0.1, 0.2]})
+def _launcher_tables():
+    df_pose = pd.DataFrame({
+        'eid': ['a', 'b'],
+        'paw': [0.1, 0.2],
+        'session_type': ['biased', 'ephys'],
+    })
     df_sessions = pd.DataFrame({
         'eid': ['a', 'b', 'c'],
         'subject': ['m1', 'm2', 'm3'],
@@ -688,9 +690,29 @@ def test_build_cohort_enriches_with_session_metadata():
         'number': [1, 1, 1],
         'session_type': ['biased', 'ephys', 'training'],
     })
+    return df_pose, df_sessions
+
+
+def test_build_cohort_enriches_with_session_metadata():
+    import scripts.lp_viewer as launcher
+
+    df_pose, df_sessions = _launcher_tables()
     out = launcher.build_cohort(df_pose, df_sessions)
     # one row per pose eid, no duplication, only pose sessions kept
     assert out['eid'].tolist() == ['a', 'b']
     assert out['paw'].tolist() == [0.1, 0.2]
+    assert out['subject'].tolist() == ['m1', 'm2']
+    # the pose roll-up's own session_type survives the merge un-suffixed
     assert out['session_type'].tolist() == ['biased', 'ephys']
-    assert 'subject' in out.columns
+
+
+def test_build_cohort_rejects_overlapping_metadata_column(monkeypatch):
+    """A column in both tables would be silently renamed `_x`/`_y` by the merge,
+    leaving the viewer to KeyError on the name it looks up."""
+    import scripts.lp_viewer as launcher
+
+    df_pose, df_sessions = _launcher_tables()
+    monkeypatch.setattr(
+        launcher, 'META_COLS', ['eid', 'subject', 'start_time', 'session_type'])
+    with pytest.raises(ValueError, match='session_type'):
+        launcher.build_cohort(df_pose, df_sessions)
