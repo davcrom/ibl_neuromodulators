@@ -1262,6 +1262,38 @@ class TestPreprocess:
 # =============================================================================
 
 class TestExtractResponses:
+    def test_returns_dict_without_assigning_attribute(self, mock_photometry_session):
+        """The engine returns its dict; the caller owns the attribute."""
+        import xarray as xr
+        session = mock_photometry_session
+        session.preprocess()
+        n = 50
+        session.trials = pd.DataFrame({
+            'stimOn_times': np.linspace(99.5, 499.5, n),
+            'firstMovement_times': np.linspace(100.3, 500.3, n),
+            'feedback_times': np.linspace(101, 501, n),
+        })
+        responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed']
+        )
+        assert isinstance(responses, dict)
+        assert isinstance(responses['VTA'], xr.DataArray)
+        assert session.photometry_responses == {}
+
+    def test_labels_come_from_signals_mapping(self, mock_photometry_session):
+        """Any mapping of label -> time-indexed Series is a valid signal source."""
+        session = mock_photometry_session
+        session.preprocess()
+        n = 50
+        session.trials = pd.DataFrame({
+            'stimOn_times': np.linspace(99.5, 499.5, n),
+            'feedback_times': np.linspace(101, 501, n),
+        })
+        signal = session.photometry['GCaMP_preprocessed']['VTA']
+        responses = session.extract_responses({'paw_speed': signal})
+        assert list(responses) == ['paw_speed']
+        assert set(responses['paw_speed'].dims) == {'event', 'trial', 'time'}
+
     def test_returns_xarray_dataarray(self, mock_photometry_session):
         import xarray as xr
         session = mock_photometry_session
@@ -1272,9 +1304,11 @@ class TestExtractResponses:
             'firstMovement_times': np.linspace(100.3, 500.3, n),
             'feedback_times': np.linspace(101, 501, n),
         })
-        session.extract_responses()
-        assert isinstance(session.responses, dict)
-        assert isinstance(session.responses['VTA'], xr.DataArray)
+        session.photometry_responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed']
+        )
+        assert isinstance(session.photometry_responses, dict)
+        assert isinstance(session.photometry_responses['VTA'], xr.DataArray)
 
     def test_has_correct_dims(self, mock_photometry_session):
         from iblnm.config import RESPONSE_EVENTS
@@ -1286,9 +1320,10 @@ class TestExtractResponses:
             'firstMovement_times': np.linspace(100.3, 500.3, n),
             'feedback_times': np.linspace(101, 501, n),
         })
-        session.extract_responses()
-        assert 'VTA' in session.responses
-        region_responses = session.responses['VTA']
+        session.photometry_responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed'])
+        assert 'VTA' in session.photometry_responses
+        region_responses = session.photometry_responses['VTA']
         assert set(region_responses.dims) == {'event', 'trial', 'time'}
         for event in RESPONSE_EVENTS:
             assert event in region_responses.coords['event'].values
@@ -1304,8 +1339,9 @@ class TestExtractResponses:
             'firstMovement_times': np.linspace(100.3, 500.3, n),
             'feedback_times': np.linspace(101, 501, n),
         })
-        session.extract_responses()
-        sel = session.responses['VTA'].sel(event='stimOn_times')
+        session.photometry_responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed'])
+        sel = session.photometry_responses['VTA'].sel(event='stimOn_times')
         assert sel.dims == ('trial', 'time')
         assert sel.shape[0] == n
 
@@ -1318,8 +1354,9 @@ class TestExtractResponses:
         session.trials = pd.DataFrame({
             'feedback_times': np.linspace(101, 501, n),
         })
-        session.extract_responses(events=['feedback_times'])
-        tpts = session.responses['VTA'].coords['time'].values
+        session.photometry_responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed'], events=['feedback_times'])
+        tpts = session.photometry_responses['VTA'].coords['time'].values
         assert tpts[0] == pytest.approx(RESPONSE_WINDOW[0], abs=0.05)
         assert tpts[-1] == pytest.approx(RESPONSE_WINDOW[1], abs=0.05)
 
@@ -1330,8 +1367,9 @@ class TestExtractResponses:
         session.trials = pd.DataFrame({
             'feedback_times': np.linspace(101, 501, n),
         })
-        session.extract_responses(events=['feedback_times'])
-        region_responses = session.responses['VTA']
+        session.photometry_responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed'], events=['feedback_times'])
+        region_responses = session.photometry_responses['VTA']
         assert list(region_responses.coords['event'].values) == ['feedback_times']
         assert region_responses.sizes['event'] == 1
 
@@ -1411,7 +1449,8 @@ class TestSaveLoadH5:
             'signed_contrast': np.random.choice([-100, -25, 0, 25, 100], n).astype(float),
             'contrast': np.random.choice([0, 25, 100], n).astype(float),
         })
-        session.extract_responses(events=['stimOn_times', 'feedback_times'])
+        session.photometry_responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed'], events=['stimOn_times', 'feedback_times'])
 
         fpath = tmp_path / f'{session.eid}.h5'
         session.save_h5(fpath)  # Create with preprocessed
@@ -1423,9 +1462,11 @@ class TestSaveLoadH5:
             assert 'trials/choice' in f
             assert 'photometry/VTA/responses/stimOn_times' in f
             assert 'photometry/VTA/responses/feedback_times' in f
+            # fs is never read back (the time axis is rebuilt from `times`)
+            assert 'fs' not in f['photometry/VTA/responses'].attrs
             # Verify response data matches xarray content
             resp_h5 = f['photometry/VTA/responses/stimOn_times'][:]
-            resp_xr = session.responses['VTA'].sel(event='stimOn_times').values
+            resp_xr = session.photometry_responses['VTA'].sel(event='stimOn_times').values
             np.testing.assert_allclose(resp_h5, resp_xr, rtol=1e-5)
             np.testing.assert_array_equal(
                 f['trials/choice'][:],
@@ -1442,21 +1483,22 @@ class TestSaveLoadH5:
             'stimOn_times': np.linspace(99.5, 499.5, n),
             'feedback_times': np.linspace(101, 501, n),
         })
-        session.extract_responses(events=['stimOn_times', 'feedback_times'])
-        original = {r: da.copy() for r, da in session.responses.items()}
+        session.photometry_responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed'], events=['stimOn_times', 'feedback_times'])
+        original = {r: da.copy() for r, da in session.photometry_responses.items()}
 
         fpath = tmp_path / f'{session.eid}.h5'
         session.save_h5(fpath)
         session.save_h5(fpath, mode='a')
 
         # Clear and reload
-        session.responses = {}
+        session.photometry_responses = {}
         session.load_h5(fpath)
-        assert isinstance(session.responses, dict)
-        assert isinstance(session.responses['VTA'], xr.DataArray)
-        assert set(session.responses['VTA'].dims) == {'event', 'trial', 'time'}
+        assert isinstance(session.photometry_responses, dict)
+        assert isinstance(session.photometry_responses['VTA'], xr.DataArray)
+        assert set(session.photometry_responses['VTA'].dims) == {'event', 'trial', 'time'}
         np.testing.assert_allclose(
-            session.responses['VTA'].sel(event='stimOn_times').values,
+            session.photometry_responses['VTA'].sel(event='stimOn_times').values,
             original['VTA'].sel(event='stimOn_times').values,
             rtol=1e-5,
         )
@@ -2904,7 +2946,7 @@ def _make_session_with_responses(mock_one, n_trials=100, post_event_value=1.0):
     post_mask = tpts >= 0
     data[:, :, post_mask] = post_event_value
 
-    ps.responses = {
+    ps.photometry_responses = {
         'VTA-r': xr.DataArray(
             data, dims=['event', 'trial', 'time'],
             coords={'event': events,
@@ -3014,7 +3056,7 @@ class TestGetResponseVector:
         data[1, :, :][:, post_mask] = 2.0   # firstMov post-event = 2
         data[2, :, :][:, post_mask] = 3.0   # feedback post-event = 3
 
-        ps.responses = {
+        ps.photometry_responses = {
             'VTA-r': xr.DataArray(
                 data, dims=['event', 'trial', 'time'],
                 coords={'event': events,
@@ -3172,7 +3214,7 @@ class TestGetResponseFeatures:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.get_response_features(min_trials=1)
         _, ps = group[0]
-        assert ps.responses == {}
+        assert ps.photometry_responses == {}
 
     def test_default_min_trials_is_one(self, tmp_path):
         """Default min_trials=1 allows sparse conditions through."""
@@ -4485,7 +4527,7 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
                                                                    n_trials)
     data = np.zeros((len(events), n_trials, n_time))
     data[:, :, tpts >= 0] = magnitude[None, :, None]
-    ps.responses = {
+    ps.photometry_responses = {
         region: xr.DataArray(
             data, dims=['event', 'trial', 'time'],
             coords={'event': events,

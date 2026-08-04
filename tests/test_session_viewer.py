@@ -184,13 +184,17 @@ def _make_mock_ps(load_trials_side_effect=None):
     ps.eid = 'test-eid'
     ps.trials = None
     ps.photometry = {}
-    ps.responses = {}
+    ps.photometry_responses = {}
     if load_trials_side_effect:
         ps.load_trials.side_effect = load_trials_side_effect
     else:
         def _set_trials():
             ps.trials = MagicMock()
         ps.load_trials.side_effect = _set_trials
+
+    def _populate_preprocessed():
+        ps.photometry['GCaMP_preprocessed'] = MagicMock()
+    ps.preprocess.side_effect = _populate_preprocessed
     return ps
 
 
@@ -207,7 +211,7 @@ def test_load_session_data_complete_h5_skips_pipeline(monkeypatch, tmp_path):
         ps.photometry = {'GCaMP': MagicMock(),
                          'Isosbestic': MagicMock(),
                          'GCaMP_preprocessed': MagicMock()}
-        ps.responses = {'VTA': MagicMock()}
+        ps.photometry_responses = {'VTA': MagicMock()}
     ps.load_h5.side_effect = _populate_from_h5
 
     result = load_session_data(ps)
@@ -232,10 +236,6 @@ def test_load_session_data_partial_h5_runs_pipeline(monkeypatch, tmp_path):
         ps.photometry['GCaMP'] = MagicMock()
         ps.photometry['Isosbestic'] = MagicMock()
     ps.load_photometry.side_effect = _populate_raw
-
-    def _populate_preprocessed():
-        ps.photometry['GCaMP_preprocessed'] = MagicMock()
-    ps.preprocess.side_effect = _populate_preprocessed
 
     load_session_data(ps)
 

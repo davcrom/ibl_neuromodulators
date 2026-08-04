@@ -1,4 +1,5 @@
 import warnings
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -354,7 +355,6 @@ def _load_preprocessed(parent_group):
 def _save_responses(parent_group, responses, response_window):
     """Write responses/ subgroup from a DataArray(event, trial, time)."""
     responses_group = _replace_group(parent_group, 'responses')
-    responses_group.attrs['fs'] = TARGET_FS
     responses_group.attrs['response_window'] = response_window
     responses_group.create_dataset(
         'times', data=responses.coords['time'].values,
@@ -412,7 +412,7 @@ def _save_photometry(session, h5_file, band):
     regions = set()
     if preprocessed is not None:
         regions.update(preprocessed.columns)
-    regions.update(session.responses.keys())
+    regions.update(session.photometry_responses.keys())
     if has_qc:
         regions.update(session.qc['brain_region'].unique())
 
@@ -422,9 +422,9 @@ def _save_photometry(session, h5_file, band):
         if preprocessed is not None and region in preprocessed.columns:
             _save_preprocessed(region_group, preprocessed[region])
 
-        if region in session.responses:
+        if region in session.photometry_responses:
             _save_responses(
-                region_group, session.responses[region], session.RESPONSE_WINDOW,
+                region_group, session.photometry_responses[region], session.RESPONSE_WINDOW,
             )
 
         if has_qc:
@@ -446,7 +446,7 @@ def _load_photometry(session, h5_file, band):
     if preprocessed_by_region:
         session.photometry[band] = pd.DataFrame(preprocessed_by_region)
 
-    session.responses = {
+    session.photometry_responses = {
         region: region_responses for region in regions
         if (region_responses := _load_responses(photometry_group[region])) is not None
     }
@@ -705,7 +705,7 @@ class PhotometrySession(PhotometrySessionLoader):
         super().__init__(*args, eid=self.eid, **kwargs)
         if not isinstance(self.photometry, dict):
             self.photometry = {}
-        self.responses = {}
+        self.photometry_responses = {}
         self.states = None
         self.ols_fits = {}
         self.qc = pd.DataFrame()
@@ -1231,33 +1231,52 @@ class PhotometrySession(PhotometrySessionLoader):
         # ~ raw_photometry = raw_photometry.set_index(timestamp_col)
         return from_neurophotometrics_df_to_photometry_df(raw_photometry).set_index('times')
 
-    def extract_responses(self, events=None, band='GCaMP_preprocessed',
-                          window=None):
-        """Extract peri-event response matrices as a dict of xarrays.
+    def extract_responses(
+        self,
+        signals: Mapping[str, pd.Series],
+        events: Sequence[str] | None = None,
+        window: Sequence[float] | None = None,
+    ) -> dict[str, xr.DataArray]:
+        """Cut peri-event response matrices out of arbitrary time series.
+
+        Signal-source agnostic: photometry passes ``self.photometry[band]``
+        (a DataFrame, whose ``.items()`` yields ``(region, Series)``), behavior
+        passes a ``label -> Series`` dict. Every label gets the same full
+        ``events`` axis. The result is returned, not stored — the caller
+        assigns it to the attribute for its modality.
+
+        Parameters
+        ----------
+        signals : Mapping[str, pd.Series]
+            Label to time-indexed signal (index in seconds, same clock as
+            ``self.trials``).
+        events : sequence of str, optional
+            ``self.trials`` columns holding event times. Defaults to
+            ``RESPONSE_EVENTS``.
+        window : sequence of float, optional
+            ``(t0, t1)`` seconds relative to each event. Defaults to
+            ``self.RESPONSE_WINDOW``.
 
         Returns
         -------
         dict[str, xr.DataArray]
-            One DataArray per brain region, dims (event, trial, time).
+            One DataArray per label, dims (event, trial, time).
         """
-
-
         if events is None:
             events = RESPONSE_EVENTS
         if window is None:
             window = self.RESPONSE_WINDOW
 
-        self.responses = {}
-        for region in self.photometry[band].columns:
-            signal = self.photometry[band][region]
+        responses = {}
+        for label, signal in signals.items():
             per_event = []
             for event in events:
-                event_times = self.trials[event].values
                 resp, sample_times = get_responses(
-                    signal, event_times, t0=window[0], t1=window[1],
+                    signal, self.trials[event].values,
+                    t0=window[0], t1=window[1],
                 )
                 per_event.append(resp)
-            self.responses[region] = xr.DataArray(
+            responses[label] = xr.DataArray(
                 np.stack(per_event),
                 dims=['event', 'trial', 'time'],
                 coords={
@@ -1266,7 +1285,7 @@ class PhotometrySession(PhotometrySessionLoader):
                     'time': sample_times,
                 },
             )
-        return self.responses
+        return responses
 
     def save_h5(self, fpath=None, groups=None, band='GCaMP_preprocessed', mode='a'):
         """Save session data to HDF5.
@@ -1297,7 +1316,7 @@ class PhotometrySession(PhotometrySessionLoader):
     def _available_save_groups(self, band):
         has_photometry = (
             band in self.photometry
-            or bool(getattr(self, 'responses', None))
+            or bool(getattr(self, 'photometry_responses', None))
             or (getattr(self, 'qc', None) is not None and len(self.qc) > 0)
         )
         has_video = (self.pose_traces is not None
@@ -1817,7 +1836,7 @@ class PhotometrySession(PhotometrySessionLoader):
         if normalize not in (None, 'minmax'):
             raise ValueError(f"normalize must be None or 'minmax', got {normalize!r}")
 
-        responses = self.mask_subsequent_events(self.responses[brain_region])
+        responses = self.mask_subsequent_events(self.photometry_responses[brain_region])
         responses = self.subtract_baseline(responses)
         sample_times = responses.coords['time'].values
 
@@ -1926,7 +1945,7 @@ class PhotometrySession(PhotometrySessionLoader):
         Parameters
         ----------
         brain_region : str
-            Recording region; must be a key of ``self.responses``.
+            Recording region; must be a key of ``self.photometry_responses``.
         formulas : dict[str, str]
             Drop-one family ``{name: formula_template}``; ``{response}`` is
             filled with ``response_col``. One key equals ``reference``.
@@ -1954,7 +1973,7 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         empty = (pd.DataFrame(columns=PERSESSION_DROPONE_COLUMNS),
                  pd.DataFrame(columns=PERSESSION_COEFS_COLUMNS))
-        if brain_region not in self.responses:
+        if brain_region not in self.photometry_responses:
             return empty
 
         target_NM = self.target_NM[self.brain_region.index(brain_region)]
@@ -2007,7 +2026,7 @@ class PhotometrySession(PhotometrySessionLoader):
         ----------
         brain_region : str
             Recording region; ``{}`` is returned if it is absent from
-            ``self.responses``.
+            ``self.photometry_responses``.
         formulas : dict[str, str]
             Drop-one family; their column union defines the complete-case trials.
         events : sequence of str
@@ -2026,7 +2045,7 @@ class PhotometrySession(PhotometrySessionLoader):
             :func:`iblnm.analysis.code_predictors`), carrying ``response_col``
             and the coded predictor columns the formulas reference.
         """
-        if brain_region not in self.responses:
+        if brain_region not in self.photometry_responses:
             return {}
         df = self._response_modeling_frame(brain_region, response_col)
         coded = {}
@@ -2065,7 +2084,7 @@ class PhotometrySession(PhotometrySessionLoader):
                                  response_col: str) -> pd.DataFrame:
         """Per-trial response magnitudes for one region merged with regressors.
 
-        For each event in ``self.responses[brain_region]`` computes the
+        For each event in ``self.photometry_responses[brain_region]`` computes the
         early-window magnitude per trial (named ``response_col``), stacks the
         events into one long frame, and merges on ``trial`` with this session's
         :func:`iblnm.analysis.build_trial_regressors`. Adds the recording's
@@ -2078,7 +2097,7 @@ class PhotometrySession(PhotometrySessionLoader):
             Long-form ``event, trial, response_col`` plus the coded-ready
             regressor columns, restricted to unbiased-block go trials.
         """
-        responses = self.responses[brain_region]
+        responses = self.photometry_responses[brain_region]
         tpts = responses.coords['time'].values
         magnitude_frames = [
             pd.DataFrame({
@@ -3131,14 +3150,14 @@ class PhotometrySessionGroup:
 
             ps.load_h5(h5_path, groups=['trials', 'photometry'])
 
-            if (getattr(ps, 'responses', None) is None
+            if (getattr(ps, 'photometry_responses', None) is None
                     or getattr(ps, 'trials', None) is None):
                 continue
 
-            if brain_region not in ps.responses:
+            if brain_region not in ps.photometry_responses:
                 continue
 
-            masked = ps.mask_subsequent_events(ps.responses[brain_region])
+            masked = ps.mask_subsequent_events(ps.photometry_responses[brain_region])
             responses = ps.subtract_baseline(masked)
 
             sample_times = responses.coords['time'].values
@@ -3700,14 +3719,14 @@ class PhotometrySessionGroup:
             fiber_idx = int(rec['fiber_idx']) if has_fiber_idx else 0
 
             # Load H5 if responses not yet available
-            if not ps.responses or not hasattr(ps, 'trials') or ps.trials is None:
+            if not ps.photometry_responses or not hasattr(ps, 'trials') or ps.trials is None:
                 h5_path = Path(self.h5_dir) / f'{eid}.h5'
                 if not h5_path.exists():
                     print(f"  H5 file not found: {h5_path}")
                     continue
                 ps.load_h5(h5_path, groups=['trials', 'photometry'])
 
-            if brain_region not in ps.responses:
+            if brain_region not in ps.photometry_responses:
                 continue
 
             vec = ps.get_response_vector(
@@ -3716,7 +3735,7 @@ class PhotometrySessionGroup:
             rows[(eid, target_nm, fiber_idx)] = vec
 
             # Discard raw data to free memory
-            ps.responses = {}
+            ps.photometry_responses = {}
             del ps.trials
 
         if not rows:

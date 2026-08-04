@@ -87,7 +87,9 @@ def process_session(ps, reprocess=False):
         ]
 
     if events_to_extract:
-        ps.extract_responses(events=events_to_extract)
+        ps.photometry_responses = ps.extract_responses(
+            ps.photometry['GCaMP_preprocessed'], events=events_to_extract,
+        )
         ps.save_h5(groups=['photometry'])
 
     return 'processed'

@@ -92,7 +92,10 @@ def prepare_session(ps):
     # contrastLeft/contrastRight are not persisted) so it stays aligned with
     # ps.baseline and the per-trial outcome selectors after the trial filter.
     ps.signed_contrast = ps.trials['signed_contrast'].to_numpy()
-    responses = ps.extract_responses(events=['stimOn_times'], window=[-0.4, -0.1])
+    responses = ps.extract_responses(
+        ps.photometry['GCaMP_preprocessed'],
+        events=['stimOn_times'], window=[-0.4, -0.1],
+    )
     baseline = responses[ps.brain_region[0]].sel(event='stimOn_times').mean(axis=1).to_numpy()
     # z-score within session so the slope is comparable across recordings and
     # the donor-swap null injects no cross-session scale differences

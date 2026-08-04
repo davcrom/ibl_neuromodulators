@@ -120,8 +120,10 @@ def load_session_data(ps):
     if 'GCaMP_preprocessed' not in ps.photometry:
         ps.preprocess()
 
-    if ps.trials is not None and not ps.responses:
-        ps.extract_responses()
+    if ps.trials is not None and not ps.photometry_responses:
+        ps.photometry_responses = ps.extract_responses(
+            ps.photometry['GCaMP_preprocessed']
+        )
 
     return ps
 

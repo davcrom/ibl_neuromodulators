@@ -73,7 +73,7 @@ class PhotometrySessionViewer:
                 and 'Isosbestic' in self.session.photometry)
 
     def _has_responses(self):
-        return bool(getattr(self.session, 'responses', None))
+        return bool(getattr(self.session, 'photometry_responses', None))
 
     def _has_trials(self):
         return (hasattr(self.session, 'trials')
@@ -81,8 +81,8 @@ class PhotometrySessionViewer:
 
     def _events(self):
         """Return events sorted by EVENT_ORDER; unknowns appended at the end."""
-        first_region = next(iter(self.session.responses))
-        evs = list(self.session.responses[first_region].coords['event'].values)
+        first_region = next(iter(self.session.photometry_responses))
+        evs = list(self.session.photometry_responses[first_region].coords['event'].values)
         known   = [e for e in EVENT_ORDER if e in evs]
         unknown = [e for e in evs if e not in EVENT_ORDER]
         return known + unknown
@@ -242,7 +242,7 @@ class PhotometrySessionViewer:
 
     def _get_transformed_responses(self, region):
         """Return responses for `region` with active transforms applied."""
-        resp = self.session.responses[region]
+        resp = self.session.photometry_responses[region]
         if self._mask_on:
             resp = self.session.mask_subsequent_events(resp)
         if self._baseline_on:
@@ -385,7 +385,7 @@ class PhotometrySessionViewer:
         ax_heat.cla()
         ax_mean.cla()
 
-        region_responses = self.session.responses[region]
+        region_responses = self.session.photometry_responses[region]
         tpts = region_responses.coords['time'].values
         raw  = region_responses.sel(event=event).values  # (n_trials, n_times)
         resp = self._get_transformed_responses(region).sel(event=event).values
