@@ -147,7 +147,8 @@ def point_colors(df: pd.DataFrame, color_by: str):
         ``session_type``.
     """
     if color_by == 'date':
-        ordinals = pd.to_datetime(df['start_time']).map(pd.Timestamp.toordinal)
+        ordinals = pd.to_datetime(df['start_time'],
+                                  format='ISO8601').map(pd.Timestamp.toordinal)
         ordinals = ordinals.to_numpy(dtype=float)
         norm = Normalize(ordinals.min(), ordinals.max())
         mappable = plt.cm.ScalarMappable(norm=norm, cmap=DATE_CMAP)

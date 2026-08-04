@@ -45,9 +45,10 @@ def test_point_colors_session_type_maps_palette():
 
 
 def test_point_colors_date_orders_by_acquisition():
-    df = pd.DataFrame({'start_time': ['2021-11-06T10:00:00',
+    # catalog start_times mix fractional-second and whole-second ISO strings
+    df = pd.DataFrame({'start_time': ['2021-11-06T10:00:00.123456',
                                       '2024-01-01T10:00:00',
-                                      '2026-02-05T10:00:00']})
+                                      '2026-02-05T10:00:00.789012']})
     colors, mappable = pose_qc.point_colors(df, 'date')
     assert mappable is not None
     # earliest session is darker (lower) than latest on the colormap
