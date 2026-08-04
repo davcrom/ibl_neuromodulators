@@ -2866,13 +2866,15 @@ class PhotometrySessionGroup:
                                          n_bootstrap=1000, random_state=0):
         """Per-mouse permutation p-values for the per-session drop-one ΔR² grid.
 
-        For each ``(target_NM, event)`` the donor pool is every scorable
-        recording of that target_NM at that event. For each focal
-        recording-event and each dropped predictor (the non-``reference``
-        ``formulas`` keys), the cross-session swap null
+        For each event the donor pool is every scorable recording at that event,
+        across all cohorts (target_NMs) — the IBL task is standardized and
+        interleaved across cohorts on the same rigs, so any session's trial
+        sequence is a valid stand-in. For each focal recording-event and each
+        dropped predictor (the non-``reference`` ``formulas`` keys), the
+        cross-session swap null
         (:func:`iblnm.analysis.permutation_null_delta_r2`) is computed against
-        all other same-target_NM recordings (focal excluded). The per-session
-        null vectors are pooled per mouse against the observed
+        all other same-event recordings (focal excluded). The per-session null
+        vectors are pooled per mouse against the observed
         ``self.response_ols_dropone_results`` by
         :func:`assemble_persession_pvalue_table`.
 
@@ -2914,9 +2916,10 @@ class PhotometrySessionGroup:
         null_vectors = {}
         for eid, target_NM, event, focal in tqdm(
                 scorable, desc="Permutation null (per recording-event)"):
-            donors = [frame for d_eid, d_nm, d_event, frame in scorable
-                      if d_nm == target_NM and d_event == event
-                      and d_eid != eid]
+            # Cohort (target_NM, the ignored field) is deliberately not filtered
+            # on: the task is standardized and interleaved across cohorts.
+            donors = [frame for d_eid, _, d_event, frame in scorable
+                      if d_event == event and d_eid != eid]
             for predictor in predictors:
                 null = analysis.permutation_null_delta_r2(
                     focal, donors, formulas[reference], formulas[predictor],

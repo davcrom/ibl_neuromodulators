@@ -6145,18 +6145,39 @@ class TestResponseOlsDroponePermutation:
                             fake_null)
         return calls
 
-    def test_donors_are_other_same_targetnm_recordings(self, monkeypatch):
-        """A focal recording's donors are exactly the other same-target_NM
-        recordings (focal excluded)."""
+    def test_donors_span_cohorts_within_event(self, monkeypatch):
+        """A focal recording's donors are every other recording at the same
+        event, regardless of target_NM; different-event recordings are excluded.
+        """
         group = self._group()
         group.response_ols_dropone_results = self._observed()
-        calls = self._patch(group, monkeypatch)
+        # e1/e2 VTA-DA and e3 DR-5HT all at feedback; e4 VTA-DA at stimOn.
+        scorable = [
+            ('e1', 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': ['e1']})),
+            ('e2', 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': ['e2']})),
+            ('e3', 'DR-5HT', 'feedback_times', pd.DataFrame({'tag': ['e3']})),
+            ('e4', 'VTA-DA', 'stimOn_times', pd.DataFrame({'tag': ['e4']})),
+        ]
+        monkeypatch.setattr(group, '_gather_coded_frames',
+                            lambda *a, **k: scorable)
+        calls = []
+
+        def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
+                      predictor, response_col='response', *, rng,
+                      n_bootstrap=1000):
+            calls.append((focal_df['tag'].iloc[0],
+                          {d['tag'].iloc[0] for d in donor_dfs}, predictor))
+            return np.full(n_bootstrap, 0.01)
+
+        monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
+                            fake_null)
 
         group.response_ols_dropone_permutation(
-            self._FORMULAS, events=['feedback_times'])
+            self._FORMULAS, events=['feedback_times', 'stimOn_times'])
 
         donors_for_e1 = next(d for f, d, _ in calls if f == 'e1')
-        assert donors_for_e1 == {'e2', 'e3'}
+        assert donors_for_e1 == {'e2', 'e3'}   # cross-cohort, same event
+        assert 'e4' not in donors_for_e1       # different event excluded
 
     def test_grain_and_columns(self, monkeypatch):
         """Returned table has grain (target_NM, event, predictor, subject) and
