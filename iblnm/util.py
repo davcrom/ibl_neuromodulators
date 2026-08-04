@@ -7,6 +7,7 @@ from iblnm.config import (
     N_UNIQUE_SAMPLES_THRESHOLD, VALID_TARGETNMS, DATASET_CATEGORIES,
     EXCLUDE_SESSION_TYPES, PROTOCOL_RED_FLAGS, SESSION_TYPES,
     SUBJECTS_TO_EXCLUDE, SESSIONS_H5_DIR, LOGGED_ERRORS_FPATH,
+    QC_VALUE_ORDER,
 )
 from iblnm.validation import (
     exception_logger,
@@ -15,6 +16,37 @@ from iblnm.validation import (
 
 
 LOG_COLUMNS = ['eid', 'error_type', 'error_message', 'traceback']
+
+
+def fill_qc_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Label every unset QC outcome ``NOT_SET`` across the assembled QC table.
+
+    Alyx omits a check entirely when it did not run, so the gap only becomes
+    visible once every session is in one table and the column exists. A null
+    QC outcome means the same thing as the IBL label ``NOT_SET``, but unlike
+    the label it cannot be stored as an HDF5 attr and drops silently out of
+    every category-based grouping.
+
+    Outcome columns are identified by content, not by name: a ``qc_`` column
+    carrying at least one ``QC_VALUE_ORDER`` label. That keeps the numeric
+    ``qc_task_*`` columns — pass fractions, not outcomes — out of it, while
+    still covering outcome columns polluted by stray numeric values.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        QC table, one row per session, as assembled from ``get_extended_qc``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``df`` with nulls in QC outcome columns replaced by
+        ``'NOT_SET'``. A column with no labels at all is left untouched, since
+        nothing distinguishes it from a numeric one.
+    """
+    label_cols = [col for col in df.columns
+                  if col.startswith('qc_') and df[col].isin(QC_VALUE_ORDER).any()]
+    return df.assign(**{col: df[col].fillna('NOT_SET') for col in label_cols})
 
 
 def concat_logs(logs):

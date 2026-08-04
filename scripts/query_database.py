@@ -24,7 +24,7 @@ from iblnm.io import get_extended_qc
 from iblnm.util import (
     collect_catalog, collect_errors,
     enforce_schema, fill_empty_lists_from_group, fill_brain_region_from_fibers,
-    fix_brain_regions, derive_target_nm, df2pqt,
+    fix_brain_regions, derive_target_nm, df2pqt, fill_qc_labels,
 )
 
 
@@ -142,6 +142,9 @@ if __name__ == '__main__':
         df_qc = df_qc.progress_apply(
             get_extended_qc, axis='columns', exlog=error_log
         ).copy()
+        # A check Alyx never ran leaves no key, so the gap is only visible once
+        # every session shares one table and the column exists.
+        df_qc = fill_qc_labels(df_qc)
 
     # Save QC
     if df_qc is not None:

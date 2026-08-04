@@ -1305,3 +1305,34 @@ class TestCountPopulationByTargetEvent:
         assert stimon['n_mice'].item() == 2         # mice m1, m2
         assert feedback['n_recordings'].item() == 1
         assert feedback['n_mice'].item() == 1
+
+
+class TestFillQCLabels:
+    """fill_qc_labels labels unset QC outcomes without touching numeric QC."""
+
+    def test_null_label_becomes_not_set(self):
+        from iblnm.util import fill_qc_labels
+        df = pd.DataFrame({'eid': ['a', 'b'],
+                           'qc_videoLeft_focus': ['PASS', None]})
+        result = fill_qc_labels(df)
+        assert result['qc_videoLeft_focus'].tolist() == ['PASS', 'NOT_SET']
+
+    def test_numeric_qc_column_untouched(self):
+        from iblnm.util import fill_qc_labels
+        df = pd.DataFrame({'eid': ['a', 'b'],
+                           'qc_task_goCue_delays': [0.99, np.nan]})
+        result = fill_qc_labels(df)
+        assert result['qc_task_goCue_delays'].isna().sum() == 1
+
+    def test_mixed_column_with_stray_number_still_filled(self):
+        from iblnm.util import fill_qc_labels
+        df = pd.DataFrame({'eid': ['a', 'b', 'c'],
+                           'qc_videoLeft_pin_state': ['PASS', 168, None]})
+        result = fill_qc_labels(df)
+        assert result['qc_videoLeft_pin_state'].tolist() == ['PASS', 168, 'NOT_SET']
+
+    def test_non_qc_column_untouched(self):
+        from iblnm.util import fill_qc_labels
+        df = pd.DataFrame({'eid': ['a', 'b'], 'subject': ['m1', None]})
+        result = fill_qc_labels(df)
+        assert result['subject'].isna().sum() == 1
