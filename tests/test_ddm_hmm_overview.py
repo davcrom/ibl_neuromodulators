@@ -126,11 +126,10 @@ def _make_state_trials(state, p_choose_right, rt_base, rt_slope, seed):
 
 
 def test_build_state_param_table_recovers_per_state_param_signs():
-    """Each state gets one row whose fitted param signs match the planted behavior.
+    """Each state gets one row whose fitted psychometric bias matches the plant.
 
-    State 1 chooses right most of the time (rightward bias, negative ``bias``) with
-    RT falling as contrast rises (negative slope); state 2 is the mirror image
-    (leftward bias, positive ``bias``; RT rising, positive slope).
+    State 1 chooses right most of the time (rightward bias, negative ``bias``);
+    state 2 is the mirror image (leftward bias, positive ``bias``).
     """
     frame = pd.concat([
         _make_state_trials(1, p_choose_right=0.85, rt_base=1.0, rt_slope=-0.004,
@@ -145,4 +144,74 @@ def test_build_state_param_table_recovers_per_state_param_signs():
     assert set(ddm.FEATURE_COLS) <= set(table.columns)
     by_state = table.set_index('state')
     assert by_state.loc[1, 'bias'] < 0 < by_state.loc[2, 'bias']
-    assert by_state.loc[1, 'rt_slope'] < 0 < by_state.loc[2, 'rt_slope']
+
+
+def test_state_curves_chronometric_median_rt_by_outcome_and_side():
+    """Chronometric frame is median RT per (state, outcome, side); zero splits.
+
+    Correct trials (feedbackType 1) resolve fast (0.3 s), incorrect (feedbackType
+    -1) slow (0.9 s). Zero contrast appears on both sides (signed -0.0 left, +0.0
+    right), so it yields two separate rows rather than one merged point.
+    """
+    rows = []
+    for feedback, rt in [(1, 0.3), (-1, 0.9)]:
+        for sc in [-100.0, -25.0, 25.0, 100.0]:
+            rows += [{'map_state': 1, 'choice': 1, 'signed_contrast': sc,
+                      'contrast': abs(sc), 'rt': rt, 'feedbackType': feedback,
+                      'stim_side': 'left' if sc < 0 else 'right'}
+                     for _ in range(3)]
+        rows += [{'map_state': 1, 'choice': 1, 'signed_contrast': -0.0,
+                  'contrast': 0.0, 'rt': rt, 'feedbackType': feedback,
+                  'stim_side': 'left'} for _ in range(3)]
+        rows += [{'map_state': 1, 'choice': 1, 'signed_contrast': 0.0,
+                  'contrast': 0.0, 'rt': rt, 'feedbackType': feedback,
+                  'stim_side': 'right'} for _ in range(3)]
+    frame = pd.DataFrame(rows)
+    param_table = pd.DataFrame({
+        'state': [1], 'bias': [0.0], 'threshold': [20.0],
+        'lapse_left': [0.05], 'lapse_right': [0.05],
+    })
+
+    chrono = ddm._state_curves(frame, param_table)['chronometric']
+
+    assert set(chrono['outcome']) == {'correct', 'incorrect'}
+    assert set(chrono['side']) == {'left', 'right'}
+    corr = chrono.query("outcome == 'correct' and signed_contrast == -100")
+    assert np.isclose(corr['median_rt'].iloc[0], 0.3)
+    # Zero contrast keeps a row per side (two dots at 0), not one merged point.
+    zero = chrono.query("outcome == 'correct' and signed_contrast == 0")
+    assert len(zero) == 2
+    assert set(zero['side']) == {'left', 'right'}
+
+
+def _one_transition_eid(eid):
+    """One eid with a single 0.8->0.2 (L->R) switch; state_1 rises 0.2->0.8 at it."""
+    return pd.DataFrame({
+        'eid': eid,
+        'probabilityLeft': [0.8, 0.8, 0.8, 0.2, 0.2, 0.2],
+        'map_state': [1, 1, 1, 1, 1, 1],
+        'state_1': [0.2, 0.2, 0.2, 0.8, 0.8, 0.8],
+        'state_2': [0.8, 0.8, 0.8, 0.2, 0.2, 0.2],
+    })
+
+
+def test_block_transition_traces_are_baseline_deltas_with_sem():
+    """Traces are Δ from the pre-transition baseline, with a matching SEM array.
+
+    Two eids each contribute one identical L->R window (window=2, baseline=2):
+    state_1 sits at 0.2 before the switch and 0.8 after, so the baseline-subtracted
+    mean is 0 at the pre-transition lags and +0.6 at the transition. Identical
+    windows give zero SEM. No R->L transition occurs, so only L->R is returned.
+    """
+    frame = pd.concat([_one_transition_eid('e1'), _one_transition_eid('e2')],
+                      ignore_index=True)
+
+    aligned = ddm._block_transition_traces(frame, window=2, baseline=2)
+
+    assert set(aligned) == {'L->R'}
+    mean, sem = aligned['L->R']['mean'], aligned['L->R']['sem']
+    assert mean.shape == (5, 2) and sem.shape == (5, 2)
+    # state_1 (column 0): lags -2,-1 are baseline (Δ 0); lag 0 is +0.6.
+    assert np.allclose(mean[:2, 0], 0.0)
+    assert np.isclose(mean[2, 0], 0.6)
+    assert np.allclose(sem, 0.0)

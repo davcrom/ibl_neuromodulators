@@ -33,25 +33,27 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_H5_DIR, DDM_HMM_PARAMS_FPATH, DDM_HMM_FIGURES_DIR,
-    FIGURE_DPI,
 )
 from iblnm.analysis import align_traces_at_transitions, pca_2d, state_dwell_times
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.task import (
-    fit_chronometric, fit_psychometric, reconstruct_contrast_sides,
+    fit_psychometric, reconstruct_contrast_sides,
 )
 from iblnm.vis import (
-    plot_state_block_transitions, plot_state_dwell_times, plot_state_param_scatter,
-    plot_state_pca, plot_state_posterior_histograms,
+    plot_state_block_transitions, plot_state_param_scatter,
+    plot_state_pca, plot_state_posterior_dwell,
     plot_state_psychometric_chronometric,
 )
 
 # Behavioral-parameter features feeding the goal-4b PCA (one per state).
-FEATURE_COLS = ['bias', 'threshold', 'lapse_left', 'lapse_right', 'rt_slope']
+FEATURE_COLS = ['bias', 'threshold', 'lapse_left', 'lapse_right']
 # probabilityLeft (prev, cur) pairs defining each block-transition type (goal 5).
 BLOCK_TRANSITIONS = {'L->R': (0.8, 0.2), 'R->L': (0.2, 0.8)}
 BLOCK_WINDOW = 15  # half-window in trials around a transition (spec Decision)
+BLOCK_BASELINE = 5  # trials before a transition defining the Δ-posterior baseline
+# feedbackType -> outcome label; splits the chronometric curves (goal 3).
+OUTCOMES = {'correct': 1, 'incorrect': -1}
 
 
 def build_mouse_states_frame(
@@ -104,10 +106,10 @@ def build_state_param_table(mouse_frame: pd.DataFrame) -> pd.DataFrame:
 
     Groups the mouse's trials by MAP state and fits, per state, a psychometric
     function (via :func:`fit_psychometric`, pooling across ``probabilityLeft``
-    blocks) and a chronometric median-RT slope (via :func:`fit_chronometric`).
-    ``contrastLeft``/``contrastRight`` are reconstructed from ``stim_side`` and
-    ``contrast`` (:func:`reconstruct_contrast_sides`) as ``fit_psychometric``
-    requires. Feeds goals 3 (curve overlays) and 4b (PCA features).
+    blocks). ``contrastLeft``/``contrastRight`` are reconstructed from
+    ``stim_side`` and ``contrast`` (:func:`reconstruct_contrast_sides`) as
+    ``fit_psychometric`` requires. Feeds goal 3 (curve overlays) and goal 4b
+    (PCA features).
 
     Parameters
     ----------
@@ -122,24 +124,19 @@ def build_state_param_table(mouse_frame: pd.DataFrame) -> pd.DataFrame:
     -------
     pandas.DataFrame
         One row per state, columns ``['state', 'bias', 'threshold', 'lapse_left',
-        'lapse_right', 'rt_slope', 'rt_intercept']``. ``bias``/``threshold``/
-        ``lapse_*`` are the psychometric fit; ``rt_slope``/``rt_intercept`` the
-        chronometric line (seconds per unit ``|contrast|`` and seconds). NaN where
-        a state has too few trials to fit.
+        'lapse_right']`` — the psychometric fit. NaN where a state has too few
+        trials to fit.
     """
     rows = []
     for state, trials in mouse_frame.groupby('map_state'):
         trials = trials.join(reconstruct_contrast_sides(trials))
         psych = fit_psychometric(trials)
-        chrono = fit_chronometric(trials, rt_col='rt', contrast_col='contrast')
         rows.append({
             'state': int(state),
             'bias': psych['bias'],
             'threshold': psych['threshold'],
             'lapse_left': psych['lapse_left'],
             'lapse_right': psych['lapse_right'],
-            'rt_slope': chrono['slope'],
-            'rt_intercept': chrono['intercept'],
         })
     return pd.DataFrame(rows)
 
@@ -149,9 +146,12 @@ def _state_curves(
 ) -> dict[str, pd.DataFrame]:
     """Assemble one mouse's per-state psychometric + chronometric plot frames.
 
-    Combines empirical points (P(choose right) per signed contrast; median RT per
-    ``|contrast|``) with the fitted parameters from ``param_table`` into the long
-    frames :func:`plot_state_psychometric_chronometric` consumes.
+    Builds the long frames :func:`plot_state_psychometric_chronometric` consumes:
+    the psychometric frame combines empirical P(choose right) per signed contrast
+    with the fitted params from ``param_table``; the chronometric frame is the
+    empirical median RT per signed contrast, split by trial outcome
+    correct/incorrect and by stimulus side (drawn as plain lines, no fit; sides
+    are not connected).
 
     Returns
     -------
@@ -172,33 +172,54 @@ def _state_curves(
              'lapse_left': p['lapse_left'], 'lapse_right': p['lapse_right']}
             for sc, pr in p_right.items()
         ]
-        median_rt = trials['rt'].groupby(trials['contrast'].abs()).median()
-        chrono_rows += [
-            {'state': state, 'contrast': c, 'median_rt': rt,
-             'slope': p['rt_slope'], 'intercept': p['rt_intercept']}
-            for c, rt in median_rt.items()
-        ]
+        for outcome, feedback in OUTCOMES.items():
+            outcome_trials = trials[trials['feedbackType'] == feedback]
+            # Split by stimulus side so left/right lines are not connected and
+            # zero contrast keeps a separate point per side (two dots at 0).
+            for side in ('left', 'right'):
+                side_trials = outcome_trials[outcome_trials['stim_side'] == side]
+                median_rt = side_trials['rt'].groupby(
+                    side_trials['signed_contrast']).median()
+                chrono_rows += [
+                    {'state': state, 'outcome': outcome, 'side': side,
+                     'signed_contrast': sc, 'median_rt': rt}
+                    for sc, rt in median_rt.items()
+                ]
     return {'psychometric': pd.DataFrame(psych_rows),
             'chronometric': pd.DataFrame(chrono_rows)}
 
 
 def _block_transition_traces(
-    mouse_frame: pd.DataFrame, window: int
-) -> dict[str, np.ndarray]:
-    """Mean per-state posterior traces around each block transition for one mouse.
+    mouse_frame: pd.DataFrame, window: int, baseline: int = BLOCK_BASELINE
+) -> dict[str, dict[str, np.ndarray]]:
+    """Δ-posterior traces (mean + SEM) around each block transition for one mouse.
 
     Detects ``probabilityLeft`` block transitions per eid (0.8->0.2 = L->R,
     0.2->0.8 = R->L; the initial 0.5 block never triggers), slices ``±window``
     trials of the per-state posteriors around each with
-    :func:`align_traces_at_transitions`, and pools windows across the mouse's eids
-    before averaging.
+    :func:`align_traces_at_transitions`, and pools windows across the mouse's
+    eids. Each window is expressed as a change from its own pre-transition
+    baseline — the mean over the ``baseline`` trials just before the switch
+    (lags ``-baseline … -1``) — then averaged across transitions, with the
+    standard error of that mean.
+
+    Parameters
+    ----------
+    mouse_frame : pandas.DataFrame
+        One mouse's concatenated trials + state posteriors, with ``eid``,
+        ``probabilityLeft``, ``map_state`` and ``state_1``…``state_K`` columns.
+    window : int
+        Half-window in trials around each transition.
+    baseline : int, optional
+        Number of pre-transition trials averaged as the per-window baseline
+        (default :data:`BLOCK_BASELINE`).
 
     Returns
     -------
-    dict of str to numpy.ndarray
-        ``{transition_type: mean_trace}`` with ``mean_trace`` shape
-        ``(2*window+1, K)``; only transition types with at least one occurrence are
-        present.
+    dict of str to dict of str to numpy.ndarray
+        ``{transition_type: {'mean': arr, 'sem': arr}}`` with each ``arr`` of
+        shape ``(2*window+1, K)``; only transition types with at least one
+        occurrence are present.
     """
     kept = mouse_frame[mouse_frame['map_state'].notna()]
     state_cols = [c for c in kept.columns if c.startswith('state_')]
@@ -212,21 +233,28 @@ def _block_transition_traces(
                 windows, _ = align_traces_at_transitions(values, idx, window)
                 collected[transition].append(windows)
 
+    base_slice = slice(window - baseline, window)
     aligned = {}
     for transition, windows in collected.items():
-        if windows:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', category=RuntimeWarning)
-                aligned[transition] = np.nanmean(
-                    np.concatenate(windows, axis=0), axis=0)
+        if not windows:
+            continue
+        pooled = np.concatenate(windows, axis=0)  # (n_transitions, 2w+1, K)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            pre = np.nanmean(pooled[:, base_slice, :], axis=1, keepdims=True)
+            delta = pooled - pre
+            n_valid = np.sum(~np.isnan(delta), axis=0)
+            aligned[transition] = {
+                'mean': np.nanmean(delta, axis=0),
+                'sem': np.nanstd(delta, axis=0, ddof=1) / np.sqrt(n_valid),
+            }
     return aligned
 
 
 def _save(fig: plt.Figure, name: str) -> None:
-    """Save ``fig`` to ``DDM_HMM_FIGURES_DIR/{name}.png`` and close it."""
+    """Save ``fig`` to ``DDM_HMM_FIGURES_DIR/{name}.svg`` and close it."""
     DDM_HMM_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
-    fig.savefig(DDM_HMM_FIGURES_DIR / f'{name}.png', dpi=FIGURE_DPI,
-                bbox_inches='tight')
+    fig.savefig(DDM_HMM_FIGURES_DIR / f'{name}.svg', bbox_inches='tight')
     plt.close(fig)
 
 
@@ -296,19 +324,20 @@ def main(one=None, window: int = BLOCK_WINDOW) -> None:
     subjects = list(dict.fromkeys(ddm_params['mouse']))
     views = _assemble_mouse_views(group, subjects, one, window)
 
-    _save(plot_state_posterior_histograms(views['states']), 'goal1_posteriors')
-    _save(plot_state_dwell_times(views['dwell']), 'goal2_dwell_times')
+    _save(plot_state_posterior_dwell(views['states'], views['dwell']),
+          'posteriors_dwell')
     _save(plot_state_psychometric_chronometric(views['curves']),
-          'goal3_psychometric_chronometric')
-    _save(plot_state_param_scatter(ddm_params), 'goal4a_ddm_param_scatter')
+          'psychometric_chronometric')
+    _save(plot_state_param_scatter(ddm_params), 'ddm_param_scatter')
 
     features = views['features'].dropna(subset=FEATURE_COLS)
-    scores, _ = pca_2d(features[FEATURE_COLS].to_numpy())
-    _save(plot_state_pca(scores, features['mouse']), 'goal4b_behavioral_pca')
+    scores, loadings = pca_2d(features[FEATURE_COLS].to_numpy())
+    _save(plot_state_pca(scores, features['mouse'], features['state'],
+                         loadings, FEATURE_COLS), 'behavioral_pca')
 
-    _save(plot_state_block_transitions(views['aligned'], window),
-          'goal5_block_transitions')
-    print(f"Wrote 6 figures to {DDM_HMM_FIGURES_DIR}")
+    _save(plot_state_block_transitions(views['aligned'], BLOCK_TRANSITIONS, window),
+          'block_transitions')
+    print(f"Wrote 5 figures to {DDM_HMM_FIGURES_DIR}")
 
 
 if __name__ == '__main__':
