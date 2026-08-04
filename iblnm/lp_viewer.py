@@ -25,6 +25,7 @@ from matplotlib.widgets import SpanSelector
 
 from iblnm.config import (
     DATASET_CATEGORIES,
+    LABEL2EVENT,
     LP_QC_LABELS,
     POSE_MEASURES,
     QC_VALUE_ORDER,
@@ -34,7 +35,7 @@ from iblnm.config import (
 from iblnm.data import (
     LP_QC_NOT_SET,
     PhotometrySession,
-    _load_pose_traces,
+    _load_movement_responses,
     _load_pose_xcorr,
 )
 
@@ -395,13 +396,13 @@ class LPViewerModel:
     ):
         self.h5_dir = Path(h5_dir)
         self.df_cohort = df_cohort[df_cohort['eid'].map(
-            self._has_pose_traces)].reset_index(drop=True)
+            self._has_movement_responses)].reset_index(drop=True)
         self.pose_path = pose_path
 
-    def _has_pose_traces(self, eid: str) -> bool:
-        """True when ``{eid}.h5`` has an extracted ``video/traces`` subgroup.
+    def _has_movement_responses(self, eid: str) -> bool:
+        """True when ``{eid}.h5`` holds at least one ``video/{label}/responses``.
 
-        The pose roll-up carries a row for every session, but trial-mean traces
+        The pose roll-up carries a row for every session, but movement responses
         are only written for sessions with LightningPose output. The viewer can
         only display the latter, so the cohort is restricted to these.
         """
@@ -409,7 +410,7 @@ class LPViewerModel:
         if not fpath.exists():
             return False
         with h5py.File(fpath, 'r') as f:
-            return 'video' in f and 'traces' in f['video']
+            return 'video' in f and bool(_load_movement_responses(f['video']))
 
     def population_mask(
         self,
@@ -441,20 +442,23 @@ class LPViewerModel:
 
     def session_panels(self, eid: str) -> SessionPanels:
         """Load the `video` H5 group for `eid` and assemble its panel data:
-        the trial-mean trace per bodypart, the cross-correlation dict, and the
-        session's `fraction_correct` (or None when unavailable)."""
+        the trial-mean trace per bodypart (each channel's own event cell, see
+        `LABEL2EVENT`), the cross-correlation dict, and the session's
+        `fraction_correct` (or None when unavailable)."""
         with h5py.File(self.h5_dir / f'{eid}.h5', 'r') as f:
-            traces = _load_pose_traces(f['video'])
+            movement_responses = _load_movement_responses(f['video'])
             xcorr = _load_pose_xcorr(f['video'])
         trial_means = {
-            str(bodypart): traces.sel(bodypart=bodypart).mean('trial').values
-            for bodypart in traces.coords['bodypart'].values
+            label: responses.sel(event=LABEL2EVENT[label]).mean('trial').values
+            for label, responses in movement_responses.items()
         }
         match = self.df_cohort.loc[
             self.df_cohort['eid'] == eid, 'fraction_correct']
         fraction_correct = match.item() if len(match) else None
+        # Every channel shares one time axis, so any label's serves the panels.
+        any_responses = next(iter(movement_responses.values()))
         return SessionPanels(
-            times=traces.coords['time'].values,
+            times=any_responses.coords['time'].values,
             traces=trial_means,
             xcorr=xcorr,
             fraction_correct=None if pd.isna(fraction_correct) else fraction_correct,

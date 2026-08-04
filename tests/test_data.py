@@ -1574,27 +1574,27 @@ class TestSaveLoadH5:
 
     def _make_video_session(self, mock_session_series, qc_lp='NOT_SET',
                             qc_movement='NOT_SET'):
-        """PhotometrySession carrying synthetic pose traces + cross-correlation."""
+        """PhotometrySession carrying synthetic movement responses + xcorr."""
         import xarray as xr
+        from iblnm.config import MOVEMENT_EVENTS
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
                                load_data=False)
         n_trial, n_time = 4, 20
-        bodyparts = ['paw', 'nose', 'tongue_speed', 'tongue_likelihood']
+        labels = ['paw', 'nose', 'tongue_speed', 'tongue_likelihood']
         rng = np.random.default_rng(0)
-        coords = {
-            'bodypart': bodyparts,
-            'trial': np.arange(n_trial),
-            'time': np.linspace(-1, 1, n_time),
+        ps.movement_responses = {
+            label: xr.DataArray(
+                rng.standard_normal((len(MOVEMENT_EVENTS), n_trial, n_time)),
+                dims=['event', 'trial', 'time'],
+                coords={
+                    'event': list(MOVEMENT_EVENTS),
+                    'trial': np.arange(n_trial),
+                    'time': np.linspace(-1, 1, n_time),
+                },
+            )
+            for label in labels
         }
-        ps.pose_traces = xr.DataArray(
-            rng.standard_normal((len(bodyparts), n_trial, n_time)),
-            dims=['bodypart', 'trial', 'time'], coords=coords,
-        )
-        ps.pose_baseline_traces = xr.DataArray(
-            rng.standard_normal((len(bodyparts), n_trial, n_time)),
-            dims=['bodypart', 'trial', 'time'], coords=coords,
-        )
         n_lags = 11
         ps.pose_xcorr = {
             'functions': rng.standard_normal((3, n_lags)),
@@ -1607,7 +1607,7 @@ class TestSaveLoadH5:
         return ps
 
     def test_save_load_video_roundtrip(self, mock_session_series, tmp_path):
-        """video group round-trips traces, cross-correlation, and QC labels."""
+        """video group round-trips movement responses, xcorr, and QC labels."""
         from iblnm.data import PhotometrySession
         ps = self._make_video_session(mock_session_series, qc_lp='FAIL',
                                       qc_movement='WARNING')
@@ -1618,17 +1618,13 @@ class TestSaveLoadH5:
                                 load_data=False)
         ps2.load_h5(fpath, groups=['video'])
 
-        assert (set(ps2.pose_traces.coords['bodypart'].values)
-                == set(ps.pose_traces.coords['bodypart'].values))
-        for bodypart in ps.pose_traces.coords['bodypart'].values:
-            np.testing.assert_allclose(
-                ps2.pose_traces.sel(bodypart=bodypart).values,
-                ps.pose_traces.sel(bodypart=bodypart).values,
-            )
-            np.testing.assert_allclose(
-                ps2.pose_baseline_traces.sel(bodypart=bodypart).values,
-                ps.pose_baseline_traces.sel(bodypart=bodypart).values,
-            )
+        assert set(ps2.movement_responses) == set(ps.movement_responses)
+        for label, responses in ps.movement_responses.items():
+            for event in responses.coords['event'].values:
+                np.testing.assert_allclose(
+                    ps2.movement_responses[label].sel(event=event).values,
+                    responses.sel(event=event).values,
+                )
         np.testing.assert_allclose(ps2.pose_xcorr['functions'],
                                    ps.pose_xcorr['functions'])
         np.testing.assert_allclose(ps2.pose_xcorr['lags'], ps.pose_xcorr['lags'])
@@ -1637,6 +1633,23 @@ class TestSaveLoadH5:
         assert ps2.pose_xcorr['drift'] == ps.pose_xcorr['drift']
         assert ps2.qc_lp == 'FAIL'
         assert ps2.qc_movement == 'WARNING'
+
+    def test_save_video_writes_per_label_responses_groups(
+            self, mock_session_series, tmp_path):
+        """Movement responses persist under video/{label}/responses, the same
+        layout photometry uses — the old flat trace groups are gone."""
+        import h5py
+        ps = self._make_video_session(mock_session_series)
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['video'])
+
+        with h5py.File(fpath, 'r') as f:
+            video = f['video']
+            assert 'traces' not in video and 'baseline_traces' not in video
+            for label in ps.movement_responses:
+                assert 'responses' in video[label]
+                assert set(ps.movement_responses[label].coords['event'].values) \
+                    <= set(video[label]['responses'].keys())
 
     def test_save_video_preserves_manual_qc(self, mock_session_series, tmp_path):
         """Re-saving automatic data with no QC on the object keeps prior labels."""
@@ -1802,10 +1815,10 @@ class TestPoseMethods:
         # diffs: [0.1, 0.1, 0.15] -> median 0.1
         assert ps.framerate_from_tpts == pytest.approx(0.1)
 
-    def test_video_measures_round_trip_without_traces(self, mock_session_series,
-                                                       tmp_path):
-        """save_h5(['video']) with no traces but measures set writes a video group
-        that load_h5 restores both measures from."""
+    def test_video_measures_round_trip_without_responses(self, mock_session_series,
+                                                          tmp_path):
+        """save_h5(['video']) with no responses but measures set writes a video
+        group that load_h5 restores both measures from."""
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
                                load_data=False)
@@ -1817,7 +1830,7 @@ class TestPoseMethods:
         ps2 = PhotometrySession(mock_session_series, one=MagicMock(),
                                 load_data=False)
         ps2.load_h5(fpath, groups=['video'])
-        assert ps2.pose_traces is None
+        assert ps2.movement_responses == {}
         assert ps2.length_discrepancy == pytest.approx(0.05)
         assert ps2.framerate_from_tpts == pytest.approx(0.0333)
 
@@ -1868,72 +1881,79 @@ class TestPoseMethods:
         })
         return ps
 
-    def test_extract_movement_traces_shapes_and_labels(self, mock_session_series):
-        """Four bodypart traces with (n_trials, n_time) matrices keyed by label."""
-        from iblnm.config import POSE_MEASURES
+    def test_movement_responses_shapes_and_labels(self, mock_session_series):
+        """One (event, trial, time) grid per movement label, full event axis."""
+        from iblnm.config import MOVEMENT_EVENTS, POSE_MEASURES
         ps = self._make_pose_session(mock_session_series, fs=30)
-        ps.extract_movement_traces()
-        assert set(ps.pose_traces.coords['bodypart'].values) == set(POSE_MEASURES)
-        assert ps.pose_traces.sizes == {'bodypart': 4, 'trial': 3, 'time': 60}
+        responses = ps.extract_responses(ps._movement_signals(),
+                                         events=MOVEMENT_EVENTS)
+        assert set(responses) == set(POSE_MEASURES)
+        assert responses['paw'].sizes == {'event': 3, 'trial': 3, 'time': 60}
+        assert (list(responses['paw'].coords['event'].values)
+                == list(MOVEMENT_EVENTS))
 
-    def test_extract_movement_traces_baseline_locked_to_stimon(self, mock_session_series):
-        """pose_baseline_traces is stimOn-locked: the nose measure (itself
-        stimOn-locked) has identical response and baseline traces, while the
-        firstMovement-locked paw measure does not."""
+    def _movement_responses(self, ps):
+        """Movement responses for `ps` through the unified extraction engine."""
+        from iblnm.config import MOVEMENT_EVENTS
+        return ps.extract_responses(ps._movement_signals(),
+                                    events=MOVEMENT_EVENTS)
+
+    def test_movement_responses_own_event_and_stimon_cells(self, mock_session_series):
+        """The stimOn baseline is a read-time cell of the same grid: the
+        stimOn-locked nose channel has identical own-event and stimOn cells,
+        while the firstMovement-locked paw channel does not."""
+        from iblnm.config import LABEL2EVENT
         ps = self._make_pose_session(mock_session_series, fs=30, accelerate=True)
-        ps.extract_movement_traces()
-        assert ps.pose_baseline_traces.sizes == ps.pose_traces.sizes
+        responses = self._movement_responses(ps)
         np.testing.assert_allclose(
-            ps.pose_baseline_traces.sel(bodypart='nose').values,
-            ps.pose_traces.sel(bodypart='nose').values)
+            responses['nose'].sel(event=LABEL2EVENT['nose']).values,
+            responses['nose'].sel(event='stimOn_times').values)
         assert not np.allclose(
-            ps.pose_baseline_traces.sel(bodypart='paw').values,
-            ps.pose_traces.sel(bodypart='paw').values,
+            responses['paw'].sel(event=LABEL2EVENT['paw']).values,
+            responses['paw'].sel(event='stimOn_times').values,
             equal_nan=True)
 
-    def test_extract_movement_traces_tongue_likelihood_is_max(self, mock_session_series):
+    def test_movement_responses_tongue_likelihood_is_max(self, mock_session_series):
         """tongue_likelihood trace equals the per-frame max of the two tips."""
         ps = self._make_pose_session(mock_session_series, tongue_like=(0.2, 0.9))
-        ps.extract_movement_traces()
-        tongue = ps.pose_traces.sel(bodypart='tongue_likelihood').values
-        np.testing.assert_allclose(tongue, 0.9)
+        responses = self._movement_responses(ps)
+        np.testing.assert_allclose(
+            responses['tongue_likelihood'].sel(event='feedback_times').values, 0.9)
 
-    def test_extract_movement_traces_common_timebase_across_fps(self, mock_session_series):
+    def test_movement_responses_common_timebase_across_fps(self, mock_session_series):
         """Different camera fps → identical trace time length (resampled to POSE_FS)."""
-        ps30 = self._make_pose_session(mock_session_series, fs=30)
-        ps99 = self._make_pose_session(mock_session_series, fs=99)
-        ps30.extract_movement_traces()
-        ps99.extract_movement_traces()
-        assert (ps30.pose_traces.sizes['time']
-                == ps99.pose_traces.sizes['time'] == 60)
+        r30 = self._movement_responses(
+            self._make_pose_session(mock_session_series, fs=30))
+        r99 = self._movement_responses(
+            self._make_pose_session(mock_session_series, fs=99))
+        assert r30['paw'].sizes['time'] == r99['paw'].sizes['time'] == 60
 
-    def test_extract_movement_traces_includes_motion_energy(self, mock_session_series):
-        """pose + ME present → bodypart coord adds motion_energy to the LP labels,
-        and the ME channel is stimOn-locked (baseline equals event trace)."""
+    def test_movement_responses_include_motion_energy(self, mock_session_series):
+        """pose + ME present → the LP labels plus a motion_energy channel."""
         from iblnm.config import POSE_MEASURES
         ps = self._make_pose_session(mock_session_series, motion_energy=True)
-        ps.extract_movement_traces()
-        assert (set(ps.pose_traces.coords['bodypart'].values)
-                == set(POSE_MEASURES) | {'motion_energy'})
-        np.testing.assert_allclose(
-            ps.pose_baseline_traces.sel(bodypart='motion_energy').values,
-            ps.pose_traces.sel(bodypart='motion_energy').values)
+        responses = self._movement_responses(ps)
+        assert set(responses) == set(POSE_MEASURES) | {'motion_energy'}
 
-    def test_extract_movement_traces_motion_energy_only(self, mock_session_series):
-        """ME present, pose=None → pose_traces has exactly ['motion_energy']."""
+    def test_movement_responses_motion_energy_only(self, mock_session_series):
+        """ME present, pose=None → exactly ['motion_energy']."""
         ps = self._make_pose_session(mock_session_series, motion_energy=True)
         ps.pose = None
-        ps.extract_movement_traces()
-        assert list(ps.pose_traces.coords['bodypart'].values) == ['motion_energy']
+        assert list(self._movement_responses(ps)) == ['motion_energy']
 
-    def test_extract_movement_traces_lp_only_when_no_motion_energy(self, mock_session_series):
-        """pose present, motion_energy=None → pose_traces has only the LP labels."""
+    def test_movement_responses_lp_only_when_no_motion_energy(self, mock_session_series):
+        """pose present, motion_energy=None → only the LP labels."""
         from iblnm.config import POSE_MEASURES
         ps = self._make_pose_session(mock_session_series)
         assert ps.motion_energy is None
-        ps.extract_movement_traces()
-        assert (set(ps.pose_traces.coords['bodypart'].values)
-                == set(POSE_MEASURES))
+        assert set(self._movement_responses(ps)) == set(POSE_MEASURES)
+
+    def test_movement_signals_empty_without_sources(self, mock_session_series):
+        """Neither pose nor motion energy → no signals, hence no responses."""
+        ps = self._make_pose_session(mock_session_series)
+        ps.pose = None
+        assert ps._movement_signals() == {}
+        assert self._movement_responses(ps) == {}
 
     @staticmethod
     def _xcorr_session(mock_session_series, wheel_times=None):

@@ -8,8 +8,14 @@ import pytest
 import xarray as xr
 
 import scripts.pose as pose
-from iblnm.config import QCVAL2NUM, VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS
+from iblnm.config import (
+    LABEL2EVENT, MOVEMENT_EVENTS, QCVAL2NUM, VIDEO_QC_COLS,
+    VIDEO_QC_QUALITY_COLS)
 from iblnm.data import PhotometrySession
+
+# Level written into every (label, event, window) cell the collector must not
+# read; picked far from any test level so a mis-selection cannot pass.
+DECOY_LEVEL = -999.0
 
 
 @pytest.fixture
@@ -26,18 +32,20 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
                         series, baselines=None, trials=None, functions=None,
                         video_qc=None, length_discrepancy=np.nan,
                         framerate_from_tpts=np.nan):
-    """Write an H5 with metadata + video groups carrying known traces.
+    """Write an H5 with metadata + video groups carrying known responses.
 
-    ``steps`` maps bodypart -> the response-trace level (flat across time); NaN
-    yields an all-NaN response trace (expected to collect to a NaN scalar). Pass
-    ``steps=None`` to write a video group with measures + QC attrs but no traces
-    (the LP-absent case). ``baselines`` maps bodypart -> the stimOn-locked
-    baseline-trace level (flat; default 0). The collected scalar is
-    ``step - baseline``. ``trials``, when given, maps ``stimOn_times`` /
-    ``feedback_times`` to 1D arrays written as flat datasets under a ``trials``
-    group. ``functions``, when given, is the (3, n_lags) xcorr array; defaults to
-    zeros. ``video_qc`` maps ``VIDEO_QC_COLS`` names to IBL QC labels written as
-    video-group attrs (default all ``NOT_SET``).
+    ``steps`` maps movement label -> the post-event level of its own event cell
+    (``LABEL2EVENT``); NaN yields an all-NaN cell (expected to collect to a NaN
+    scalar). ``baselines`` maps label -> the pre-event level of its stimOn cell
+    (default 0). Every other (label, event, window) combination is filled with
+    ``DECOY_LEVEL``, so a collected scalar of ``step - baseline`` can only come
+    from selecting the right two cells and windows. Pass ``steps=None`` to write
+    a video group with measures + QC attrs but no responses (LP-absent case).
+    ``trials``, when given, maps ``stimOn_times`` / ``feedback_times`` to 1D
+    arrays written as flat datasets under a ``trials`` group. ``functions``,
+    when given, is the (3, n_lags) xcorr array; defaults to zeros. ``video_qc``
+    maps ``VIDEO_QC_COLS`` names to IBL QC labels written as video-group attrs
+    (default all ``NOT_SET``).
     """
     baselines = baselines or {}
     series = series.copy()
@@ -50,21 +58,31 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
 
     if steps is not None:
         time = np.linspace(-0.5, 0.5, 101)
-        bodyparts = list(steps)
         n_trial = 3
 
-        def _flat(level):
-            if np.isnan(level):
-                return np.full((n_trial, time.size), np.nan)
-            return np.full((n_trial, time.size), level)
+        def _step_cells(label):
+            """(n_event, n_trial, n_time) grid; only the cells the collector is
+            meant to read carry the label's levels, the rest carry DECOY_LEVEL."""
+            cells = [
+                np.where(
+                    time < 0,
+                    baselines.get(label, 0.0) if event == 'stimOn_times'
+                    else DECOY_LEVEL,
+                    steps[label] if event == LABEL2EVENT[label] else DECOY_LEVEL,
+                )
+                for event in MOVEMENT_EVENTS
+            ]
+            return np.broadcast_to(np.stack(cells)[:, None, :],
+                                   (len(MOVEMENT_EVENTS), n_trial, time.size))
 
-        response = np.stack([_flat(steps[bp]) for bp in bodyparts])
-        baseline = np.stack([_flat(baselines.get(bp, 0.0)) for bp in bodyparts])
-        coords = {'bodypart': bodyparts, 'trial': np.arange(n_trial), 'time': time}
-        ps.pose_traces = xr.DataArray(
-            response, dims=['bodypart', 'trial', 'time'], coords=coords)
-        ps.pose_baseline_traces = xr.DataArray(
-            baseline, dims=['bodypart', 'trial', 'time'], coords=coords)
+        ps.movement_responses = {
+            label: xr.DataArray(
+                _step_cells(label), dims=['event', 'trial', 'time'],
+                coords={'event': list(MOVEMENT_EVENTS),
+                        'trial': np.arange(n_trial), 'time': time},
+            )
+            for label in steps
+        }
         ps.pose_xcorr = {
             'functions': np.zeros((3, 11)) if functions is None else np.asarray(functions),
             'lags': np.linspace(-5, 5, 11),
@@ -144,7 +162,7 @@ class TestProcessPoseSkip:
         result = pose.process_pose(fake_ps)
 
         assert result == 'skipped'
-        fake_ps.extract_movement_traces.assert_not_called()
+        fake_ps.extract_responses.assert_not_called()
         fake_ps.extract_paw_wheel_xcorr.assert_not_called()
 
     def test_reprocess_extracts_despite_existing_group(self, fake_ps, tmp_path,
@@ -155,7 +173,7 @@ class TestProcessPoseSkip:
         result = pose.process_pose(fake_ps, reprocess=True)
 
         assert result == 'processed'
-        fake_ps.extract_movement_traces.assert_called_once()
+        fake_ps.extract_responses.assert_called_once()
         fake_ps.extract_paw_wheel_xcorr.assert_called_once()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
@@ -171,7 +189,7 @@ class TestProcessPoseSkip:
 
         assert result == 'processed'
         fake_ps.log_error.assert_called_once()
-        fake_ps.extract_movement_traces.assert_called_once()
+        fake_ps.extract_responses.assert_called_once()
         fake_ps.extract_paw_wheel_xcorr.assert_not_called()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
@@ -189,7 +207,7 @@ class TestProcessPoseSkip:
         logged = {type(call.args[0]).__name__
                   for call in fake_ps.log_error.call_args_list}
         assert logged == {'MissingMotionEnergy'}
-        fake_ps.extract_movement_traces.assert_called_once()
+        fake_ps.extract_responses.assert_called_once()
         fake_ps.extract_paw_wheel_xcorr.assert_called_once()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
@@ -207,7 +225,7 @@ class TestProcessPoseSkip:
         result = pose.process_pose(fake_ps)
 
         assert result == 'processed'
-        fake_ps.extract_movement_traces.assert_not_called()
+        fake_ps.extract_responses.assert_not_called()
         fake_ps.extract_paw_wheel_xcorr.assert_not_called()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
@@ -228,7 +246,7 @@ class TestProcessPoseSkip:
                   for call in fake_ps.log_error.call_args_list}
         assert logged == {'VideoLengthError', 'VideoTimestampsQCError',
                           'VideoDroppedFramesQCError', 'VideoPinStateQCError'}
-        fake_ps.extract_movement_traces.assert_called_once()
+        fake_ps.extract_responses.assert_called_once()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
     def test_clean_video_qc_logs_nothing(self, fake_ps, tmp_path, monkeypatch):

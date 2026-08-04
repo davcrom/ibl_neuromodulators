@@ -483,6 +483,14 @@ POSE_MEASURES = {
 # Event the motion_energy channel locks to (baseline is also stimOn-locked).
 MOTION_ENERGY_EVENT = 'stimOn_times'
 
+# Every movement channel is extracted at every event in this union, so any
+# (label, event) cell exists for a consumer; each channel's own response event
+# is selected at read time via LABEL2EVENT.
+MOVEMENT_EVENTS = sorted(
+    {event for event, _, _ in POSE_MEASURES.values()} | {MOTION_ENERGY_EVENT})
+LABEL2EVENT = ({label: event for label, (event, _, _) in POSE_MEASURES.items()}
+               | {'motion_energy': MOTION_ENERGY_EVENT})
+
 
 # Single-session photometry encoding model (kernel-based ridge regression).
 # The model grid, bases, ridge tuning, and default term spec read by

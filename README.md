@@ -156,7 +156,8 @@ from iblnm.config import SESSIONS_H5_DIR
 
 ps = PhotometrySession(session_row, one=one)
 ps.load_h5(SESSIONS_H5_DIR / f'{ps.eid}.h5')
-# → ps.photometry['GCaMP_preprocessed'], ps.trials, ps.responses, ps.wheel_velocity
+# → ps.photometry['GCaMP_preprocessed'], ps.trials, ps.photometry_responses,
+#   ps.movement_responses, ps.wheel_velocity
 ```
 
 ### Validation
@@ -189,19 +190,38 @@ from iblnm.config import RESPONSE_EVENTS
 ps.preprocess()  # bleach → isosbestic → zscore → resample to 30 Hz
                  # → ps.photometry['GCaMP_preprocessed']
 
-ps.extract_responses(events=RESPONSE_EVENTS)
-# → ps.responses: dict[str, xr.DataArray] keyed by brain region,
+ps.photometry_responses = ps.extract_responses(
+    ps.photometry['GCaMP_preprocessed'], events=RESPONSE_EVENTS)
+# → dict[str, xr.DataArray] keyed by brain region,
 #   each DataArray has dims (event, trial, time)
 
 ps.save_h5()  # saves all available data groups
 ```
+
+`extract_responses` takes any `label -> pd.Series` mapping, so the same engine
+cuts movement responses out of the video channels:
+
+```python
+from iblnm.config import MOVEMENT_EVENTS
+
+ps.load_pose()
+ps.load_motion_energy()
+ps.movement_responses = ps.extract_responses(
+    ps._movement_signals(), events=MOVEMENT_EVENTS)
+# → dict keyed by movement channel ('paw', 'nose', 'tongue_speed',
+#   'tongue_likelihood', 'motion_energy'), same (event, trial, time) dims
+```
+
+Every channel carries the full event axis. A channel's own response event is
+`config.LABEL2EVENT[label]`; its baseline is the `stimOn_times` cell over
+`BASELINE_WINDOW`. Both are read-time selections, not separate stored arrays.
 
 ### Working with responses
 
 Response transforms operate on a single region's DataArray at a time:
 
 ```python
-region_responses = ps.responses['VTA']  # dims: (event, trial, time)
+region_responses = ps.photometry_responses['VTA']  # dims: (event, trial, time)
 
 # Baseline subtraction (mean of [-0.1, 0] window)
 responses = ps.subtract_baseline(region_responses)
@@ -436,10 +456,12 @@ Response feature vectors indexed by `(eid, target_NM)`. Each column is a conditi
 ### HDF5: `data/sessions/{eid}.h5`
 
 File is organized into top-level groups (`metadata`, `errors`, `photometry`,
-`trials`, `wheel`) that mirror the `PhotometrySession` attributes. Each group
-is read/written by a dedicated handler pair registered in `_SAVE_HANDLERS`
-and `_LOAD_HANDLERS` in `iblnm/data.py`. Photometry data is organized per
-brain region so single-region loads do not require reading the full file.
+`trials`, `wheel`, `video`) that mirror the `PhotometrySession` attributes.
+Each group is read/written by a dedicated handler pair registered in
+`_SAVE_HANDLERS` and `_LOAD_HANDLERS` in `iblnm/data.py`. Photometry data is
+organized per brain region so single-region loads do not require reading the
+full file; video data follows the same `{label}/responses/` layout per
+movement channel.
 
 ```
 {eid}.h5
@@ -470,7 +492,7 @@ brain region so single-region loads do not require reading the full file.
 │       │   ├── stimOn_times         float64 (T, W)
 │       │   ├── firstMovement_times  float64 (T, W)
 │       │   ├── feedback_times       float64 (T, W)
-│       │   └── attrs: fs=30, response_window=[-1.0, 1.0]
+│       │   └── attrs: response_window=[-1.0, 1.0]
 │       │
 │       └── qc/
 │           └── one dataset per QC metric column (band, brain_region,
@@ -488,18 +510,39 @@ brain region so single-region loads do not require reading the full file.
 │   ├── contrast              float64 (T,)   unsigned
 │   └── stim_side             str     (T,)   'left' or 'right'
 │
-└── wheel/
-    └── responses/
-        ├── velocity   float32 (T, W)  per-trial wheel velocity; NaN-padded
-        └── attrs: fs=100, t0_event='stimOn_times', t1_event='feedback_times'
+├── wheel/
+│   └── responses/
+│       ├── velocity   float32 (T, W)  per-trial wheel velocity; NaN-padded
+│       └── attrs: fs=100, t0_event='stimOn_times', t1_event='feedback_times'
+│
+└── video/
+    ├── attrs: length_discrepancy, framerate_from_tpts, qc_lp, qc_movement,
+    │          qc_timing, the 8 VIDEO_QC_COLS labels
+    │
+    ├── {movement_channel}/          paw, nose, tongue_speed,
+    │   └── responses/               tongue_likelihood, motion_energy
+    │       ├── times                float64 (W,)
+    │       ├── trials               int64   (T,)
+    │       ├── stimOn_times         float64 (T, W)
+    │       ├── firstMovement_times  float64 (T, W)
+    │       ├── feedback_times       float64 (T, W)
+    │       └── attrs: response_window=[-1.0, 1.0]
+    │
+    └── crosscorr/                   paw–wheel timing diagnostic
+        ├── functions   float64 (3, L)   per-third cross-correlation
+        ├── lags        float64 (L,)
+        ├── peak_lags   float64 (3,)
+        └── attrs: drift
 ```
 
 `N` = samples at 30 Hz, `T` = trial count, `W` = response window samples
-(60 for [-1, 1] s at 30 Hz), `M` = logged error count.
+(60 for [-1, 1] s at 30 Hz), `M` = logged error count, `L` = cross-correlation
+lag count.
 
 `save_h5(groups=...)` and `load_h5(groups=...)` accept the top-level group
-names (`'metadata'`, `'errors'`, `'photometry'`, `'trials'`, `'wheel'`) to
-restrict which handlers run. Omit `groups` to process everything present.
+names (`'metadata'`, `'errors'`, `'photometry'`, `'trials'`, `'wheel'`,
+`'video'`) to restrict which handlers run. Omit `groups` to process everything
+present.
 
 ---
 

@@ -7,8 +7,9 @@ import xarray as xr
 from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
 
-from iblnm.config import LP_QC_LABELS
-from iblnm.data import _save_pose_traces, _save_pose_xcorr
+from iblnm.config import (
+    LABEL2EVENT, LP_QC_LABELS, MOVEMENT_EVENTS, RESPONSE_WINDOW)
+from iblnm.data import _save_pose_xcorr, _save_responses
 from iblnm.lp_viewer import (
     HISTOGRAM_MEASURES,
     HISTOGRAM_TITLES,
@@ -476,14 +477,15 @@ def test_apply_label_rejects_unknown_field(label_table):
 
 @pytest.fixture
 def video_h5(tmp_path):
-    """Synthetic video H5: a traces subgroup (automatic data) + label attrs."""
+    """Synthetic video H5: a paw responses subgroup (automatic data) + labels."""
     fpath = tmp_path / 'session.h5'
     paw = np.arange(12, dtype=np.float64).reshape(3, 4)
     with h5py.File(fpath, 'w') as f:
         grp = f.create_group('video')
         for label in LP_QC_LABELS:
             grp.attrs[label] = 'NOT_SET'
-        grp.create_group('traces').create_dataset('paw', data=paw)
+        responses = grp.create_group('paw').create_group('responses')
+        responses.create_dataset('stimOn_times', data=paw)
     return fpath, paw
 
 
@@ -498,12 +500,13 @@ def test_persist_labels_round_trips(video_h5):
         assert _decode(attrs['qc_timing']) == 'WARNING'
 
 
-def test_persist_labels_leaves_traces_untouched(video_h5):
+def test_persist_labels_leaves_responses_untouched(video_h5):
     fpath, paw = video_h5
     persist_labels(fpath, {'qc_lp': 'WARNING', 'qc_movement': 'FAIL',
                            'qc_timing': 'PASS'})
     with h5py.File(fpath, 'r') as f:
-        np.testing.assert_array_equal(f['video']['traces']['paw'][:], paw)
+        np.testing.assert_array_equal(
+            f['video']['paw']['responses']['stimOn_times'][:], paw)
 
 
 def _decode(value):
@@ -577,11 +580,15 @@ def cohort_model(tmp_path):
     """An LPViewerModel over a 2-session cohort with one session on disk."""
     rng = np.random.default_rng(0)
     tpts = np.linspace(-1.0, 1.0, N_TIME)
-    traces = xr.DataArray(
-        rng.random((len(BODYPARTS), N_TRIALS, N_TIME)),
-        dims=['bodypart', 'trial', 'time'],
-        coords={'bodypart': BODYPARTS, 'trial': np.arange(N_TRIALS), 'time': tpts},
-    )
+    responses = {
+        label: xr.DataArray(
+            rng.random((len(MOVEMENT_EVENTS), N_TRIALS, N_TIME)),
+            dims=['event', 'trial', 'time'],
+            coords={'event': list(MOVEMENT_EVENTS),
+                    'trial': np.arange(N_TRIALS), 'time': tpts},
+        )
+        for label in BODYPARTS
+    }
     xcorr = {
         'functions': rng.random((3, N_LAGS)),
         'lags': np.linspace(-5.0, 5.0, N_LAGS),
@@ -593,7 +600,8 @@ def cohort_model(tmp_path):
     for eid in ('eid1', 'eid2'):
         with h5py.File(h5_dir / f'{eid}.h5', 'w') as f:
             grp = f.create_group('video')
-            _save_pose_traces(grp, traces)
+            for label, da in responses.items():
+                _save_responses(grp.create_group(label), da, RESPONSE_WINDOW)
             _save_pose_xcorr(grp, xcorr)
 
     df_cohort = pd.DataFrame({
@@ -602,13 +610,13 @@ def cohort_model(tmp_path):
         'session_type': ['biased', 'ephys'],
         'fraction_correct': [0.77, np.nan],
     })
-    return LPViewerModel(df_cohort, h5_dir), traces
+    return LPViewerModel(df_cohort, h5_dir), responses
 
 
-def test_model_drops_sessions_without_traces(cohort_model):
+def test_model_drops_sessions_without_responses(cohort_model):
     model, _ = cohort_model
     h5_dir = model.h5_dir
-    # eid3: H5 with an empty video group (QC attrs only, no traces).
+    # eid3: H5 with an empty video group (QC attrs only, no responses).
     with h5py.File(h5_dir / 'eid3.h5', 'w') as f:
         f.create_group('video')
     # eid4: no H5 file on disk at all.
@@ -637,15 +645,17 @@ def test_model_population_mask_matches_select_population(cohort_model):
 
 
 def test_session_panels_trace_shapes(cohort_model):
-    model, traces = cohort_model
+    model, responses = cohort_model
     panels = model.session_panels('eid1')
     assert set(panels.traces) == set(BODYPARTS)
     assert panels.times.shape == (N_TIME,)
     for trace in panels.traces.values():
         assert trace.shape == (N_TIME,)
-    # paw panel is the trial-mean of the stored paw trace
-    expected = traces.sel(bodypart='paw').mean('trial').values
-    np.testing.assert_allclose(panels.traces['paw'], expected)
+    # each panel is the trial-mean of its channel's own event cell
+    for label in BODYPARTS:
+        expected = (responses[label].sel(event=LABEL2EVENT[label])
+                    .mean('trial').values)
+        np.testing.assert_allclose(panels.traces[label], expected)
 
 
 def test_session_panels_xcorr_and_performance(cohort_model):

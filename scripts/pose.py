@@ -26,7 +26,9 @@ import pandas as pd
 from iblnm.analysis import movement_delta
 from iblnm.config import (
     BASELINE_WINDOW,
+    LABEL2EVENT,
     LP_QC_LABELS,
+    MOVEMENT_EVENTS,
     MOVEMENT_RESPONSE_WINDOW,
     PERFORMANCE_FPATH,
     POSE_FPATH,
@@ -41,7 +43,7 @@ from iblnm.config import (
 from iblnm.data import (
     LP_QC_NOT_SET,
     PhotometrySessionGroup,
-    _load_pose_traces,
+    _load_movement_responses,
     _load_pose_xcorr,
     _read_video_qc,
 )
@@ -131,7 +133,8 @@ def process_pose(ps, reprocess=False):
     except MissingMotionEnergy as e:
         ps.log_error(e)
     if ps.pose is not None or ps.motion_energy is not None:
-        ps.extract_movement_traces()
+        ps.movement_responses = ps.extract_responses(
+            ps._movement_signals(), events=MOVEMENT_EVENTS)
     if ps.pose is not None:
         ps.extract_paw_wheel_xcorr()
     ps.save_h5(groups=['video'])
@@ -159,12 +162,9 @@ def _collect_error_types(h5_dir) -> dict[str, set[str]]:
     return df_errors.groupby('eid')['error_type'].agg(set).to_dict()
 
 
-def _has_lp_traces(traces) -> bool:
-    """True when ``traces`` hold an LP keypoint channel (not just motion energy)."""
-    if traces is None:
-        return False
-    return any(bodypart != 'motion_energy'
-               for bodypart in traces.coords['bodypart'].values)
+def _has_lp_channel(movement_responses: dict) -> bool:
+    """True when an LP keypoint channel was extracted (not just motion energy)."""
+    return any(label != 'motion_energy' for label in movement_responses)
 
 
 def _score_video_qc(attrs, error_types: set[str]) -> float:
@@ -188,20 +188,19 @@ def _score_video_qc(attrs, error_types: set[str]) -> float:
     return float(np.nanmean(quality)) if quality else np.nan
 
 
-def _add_trace_deltas(row: dict, traces, baseline_traces) -> None:
-    """Add one post-minus-pre movement delta per bodypart; no-op when absent.
+def _add_trace_deltas(row: dict, movement_responses: dict) -> None:
+    """Add one post-minus-pre movement delta per channel; no-op when absent.
 
-    The delta is the response mean over ``MOVEMENT_RESPONSE_WINDOW`` minus the
-    stimOn-locked baseline mean over ``BASELINE_WINDOW``. The ``motion_energy``
-    channel flows through this loop like any other bodypart.
+    Both terms are read-time slices of the channel's response grid: the mean
+    over ``MOVEMENT_RESPONSE_WINDOW`` of its own event cell (``LABEL2EVENT``)
+    minus the mean over ``BASELINE_WINDOW`` of its stimOn-locked cell. The
+    ``motion_energy`` channel flows through this loop like any other label.
     """
-    if traces is None:
-        return
-    tpts = traces.coords['time'].values
-    for bodypart in traces.coords['bodypart'].values:
-        row[bodypart] = movement_delta(
-            traces.sel(bodypart=bodypart).values,
-            baseline_traces.sel(bodypart=bodypart).values, tpts,
+    for label, responses in movement_responses.items():
+        row[label] = movement_delta(
+            responses.sel(event=LABEL2EVENT[label]).values,
+            responses.sel(event='stimOn_times').values,
+            responses.coords['time'].values,
             MOVEMENT_RESPONSE_WINDOW, BASELINE_WINDOW,
         )
 
@@ -267,14 +266,13 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
                 continue
             eids_with_video.add(eid)
             video = f['video']
-            traces = _load_pose_traces(video)
-            baseline_traces = _load_pose_traces(video, name='baseline_traces')
+            movement_responses = _load_movement_responses(video)
             xcorr = _load_pose_xcorr(video)
             qc = _read_video_qc(f)
             row = {
                 'eid': eid,
                 'session_type': _read_session_type(f),
-                'lp_exists': _has_lp_traces(traces),
+                'lp_exists': _has_lp_channel(movement_responses),
                 'mean_rt': _read_mean_rt(f),
                 'length_discrepancy': video.attrs.get('length_discrepancy', np.nan),
                 'framerate_from_tpts': video.attrs.get('framerate_from_tpts', np.nan),
@@ -282,7 +280,7 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
             }
             row.update({col: _decode(video.attrs[col])
                         for col in VIDEO_QC_COLS if col in video.attrs})
-            _add_trace_deltas(row, traces, baseline_traces)
+            _add_trace_deltas(row, movement_responses)
             _add_xcorr_scalars(row, xcorr)
         row.update({label: _decode(qc.get(label, LP_QC_NOT_SET))
                     for label in LP_QC_LABELS})

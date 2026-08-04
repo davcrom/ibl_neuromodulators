@@ -20,7 +20,7 @@ from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, DDM_HMM_DIR, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD,
     LOGGED_ERRORS_FPATH, LP_QC_LABELS,
-    MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION, MOTION_ENERGY_EVENT,
+    MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
     N_UNIQUE_SAMPLES_THRESHOLD,
     POSE_MEASURES,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
@@ -462,43 +462,17 @@ def _load_photometry(session, h5_file, band):
 # ----- Video / LightningPose sub-handlers (pure: parent_group + payload) -----
 
 LP_QC_NOT_SET = 'NOT_SET'
-_POSE_TRACES_RESERVED_KEYS = {'times', 'trials'}
+# Video subgroup that holds a diagnostic rather than a movement channel's
+# responses, so label iteration must skip it.
+_VIDEO_NON_LABEL_KEYS = {'crosscorr'}
 
 
-def _save_pose_traces(parent_group, traces, name='traces'):
-    """Write a `name`/ subgroup from a DataArray(bodypart, trial, time).
-
-    `name` selects the subgroup: ``traces`` for the event-locked response
-    traces, ``baseline_traces`` for the stimOn-locked baseline traces.
-    """
-    traces_group = _replace_group(parent_group, name)
-    traces_group.attrs['response_window'] = RESPONSE_WINDOW
-    traces_group.create_dataset('times', data=traces.coords['time'].values)
-    traces_group.create_dataset('trials', data=traces.coords['trial'].values)
-    for bodypart in traces.coords['bodypart'].values:
-        traces_group.create_dataset(
-            bodypart,
-            data=traces.sel(bodypart=bodypart).values.astype(np.float64),
-            compression='gzip', compression_opts=4,
-        )
-
-
-def _load_pose_traces(parent_group, name='traces'):
-    """Read a `name`/ subgroup into a DataArray(bodypart, trial, time), or None."""
-    if name not in parent_group:
-        return None
-    traces_group = parent_group[name]
-    bodyparts = [k for k in traces_group.keys()
-                 if k not in _POSE_TRACES_RESERVED_KEYS]
-    return xr.DataArray(
-        np.stack([traces_group[bp][:].astype(np.float64) for bp in bodyparts]),
-        dims=['bodypart', 'trial', 'time'],
-        coords={
-            'bodypart': bodyparts,
-            'trial': traces_group['trials'][:],
-            'time':  traces_group['times'][:],
-        },
-    )
+def _load_movement_responses(video_group):
+    """Read every ``video/{label}/responses`` subgroup into a label -> DataArray
+    dict. Subgroups holding diagnostics rather than a movement channel (see
+    ``_VIDEO_NON_LABEL_KEYS``) are skipped."""
+    return {label: _load_responses(video_group[label]) for label in video_group
+            if label not in _VIDEO_NON_LABEL_KEYS}
 
 
 def _save_pose_xcorr(parent_group, xcorr):
@@ -538,10 +512,8 @@ def _save_video(session, h5_file, band):
     grp = _replace_group(h5_file, 'video')
     grp.attrs['length_discrepancy'] = session.length_discrepancy
     grp.attrs['framerate_from_tpts'] = session.framerate_from_tpts
-    if session.pose_traces is not None:
-        _save_pose_traces(grp, session.pose_traces)
-    if session.pose_baseline_traces is not None:
-        _save_pose_traces(grp, session.pose_baseline_traces, name='baseline_traces')
+    for label, responses in session.movement_responses.items():
+        _save_responses(grp.require_group(label), responses, RESPONSE_WINDOW)
     if session.pose_xcorr is not None:
         _save_pose_xcorr(grp, session.pose_xcorr)
     for label in LP_QC_LABELS:
@@ -561,8 +533,7 @@ def _load_video(session, h5_file, band):
         session.length_discrepancy = grp.attrs['length_discrepancy']
     if 'framerate_from_tpts' in grp.attrs:
         session.framerate_from_tpts = grp.attrs['framerate_from_tpts']
-    session.pose_traces = _load_pose_traces(grp)
-    session.pose_baseline_traces = _load_pose_traces(grp, name='baseline_traces')
+    session.movement_responses = _load_movement_responses(grp)
     session.pose_xcorr = _load_pose_xcorr(grp)
     for label in LP_QC_LABELS:
         if label in grp.attrs:
@@ -714,8 +685,7 @@ class PhotometrySession(PhotometrySessionLoader):
         self.motion_energy = None
         self.length_discrepancy = np.nan
         self.framerate_from_tpts = np.nan
-        self.pose_traces = None
-        self.pose_baseline_traces = None
+        self.movement_responses = {}
         self.pose_xcorr = None
         self.video_qc = {}
         self.qc_lp = LP_QC_NOT_SET
@@ -1319,7 +1289,7 @@ class PhotometrySession(PhotometrySessionLoader):
             or bool(getattr(self, 'photometry_responses', None))
             or (getattr(self, 'qc', None) is not None and len(self.qc) > 0)
         )
-        has_video = (self.pose_traces is not None
+        has_video = (bool(self.movement_responses)
                      or self.pose_xcorr is not None
                      or np.isfinite(self.length_discrepancy)
                      or np.isfinite(self.framerate_from_tpts))
@@ -1714,12 +1684,11 @@ class PhotometrySession(PhotometrySessionLoader):
         qc = get_extended_qc(self.to_series(), one=self.one)
         self.video_qc = {col: qc.get(col, LP_QC_NOT_SET) for col in VIDEO_QC_COLS}
 
-    def _movement_signals(self):
+    def _movement_signals(self) -> dict[str, pd.Series]:
         """Per-frame movement signals keyed by channel label.
 
-        Returns a dict ``label -> (signal, event)`` where ``signal`` is a
-        ``pd.Series`` on a common 1/POSE_FS time base and ``event`` is the trials
-        column the response trace locks to. LP keypoint channels
+        Returns a dict ``label -> pd.Series`` on a common 1/POSE_FS time base,
+        ready to hand to ``extract_responses``. LP keypoint channels
         (``config.POSE_MEASURES``) are included only when ``self.pose`` is set;
         the ``motion_energy`` channel only when ``self.motion_energy`` is set.
         The two sources are independent, so a session may contribute either or
@@ -1730,62 +1699,15 @@ class PhotometrySession(PhotometrySessionLoader):
             # Resample raw pose to a common rate first, so speeds (px per time
             # step) and trace lengths are comparable across camera fps.
             pose, pose_times = resample_pose(self.pose, self.pose_times, POSE_FS)
-            for label, (event, keypoints, reduction) in POSE_MEASURES.items():
-                signals[label] = (
-                    pd.Series(movement_trace(pose, keypoints, reduction),
-                              index=pose_times),
-                    event,
-                )
+            signals.update({
+                label: pd.Series(movement_trace(pose, keypoints, reduction),
+                                 index=pose_times)
+                for label, (_, keypoints, reduction) in POSE_MEASURES.items()
+            })
         if self.motion_energy is not None:
-            signals['motion_energy'] = (
-                resample_signal(
-                    pd.Series(self.motion_energy, index=self.pose_times), POSE_FS),
-                MOTION_ENERGY_EVENT,
-            )
+            signals['motion_energy'] = resample_signal(
+                pd.Series(self.motion_energy, index=self.pose_times), POSE_FS)
         return signals
-
-    def extract_movement_traces(self):
-        """Extract per-trial peri-event movement traces for each channel.
-
-        Assembles the available per-frame signals (LP keypoint measures and/or
-        the resampled motion-energy scalar), event-locks each to its own event,
-        and stores them on ``self.pose_traces`` as a DataArray with dims
-        ``(bodypart, trial, time)``. ``self.pose_baseline_traces`` holds the same
-        channels stimOn-locked for a common pre-stimOn baseline. Both are left
-        ``None`` when neither LP nor motion energy is present.
-        """
-        signals = self._movement_signals()
-        if not signals:
-            self.pose_traces = None
-            self.pose_baseline_traces = None
-            return
-        stimon = self.trials['stimOn_times'].values
-        traces = {}
-        baselines = {}
-        for label, (signal, event) in signals.items():
-            traces[label], tpts = get_responses(
-                signal, self.trials[event].values,
-                t0=RESPONSE_WINDOW[0], t1=RESPONSE_WINDOW[1],
-            )
-            # Stimulus-onset-locked trace for a common pre-stimOn baseline, over
-            # the same window so its time axis matches the response trace.
-            baselines[label], _ = get_responses(
-                signal, stimon, t0=RESPONSE_WINDOW[0], t1=RESPONSE_WINDOW[1],
-            )
-        labels = list(signals)
-        coords = {
-            'bodypart': labels,
-            'trial': self.trials.index.to_numpy(),
-            'time': tpts,
-        }
-        self.pose_traces = xr.DataArray(
-            np.stack([traces[label] for label in labels]),
-            dims=['bodypart', 'trial', 'time'], coords=coords,
-        )
-        self.pose_baseline_traces = xr.DataArray(
-            np.stack([baselines[label] for label in labels]),
-            dims=['bodypart', 'trial', 'time'], coords=coords,
-        )
 
     def extract_paw_wheel_xcorr(self):
         """Compute the per-third paw–wheel cross-correlation timing diagnostic.

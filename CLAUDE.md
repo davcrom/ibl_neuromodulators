@@ -156,19 +156,29 @@ Lazy loading — all data attributes start empty:
 
 ```python
 ps = PhotometrySession(session_row, one=one)
-# ps.trials = None, ps.photometry = {}, ps.responses = {}, ps.qc = None
+# ps.trials = None, ps.photometry = {}, ps.photometry_responses = {},
+# ps.movement_responses = {}, ps.qc = None
 
 ps.load_trials()       # populates ps.trials
 ps.load_photometry()   # populates ps.photometry['GCaMP'], ps.photometry['Isosbestic']
 ps.preprocess()        # adds ps.photometry['GCaMP_preprocessed']
-ps.extract_responses() # populates ps.responses: dict[region, DataArray]
+ps.photometry_responses = ps.extract_responses(ps.photometry['GCaMP_preprocessed'])
 ```
 
-`ps.responses` is a `dict[str, xr.DataArray]` keyed by brain region. Each
-DataArray has dims `(event, trial, time)`. Truthiness (`if ps.responses`)
-checks whether any region has been extracted; use `region in ps.responses`
-to check a specific region. `subtract_baseline` and `mask_subsequent_events`
-operate on one region's DataArray at a time — pass `ps.responses[region]`.
+`extract_responses(signals, events=..., window=...)` is signal-source agnostic:
+it cuts peri-event matrices out of any `label -> pd.Series` mapping and returns
+`dict[label, xr.DataArray]` with dims `(event, trial, time)`, leaving the
+caller to assign it. Photometry passes `ps.photometry[band]` (labels are brain
+regions) and assigns `ps.photometry_responses`; behavior passes
+`ps._movement_signals()` with `events=MOVEMENT_EVENTS` (labels are movement
+channels) and assigns `ps.movement_responses`. Each movement channel carries
+the full event axis; its own response event is selected at read time via
+`config.LABEL2EVENT`, and its baseline is the `stimOn_times` cell.
+
+Truthiness (`if ps.photometry_responses`) checks whether any label has been
+extracted; use `region in ps.photometry_responses` to check a specific one.
+`subtract_baseline` and `mask_subsequent_events` operate on one label's
+DataArray at a time — pass `ps.photometry_responses[region]`.
 
 Access data attributes directly, not through getters. The class extends
 `PhotometrySessionLoader` from `brainbox.io.one`.
@@ -177,11 +187,13 @@ HDF5 round-trip: `save_h5()` writes all available data groups.
 `load_h5(fpath)` populates all available groups. Both dispatch to per-group
 handler functions via `_SAVE_HANDLERS` / `_LOAD_HANDLERS` registries keyed
 by top-level group name (`metadata`, `errors`, `photometry`, `trials`,
-`wheel`). Photometry sub-handlers (`_save_preprocessed`, `_save_responses`,
+`wheel`, `video`). Sub-handlers (`_save_preprocessed`, `_save_responses`,
 `_save_qc`) are pure: they take a parent `h5py.Group` plus the payload and
-do not touch the session object. Adding a new top-level group means writing
-a handler pair and registering it in both dicts. See README for the on-disk
-layout.
+do not touch the session object. `_save_responses` / `_load_responses` serve
+both modalities, so responses live under `{group}/{label}/responses/` whether
+the label is a brain region (`photometry/`) or a movement channel (`video/`).
+Adding a new top-level group means writing a handler pair and registering it
+in both dicts. See README for the on-disk layout.
 
 ### 3b. PhotometrySessionGroup Lifecycle
 
