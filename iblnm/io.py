@@ -202,7 +202,10 @@ def get_extended_qc(series, one=None):
         elif isinstance(val, (float, str)):
             series[key] = val
         elif val is None:
-            series[key] = None  # Let pandas handle as NaN
+            # Alyx reports a check that produced no outcome as null. Keep it in
+            # the QC vocabulary: a null cannot be stored as an HDF5 attr and
+            # drops silently out of every category-based grouping downstream.
+            series[key] = QC.NOT_SET.name
         else:
             raise ValueError(f"Unexpected QC value type for '{key}': {type(val)}")
 

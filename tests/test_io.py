@@ -105,3 +105,25 @@ class TestGetBrainRegion:
         get_brain_region(mock_session, one=mock_one)
         first_call_dataset = mock_one.load_dataset.call_args_list[0][0][1]
         assert first_call_dataset == '_ibl_experiment.description.yaml'
+
+
+class TestGetExtendedQC:
+    """get_extended_qc normalizes Alyx extended-QC outcomes."""
+
+    def test_null_outcome_becomes_not_set(self, mock_session, mock_one):
+        from iblnm.io import get_extended_qc
+        mock_one.alyx.rest.return_value = {
+            'qc': 'FAIL',
+            'extended_qc': {'_videoLeft_wheel_alignment': None},
+        }
+        result = get_extended_qc(mock_session, one=mock_one)
+        assert result['qc_videoLeft_wheel_alignment'] == 'NOT_SET'
+
+    def test_enum_outcome_maps_to_label(self, mock_session, mock_one):
+        from iblnm.io import get_extended_qc
+        mock_one.alyx.rest.return_value = {
+            'qc': 'PASS',
+            'extended_qc': {'_videoLeft_focus': 10},
+        }
+        result = get_extended_qc(mock_session, one=mock_one)
+        assert result['qc_videoLeft_focus'] == 'PASS'
