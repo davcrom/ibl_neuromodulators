@@ -16,7 +16,7 @@ from sklearn.preprocessing import quantile_transform
 
 from iblnm.config import (
     ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP,
-    PERSESSION_SIGNIFICANCE_ALPHA,
+    PERSESSION_SIGNIFICANCE_ALPHA, _PERSESSION_REGRESSORS,
     RESPONSE_EVENTS, RESPONSE_WINDOWS,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
@@ -2977,10 +2977,6 @@ def plot_lmm_reliability(reliability_df, full_r2, title):
     return fig
 
 
-# Dropped regressors on the per-recording OLS x-axis, in fixed order: the
-# `persession` model family keys minus `full`.
-_PERSESSION_DROPONE_PREDICTORS = ['contrast', 'side', 'reward', 'choice_side',
-                                  'log_reaction_time', 'peak_velocity']
 # x-axis layout (units where one subject occupies a width of 1):
 _SUBJECT_SPACING = 0.7       # x between consecutive subjects within a target-NM
 _TARGETNM_GAP = 1.0          # blank x between consecutive target-NM groups
@@ -3131,10 +3127,10 @@ def _dropone_rows():
     -------
     rows : list[tuple[str, str, str]]
         One ``(row_label, value_column, predictor)`` per dropped regressor
-        (``_PERSESSION_DROPONE_PREDICTORS`` order), each reading ``delta_r2``.
+        (``_PERSESSION_REGRESSORS`` order), each reading ``delta_r2``.
     supylabel : str
     """
-    return ([(p, 'delta_r2', p) for p in _PERSESSION_DROPONE_PREDICTORS],
+    return ([(p, 'delta_r2', p) for p in _PERSESSION_REGRESSORS],
             'ΔR² (per-session, in-sample)')
 
 
@@ -3148,7 +3144,7 @@ def _total_r2_rows():
         ``r2`` off one predictor (it repeats across predictors per session).
     supylabel : str
     """
-    return ([('full model R²', 'r2', _PERSESSION_DROPONE_PREDICTORS[0])],
+    return ([('full model R²', 'r2', _PERSESSION_REGRESSORS[0])],
             'R² (per-session, in-sample)')
 
 
@@ -3297,7 +3293,7 @@ def plot_ols_dropone(df, title, pvalues=None,
                      alpha=PERSESSION_SIGNIFICANCE_ALPHA, counts=None):
     """Per-session drop-one ΔR² — dropped-regressor rows × event columns.
 
-    One row per dropped regressor (``_PERSESSION_DROPONE_PREDICTORS`` order),
+    One row per dropped regressor (``_PERSESSION_REGRESSORS`` order),
     each plotting that regressor's ``delta_r2`` as translucent per-session dots
     plus a per-subject mean dash. See ``_persession_subject_grid``.
 
@@ -3506,7 +3502,7 @@ def plot_varcomp_violins(violin_df, title):
     has_data = len(violin_df) > 0
     events = _sort_events(violin_df['event'].unique()) if has_data else []
     present = set(violin_df['regressor']) if has_data else set()
-    regressors = [r for r in _PERSESSION_DROPONE_PREDICTORS if r in present]
+    regressors = [r for r in _PERSESSION_REGRESSORS if r in present]
     n_rows, n_cols = max(len(regressors), 1), max(len(events), 1)
 
     if not has_data:

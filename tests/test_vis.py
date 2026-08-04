@@ -7,6 +7,7 @@ matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 from unittest.mock import MagicMock
 
+from iblnm.config import _PERSESSION_REGRESSORS
 from iblnm.vis import plot_relative_contrast
 
 
@@ -1216,8 +1217,9 @@ class TestPlotLmmReliability:
 class TestPlotOlsDropone:
     """Per-session ΔR² scatter grid: dropped-regressor rows × event columns."""
 
-    _PREDICTORS = ('contrast', 'side', 'reward', 'choice_side',
-                   'log_reaction_time', 'peak_velocity')
+    # Sourced from config so the row-label assertion below guards vis's figure
+    # rows against drift from the canonical drop-one regressor list.
+    _PREDICTORS = tuple(_PERSESSION_REGRESSORS)
     # Per-event delta_r2 base so a point's value identifies its event row.
     _EVENT_BASE = {'stimOn_times': 0.1, 'feedback_times': 0.5}
 
