@@ -3202,7 +3202,8 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
     target-NM with a gap so a target-NM's width scales with its subject count
     (see ``_group_xslots``); subjects are placed left to right in the
     alphanumeric order ``_group_xslots`` returns. Each subject's cell values are
-    drawn by ``draw_mark`` in the subject's target-NM color. One x-tick per
+    drawn by ``draw_mark`` in the subject's target-NM color, grayed when
+    ``pvalues`` marks the subject non-significant for that cell. One x-tick per
     target-NM is centred on its subjects. All panels share one y-axis; the
     figure size scales with the total subject count and the number of rows.
 
@@ -3223,10 +3224,11 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
         ``draw_mark(ax, x, vals, color)`` drawing one subject's cell values at
         ``x`` (e.g. ``_scatter_subject``).
     pvalues : pd.DataFrame or None
-        Per-mouse permutation p-values, threaded through but not applied to
-        rendering (graying is disabled; see ``_subject_significance_color``).
+        Per-mouse permutation p-values. When given, each subject whose cell
+        ``p_value >= alpha`` (or has no p-value row) is grayed rather than drawn
+        in its target-NM color (see ``_subject_significance_color``).
     alpha : float
-        Significance threshold, threaded through but unused for color.
+        Significance threshold; a subject keeps its color when ``p_value < alpha``.
     counts : pd.DataFrame or None
         Donor-pool sizes per ``(target_NM, event)`` (columns ``n_recordings``,
         ``n_mice``). When given, each target's x-tick label gains a
@@ -3268,11 +3270,14 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
             ax = axes[r, c]
             df_cell = df[(df['event'] == event) & (df['predictor'] == predictor)]
             for tnm, subjects in subjects_by_target.items():
-                color = TARGETNM_COLORS.get(tnm, 'gray')
+                base_color = TARGETNM_COLORS.get(tnm, 'gray')
                 for subject, x in zip(subjects, slots_by_target[tnm]):
                     vals = df_cell.loc[df_cell['subject'] == subject,
                                        value_col].values
                     if len(vals):
+                        color = _subject_significance_color(
+                            base_color, pvalues, event, predictor, subject,
+                            alpha)
                         draw_mark(ax, x, vals, color)
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
@@ -3303,10 +3308,11 @@ def plot_ols_dropone(df, title, pvalues=None,
     title : str
         Figure suptitle.
     pvalues : pd.DataFrame or None
-        Per-mouse permutation p-values, threaded through but not applied to
-        rendering (graying disabled).
+        Per-mouse permutation p-values. When given, a subject non-significant
+        for a cell (``p_value >= alpha`` or no row) is grayed instead of drawn in
+        its target-NM color (see ``_subject_significance_color``).
     alpha : float
-        Significance threshold, threaded through but unused for color.
+        Significance threshold; a subject keeps its color when ``p_value < alpha``.
     counts : pd.DataFrame or None
         Donor-pool sizes per ``(target_NM, event)`` (columns ``n_recordings``,
         ``n_mice``, e.g. from ``count_population_by_target_event``). When given,
@@ -4588,106 +4594,83 @@ def _summarize_state_posteriors(
     return occupancy, histograms
 
 
-def plot_state_posterior_histograms(
-    states_by_mouse: dict[str, pd.DataFrame], n_bins: int = 20
-) -> plt.Figure:
-    """Per-state posterior histograms and MAP occupancy, one axes per mouse.
+# Shared layout for the per-mouse "one row per mouse" goal figures.
+ROW_HEIGHT = 2.4   # inches per mouse row, so axis heights match across figures
+POINT_ALPHA = 0.5  # alpha for empirical data-point markers
 
-    For each mouse, overlays a step histogram of every state's posterior column
-    (``state_1``…``state_K``) on [0, 1]: crisp assignments concentrate mass near
-    0 and 1. A companion inset bar in the upper-left shows each state's MAP
-    occupancy (fraction of assigned trials), recomputed here via
-    :func:`_summarize_state_posteriors`. States are colored consistently within a
-    mouse by ``plt.cm.tab10``; state labels are unaligned across mice.
+
+def plot_state_posterior_dwell(
+    states_by_mouse: dict[str, pd.DataFrame],
+    dwell_by_mouse: dict[str, pd.DataFrame],
+    n_bins: int = 20,
+) -> plt.Figure:
+    """Per-state posterior crispness and dwell times, one mouse per row.
+
+    Each mouse gets two axes. Left: a step histogram of every state's posterior
+    column (``state_1``…``state_K``) on [0, 1] — crisp assignments concentrate
+    mass near 0 and 1 — with an inset bar of each state's MAP occupancy
+    (:func:`_summarize_state_posteriors`). Right: a step histogram of run-lengths
+    (dwell times in trial units) per state. States are colored consistently
+    within a mouse by ``plt.cm.tab10``; labels are unaligned across mice.
 
     Parameters
     ----------
     states_by_mouse : dict of str to pandas.DataFrame
         Maps each subject to its per-trial state frame (``map_state`` plus
         ``state_1``…``state_K`` posteriors; NaN on trials dropped from the fit),
-        as assembled by the orchestration script from
-        :meth:`PhotometrySession.load_states`.
+        from :meth:`PhotometrySession.load_states`.
+    dwell_by_mouse : dict of str to pandas.DataFrame
+        Maps each subject to its pooled dwell-time frame with columns
+        ``['state', 'length']`` (one row per run), from
+        :func:`iblnm.analysis.state_dwell_times` applied per eid.
     n_bins : int, optional
-        Number of histogram bins spanning [0, 1] (default 20).
+        Histogram bins for each panel (default 20).
 
     Returns
     -------
     matplotlib.figure.Figure
-        Grid of per-mouse axes; unused grid cells are hidden.
+        ``len(states_by_mouse)`` rows by 2 columns (posterior, dwell).
     """
     bins = np.linspace(0, 1, n_bins + 1)
     mice = list(states_by_mouse)
-    ncols = min(4, len(mice))
-    nrows = int(np.ceil(len(mice) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
-                             squeeze=False)
-    for ax, mouse in zip(axes.flat, mice):
+    fig, axes = plt.subplots(len(mice), 2, figsize=(7, ROW_HEIGHT * len(mice)),
+                             squeeze=False, layout='constrained')
+    for (ax_post, ax_dwell), mouse in zip(axes, mice):
         occupancy, histograms = _summarize_state_posteriors(
             states_by_mouse[mouse], bins)
         state_colors = plt.cm.tab10(np.arange(len(occupancy)))
         for (label, counts), color in zip(histograms.items(), state_colors):
-            ax.stairs(counts, bins, color=color, label=f'state {label}')
-        inset = ax.inset_axes([0.08, 0.62, 0.3, 0.32])
+            ax_post.stairs(counts, bins, color=color, label=f'state {label}')
+        inset = ax_post.inset_axes([0.08, 0.62, 0.3, 0.32])
         inset.bar(range(len(occupancy)), occupancy.to_numpy(), color=state_colors)
         inset.set_ylim(0, 1)
         inset.set_xticks([])
-        inset.set_title('occupancy', fontsize=TICKFONTSIZE)
-        ax.set_xlabel('posterior probability')
-        ax.set_ylabel('trials')
-        ax.set_title(mouse)
-        ax.legend(fontsize=TICKFONTSIZE, frameon=False)
+        inset.tick_params(labelsize=6)
+        inset.set_title('occupancy', fontsize=6)
+        ax_post.set_xlabel('posterior probability', fontsize=8)
+        ax_post.set_ylabel('trials', fontsize=8)
+        ax_post.set_title(mouse, fontsize=9)
+        ax_post.tick_params(labelsize=7)
+        ax_post.legend(fontsize=6, frameon=False)
 
-    for ax in axes.flat[len(mice):]:
-        ax.axis('off')
-    return fig
-
-
-def plot_state_dwell_times(
-    dwell_by_mouse: dict[str, pd.DataFrame], n_bins: int = 20
-) -> plt.Figure:
-    """Per-state dwell-time distributions, one axes per mouse.
-
-    For each mouse, overlays a step histogram of run-lengths (dwell times in
-    trial units) per state, on a shared bin grid spanning that mouse's observed
-    range. States are colored consistently within a mouse by ``plt.cm.tab10``;
-    state labels are unaligned across mice.
-
-    Parameters
-    ----------
-    dwell_by_mouse : dict of str to pandas.DataFrame
-        Maps each subject to its pooled dwell-time frame with integer columns
-        ``['state', 'length']`` (one row per run), as assembled by the
-        orchestration script from :func:`iblnm.analysis.state_dwell_times`
-        applied per eid.
-    n_bins : int, optional
-        Number of histogram bins spanning [0, max dwell] per mouse (default 20).
-
-    Returns
-    -------
-    matplotlib.figure.Figure
-        Grid of per-mouse axes; unused grid cells are hidden.
-    """
-    mice = list(dwell_by_mouse)
-    ncols = min(4, len(mice))
-    nrows = int(np.ceil(len(mice) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
-                             squeeze=False)
-    for ax, mouse in zip(axes.flat, mice):
         dwell = dwell_by_mouse[mouse]
-        bins = np.linspace(0, dwell['length'].max(), n_bins + 1)
+        dwell_bins = np.linspace(0, dwell['length'].max(), n_bins + 1)
         by_state = dwell.groupby('state')['length']
-        state_colors = plt.cm.tab10(np.arange(by_state.ngroups))
-        for (label, lengths), color in zip(by_state, state_colors):
-            counts, _ = np.histogram(lengths, bins=bins)
-            ax.stairs(counts, bins, color=color, label=f'state {label}')
-        ax.set_xlabel('dwell time (trials)')
-        ax.set_ylabel('runs')
-        ax.set_title(mouse)
-        ax.legend(fontsize=TICKFONTSIZE, frameon=False)
-
-    for ax in axes.flat[len(mice):]:
-        ax.axis('off')
+        dwell_colors = plt.cm.tab10(np.arange(by_state.ngroups))
+        for (label, lengths), color in zip(by_state, dwell_colors):
+            counts, _ = np.histogram(lengths, bins=dwell_bins)
+            ax_dwell.stairs(counts, dwell_bins, color=color, label=f'state {label}')
+        ax_dwell.set_xlabel('dwell time (trials)', fontsize=8)
+        ax_dwell.set_ylabel('runs', fontsize=8)
+        ax_dwell.set_title(mouse, fontsize=9)
+        ax_dwell.tick_params(labelsize=7)
     return fig
+
+
+_CHRONO_OUTCOME_STYLE = {
+    'correct': {'linestyle': '-', 'fill': True},
+    'incorrect': {'linestyle': '--', 'fill': False},
+}
 
 
 def plot_state_psychometric_chronometric(
@@ -4697,13 +4680,16 @@ def plot_state_psychometric_chronometric(
     """Per-state psychometric + chronometric curves, one mouse per row.
 
     Each mouse gets two axes: a psychometric panel (P(rightward choice) vs
-    signed contrast) and a chronometric panel (median RT vs |contrast|). Every
-    inferred state is overlaid with a consistent colour within a mouse
-    (``plt.cm.tab10``, keyed by sorted state label). Empirical points are drawn
-    as markers; the fitted psychometric (``psychofit.erf_psycho_2gammas``) and
-    linear chronometric overlays are drawn where their parameters are finite and
-    skipped otherwise (low-trial states return NaN fits). State labels are
-    unaligned across mice.
+    signed contrast) and a chronometric panel (median RT vs signed contrast).
+    Every inferred state is overlaid with a consistent colour within a mouse
+    (``plt.cm.tab10``, keyed by sorted state label). The chronometric panel draws
+    plain lines through the empirical medians, split by trial outcome — correct
+    (filled markers, solid line) vs incorrect (open markers, dashed line) — and by
+    stimulus side, so the left and right lines are not connected across zero
+    contrast (two points at 0). The
+    psychometric panel adds a fitted overlay (``psychofit.erf_psycho_2gammas``)
+    where its parameters are finite (low-trial states return NaN fits). State
+    labels are unaligned across mice.
 
     Parameters
     ----------
@@ -4712,8 +4698,9 @@ def plot_state_psychometric_chronometric(
         frames assembled by the orchestration script. The psychometric frame has
         columns ``['state', 'signed_contrast', 'p_right', 'bias', 'threshold',
         'lapse_left', 'lapse_right']`` (fit params constant within a state); the
-        chronometric frame has ``['state', 'contrast', 'median_rt', 'slope',
-        'intercept']`` (``contrast`` is ``|contrast|`` in percent).
+        chronometric frame has ``['state', 'outcome', 'side', 'signed_contrast',
+        'median_rt']`` (``outcome`` in ``{'correct', 'incorrect'}``, ``side`` in
+        ``{'left', 'right'}``).
     contrast_range : tuple of float, optional
         Signed-contrast span (percent) over which the psychometric overlay is
         drawn (default ``(-100, 100)``).
@@ -4727,8 +4714,8 @@ def plot_state_psychometric_chronometric(
     import psychofit as psy
 
     mice = list(curves_by_mouse)
-    fig, axes = plt.subplots(len(mice), 2, figsize=(8, 3 * len(mice)),
-                             squeeze=False)
+    fig, axes = plt.subplots(len(mice), 2, figsize=(7, ROW_HEIGHT * len(mice)),
+                             squeeze=False, layout='constrained')
     grid = np.linspace(contrast_range[0], contrast_range[1], 200)
     for (ax_psych, ax_chrono), mouse in zip(axes, mice):
         psych = curves_by_mouse[mouse]['psychometric']
@@ -4739,133 +4726,247 @@ def plot_state_psychometric_chronometric(
         for state, points in psych.groupby('state'):
             color = state_colors[state]
             ax_psych.scatter(points['signed_contrast'], points['p_right'],
-                             color=color, label=f'state {state}')
+                             color=color, alpha=POINT_ALPHA, label=f'state {state}')
             params = points[['bias', 'threshold',
                              'lapse_right', 'lapse_left']].iloc[0].to_numpy()
             if np.all(np.isfinite(params)):
                 ax_psych.plot(grid, psy.erf_psycho_2gammas(params, grid),
                               color=color, linewidth=1.5)
 
-        for state, points in chrono.groupby('state'):
+        # One plain line per (state, outcome, side); sides are drawn separately so
+        # they are not connected across zero contrast (two dots at 0).
+        for (state, outcome, _), points in chrono.groupby(
+                ['state', 'outcome', 'side']):
             color = state_colors[state]
-            ax_chrono.scatter(points['contrast'], points['median_rt'],
-                              color=color, label=f'state {state}')
-            slope, intercept = points[['slope', 'intercept']].iloc[0]
-            if np.isfinite(slope) and np.isfinite(intercept):
-                x = np.sort(points['contrast'].to_numpy())
-                ax_chrono.plot(x, intercept + slope * x,
-                               color=color, linewidth=1.5)
+            style = _CHRONO_OUTCOME_STYLE[outcome]
+            points = points.sort_values('signed_contrast')
+            ax_chrono.plot(points['signed_contrast'], points['median_rt'],
+                           color=color, alpha=POINT_ALPHA, marker='o',
+                           markersize=3, linestyle=style['linestyle'],
+                           markerfacecolor=color if style['fill'] else 'none')
 
         ax_psych.axhline(0.5, color='gray', linestyle='--', alpha=0.5)
-        ax_psych.set_xlabel('signed contrast (%)')
-        ax_psych.set_ylabel('P(choose right)')
-        ax_psych.set_title(mouse)
-        ax_psych.legend(fontsize=TICKFONTSIZE, frameon=False)
-        ax_chrono.set_xlabel('|contrast| (%)')
-        ax_chrono.set_ylabel('median RT (s)')
-        ax_chrono.set_title(mouse)
+        ax_psych.set_xlabel('signed contrast (%)', fontsize=8)
+        ax_psych.set_ylabel('P(choose right)', fontsize=8)
+        ax_psych.set_title(mouse, fontsize=9)
+        ax_psych.tick_params(labelsize=7)
+        ax_psych.legend(fontsize=6, frameon=False)
+        ax_chrono.set_xlabel('signed contrast (%)', fontsize=8)
+        ax_chrono.set_ylabel('median RT (s)', fontsize=8)
+        ax_chrono.set_title(mouse, fontsize=9)
+        ax_chrono.tick_params(labelsize=7)
+
+    outcome_handles = [
+        Line2D([], [], color='0.4', marker='o', linestyle=style['linestyle'],
+               markerfacecolor='0.4' if style['fill'] else 'none', label=outcome)
+        for outcome, style in _CHRONO_OUTCOME_STYLE.items()]
+    axes[0][1].legend(handles=outcome_handles, fontsize=6, frameon=False)
     return fig
+
+
+_MOUSE_MARKERS = ('o', 's', '^', 'D', 'v', 'P', 'X', '*')
+
+
+def _mouse_markers(mice: list) -> dict:
+    """Map each mouse to a distinct marker shape (mouse = shape in the scatters)."""
+    return dict(zip(mice, itertools.cycle(_MOUSE_MARKERS)))
+
+
+def _scatter_by_state_and_mouse(ax, x, y, states, mouse_labels, markers) -> None:
+    """Scatter (x, y) with color = within-mouse state and marker = mouse.
+
+    Color follows the shared per-state scheme used by every other goal figure
+    (state ``s`` in 1…K -> ``plt.cm.tab10(s - 1)``); each mouse is drawn as a
+    single scatter call so it gets one distinct marker shape.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to draw into.
+    x, y : array-like, shape (n_states,)
+        Point coordinates.
+    states : array-like of int, shape (n_states,)
+        Within-mouse state label (1…K) per point; sets color.
+    mouse_labels : array-like of str, shape (n_states,)
+        Mouse per point; sets marker.
+    markers : dict of str to str
+        Mouse -> marker shape (from :func:`_mouse_markers`).
+    """
+    x, y = np.asarray(x), np.asarray(y)
+    states = np.asarray(states)
+    mouse_labels = np.asarray(mouse_labels)
+    for mouse, marker in markers.items():
+        mask = mouse_labels == mouse
+        ax.scatter(x[mask], y[mask], marker=marker,
+                   color=plt.cm.tab10(states[mask] - 1))
+
+
+def _state_mouse_handles(states, markers):
+    """Legend handles for the state-color and mouse-marker encodings."""
+    state_handles = [Line2D([], [], marker='o', linestyle='none',
+                            color=plt.cm.tab10(s - 1), label=f'state {s}')
+                     for s in states]
+    mouse_handles = [Line2D([], [], marker=marker, linestyle='none', color='0.4',
+                            label=mouse) for mouse, marker in markers.items()]
+    return state_handles, mouse_handles
+
+
+def _add_state_mouse_legends(fig, states, markers) -> None:
+    """Add two outside legends: state->color and mouse->marker shape."""
+    state_handles, mouse_handles = _state_mouse_handles(states, markers)
+    fig.legend(handles=state_handles, title='state', frameon=False,
+               fontsize=TICKFONTSIZE, loc='outside right upper')
+    fig.legend(handles=mouse_handles, title='mouse', frameon=False,
+               fontsize=TICKFONTSIZE, loc='outside right lower')
 
 
 def plot_state_param_scatter(
     params_df: pd.DataFrame, params: tuple = ('B', 'k', 'a0')
 ) -> plt.Figure:
-    """Pairwise scatter of per-state DDM parameters, colored by mouse (goal 4a).
+    """3D scatter of per-state DDM parameters; color = state, marker = mouse.
 
-    One point per (mouse, state); each axes shows one parameter pair, so three
-    parameters give three panels (B-k, B-a0, k-a0). Mice are colored consistently
-    by ``plt.cm.tab10`` keyed by sorted subject label, so a state signature that
-    recurs across mice reads as a cluster spanning colors.
+    One point per (mouse, state) in the space of the three ``params`` (default
+    B, k, a0). Within-mouse state sets the color (shared ``plt.cm.tab10`` scheme,
+    matching every other goal figure) and mouse sets the marker shape, so a
+    recurring state signature reads as a cluster of one color across marker
+    shapes. State labels are unaligned across mice.
 
     Parameters
     ----------
     params_df : pandas.DataFrame
-        One row per (mouse, state), with a ``mouse`` column and the columns named
-        in ``params`` (per-state DDM parameters from
+        One row per (mouse, state), with ``mouse`` and ``state`` columns and the
+        columns named in ``params`` (per-state DDM parameters from
         ``all_mice_bestK_params.csv``).
     params : tuple of str, optional
-        Parameter columns to cross pairwise (default ``('B', 'k', 'a0')``).
+        The three parameter columns forming the x/y/z axes (default
+        ``('B', 'k', 'a0')``).
 
     Returns
     -------
     matplotlib.figure.Figure
-        One axes per parameter pair.
+        One 3D axes, with outside state-color and mouse-marker legends.
     """
-    pairs = list(itertools.combinations(params, 2))
+    x_param, y_param, z_param = params
     mice = sorted(params_df['mouse'].unique())
-    mouse_colors = dict(zip(mice, plt.cm.tab10(np.arange(len(mice)))))
-    point_colors = list(params_df['mouse'].map(mouse_colors))
+    markers = _mouse_markers(mice)
+    states = sorted(params_df['state'].unique())
 
-    fig, axes = plt.subplots(1, len(pairs), figsize=(4 * len(pairs), 4),
-                             squeeze=False)
-    for ax, (x_param, y_param) in zip(axes.flat, pairs):
-        ax.scatter(params_df[x_param], params_df[y_param], c=point_colors)
-        ax.set_xlabel(x_param)
-        ax.set_ylabel(y_param)
+    fig = plt.figure(figsize=(6, 6), layout='constrained')
+    ax = fig.add_subplot(projection='3d')
+    for mouse, marker in markers.items():
+        sub = params_df[params_df['mouse'] == mouse]
+        ax.scatter(sub[x_param], sub[y_param], sub[z_param], marker=marker,
+                   color=plt.cm.tab10(sub['state'].to_numpy() - 1),
+                   alpha=POINT_ALPHA, depthshade=False)
+    ax.set_xlabel(x_param)
+    ax.set_ylabel(y_param)
+    ax.set_zlabel(z_param)
 
-    handles = [Line2D([], [], marker='o', linestyle='none', color=mouse_colors[m],
-                      label=m) for m in mice]
-    axes.flat[-1].legend(handles=handles, fontsize=TICKFONTSIZE, frameon=False,
-                         loc='best')
+    _add_state_mouse_legends(fig, states, markers)
     return fig
 
 
-def plot_state_pca(scores: np.ndarray, labels: Iterable, ax=None) -> plt.Figure:
-    """PC1xPC2 scatter of per-state behavioral features, colored by mouse (goal 4b).
+def plot_state_pca(
+    scores: np.ndarray, mouse_labels: Iterable, states: Iterable,
+    loadings: np.ndarray, feature_names: Iterable,
+) -> plt.Figure:
+    """PC1xPC2 scatter of per-state behavioral features, with loading heatmaps.
 
-    One point per state, positioned by its first two principal-component scores
-    (from :func:`iblnm.analysis.pca_2d` on the z-scored behavioral feature matrix)
-    and colored by mouse (``plt.cm.tab10`` keyed by sorted label).
+    The central axes scatters one point per state by its first two
+    principal-component scores (from :func:`iblnm.analysis.pca_2d`); within-mouse
+    state sets the color (shared ``plt.cm.tab10`` scheme) and mouse sets the
+    marker shape. Two loading heatmaps sit beside the axis each PC defines: PC1's
+    feature weights run horizontally under the x-axis, PC2's run vertically beside
+    the y-axis, both on a symmetric diverging scale centered at 0.
 
     Parameters
     ----------
     scores : numpy.ndarray, shape (n_states, 2)
         PC1/PC2 coordinates per state.
-    labels : iterable of str, length n_states
-        Mouse label per state, used to color points.
-    ax : matplotlib.axes.Axes, optional
-        Axes to draw into; a new figure/axes is created when omitted.
+    mouse_labels : iterable of str, length n_states
+        Mouse per state; sets marker shape.
+    states : iterable of int, length n_states
+        Within-mouse state label (1…K) per point; sets color.
+    loadings : numpy.ndarray, shape (n_features, 2)
+        Feature weights for PC1 (column 0) and PC2 (column 1).
+    feature_names : iterable of str, length n_features
+        Feature labels, in ``loadings`` row order.
 
     Returns
     -------
     matplotlib.figure.Figure
-        The figure containing the PCA scatter.
+        The scatter plus the two aligned loading heatmaps.
     """
-    labels = np.asarray(labels)
-    mice = sorted(set(labels))
-    mouse_colors = dict(zip(mice, plt.cm.tab10(np.arange(len(mice)))))
+    mouse_labels = np.asarray(mouse_labels)
+    loadings = np.asarray(loadings)
+    feature_names = list(feature_names)
+    markers = _mouse_markers(sorted(set(mouse_labels)))
+    vlim = np.abs(loadings).max()
 
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(5, 5))
-    for mouse in mice:
-        mask = labels == mouse
-        ax.scatter(scores[mask, 0], scores[mask, 1],
-                   color=mouse_colors[mouse], label=mouse)
+    # Explicit square layout (square figure => equal strip thickness in inches):
+    # the PC1 heatmap spans the scatter's width beneath it, the PC2 heatmap spans
+    # its height to the left, and the colorbar matches that thickness on the
+    # right, all aligned to the scatter's edges.
+    main, left, bottom, strip, gap, cbar_gap = 0.52, 0.32, 0.26, 0.05, 0.09, 0.02
+    fig = plt.figure(figsize=(6.5, 6.5))
+    ax = fig.add_axes([left, bottom, main, main])
+    ax_pc1 = fig.add_axes([left, bottom - gap - strip, main, strip])
+    ax_pc2 = fig.add_axes([left - gap - strip, bottom, strip, main])
+    cax = fig.add_axes([left + main + cbar_gap, bottom, strip, main])
+
+    _scatter_by_state_and_mouse(ax, scores[:, 0], scores[:, 1], states,
+                                mouse_labels, markers)
     ax.set_xlabel('PC1')
     ax.set_ylabel('PC2')
-    ax.legend(fontsize=TICKFONTSIZE, frameon=False, loc='best')
-    return ax.figure
+
+    ax_pc1.imshow(loadings[:, 0][None, :], cmap='RdBu_r', vmin=-vlim, vmax=vlim,
+                  aspect='auto')
+    ax_pc1.set_yticks([])
+    ax_pc1.set_xticks(range(len(feature_names)))
+    ax_pc1.set_xticklabels(feature_names, rotation=90, fontsize=7)
+
+    im = ax_pc2.imshow(loadings[:, 1][:, None], cmap='RdBu_r', vmin=-vlim,
+                       vmax=vlim, aspect='auto')
+    ax_pc2.set_xticks([])
+    ax_pc2.set_yticks(range(len(feature_names)))
+    ax_pc2.set_yticklabels(feature_names, fontsize=7)
+
+    fig.colorbar(im, cax=cax, label='loading')
+    state_handles, mouse_handles = _state_mouse_handles(sorted(set(states)),
+                                                        markers)
+    fig.legend(handles=state_handles, title='state', frameon=False,
+               fontsize=TICKFONTSIZE, loc='upper left', bbox_to_anchor=(1.02, 0.78))
+    fig.legend(handles=mouse_handles, title='mouse', frameon=False,
+               fontsize=TICKFONTSIZE, loc='upper left', bbox_to_anchor=(1.02, 0.5))
+    return fig
 
 
 def plot_state_block_transitions(
-    aligned_by_mouse: dict[str, dict[str, np.ndarray]], window: int = 15
+    aligned_by_mouse: dict[str, dict[str, np.ndarray]],
+    transition_types: Iterable[str],
+    window: int = 15,
 ) -> plt.Figure:
-    """Per-state posterior traces around block transitions, one mouse per axes (goal 5).
+    """Per-state posterior traces around block transitions: mice x transitions.
 
-    For each mouse, overlays the mean per-state posterior aligned to block
-    transitions: state is encoded by color (``plt.cm.tab10``), transition type
-    (e.g. L->R vs R->L) by line style. A dashed vertical line marks the
-    transition trial. State labels are unaligned across mice.
+    One row per mouse, one column per transition type. Each axes overlays the
+    mean per-state change in posterior (Δ from the pre-transition baseline) for
+    that mouse and transition, state encoded by color (``plt.cm.tab10``), with a
+    shaded ±SEM band across transitions. Dashed lines mark the transition trial
+    (vertical) and the zero-change baseline (horizontal). Each axes is titled
+    ``"{mouse} {transition}"``. Cells for a mouse missing a transition are hidden.
+    State labels are unaligned across mice.
 
     Parameters
     ----------
-    aligned_by_mouse : dict of str to dict of str to numpy.ndarray
-        Maps each subject to a ``{transition_type: mean_trace}`` dict, where
-        ``mean_trace`` has shape ``(2*window+1, K)`` — the per-position mean
-        posterior across that mouse's transitions, one column per state (the
-        ``mean`` output of :func:`iblnm.analysis.align_traces_at_transitions`).
-        Transition-type keys are shared across mice and drawn in a fixed style
-        order.
+    aligned_by_mouse : dict of str to dict of str to dict of str to numpy.ndarray
+        Maps each subject to a ``{transition_type: {'mean': arr, 'sem': arr}}``
+        structure, where ``arr`` has shape ``(2*window+1, K)`` — the per-position
+        mean and standard error of the baseline-subtracted posterior across that
+        mouse's transitions, one column per state (assembled by the orchestration
+        script from :func:`iblnm.analysis.align_traces_at_transitions`).
+    transition_types : iterable of str
+        Transition types to draw as columns (keys of the per-mouse inner dicts,
+        e.g. ``('L->R', 'R->L')``).
     window : int, optional
         Half-window in trials; the x-axis spans ``[-window, window]``
         (default 15).
@@ -4873,34 +4974,39 @@ def plot_state_block_transitions(
     Returns
     -------
     matplotlib.figure.Figure
-        Grid of per-mouse axes; unused grid cells are hidden.
+        Grid of mouse (rows) x transition (columns) axes; missing cells hidden.
     """
     mice = list(aligned_by_mouse)
-    transition_types = list(dict.fromkeys(
-        t for traces in aligned_by_mouse.values() for t in traces))
-    linestyles = dict(zip(transition_types, itertools.cycle(['-', '--', ':'])))
+    transition_types = list(transition_types)
     lag = np.arange(-window, window + 1)
 
-    ncols = min(4, len(mice))
-    nrows = int(np.ceil(len(mice) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
-                             squeeze=False)
-    for ax, mouse in zip(axes.flat, mice):
-        for transition, trace in aligned_by_mouse[mouse].items():
-            state_colors = plt.cm.tab10(np.arange(trace.shape[1]))
+    # Same figure width, height, and per-axes decoration (one-line title, x/y
+    # labels) as the other one-row-per-mouse figures, so axis height and vertical
+    # spacing match them exactly under constrained layout.
+    fig, axes = plt.subplots(
+        len(mice), len(transition_types),
+        figsize=(3.5 * len(transition_types), ROW_HEIGHT * len(mice)),
+        squeeze=False, layout='constrained')
+    for row, mouse in zip(axes, mice):
+        for ax, transition in zip(row, transition_types):
+            stats = aligned_by_mouse[mouse].get(transition)
+            if stats is None:
+                ax.axis('off')
+                continue
+            mean, sem = stats['mean'], stats['sem']
+            state_colors = plt.cm.tab10(np.arange(mean.shape[1]))
             for state, color in enumerate(state_colors):
-                ax.plot(lag, trace[:, state], color=color,
-                        linestyle=linestyles[transition])
-        ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
-        ax.set_xlabel('trial from transition')
-        ax.set_ylabel('P(state)')
-        ax.set_title(mouse)
-
-    handles = [Line2D([], [], color='gray', linestyle=linestyles[t], label=t)
-               for t in transition_types]
-    axes.flat[0].legend(handles=handles, fontsize=TICKFONTSIZE, frameon=False,
-                        loc='best')
-    for ax in axes.flat[len(mice):]:
-        ax.axis('off')
+                ax.fill_between(lag, mean[:, state] - sem[:, state],
+                                mean[:, state] + sem[:, state],
+                                color=color, alpha=0.2, linewidth=0)
+                ax.plot(lag, mean[:, state], color=color,
+                        label=f'state {state + 1}')
+            ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
+            ax.axhline(0, color='gray', linestyle=':', alpha=0.5)
+            ax.set_xlabel('trial from transition', fontsize=8)
+            ax.set_ylabel('Δ P(state)', fontsize=8)
+            ax.set_title(f'{mouse} {transition}', fontsize=9)
+            ax.tick_params(labelsize=7)
+    axes[0][0].legend(fontsize=6, frameon=False, loc='best')
     return fig
 

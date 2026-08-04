@@ -1397,9 +1397,9 @@ class TestPlotOlsDropone:
                 for c in ax.collections
                 if isinstance(c, PathCollection) and len(c.get_offsets()) == 1}
 
-    def test_pvalues_leave_every_subject_in_targetnm_color(self):
-        """Graying is disabled: passing a p-value table (even marking a subject
-        non-significant) still draws every subject in its target-NM color."""
+    def test_pvalues_gray_nonsignificant_subjects(self):
+        """A p-value table grays subjects whose cell ``p_value >= alpha`` while
+        significant subjects keep their target-NM color."""
         from iblnm.vis import plot_ols_dropone
         from iblnm.config import TARGETNM_COLORS
         import matplotlib.colors as mcolors
@@ -1418,9 +1418,9 @@ class TestPlotOlsDropone:
         fig = plot_ols_dropone(pd.DataFrame(rows), 't', pvalues=pvalues,
                                alpha=0.05)
         colors = self._marker_color_by_y(fig.axes[0])
-        vta = mcolors.to_rgb(TARGETNM_COLORS['VTA-DA'])
-        assert np.allclose(colors[0.2], vta)  # m_sig mean 0.2
-        assert np.allclose(colors[0.5], vta)  # m_ns mean 0.5 — not gray
+        assert np.allclose(colors[0.2],
+                           mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))  # m_sig
+        assert np.allclose(colors[0.5], mcolors.to_rgb('gray'))  # m_ns grayed
         plt.close(fig)
 
 
@@ -3248,13 +3248,23 @@ class TestStatePosteriorHistograms:
             assert counts[1:-1].sum() == 0
             assert counts[0] + counts[-1] == 8
 
-    def test_returns_figure_with_axes_per_mouse(self):
-        from iblnm.vis import plot_state_posterior_histograms
+    def _dwell(self):
+        return pd.DataFrame({'state': [1, 1, 2, 2, 1], 'length': [2, 3, 1, 4, 2]})
+
+    def test_combined_figure_row_per_mouse_two_columns(self):
+        from iblnm.vis import plot_state_posterior_dwell
         states_by_mouse = {'ZFM-A': self._states(), 'ZFM-B': self._states()}
-        fig = plot_state_posterior_histograms(states_by_mouse)
+        dwell_by_mouse = {'ZFM-A': self._dwell(), 'ZFM-B': self._dwell()}
+        fig = plot_state_posterior_dwell(states_by_mouse, dwell_by_mouse)
         assert isinstance(fig, plt.Figure)
+        # Two mice, each a row of two main axes (posterior | dwell); insets add
+        # occupancy axes, so the main-axes count is at least 4.
         titles = {ax.get_title() for ax in fig.axes if ax.get_title()}
         assert {'ZFM-A', 'ZFM-B'} <= titles
+        # One axes carries the dwell x-label, another the posterior x-label.
+        xlabels = {ax.get_xlabel() for ax in fig.axes}
+        assert 'dwell time (trials)' in xlabels
+        assert 'posterior probability' in xlabels
         plt.close(fig)
 
 
@@ -3274,14 +3284,17 @@ class TestStatePsychometricChronometric:
         })
 
     def _chronometric(self):
-        """Two states, three |contrast| points each with known median RT."""
-        return pd.DataFrame({
-            'state': [1, 1, 1, 2, 2, 2],
-            'contrast': [0.0, 25.0, 100.0, 0.0, 25.0, 100.0],
-            'median_rt': [0.50, 0.42, 0.34, 0.60, 0.48, 0.36],
-            'slope': [-0.0016, -0.0016, -0.0016, -0.0024, -0.0024, -0.0024],
-            'intercept': [0.50, 0.50, 0.50, 0.60, 0.60, 0.60],
-        })
+        """Two states x two outcomes x two sides, median RT at two contrasts each."""
+        rows = []
+        sides = {'left': [-100.0, -25.0], 'right': [25.0, 100.0]}
+        for state, rt0 in [(1, 0.50), (2, 0.60)]:
+            for outcome, bump in [('correct', 0.0), ('incorrect', 0.1)]:
+                for side, contrasts in sides.items():
+                    for sc in contrasts:
+                        rows.append({'state': state, 'outcome': outcome,
+                                     'side': side, 'signed_contrast': sc,
+                                     'median_rt': rt0 + bump - 0.001 * abs(sc)})
+        return pd.DataFrame(rows)
 
     def _curves(self):
         return {'ZFM-A': {'psychometric': self._psychometric(),
@@ -3301,32 +3314,132 @@ class TestStatePsychometricChronometric:
         assert np.allclose(got, exp)
         plt.close(fig)
 
-    def test_chronometric_points_at_known_positions(self):
+    def test_chronometric_plain_lines_at_known_positions(self):
         from iblnm.vis import plot_state_psychometric_chronometric
         fig = plot_state_psychometric_chronometric(self._curves())
         chrono = self._chronometric()
         ax = fig.axes[1]  # column 1 = chronometric for the single mouse
-        assert len(ax.collections) == chrono['state'].nunique()
-        offsets = np.vstack([c.get_offsets() for c in ax.collections])
-        expected = chrono[['contrast', 'median_rt']].to_numpy()
-        got = offsets[np.lexsort(offsets.T)]
+        # One plain line per (state, outcome, side) group; no scatter collections.
+        assert len(ax.collections) == 0
+        assert len(ax.lines) == 8  # 2 states x 2 outcomes x 2 sides
+        vertices = np.vstack([ln.get_xydata() for ln in ax.lines])
+        expected = chrono[['signed_contrast', 'median_rt']].to_numpy()
+        got = vertices[np.lexsort(vertices.T)]
         exp = expected[np.lexsort(expected.T)]
         assert np.allclose(got, exp)
         plt.close(fig)
 
-    def test_nan_fit_params_skip_overlay_without_error(self):
+    def test_nan_psychometric_params_skip_overlay_without_error(self):
         from iblnm.vis import plot_state_psychometric_chronometric
         curves = self._curves()
-        # State 2's fit failed (all params NaN): its points still plot, but no
-        # psychometric/chronometric overlay line is drawn for it.
+        # State 2's psychometric fit failed (all params NaN): its points still
+        # plot, but no psychometric overlay line is drawn for it.
         psych = curves['ZFM-A']['psychometric']
-        chrono = curves['ZFM-A']['chronometric']
         psych.loc[psych['state'] == 2,
                   ['bias', 'threshold', 'lapse_left', 'lapse_right']] = np.nan
-        chrono.loc[chrono['state'] == 2, ['slope', 'intercept']] = np.nan
         fig = plot_state_psychometric_chronometric(curves)
-        # Two states scatter on each panel; only state 1 adds an overlay line.
-        assert len(fig.axes[0].collections) == 2
-        assert len(fig.axes[0].lines) == 2  # 1 overlay + axhline
-        assert len(fig.axes[1].lines) == 1  # 1 overlay, no axhline on chrono
+        assert len(fig.axes[0].collections) == 2  # psychometric: 2 states
+        assert len(fig.axes[0].lines) == 2  # state-1 overlay + axhline
+        # Chronometric always draws plain lines: 2 states x 2 outcomes x 2 sides.
+        assert len(fig.axes[1].lines) == 8
+        plt.close(fig)
+
+
+class TestStateBlockTransitions:
+    """Goal-5 figure: posterior traces around one block-transition type."""
+
+    def _aligned(self, window=2, k=3):
+        """Two mice; each transition carries a constant Δ mean and SEM per state.
+
+        L->R Δ mean is 0.1 (SEM 0.02); R->L Δ mean is 0.9 (SEM 0.05).
+        """
+        length = 2 * window + 1
+
+        def entry(mean, sem):
+            return {'mean': np.full((length, k), mean),
+                    'sem': np.full((length, k), sem)}
+
+        return {
+            'ZFM-A': {'L->R': entry(0.1, 0.02), 'R->L': entry(0.9, 0.05)},
+            'ZFM-B': {'L->R': entry(0.1, 0.02), 'R->L': entry(0.9, 0.05)},
+        }
+
+    def test_columns_are_transitions_rows_are_mice(self):
+        from iblnm.vis import plot_state_block_transitions
+        fig = plot_state_block_transitions(self._aligned(), ['L->R', 'R->L'],
+                                           window=2)
+        # 2 mice x 2 transitions = 4 axes, row-major: [A/LR, A/RL, B/LR, B/RL].
+        assert len(fig.axes) == 4
+        # ZFM-A, L->R (axes[0]): every state trace carries the L->R value 0.1.
+        ax_lr = fig.axes[0]
+        state_lines = [ln for ln in ax_lr.lines if len(ln.get_ydata()) > 2]
+        assert len(state_lines) == 3  # K states
+        for ln in state_lines:
+            assert np.allclose(ln.get_ydata(), 0.1)
+        # ZFM-A, R->L (axes[1]) carries the R->L value 0.9.
+        ax_rl = fig.axes[1]
+        rl_lines = [ln for ln in ax_rl.lines if len(ln.get_ydata()) > 2]
+        assert all(np.allclose(ln.get_ydata(), 0.9) for ln in rl_lines)
+        # Each axes is titled "{mouse} {transition}".
+        assert ax_lr.get_title() == 'ZFM-A L->R'
+        assert ax_rl.get_title() == 'ZFM-A R->L'
+        plt.close(fig)
+
+    def test_draws_a_shaded_sem_band_per_state(self):
+        from iblnm.vis import plot_state_block_transitions
+        fig = plot_state_block_transitions(self._aligned(), ['L->R'], window=2)
+        # One fill_between PolyCollection per state (the SEM band).
+        assert len(fig.axes[0].collections) == 3
+        plt.close(fig)
+
+
+class TestStatePCA:
+    """Goal-4b figure: PCA scatter plus PC1/PC2 loading heatmaps."""
+
+    def test_loading_heatmaps_match_loadings(self):
+        from iblnm.vis import plot_state_pca
+        scores = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+        mice = ['ZFM-A', 'ZFM-A', 'ZFM-B', 'ZFM-B']
+        states = [1, 2, 1, 2]
+        loadings = np.array([[0.1, 0.9], [0.2, 0.8], [0.3, 0.7],
+                             [0.4, 0.6], [0.5, 0.5]])  # 5 features x 2 PCs
+        feats = ['bias', 'threshold', 'lapse_left', 'lapse_right', 'rt_slope']
+
+        fig = plot_state_pca(scores, mice, states, loadings, feats)
+
+        images = [np.asarray(ax.images[0].get_array()).ravel()
+                  for ax in fig.axes if ax.images]
+        assert len(images) == 2  # one heatmap per principal component
+        assert any(np.allclose(img, loadings[:, 0]) for img in images)  # PC1
+        assert any(np.allclose(img, loadings[:, 1]) for img in images)  # PC2
+        plt.close(fig)
+
+
+class TestStateParamScatter:
+    """Goal-4a figure: color encodes within-mouse state, marker encodes mouse."""
+
+    def _params(self):
+        return pd.DataFrame({
+            'mouse': ['ZFM-A', 'ZFM-A', 'ZFM-B', 'ZFM-B'],
+            'state': [1, 2, 1, 2],
+            'B': [1.0, 2.0, 3.0, 4.0],
+            'k': [1.0, 2.0, 3.0, 4.0],
+            'a0': [1.0, 2.0, 3.0, 4.0],
+        })
+
+    def test_marker_per_mouse_color_per_state(self):
+        from iblnm.vis import plot_state_param_scatter
+        fig = plot_state_param_scatter(self._params())
+        fig.canvas.draw()  # 3D scatter resolves per-point facecolors at draw time
+        ax = fig.axes[0]  # the single 3D axes
+        # One scatter collection per mouse (each mouse = one marker shape).
+        assert len(ax.collections) == 2
+        # State colors match the shared tab10-by-state scheme (RGB; alpha < 1).
+        facecolors = ax.collections[0].get_facecolors()  # ZFM-A, states [1, 2]
+        assert np.allclose(facecolors[0][:3], plt.cm.tab10(0)[:3])
+        assert np.allclose(facecolors[1][:3], plt.cm.tab10(1)[:3])
+        # Different mice draw different marker shapes.
+        shape_a = ax.collections[0].get_paths()[0].vertices.shape
+        shape_b = ax.collections[1].get_paths()[0].vertices.shape
+        assert shape_a != shape_b
         plt.close(fig)
