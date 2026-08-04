@@ -343,7 +343,6 @@ EXCLUDE_SESSION_TYPES = [
 QCVAL2NUM = {
     np.nan: 0.,
     'nan': 0.,  # string 'nan' from parquet files
-    'NOT SET': 0.01,
     'NOT_SET': 0.01,
     'PASS': 1.,
     'WARNING': 0.66,
