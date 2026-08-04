@@ -453,6 +453,28 @@ class TestFitChronometric:
         assert np.isnan(result['slope'])
         assert np.isnan(result['intercept'])
 
+    def test_fits_on_signed_contrast_without_folding_sides(self):
+        """The contrast column is fit as given: negative levels keep their sign.
+
+        On the left side (negative signed contrast) RT falls toward the edges, so
+        the median-RT-vs-signed-contrast slope is positive — recovered only
+        because the fit no longer takes the absolute value.
+        """
+        levels = np.array([-100.0, -25.0, -12.5, -6.25])
+        true_slope, true_intercept = 0.003, 0.5
+        trials = pd.DataFrame({
+            'signed_contrast': np.repeat(levels, 3),
+            'rt': np.concatenate([
+                true_intercept + true_slope * c + np.array([-0.01, 0.0, 0.01])
+                for c in levels
+            ]),
+        })
+
+        result = fit_chronometric(trials, contrast_col='signed_contrast')
+
+        assert result['n_levels'] == 4
+        assert result['slope'] == pytest.approx(true_slope, abs=1e-6)
+
 
 class TestFitPsychometricByBlock:
     def test_returns_dict_of_blocks(self, mock_trials_biased):

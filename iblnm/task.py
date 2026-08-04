@@ -378,9 +378,10 @@ def fit_chronometric(
 ) -> dict:
     """Summarize the chronometric relationship as a single linear RT slope.
 
-    Computes median reaction time at each unique absolute-contrast level, then
-    fits an ordinary-least-squares line of median-RT on ``|contrast|``. The
-    median (not the trial-level mean) is used because RT is heavy-tailed
+    Computes median reaction time at each unique level of ``contrast_col`` (used
+    as given — pass ``|contrast|`` to pool sides, or a signed contrast to fit one
+    side), then fits an ordinary-least-squares line of median-RT on that column.
+    The median (not the trial-level mean) is used because RT is heavy-tailed
     (median ~0.39 s, max <10 s), matching how chronometric curves are drawn.
 
     Parameters
@@ -390,8 +391,8 @@ def fit_chronometric(
     rt_col : str
         Name of the reaction-time column, in seconds.
     contrast_col : str
-        Name of the contrast column. Its absolute value defines the levels, so
-        either a signed or an unsigned contrast column works.
+        Name of the contrast column; its values (not their absolute value)
+        define the levels and the regressor.
 
     Returns
     -------
@@ -402,8 +403,7 @@ def fit_chronometric(
         ``intercept`` are NaN when fewer than 2 non-empty levels are present.
     """
     finite = trials[np.isfinite(trials[rt_col])]
-    levels_col = np.abs(finite[contrast_col])
-    medians = finite[rt_col].groupby(levels_col).median()
+    medians = finite[rt_col].groupby(finite[contrast_col]).median()
 
     if len(medians) < 2:
         return {
