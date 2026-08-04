@@ -172,13 +172,19 @@ def _score_video_qc(attrs, error_types: set[str]) -> float:
 
     The five ``VIDEO_QC_QUALITY_COLS`` labels in the ``video`` group ``attrs``
     are mapped through ``config.QCVAL2NUM`` and averaged with ``nanmean``. Any
-    error type in ``VIDEO_QC_DISQUALIFYING_ERRORS`` forces the score to ``-1``;
-    a group with no quality labels scores NaN.
+    error type in ``VIDEO_QC_DISQUALIFYING_ERRORS`` forces the score to ``-1``.
+
+    ``NOT_SET`` labels are dropped rather than scored: the check produced no
+    outcome, so it carries no evidence either way. Its ``QCVAL2NUM`` value
+    exists to place it on the QC colormap, not to weigh in an average. A group
+    with no scorable label left scores NaN.
     """
     if error_types & VIDEO_QC_DISQUALIFYING_ERRORS:
         return -1.0
-    quality = [QCVAL2NUM.get(_decode(attrs[col]), np.nan)
-               for col in VIDEO_QC_QUALITY_COLS if col in attrs]
+    labels = [_decode(attrs[col]) for col in VIDEO_QC_QUALITY_COLS
+              if col in attrs]
+    quality = [QCVAL2NUM.get(label, np.nan) for label in labels
+               if label != LP_QC_NOT_SET]
     return float(np.nanmean(quality)) if quality else np.nan
 
 

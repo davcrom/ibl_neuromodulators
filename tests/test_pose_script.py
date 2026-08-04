@@ -416,6 +416,31 @@ class TestCollectPose:
         expected = np.nanmean([QCVAL2NUM['PASS']] * len(VIDEO_QC_QUALITY_COLS))
         np.testing.assert_allclose(df.loc['eid-q', 'video_qc_score'], expected)
 
+    def test_not_set_excluded_from_quality_score(self, tmp_path,
+                                                 mock_session_series, perf_fpath):
+        """NOT_SET means the check never ran, so it must not weigh on the score."""
+        qc = {col: 'PASS' for col in VIDEO_QC_COLS}
+        qc['qc_videoLeft_wheel_alignment'] = 'NOT_SET'
+        _write_pose_session(tmp_path, 'eid-ns', steps=None, drift=np.nan,
+                            peak_lags=None, qc_lp='NOT_SET',
+                            series=mock_session_series, video_qc=qc)
+
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+
+        np.testing.assert_allclose(df.loc['eid-ns', 'video_qc_score'],
+                                   QCVAL2NUM['PASS'])
+
+    def test_all_not_set_quality_scores_nan(self, tmp_path, mock_session_series,
+                                            perf_fpath):
+        qc = {col: 'NOT_SET' for col in VIDEO_QC_COLS}
+        _write_pose_session(tmp_path, 'eid-allns', steps=None, drift=np.nan,
+                            peak_lags=None, qc_lp='NOT_SET',
+                            series=mock_session_series, video_qc=qc)
+
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+
+        assert np.isnan(df.loc['eid-allns', 'video_qc_score'])
+
     def test_lp_absent_row_present_with_nan_traces(self, tmp_path,
                                                    mock_session_series, perf_fpath):
         """Video group with measures + QC but no traces: row present, scored."""
