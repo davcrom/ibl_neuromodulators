@@ -1,14 +1,14 @@
 """DDM-HMM first-look overview.
 
 Runs the first look at a collaborator's per-mouse drift-diffusion + hidden-Markov
-model (DDM-HMM) fit to the choice/RT behavior of the 8 LC-NE mice, and writes six
+model (DDM-HMM) fit to the choice/RT behavior of the 8 LC-NE mice, and writes five
 figures to ``figures/ddm-hmm/``:
 
-1. Per-state posterior histograms + MAP occupancy (per mouse).
-2. State dwell-time distributions (per mouse).
-3. Per-state psychometric + chronometric curves (per mouse).
-4a. Per-state DDM-parameter pairwise scatter (all mice, colored by mouse).
-4b. PCA of per-state behavioral-parameter features (all mice, colored by mouse).
+1. Per-state posterior histograms + MAP occupancy and state dwell-time
+   distributions (per mouse).
+2. Per-state psychometric + chronometric curves (per mouse).
+3. Per-state DDM-parameter pairwise scatter (all mice, colored by mouse).
+4. PCA of per-state behavioral-parameter features (all mice, colored by mouse).
 5. Per-state posterior traces around block transitions (per mouse).
 
 The ``PhotometrySessionGroup`` is the source of truth for which sessions are in
@@ -22,9 +22,7 @@ No tables are persisted — every quantity recomputes at runtime.
 
 Usage:
     python scripts/ddm_hmm_overview.py            # all modeled mice
-    python scripts/ddm_hmm_overview.py --window 20  # block-transition half-window
 """
-import argparse
 import warnings
 
 import numpy as np
@@ -108,7 +106,7 @@ def build_state_param_table(mouse_frame: pd.DataFrame) -> pd.DataFrame:
     function (via :func:`fit_psychometric`, pooling across ``probabilityLeft``
     blocks). ``contrastLeft``/``contrastRight`` are reconstructed from
     ``stim_side`` and ``contrast`` (:func:`reconstruct_contrast_sides`) as
-    ``fit_psychometric`` requires. Feeds goal 3 (curve overlays) and goal 4b
+    ``fit_psychometric`` requires. Feeds figure 2 (curve overlays) and figure 4
     (PCA features).
 
     Parameters
@@ -116,8 +114,7 @@ def build_state_param_table(mouse_frame: pd.DataFrame) -> pd.DataFrame:
     mouse_frame : pandas.DataFrame
         One mouse's concatenated trials + states (from
         :func:`build_mouse_states_frame`). Must carry ``map_state``, ``choice``,
-        ``feedbackType``, ``probabilityLeft``, ``stim_side``, ``contrast``, and a
-        reaction-time column ``rt`` (seconds). Trials dropped from the fit
+        ``stim_side`` and ``contrast``. Trials dropped from the fit
         (``map_state`` NaN) are ignored by the ``groupby``.
 
     Returns
@@ -259,7 +256,7 @@ def _save(fig: plt.Figure, name: str) -> None:
 
 
 def _assemble_mouse_views(
-    group: PhotometrySessionGroup, subjects: list[str], one, window: int
+    group: PhotometrySessionGroup, subjects: list[str], one
 ) -> dict:
     """Build every modeled mouse's plot inputs from the filtered group.
 
@@ -294,7 +291,7 @@ def _assemble_mouse_views(
         param_table['mouse'] = subject
         param_tables.append(param_table)
         views['curves'][subject] = _state_curves(frame, param_table)
-        views['aligned'][subject] = _block_transition_traces(frame, window)
+        views['aligned'][subject] = _block_transition_traces(frame, BLOCK_WINDOW)
         print(f"  {subject}: {len(kept)} fit trials, "
               f"{param_table['state'].nunique()} states")
 
@@ -302,17 +299,14 @@ def _assemble_mouse_views(
     return views
 
 
-def main(one=None, window: int = BLOCK_WINDOW) -> None:
-    """Assemble every mouse's frame and render the six overview figures.
+def main(one=None) -> None:
+    """Assemble every mouse's frame and render the five overview figures.
 
     Parameters
     ----------
     one : ONE, optional
         Connection for offline H5 access; a default read-only connection is
         created when omitted.
-    window : int, optional
-        Half-window in trials for the block-transition traces (default
-        ``BLOCK_WINDOW``).
     """
     if one is None:
         one = _get_default_connection()
@@ -322,7 +316,7 @@ def main(one=None, window: int = BLOCK_WINDOW) -> None:
 
     ddm_params = pd.read_csv(DDM_HMM_PARAMS_FPATH)
     subjects = list(dict.fromkeys(ddm_params['mouse']))
-    views = _assemble_mouse_views(group, subjects, one, window)
+    views = _assemble_mouse_views(group, subjects, one)
 
     _save(plot_state_posterior_dwell(views['states'], views['dwell']),
           'posteriors_dwell')
@@ -335,17 +329,10 @@ def main(one=None, window: int = BLOCK_WINDOW) -> None:
     _save(plot_state_pca(scores, features['mouse'], features['state'],
                          loadings, FEATURE_COLS), 'behavioral_pca')
 
-    _save(plot_state_block_transitions(views['aligned'], BLOCK_TRANSITIONS, window),
-          'block_transitions')
+    _save(plot_state_block_transitions(views['aligned'], BLOCK_TRANSITIONS,
+                                       BLOCK_WINDOW), 'block_transitions')
     print(f"Wrote 5 figures to {DDM_HMM_FIGURES_DIR}")
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument('--window', type=int, default=BLOCK_WINDOW,
-                        help='block-transition half-window in trials')
-    args = parser.parse_args()
-    main(window=args.window)
+    main()
