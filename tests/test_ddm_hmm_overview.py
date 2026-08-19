@@ -7,12 +7,95 @@ import pytest
 import matplotlib
 matplotlib.use('Agg')
 
+from iblnm.data import PhotometrySession
+
 import scripts.ddm_hmm_overview as ddm
 
 
 # =========================================================================
 # build_mouse_states_frame
 # =========================================================================
+
+def _step_photometry(step_levels, stim_times, fs=100, duration=20.0):
+    """Photometry dict whose LC signal is a known step in each pre-stimulus window.
+
+    The signal is zero everywhere except the 0.5 s before each ``stim_times``
+    entry, where it holds that trial's ``step_levels`` value — so the mean over
+    ``[-0.4, -0.1]`` s before stimulus onset is that level exactly, with no
+    re-implementation of the extraction.
+    """
+    times = np.arange(0, duration, 1 / fs)
+    signal = np.zeros_like(times)
+    for stim_time, level in zip(stim_times, step_levels):
+        signal[(times >= stim_time - 0.5) & (times < stim_time)] = level
+    return {'GCaMP_preprocessed': pd.DataFrame({'LC': signal}, index=times)}
+
+
+def test_build_mouse_states_frame_attaches_window_mean_baseline(monkeypatch):
+    """Each trial's ``baseline`` is the LC mean over [-0.4, -0.1] s pre-stimulus.
+
+    The synthetic signal steps to a distinct known level in each trial's
+    pre-stimulus window, so the extracted baseline must reproduce those levels
+    trial by trial.
+    """
+    sessions = pd.DataFrame({'eid': ['e1'], 'subject': ['M']})
+    group = SimpleNamespace(sessions=sessions)
+    stim_times = [5.0, 10.0, 15.0]
+    levels = [1.0, 2.0, 3.0]
+
+    class FakePS:
+        extract_responses = PhotometrySession.extract_responses
+
+        def __init__(self, row, one=None):
+            self.eid = row['eid']
+            self.brain_region = ['LC']
+
+        def load_h5(self, groups=None):
+            self.trials = pd.DataFrame({'stimOn_times': stim_times,
+                                        'choice': [1, -1, 1]})
+            self.photometry = _step_photometry(levels, stim_times)
+
+        def load_states(self):
+            self.states = pd.DataFrame({'map_state': [1.0, 2.0, 1.0]})
+
+    monkeypatch.setattr(ddm, 'PhotometrySession', FakePS)
+    frame = ddm.build_mouse_states_frame(group, 'M', one=None)
+
+    assert np.allclose(frame['baseline'], levels)
+
+
+def test_build_mouse_states_frame_baseline_stays_aligned_to_its_trial(monkeypatch):
+    """Baselines follow their own trials when the states join leaves NaN gaps.
+
+    The fit covers only trials 0 and 2, so trial 1 joins a NaN ``map_state``;
+    every trial must still carry the baseline computed from its own window.
+    """
+    sessions = pd.DataFrame({'eid': ['e1'], 'subject': ['M']})
+    group = SimpleNamespace(sessions=sessions)
+    stim_times = [5.0, 10.0, 15.0]
+    levels = [1.0, 2.0, 3.0]
+
+    class FakePS:
+        extract_responses = PhotometrySession.extract_responses
+
+        def __init__(self, row, one=None):
+            self.eid = row['eid']
+            self.brain_region = ['LC']
+
+        def load_h5(self, groups=None):
+            self.trials = pd.DataFrame({'stimOn_times': stim_times,
+                                        'choice': [1, -1, 1]})
+            self.photometry = _step_photometry(levels, stim_times)
+
+        def load_states(self):
+            # Fit dropped trial 1, so its map_state joins as NaN.
+            self.states = pd.DataFrame({'map_state': [1.0, 2.0]}, index=[0, 2])
+
+    monkeypatch.setattr(ddm, 'PhotometrySession', FakePS)
+    frame = ddm.build_mouse_states_frame(group, 'M', one=None)
+
+    assert frame['map_state'].isna().to_list() == [False, True, False]
+    assert np.allclose(frame['baseline'], levels)
 
 def test_build_mouse_states_frame_drops_unfit_and_other_subjects(monkeypatch):
     """Only the requested subject's fit sessions survive the concatenation.
@@ -25,18 +108,25 @@ def test_build_mouse_states_frame_drops_unfit_and_other_subjects(monkeypatch):
                              'subject': ['M', 'M', 'OTHER']})
     group = SimpleNamespace(sessions=sessions)
 
-    trials = {'e1': pd.DataFrame({'choice': [1, -1, 1]}),
-              'e2': pd.DataFrame({'choice': [1, 1]})}
+    trials = {'e1': pd.DataFrame({'choice': [1, -1, 1],
+                                  'stimOn_times': [5.0, 10.0, 15.0]}),
+              'e2': pd.DataFrame({'choice': [1, 1],
+                                  'stimOn_times': [5.0, 10.0]})}
     states = {'e1': pd.DataFrame({'map_state': [1.0, 2.0, 1.0],
                                   'state_1': [0.9, 0.2, 0.8]}),
               'e2': None}  # session absent from the fit
 
     class FakePS:
+        extract_responses = PhotometrySession.extract_responses
+
         def __init__(self, row, one=None):
             self.eid = row['eid']
+            self.brain_region = ['LC']
 
         def load_h5(self, groups=None):
             self.trials = trials[self.eid]
+            self.photometry = _step_photometry(
+                [1.0] * len(self.trials), self.trials['stimOn_times'])
 
         def load_states(self):
             self.states = states[self.eid]
@@ -78,15 +168,22 @@ def test_build_mouse_states_frame_skips_sessions_without_trials(monkeypatch):
     sessions = pd.DataFrame({'eid': ['e1', 'e2'], 'subject': ['M', 'M']})
     group = SimpleNamespace(sessions=sessions)
 
-    trials = {'e1': pd.DataFrame(), 'e2': pd.DataFrame({'choice': [1, -1]})}
+    trials = {'e1': pd.DataFrame(),
+              'e2': pd.DataFrame({'choice': [1, -1],
+                                  'stimOn_times': [5.0, 10.0]})}
     states = {'e2': pd.DataFrame({'map_state': [1.0, 2.0]})}
 
     class FakePS:
+        extract_responses = PhotometrySession.extract_responses
+
         def __init__(self, row, one=None):
             self.eid = row['eid']
+            self.brain_region = ['LC']
 
         def load_h5(self, groups=None):
             self.trials = trials[self.eid]
+            self.photometry = _step_photometry(
+                [1.0] * len(self.trials), self.trials.get('stimOn_times', []))
 
         def load_states(self):
             self.states = states[self.eid]
@@ -234,3 +331,34 @@ def test_assemble_mouse_views_raises_when_no_mouse_is_in_the_fit(monkeypatch):
 
     with pytest.raises(ValueError, match='no modeled mouse'):
         ddm._assemble_mouse_views(group=None, subjects=['M1', 'M2'], one=None)
+
+
+def test_assemble_mouse_views_baselines_view_holds_fit_trials_only(monkeypatch):
+    """The 'baselines' view carries (state, baseline, eid) for fit trials only.
+
+    The trial the fit dropped (NaN ``map_state``) is absent, and ``state`` comes
+    back as an integer label rather than the joined float.
+    """
+    frame = pd.DataFrame({
+        'map_state': [1.0, np.nan, 2.0],
+        'baseline': [0.5, 9.9, -0.5],
+        'eid': ['e1', 'e1', 'e2'],
+        'stimOn_times': [1.0, 2.0, 3.0],
+        'response_times': [1.5, 2.5, 3.5],
+    })
+    monkeypatch.setattr(ddm, 'build_mouse_states_frame',
+                        lambda group, subject, one: frame.copy())
+    monkeypatch.setattr(ddm, 'build_state_param_table',
+                        lambda mouse_frame: pd.DataFrame({'state': [1, 2]}))
+    monkeypatch.setattr(ddm, '_state_curves', lambda mouse_frame, params: {})
+    monkeypatch.setattr(ddm, '_block_transition_traces',
+                        lambda mouse_frame, window: {})
+
+    views = ddm._assemble_mouse_views(group=None, subjects=['M'], one=None)
+
+    baselines = views['baselines']['M']
+    assert list(baselines.columns) == ['state', 'baseline', 'eid']
+    assert list(baselines['state']) == [1, 2]
+    assert pd.api.types.is_integer_dtype(baselines['state'])
+    assert list(baselines['baseline']) == [0.5, -0.5]
+    assert list(baselines['eid']) == ['e1', 'e2']

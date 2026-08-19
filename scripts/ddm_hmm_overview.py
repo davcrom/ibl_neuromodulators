@@ -52,6 +52,10 @@ BLOCK_WINDOW = 15  # half-window in trials around a transition (spec Decision)
 BLOCK_BASELINE = 5  # trials before a transition defining the Δ-posterior baseline
 # feedbackType -> outcome label; splits the chronometric curves (figure 2).
 OUTCOMES = {'correct': 1, 'incorrect': -1}
+# Pre-stimulus NM baseline window, s relative to stimOn_times (figure 6). Not
+# config.BASELINE_WINDOW, which is (-0.1, 0) and serves evoked-response
+# subtraction — a different quantity.
+NM_BASELINE_WINDOW = [-0.4, -0.1]
 
 
 def build_mouse_states_frame(
@@ -60,11 +64,16 @@ def build_mouse_states_frame(
     """Concatenate one mouse's per-session trials + fitted states into one frame.
 
     Filters ``group`` to ``subject``, then for each of its sessions instantiates a
-    :class:`PhotometrySession`, loads the H5 ``trials`` group offline, and attaches
-    the fitted per-trial states via :meth:`PhotometrySession.load_states`. Sessions
-    absent from the fit (``states is None``) are dropped. The surviving per-session
-    frames — trials joined with their state columns, tagged with ``eid`` — are
-    concatenated in session order.
+    :class:`PhotometrySession`, loads the H5 ``trials`` and ``photometry`` groups
+    offline, and attaches the fitted per-trial states via
+    :meth:`PhotometrySession.load_states`. Sessions absent from the fit
+    (``states is None``) are dropped. The surviving per-session frames — trials
+    joined with their state columns and pre-stimulus NM baseline, tagged with
+    ``eid`` — are concatenated in session order.
+
+    A session lacking a ``GCaMP_preprocessed`` signal raises ``KeyError`` and
+    stops the run: no in-scope session lacks it, so a NaN path would be dead code
+    that later reads as real missing data.
 
     Parameters
     ----------
@@ -79,14 +88,17 @@ def build_mouse_states_frame(
     -------
     pandas.DataFrame
         Full trials columns plus ``map_state``/``state_1``…``state_K`` (NaN on
-        trials dropped from the fit) plus an ``eid`` column, one row per trial
-        across the mouse's fit sessions. Empty when no session was in the fit.
+        trials dropped from the fit), a ``baseline`` column — the mean of the
+        session's preprocessed signal over :data:`NM_BASELINE_WINDOW` before
+        ``stimOn_times``, in session-SD units, NaN where the window runs off the
+        recording — and an ``eid`` column, one row per trial across the mouse's
+        fit sessions. Empty when no session was in the fit.
     """
     rows = group.sessions[group.sessions['subject'] == subject]
     frames = []
     for _, row in rows.iterrows():
         ps = PhotometrySession(row, one=one)
-        ps.load_h5(groups=['trials'])
+        ps.load_h5(groups=['trials', 'photometry'])
         if ps.trials is None or ps.trials.empty:
             print(f"  {ps.eid}: no stored trials — skipped")
             continue
@@ -94,6 +106,12 @@ def build_mouse_states_frame(
         if ps.states is None:
             continue
         frame = ps.trials.join(ps.states)
+        responses = ps.extract_responses(
+            ps.photometry['GCaMP_preprocessed'],
+            events=['stimOn_times'], window=NM_BASELINE_WINDOW,
+        )
+        frame['baseline'] = responses[ps.brain_region[0]].sel(
+            event='stimOn_times').mean('time').to_series()
         frame['eid'] = ps.eid
         frames.append(frame)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -261,22 +279,25 @@ def _assemble_mouse_views(
     """Build every modeled mouse's plot inputs from the filtered group.
 
     Iterates ``subjects``, assembling each one's trials+states frame and deriving
-    the per-mouse inputs for figures 1, 2 and 5 plus its per-state feature rows.
+    the per-mouse inputs for figures 1, 2, 5 and 6 plus its per-state feature rows.
     Mice with no session in the fit are skipped.
 
     Returns
     -------
     dict
-        Keys ``'states'``, ``'dwell'``, ``'curves'``, ``'aligned'`` each map
-        subject to that figure's plot input; ``'features'`` is the concatenated
-        per-state behavioral-feature table (with a ``mouse`` column) for the PCA.
+        Keys ``'states'``, ``'dwell'``, ``'curves'``, ``'aligned'``,
+        ``'baselines'`` each map subject to that figure's plot input;
+        ``'baselines'`` holds the fit-only trials as ``['state', 'baseline',
+        'eid']``. ``'features'`` is the concatenated per-state behavioral-feature
+        table (with a ``mouse`` column) for the PCA.
 
     Raises
     ------
     ValueError
         If every subject was skipped, leaving nothing to plot.
     """
-    views = {key: {} for key in ('states', 'dwell', 'curves', 'aligned')}
+    views = {key: {}
+             for key in ('states', 'dwell', 'curves', 'aligned', 'baselines')}
     param_tables = []
     for subject in subjects:
         frame = build_mouse_states_frame(group, subject, one)
@@ -291,6 +312,11 @@ def _assemble_mouse_views(
         kept = frame[frame['map_state'].notna()]
         views['dwell'][subject] = state_dwell_times(
             kept['map_state'].astype(int).to_numpy(), kept['eid'].to_numpy())
+        views['baselines'][subject] = pd.DataFrame({
+            'state': kept['map_state'].astype(int),
+            'baseline': kept['baseline'],
+            'eid': kept['eid'],
+        })
 
         param_table = build_state_param_table(frame)
         param_table['mouse'] = subject
