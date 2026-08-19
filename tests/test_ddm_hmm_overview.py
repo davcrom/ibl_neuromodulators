@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 import matplotlib
 matplotlib.use('Agg')
 
@@ -215,3 +216,21 @@ def test_block_transition_traces_are_baseline_deltas_with_sem():
     assert np.allclose(mean[:2, 0], 0.0)
     assert np.isclose(mean[2, 0], 0.6)
     assert np.allclose(sem, 0.0)
+
+
+# =========================================================================
+# _assemble_mouse_views
+# =========================================================================
+
+def test_assemble_mouse_views_raises_when_no_mouse_is_in_the_fit(monkeypatch):
+    """No modeled mouse survives the group filter -> a named error, not concat's.
+
+    Every subject yielding an empty frame leaves no per-state feature table to
+    concatenate; the failure must name the cause rather than surface pandas'
+    "No objects to concatenate".
+    """
+    monkeypatch.setattr(ddm, 'build_mouse_states_frame',
+                        lambda group, subject, one: pd.DataFrame())
+
+    with pytest.raises(ValueError, match='no modeled mouse'):
+        ddm._assemble_mouse_views(group=None, subjects=['M1', 'M2'], one=None)

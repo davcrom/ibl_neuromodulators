@@ -44,13 +44,13 @@ from iblnm.vis import (
     plot_state_psychometric_chronometric,
 )
 
-# Behavioral-parameter features feeding the goal-4b PCA (one per state).
+# Behavioral-parameter features feeding the figure-4 PCA (one per state).
 FEATURE_COLS = ['bias', 'threshold', 'lapse_left', 'lapse_right']
-# probabilityLeft (prev, cur) pairs defining each block-transition type (goal 5).
+# probabilityLeft (prev, cur) pairs defining each block-transition type (figure 5).
 BLOCK_TRANSITIONS = {'L->R': (0.8, 0.2), 'R->L': (0.2, 0.8)}
 BLOCK_WINDOW = 15  # half-window in trials around a transition (spec Decision)
 BLOCK_BASELINE = 5  # trials before a transition defining the Δ-posterior baseline
-# feedbackType -> outcome label; splits the chronometric curves (goal 3).
+# feedbackType -> outcome label; splits the chronometric curves (figure 2).
 OUTCOMES = {'correct': 1, 'incorrect': -1}
 
 
@@ -261,15 +261,20 @@ def _assemble_mouse_views(
     """Build every modeled mouse's plot inputs from the filtered group.
 
     Iterates ``subjects``, assembling each one's trials+states frame and deriving
-    the per-mouse inputs for goals 1, 2, 3 and 5 plus its per-state feature rows.
+    the per-mouse inputs for figures 1, 2 and 5 plus its per-state feature rows.
     Mice with no session in the fit are skipped.
 
     Returns
     -------
     dict
         Keys ``'states'``, ``'dwell'``, ``'curves'``, ``'aligned'`` each map
-        subject to that goal's plot input; ``'features'`` is the concatenated
+        subject to that figure's plot input; ``'features'`` is the concatenated
         per-state behavioral-feature table (with a ``mouse`` column) for the PCA.
+
+    Raises
+    ------
+    ValueError
+        If every subject was skipped, leaving nothing to plot.
     """
     views = {key: {} for key in ('states', 'dwell', 'curves', 'aligned')}
     param_tables = []
@@ -295,6 +300,9 @@ def _assemble_mouse_views(
         print(f"  {subject}: {len(kept)} fit trials, "
               f"{param_table['state'].nunique()} states")
 
+    if not param_tables:
+        raise ValueError(
+            f"no modeled mouse survived the group filter (tried {subjects})")
     views['features'] = pd.concat(param_tables, ignore_index=True)
     return views
 
