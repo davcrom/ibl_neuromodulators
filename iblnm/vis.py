@@ -4593,6 +4593,7 @@ def _summarize_state_posteriors(
 # Shared layout for the per-mouse "one row per mouse" goal figures.
 ROW_HEIGHT = 2.4   # inches per mouse row, so axis heights match across figures
 POINT_ALPHA = 0.5  # alpha for empirical data-point markers
+DOT_JITTER = 0.12  # half-width, in x units, of the per-session dot spread
 
 
 def plot_state_posterior_dwell(
@@ -4660,6 +4661,62 @@ def plot_state_posterior_dwell(
         ax_dwell.set_ylabel('runs', fontsize=8)
         ax_dwell.set_title(mouse, fontsize=9)
         ax_dwell.tick_params(labelsize=7)
+    return fig
+
+
+def plot_state_baselines(baselines_by_mouse: dict[str, pd.DataFrame]) -> plt.Figure:
+    """Per-state pre-stimulus NM baseline distributions, one mouse per row.
+
+    Each mouse gets one axis: a violin of every trial's baseline per MAP state,
+    with that state's per-session median baselines overlaid as dots. The dots
+    matter because the baseline is not re-centered per session — a state's shift
+    can be carried by a single session, and that shows up as one outlying dot
+    rather than a wider violin. States are colored consistently within a mouse by
+    ``plt.cm.tab10``; each mouse is fit separately, so state labels carry no
+    meaning across mice.
+
+    A state with fewer than 10 trials is drawn by :func:`violinplot` as an
+    open-circle scatter of its raw values instead of a violin — rare states
+    therefore appear as points.
+
+    Parameters
+    ----------
+    baselines_by_mouse : dict of str to pandas.DataFrame
+        Maps each subject to its fit-only trials with columns ``['state',
+        'baseline', 'eid']``. ``baseline`` is the mean preprocessed signal over
+        the pre-stimulus window, in session-SD units (the preprocessing pipeline
+        z-scores each session); NaN baselines are dropped.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        ``len(baselines_by_mouse)`` rows by 1 column, states along x in ascending
+        label order.
+    """
+    mice = list(baselines_by_mouse)
+    fig, axes = plt.subplots(len(mice), 1, figsize=(7, ROW_HEIGHT * len(mice)),
+                             squeeze=False, layout='constrained')
+    for (ax,), mouse in zip(axes, mice):
+        # groupby sorts its keys, putting the states in ascending label order.
+        by_state = baselines_by_mouse[mouse].dropna(
+            subset=['baseline']).groupby('state')
+        positions = np.arange(by_state.ngroups)
+        colors = plt.cm.tab10(positions)
+        violinplot(ax, [trials['baseline'].to_numpy() for _, trials in by_state],
+                   positions=positions, colors=colors,
+                   remove_outliers=False, show_outliers=False)
+        for position, (_, trials), color in zip(positions, by_state, colors):
+            medians = trials.groupby('eid')['baseline'].median()
+            # Evenly spaced offsets, endpoints excluded: deterministic, and a
+            # lone session lands on the violin's center.
+            offsets = np.linspace(-DOT_JITTER, DOT_JITTER, len(medians) + 2)[1:-1]
+            ax.scatter(position + offsets, medians.to_numpy(), s=8, color=color,
+                       alpha=POINT_ALPHA, zorder=3)
+        ax.set_xticks(positions, [str(state) for state in by_state.groups])
+        ax.set_xlabel('state', fontsize=8)
+        ax.set_ylabel('baseline (session SD)', fontsize=8)
+        ax.set_title(mouse, fontsize=9)
+        ax.tick_params(labelsize=7)
     return fig
 
 

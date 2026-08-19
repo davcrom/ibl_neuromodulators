@@ -1,7 +1,7 @@
 """DDM-HMM first-look overview.
 
 Runs the first look at a collaborator's per-mouse drift-diffusion + hidden-Markov
-model (DDM-HMM) fit to the choice/RT behavior of the 8 LC-NE mice, and writes five
+model (DDM-HMM) fit to the choice/RT behavior of the 8 LC-NE mice, and writes six
 figures to ``figures/ddm-hmm/``:
 
 1. Per-state posterior histograms + MAP occupancy and state dwell-time
@@ -10,6 +10,7 @@ figures to ``figures/ddm-hmm/``:
 3. Per-state DDM-parameter pairwise scatter (all mice, colored by mouse).
 4. PCA of per-state behavioral-parameter features (all mice, colored by mouse).
 5. Per-state posterior traces around block transitions (per mouse).
+6. Per-state pre-stimulus NM baseline distributions (per mouse).
 
 The ``PhotometrySessionGroup`` is the source of truth for which sessions are in
 scope: each mouse's trial+state frame is assembled by filtering the group to that
@@ -39,7 +40,7 @@ from iblnm.task import (
     fit_psychometric, reconstruct_contrast_sides,
 )
 from iblnm.vis import (
-    plot_state_block_transitions, plot_state_param_scatter,
+    plot_state_baselines, plot_state_block_transitions, plot_state_param_scatter,
     plot_state_pca, plot_state_posterior_dwell,
     plot_state_psychometric_chronometric,
 )
@@ -334,7 +335,7 @@ def _assemble_mouse_views(
 
 
 def main(one=None) -> None:
-    """Assemble every mouse's frame and render the five overview figures.
+    """Assemble every mouse's frame and render the six overview figures.
 
     Parameters
     ----------
@@ -365,7 +366,8 @@ def main(one=None) -> None:
 
     _save(plot_state_block_transitions(views['aligned'], BLOCK_TRANSITIONS,
                                        BLOCK_WINDOW), 'block_transitions')
-    print(f"Wrote 5 figures to {DDM_HMM_FIGURES_DIR}")
+    _save(plot_state_baselines(views['baselines']), 'state_baselines')
+    print(f"Wrote 6 figures to {DDM_HMM_FIGURES_DIR}")
 
 
 if __name__ == '__main__':

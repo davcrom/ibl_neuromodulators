@@ -3417,6 +3417,64 @@ class TestStatePCA:
         plt.close(fig)
 
 
+class TestStateBaselines:
+    """Goal-6 figure: per-state pre-stimulus NM baseline violins per mouse."""
+
+    def _baselines(self):
+        """Two mice, states 2 and 1 (unsorted), two sessions each, 12 trials/state.
+
+        State 1 sits near 0, state 2 near 10, so a violin's y range identifies
+        which state it drew. Session medians are exactly the session's constant
+        offset from the state center.
+        """
+        rows = []
+        for state, center in [(2, 10.0), (1, 0.0)]:
+            for eid, offset in [('eid-a', -0.5), ('eid-b', 0.5)]:
+                rows += [{'state': state, 'eid': eid,
+                          'baseline': center + offset + step}
+                         for step in np.linspace(-0.1, 0.1, 12)]
+        frame = pd.DataFrame(rows)
+        return {'ZFM-A': frame, 'ZFM-B': frame.copy()}
+
+    def test_violins_in_ascending_state_order(self):
+        from iblnm.vis import plot_state_baselines
+        fig = plot_state_baselines(self._baselines())
+        ax = fig.axes[0]  # first mouse's panel
+        bodies = [c for c in ax.collections
+                  if isinstance(c, matplotlib.collections.PolyCollection)]
+        assert len(bodies) == 2  # one violin per state
+        centers = []
+        for body in bodies:
+            vertices = body.get_paths()[0].vertices
+            centers.append((vertices[:, 0].mean(), vertices[:, 1].mean()))
+        centers.sort()  # by x position
+        # Ascending state order despite the input frame listing state 2 first:
+        # the leftmost violin holds state 1 (near 0), the next state 2 (near 10).
+        assert np.allclose([x for x, _ in centers], [0.0, 1.0], atol=0.05)
+        assert abs(centers[0][1] - 0.0) < 1.0
+        assert abs(centers[1][1] - 10.0) < 1.0
+        assert [t.get_text() for t in ax.get_xticklabels()] == ['1', '2']
+        plt.close(fig)
+
+    def test_dots_are_per_session_medians_at_their_state_position(self):
+        from iblnm.vis import plot_state_baselines
+        frames = self._baselines()
+        fig = plot_state_baselines(frames)
+        ax = fig.axes[0]
+        dots = np.vstack([c.get_offsets() for c in ax.collections
+                          if isinstance(c, matplotlib.collections.PathCollection)])
+        expected = frames['ZFM-A'].groupby(['state', 'eid'])['baseline'].median()
+        assert len(dots) == len(expected)  # one dot per (state, eid) group
+        # Each dot sits within the jitter band of its state's x position, and
+        # the dots at that position carry that state's session medians.
+        for position, state in enumerate(sorted(frames['ZFM-A']['state'].unique())):
+            at_state = dots[np.abs(dots[:, 0] - position) < 0.5]
+            assert len(at_state) == 2  # two sessions
+            assert np.allclose(sorted(at_state[:, 1]),
+                               sorted(expected.loc[state].to_numpy()))
+        plt.close(fig)
+
+
 class TestStateParamScatter:
     """Goal-4a figure: color encodes within-mouse state, marker encodes mouse."""
 
