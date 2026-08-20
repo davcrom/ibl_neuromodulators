@@ -1,8 +1,8 @@
 """DDM-HMM first-look overview.
 
 Runs the first look at a collaborator's per-mouse drift-diffusion + hidden-Markov
-model (DDM-HMM) fit to the choice/RT behavior of the 8 LC-NE mice, and writes six
-figures to ``figures/ddm-hmm/``:
+model (DDM-HMM) fit to the choice/RT behavior of the 8 LC-NE mice, and writes
+seven figures to ``figures/ddm-hmm/``:
 
 1. Per-state posterior histograms + MAP occupancy and state dwell-time
    distributions (per mouse).
@@ -12,6 +12,8 @@ figures to ``figures/ddm-hmm/``:
 5. Per-state posterior traces around block transitions (per mouse).
 6. Per-state NM distributions — pre-stimulus baseline, stimulus-onset response
    and feedback response — split into correct and incorrect trials (per mouse).
+7. Δ traces of those three NM measures around entry into each state, one line
+   per entered state (per mouse).
 
 The ``PhotometrySessionGroup`` is the source of truth for which sessions are in
 scope: each mouse's trial+state frame is assembled by filtering the group to that
@@ -410,6 +412,22 @@ def _state_switch_traces(
     }
 
 
+def _state_line_labels(
+    traces_by_mouse: dict[str, dict[Hashable, dict[str, np.ndarray]]],
+) -> list[str]:
+    """Legend labels for the state lines of a :func:`plot_transition_traces` grid.
+
+    The legend sits on the first mouse's axes, but K varies across mice, so the
+    labels are sized to the widest mouse and the extras go unused. States are
+    numbered from 1, as in ``DDM_HMM_PARAMS_FPATH``, so label *i* names the same
+    state as figure 6's *i*-th x tick.
+    """
+    n_states = max(stats['mean'].shape[1]
+                   for traces in traces_by_mouse.values()
+                   for stats in traces.values())
+    return [f'state {i + 1}' for i in range(n_states)]
+
+
 def _save(fig: plt.Figure, name: str) -> None:
     """Save ``fig`` to ``DDM_HMM_FIGURES_DIR/{name}.svg`` and close it."""
     DDM_HMM_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -494,7 +512,7 @@ def _assemble_mouse_views(
 
 
 def main(one=None) -> None:
-    """Assemble every mouse's frame and render the six overview figures.
+    """Assemble every mouse's frame and render the seven overview figures.
 
     Parameters
     ----------
@@ -523,20 +541,25 @@ def main(one=None) -> None:
     _save(plot_state_pca(scores, features['mouse'], features['state'],
                          loadings, FEATURE_COLS), 'behavioral_pca')
 
-    # Legend labels sit on the first mouse's axes, but K varies across mice, so
-    # size them to the widest mouse; the extras go unused.
-    n_states = max(stats['mean'].shape[1]
-                   for traces in views['aligned'].values()
-                   for stats in traces.values())
     _save(plot_transition_traces(
               views['aligned'], BLOCK_TRANSITIONS, BLOCK_WINDOW,
               ylabels=['Δ P(state)'] * len(BLOCK_TRANSITIONS),
               xlabel='trial from transition',
-              line_labels=[f'state {i + 1}' for i in range(n_states)]),
+              line_labels=_state_line_labels(views['aligned'])),
           'block_transitions')
     _save(plot_state_measures(views['measures'], MEASURE_LABELS),
           'state_measures')
-    print(f"Wrote 6 figures to {DDM_HMM_FIGURES_DIR}")
+    # Median MAP-state run length is 1-5 trials per mouse (measured 2026-08-20
+    # from DDM_HMM_DIR/*_K*_posteriors.csv), so lags beyond about +/-2 are
+    # contaminated by neighbouring states: a flat trace out there is
+    # uninformative, not evidence of no effect.
+    _save(plot_transition_traces(
+              views['switches'], MEASURE_LABELS, SWITCH_WINDOW,
+              ylabels=list(MEASURE_LABELS.values()),
+              xlabel='trial from state switch',
+              line_labels=_state_line_labels(views['switches'])),
+          'state_switch_measures')
+    print(f"Wrote 7 figures to {DDM_HMM_FIGURES_DIR}")
 
 
 if __name__ == '__main__':

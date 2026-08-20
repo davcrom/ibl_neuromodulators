@@ -795,3 +795,74 @@ def test_assemble_mouse_views_measures_drop_all_nan_and_omit_empty_mouse(monkeyp
     assert views['switches'] == {'M1': {'n_trials': 2}}
     # M2 still contributes to the behavioral views.
     assert 'M2' in views['states'] and 'M2' in views['dwell']
+
+
+# =========================================================================
+# main
+# =========================================================================
+
+def _stub_main_dependencies(monkeypatch):
+    """Stub everything ``main`` needs but the figure calls under test.
+
+    Replaces the catalog/parameter reads, the group construction, the view
+    assembly, the PCA and every plotter with cheap stand-ins, and returns the
+    recorders: the ``_save`` names in call order, the ``plot_transition_traces``
+    calls as ``(args, kwargs)``, and the stub views ``main`` renders.
+    """
+    views = {
+        'states': {'M': pd.DataFrame({'map_state': [1.0]})},
+        'dwell': {'M': pd.DataFrame({'state': [1], 'dwell': [3]})},
+        'curves': {'M': {}},
+        'aligned': {'M': {'L->R': {'mean': np.zeros((2 * ddm.BLOCK_WINDOW + 1, 2)),
+                                   'sem': np.zeros((2 * ddm.BLOCK_WINDOW + 1, 2))}}},
+        'measures': {'M': pd.DataFrame({'state': [1]})},
+        'switches': {'M': {measure: {'mean': np.zeros((2 * ddm.SWITCH_WINDOW + 1, 2)),
+                                     'sem': np.zeros((2 * ddm.SWITCH_WINDOW + 1, 2))}
+                           for measure in ddm.MEASURE_LABELS}},
+        'features': pd.DataFrame({'mouse': ['M', 'M'], 'state': [1, 2],
+                                  **{col: [0.0, 1.0] for col in ddm.FEATURE_COLS}}),
+    }
+    monkeypatch.setattr(ddm.pd, 'read_parquet', lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(ddm.pd, 'read_csv',
+                        lambda *a, **k: pd.DataFrame({'mouse': ['M']}))
+    monkeypatch.setattr(
+        ddm, 'PhotometrySessionGroup',
+        SimpleNamespace(from_catalog=lambda *a, **k: SimpleNamespace(
+            filter_sessions=lambda *a, **k: None)))
+    monkeypatch.setattr(ddm, '_assemble_mouse_views',
+                        lambda group, subjects, one: views)
+    monkeypatch.setattr(ddm, 'pca_2d',
+                        lambda features: (np.zeros((2, 2)), np.zeros((4, 2))))
+
+    saved_names, transition_calls = [], []
+    monkeypatch.setattr(ddm, '_save', lambda fig, name: saved_names.append(name))
+    monkeypatch.setattr(ddm, 'plot_transition_traces',
+                        lambda *args, **kwargs: transition_calls.append(
+                            (args, kwargs)))
+    for plotter in ('plot_state_posterior_dwell',
+                    'plot_state_psychometric_chronometric',
+                    'plot_state_param_scatter', 'plot_state_pca',
+                    'plot_state_measures'):
+        monkeypatch.setattr(ddm, plotter, lambda *a, **k: None)
+    return saved_names, transition_calls, views
+
+
+def test_main_renders_the_state_switch_figure(monkeypatch):
+    """``main`` writes a seventh figure from the switch view, measures as columns.
+
+    The switch traces reach ``plot_transition_traces`` unchanged, its columns are
+    the ``MEASURE_LABELS`` keys in iteration order (fixing the left-to-right panel
+    order), and the lag axis is labelled in trials from the state switch.
+    """
+    saved_names, transition_calls, views = _stub_main_dependencies(monkeypatch)
+
+    ddm.main(one=object())
+
+    assert len(saved_names) == 7
+    assert 'state_switch_measures' in saved_names
+    switch_args, switch_kwargs = transition_calls[-1]
+    assert switch_args[0] is views['switches']
+    assert list(switch_args[1]) == list(ddm.MEASURE_LABELS)
+    assert switch_args[2] == ddm.SWITCH_WINDOW
+    assert switch_kwargs['xlabel'] == 'trial from state switch'
+    assert list(switch_kwargs['ylabels']) == list(ddm.MEASURE_LABELS.values())
