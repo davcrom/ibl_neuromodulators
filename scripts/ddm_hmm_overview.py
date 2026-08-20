@@ -72,9 +72,13 @@ def build_mouse_states_frame(
     joined with their state columns and pre-stimulus NM baseline, tagged with
     ``eid`` — are concatenated in session order.
 
-    A session lacking a ``GCaMP_preprocessed`` signal raises ``KeyError`` and
-    stops the run: no in-scope session lacks it, so a NaN path would be dead code
-    that later reads as real missing data.
+    One fiber per mouse: a session yields a baseline only when its data and its
+    metadata agree on exactly one fiber — ``GCaMP_preprocessed`` has one column
+    and ``brain_region`` one entry. The bilateral sessions name their columns
+    ``LC-l``/``LC-r`` (which is why the column, not ``brain_region[0]``, selects
+    the signal), and some sessions carry a duplicated ``['LC', 'LC']`` against a
+    single column. Both are ambiguous, so they get a NaN baseline and keep their
+    trials, which still feed the behavioral figures.
 
     Parameters
     ----------
@@ -92,7 +96,8 @@ def build_mouse_states_frame(
         trials dropped from the fit), a ``baseline`` column — the mean of the
         session's preprocessed signal over :data:`NM_BASELINE_WINDOW` before
         ``stimOn_times``, in session-SD units, NaN where the window runs off the
-        recording — and an ``eid`` column, one row per trial across the mouse's
+        recording or the session's fiber was ambiguous — and an ``eid`` column,
+        one row per trial across the mouse's
         fit sessions. Empty when no session was in the fit.
     """
     rows = group.sessions[group.sessions['subject'] == subject]
@@ -107,12 +112,17 @@ def build_mouse_states_frame(
         if ps.states is None:
             continue
         frame = ps.trials.join(ps.states)
-        responses = ps.extract_responses(
-            ps.photometry['GCaMP_preprocessed'],
-            events=['stimOn_times'], window=NM_BASELINE_WINDOW,
-        )
-        frame['baseline'] = responses[ps.brain_region[0]].sel(
-            event='stimOn_times').mean('time').to_series()
+        signals = ps.photometry['GCaMP_preprocessed']
+        if len(signals.columns) == 1 and len(ps.brain_region) == 1:
+            responses = ps.extract_responses(
+                signals, events=['stimOn_times'], window=NM_BASELINE_WINDOW,
+            )
+            frame['baseline'] = responses[signals.columns[0]].sel(
+                event='stimOn_times').mean('time').to_series()
+        else:
+            print(f"  {ps.eid}: {len(signals.columns)} photometry columns, "
+                  f"{len(ps.brain_region)} brain regions — no baseline")
+            frame['baseline'] = np.nan
         frame['eid'] = ps.eid
         frames.append(frame)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -288,8 +298,10 @@ def _assemble_mouse_views(
     dict
         Keys ``'states'``, ``'dwell'``, ``'curves'``, ``'aligned'``,
         ``'baselines'`` each map subject to that figure's plot input;
-        ``'baselines'`` holds the fit-only trials as ``['state', 'baseline',
-        'eid']``. ``'features'`` is the concatenated per-state behavioral-feature
+        ``'baselines'`` holds the fit-only trials that also carry a baseline, as
+        ``['state', 'baseline', 'eid']``, and omits a mouse whose every session
+        had an ambiguous fiber — such a mouse still appears in the other views.
+        ``'features'`` is the concatenated per-state behavioral-feature
         table (with a ``mouse`` column) for the PCA.
 
     Raises
@@ -313,11 +325,13 @@ def _assemble_mouse_views(
         kept = frame[frame['map_state'].notna()]
         views['dwell'][subject] = state_dwell_times(
             kept['map_state'].astype(int).to_numpy(), kept['eid'].to_numpy())
-        views['baselines'][subject] = pd.DataFrame({
-            'state': kept['map_state'].astype(int),
-            'baseline': kept['baseline'],
-            'eid': kept['eid'],
-        })
+        with_baseline = kept[kept['baseline'].notna()]
+        if not with_baseline.empty:
+            views['baselines'][subject] = pd.DataFrame({
+                'state': with_baseline['map_state'].astype(int),
+                'baseline': with_baseline['baseline'],
+                'eid': with_baseline['eid'],
+            })
 
         param_table = build_state_param_table(frame)
         param_table['mouse'] = subject

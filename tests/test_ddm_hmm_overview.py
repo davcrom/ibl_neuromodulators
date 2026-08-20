@@ -97,6 +97,63 @@ def test_build_mouse_states_frame_baseline_stays_aligned_to_its_trial(monkeypatc
     assert frame['map_state'].isna().to_list() == [False, True, False]
     assert np.allclose(frame['baseline'], levels)
 
+def _ambiguous_fiber_frame(monkeypatch, columns, brain_region):
+    """Run build_mouse_states_frame on a session with the given fiber metadata."""
+    sessions = pd.DataFrame({'eid': ['e1'], 'subject': ['M']})
+    group = SimpleNamespace(sessions=sessions)
+    stim_times = [5.0, 10.0, 15.0]
+    levels = [1.0, 2.0, 3.0]
+
+    class FakePS:
+        extract_responses = PhotometrySession.extract_responses
+
+        def __init__(self, row, one=None):
+            self.eid = row['eid']
+            self.brain_region = brain_region
+
+        def load_h5(self, groups=None):
+            self.trials = pd.DataFrame({'stimOn_times': stim_times,
+                                        'choice': [1, -1, 1]})
+            single = _step_photometry(levels, stim_times)['GCaMP_preprocessed']
+            self.photometry = {'GCaMP_preprocessed': pd.DataFrame(
+                {col: single['LC'].to_numpy() for col in columns},
+                index=single.index)}
+
+        def load_states(self):
+            self.states = pd.DataFrame({'map_state': [1.0, 2.0, 1.0]})
+
+    monkeypatch.setattr(ddm, 'PhotometrySession', FakePS)
+    return ddm.build_mouse_states_frame(group, 'M', one=None)
+
+
+def test_bilateral_session_yields_nan_baseline(monkeypatch):
+    """Two photometry columns -> no fiber to pick, so baseline is NaN, not an error.
+
+    The bilateral sessions name their columns ``LC-l``/``LC-r``, which the
+    session's ``brain_region`` entry (``'LC'``) does not match. The trials
+    themselves must survive, since they still feed the behavioral figures.
+    """
+    frame = _ambiguous_fiber_frame(
+        monkeypatch, columns=['LC-l', 'LC-r'], brain_region=['LC', 'LC'])
+
+    assert len(frame) == 3
+    assert frame['baseline'].isna().all()
+    assert frame['map_state'].notna().all()
+
+
+def test_duplicated_brain_region_yields_nan_baseline(monkeypatch):
+    """One column but two brain_region entries -> ambiguous, so baseline is NaN.
+
+    These sessions carry ``['LC', 'LC']`` against a single data column, so which
+    fiber the column came from is unknown even though only one signal exists.
+    """
+    frame = _ambiguous_fiber_frame(
+        monkeypatch, columns=['LC'], brain_region=['LC', 'LC'])
+
+    assert len(frame) == 3
+    assert frame['baseline'].isna().all()
+
+
 def test_build_mouse_states_frame_drops_unfit_and_other_subjects(monkeypatch):
     """Only the requested subject's fit sessions survive the concatenation.
 
@@ -362,3 +419,44 @@ def test_assemble_mouse_views_baselines_view_holds_fit_trials_only(monkeypatch):
     assert pd.api.types.is_integer_dtype(baselines['state'])
     assert list(baselines['baseline']) == [0.5, -0.5]
     assert list(baselines['eid']) == ['e1', 'e2']
+
+
+def test_assemble_mouse_views_baselines_drops_nan_and_omits_empty_mouse(monkeypatch):
+    """Ambiguous-fiber sessions leave NaN baselines; they never reach the view.
+
+    ``M1`` has one usable session and one whose fiber was ambiguous (NaN
+    baseline) — only the usable trials survive. ``M2``'s every session was
+    ambiguous, so it is absent from the view entirely while still contributing
+    to the behavioral views.
+    """
+    frames = {
+        'M1': pd.DataFrame({
+            'map_state': [1.0, 2.0],
+            'baseline': [0.5, np.nan],
+            'eid': ['e1', 'e2'],
+            'stimOn_times': [1.0, 2.0],
+            'response_times': [1.5, 2.5],
+        }),
+        'M2': pd.DataFrame({
+            'map_state': [1.0, 2.0],
+            'baseline': [np.nan, np.nan],
+            'eid': ['e3', 'e3'],
+            'stimOn_times': [1.0, 2.0],
+            'response_times': [1.5, 2.5],
+        }),
+    }
+    monkeypatch.setattr(ddm, 'build_mouse_states_frame',
+                        lambda group, subject, one: frames[subject].copy())
+    monkeypatch.setattr(ddm, 'build_state_param_table',
+                        lambda mouse_frame: pd.DataFrame({'state': [1, 2]}))
+    monkeypatch.setattr(ddm, '_state_curves', lambda mouse_frame, params: {})
+    monkeypatch.setattr(ddm, '_block_transition_traces',
+                        lambda mouse_frame, window: {})
+
+    views = ddm._assemble_mouse_views(group=None, subjects=['M1', 'M2'],
+                                      one=None)
+
+    assert list(views['baselines']['M1']['baseline']) == [0.5]
+    assert 'M2' not in views['baselines']
+    # M2 still contributes to the behavioral views.
+    assert 'M2' in views['states'] and 'M2' in views['dwell']
