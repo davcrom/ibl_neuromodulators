@@ -3503,3 +3503,33 @@ class TestStateParamScatter:
         shape_b = ax.collections[1].get_paths()[0].vertices.shape
         assert shape_a != shape_b
         plt.close(fig)
+
+
+class TestViolinplotAlpha:
+    """`violinplot`'s alpha modulates the violin bodies only."""
+
+    @staticmethod
+    def _data(seed=0):
+        rng = np.random.default_rng(seed)
+        return [rng.normal(0, 1, 50), rng.normal(1, 1, 50)]
+
+    def test_alpha_applied_to_bodies(self):
+        from iblnm.vis import violinplot
+        fig, ax = plt.subplots()
+        violins = violinplot(ax, self._data(), colors=['C0', 'C1'], alpha=0.5)
+        assert [pc.get_alpha() for pc in violins['bodies']] == [0.5, 0.5]
+        plt.close(fig)
+
+    def test_medians_keep_full_opacity(self):
+        from iblnm.vis import violinplot
+        fig, ax = plt.subplots()
+        violins = violinplot(ax, self._data(), colors=['C0', 'C1'], alpha=0.5)
+        assert violins['cmedians'].get_alpha() in (None, 1)
+        plt.close(fig)
+
+    def test_default_alpha_is_opaque(self):
+        from iblnm.vis import violinplot
+        fig, ax = plt.subplots()
+        violins = violinplot(ax, self._data(), colors=['C0', 'C1'])
+        assert [pc.get_alpha() for pc in violins['bodies']] == [1, 1]
+        plt.close(fig)

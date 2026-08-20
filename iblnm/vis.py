@@ -1156,7 +1156,7 @@ def session_plot(series, pipeline=[], t0=60, t1=120):
 
 def violinplot(
     ax, data, positions=None, log_transform=False, remove_outliers=True,
-    show_outliers=True, outlier_threshold=1.5, colors=None, **violin_kwargs
+    show_outliers=True, outlier_threshold=1.5, colors=None, alpha=1, **violin_kwargs
 ):
     """
     Draw violin plots on the given axes with options for log transformation and
@@ -1178,6 +1178,13 @@ def violinplot(
         If True, outliers (as determined by the IQR method) are plotted as separate scatter points.
     outlier_threshold : float, default 1.5
         The multiplier for the IQR to set the outlier boundary.
+    colors : list of color, optional
+        One color per group. When given, violin bodies are drawn as unfilled
+        outlines in these colors and the medians are colored to match.
+    alpha : float, default 1
+        Opacity of the violin bodies only. Medians and scatter points keep full
+        opacity, so a faint violin still shows a crisp median. Since the bodies
+        are unfilled, this modulates the outline.
     violin_kwargs : dict
         Other keyword arguments to pass to ax.violinplot().
 
@@ -1236,7 +1243,7 @@ def violinplot(
             pc.set_facecolor('none')
             pc.set_edgecolor(color)
             pc.set_linewidth(1)
-            pc.set_alpha(1)
+            pc.set_alpha(alpha)
         violins['cmedians'].set_color(violin_colors)
 
     # Optionally, scatter the outlier points.
