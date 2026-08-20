@@ -47,9 +47,9 @@ from iblnm.task import (
     fit_psychometric, reconstruct_contrast_sides,
 )
 from iblnm.vis import (
-    plot_state_block_transitions, plot_state_measures, plot_state_param_scatter,
-    plot_state_pca, plot_state_posterior_dwell,
-    plot_state_psychometric_chronometric,
+    plot_state_measures, plot_state_param_scatter, plot_state_pca,
+    plot_state_posterior_dwell, plot_state_psychometric_chronometric,
+    plot_transition_traces,
 )
 
 # Behavioral-parameter features feeding the figure-4 PCA (one per state).
@@ -450,8 +450,17 @@ def main(one=None) -> None:
     _save(plot_state_pca(scores, features['mouse'], features['state'],
                          loadings, FEATURE_COLS), 'behavioral_pca')
 
-    _save(plot_state_block_transitions(views['aligned'], BLOCK_TRANSITIONS,
-                                       BLOCK_WINDOW), 'block_transitions')
+    # Legend labels sit on the first mouse's axes, but K varies across mice, so
+    # size them to the widest mouse; the extras go unused.
+    n_states = max(stats['mean'].shape[1]
+                   for traces in views['aligned'].values()
+                   for stats in traces.values())
+    _save(plot_transition_traces(
+              views['aligned'], BLOCK_TRANSITIONS, BLOCK_WINDOW,
+              ylabels=['Δ P(state)'] * len(BLOCK_TRANSITIONS),
+              xlabel='trial from transition',
+              line_labels=[f'state {i + 1}' for i in range(n_states)]),
+          'block_transitions')
     _save(plot_state_measures(views['measures'], MEASURE_LABELS),
           'state_measures')
     print(f"Wrote 6 figures to {DDM_HMM_FIGURES_DIR}")

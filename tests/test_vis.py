@@ -3347,8 +3347,10 @@ class TestStatePsychometricChronometric:
         plt.close(fig)
 
 
-class TestStateBlockTransitions:
-    """Goal-5 figure: posterior traces around one block-transition type."""
+class TestTransitionTraces:
+    """Lag-trace grid shared by the block-transition and state-switch figures."""
+
+    LINE_LABELS = ['state 1', 'state 2', 'state 3']
 
     def _aligned(self, window=2, k=3):
         """Two mice; each transition carries a constant Δ mean and SEM per state.
@@ -3367,9 +3369,11 @@ class TestStateBlockTransitions:
         }
 
     def test_columns_are_transitions_rows_are_mice(self):
-        from iblnm.vis import plot_state_block_transitions
-        fig = plot_state_block_transitions(self._aligned(), ['L->R', 'R->L'],
-                                           window=2)
+        from iblnm.vis import plot_transition_traces
+        fig = plot_transition_traces(
+            self._aligned(), ['L->R', 'R->L'], window=2,
+            ylabels=['Δ P(state)'] * 2, xlabel='trial from transition',
+            line_labels=self.LINE_LABELS)
         # 2 mice x 2 transitions = 4 axes, row-major: [A/LR, A/RL, B/LR, B/RL].
         assert len(fig.axes) == 4
         # ZFM-A, L->R (axes[0]): every state trace carries the L->R value 0.1.
@@ -3388,10 +3392,37 @@ class TestStateBlockTransitions:
         plt.close(fig)
 
     def test_draws_a_shaded_sem_band_per_state(self):
-        from iblnm.vis import plot_state_block_transitions
-        fig = plot_state_block_transitions(self._aligned(), ['L->R'], window=2)
+        from iblnm.vis import plot_transition_traces
+        fig = plot_transition_traces(
+            self._aligned(), ['L->R'], window=2, ylabels=['Δ P(state)'],
+            xlabel='trial from transition', line_labels=self.LINE_LABELS)
         # One fill_between PolyCollection per state (the SEM band).
         assert len(fig.axes[0].collections) == 3
+        plt.close(fig)
+
+    def test_missing_column_is_hidden_and_lines_carry_caller_labels(self):
+        from iblnm.vis import plot_transition_traces
+        traces = self._aligned()
+        del traces['ZFM-B']['R->L']  # ZFM-B never entered the R->L transition
+        fig = plot_transition_traces(
+            traces, ['L->R', 'R->L'], window=2, ylabels=['Δ P(state)'] * 2,
+            xlabel='trial from transition', line_labels=['a', 'b', 'c'])
+        assert fig.axes[3].axison is False  # ZFM-B / R->L cell drawn blank
+        assert fig.axes[0].axison is True
+        legend_labels = [t.get_text() for t in fig.axes[0].get_legend().texts]
+        assert legend_labels == ['a', 'b', 'c']
+        plt.close(fig)
+
+    def test_ylabels_are_per_column_and_xlabel_is_shared(self):
+        from iblnm.vis import plot_transition_traces
+        fig = plot_transition_traces(
+            self._aligned(), ['L->R', 'R->L'], window=2,
+            ylabels=['baseline', 'stimOn'], xlabel='trial from state switch',
+            line_labels=self.LINE_LABELS)
+        # Row-major: axes 0/2 are column 0, axes 1/3 are column 1.
+        assert [ax.get_ylabel() for ax in fig.axes] == [
+            'baseline', 'stimOn', 'baseline', 'stimOn']
+        assert {ax.get_xlabel() for ax in fig.axes} == {'trial from state switch'}
         plt.close(fig)
 
 

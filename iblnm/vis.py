@@ -1,7 +1,7 @@
 import itertools
 import re
 import warnings
-from collections.abc import Iterable, Mapping
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -5055,71 +5055,78 @@ def plot_state_pca(
     return fig
 
 
-def plot_state_block_transitions(
-    aligned_by_mouse: dict[str, dict[str, np.ndarray]],
-    transition_types: Iterable[str],
-    window: int = 15,
+def plot_transition_traces(
+    traces_by_mouse: Mapping[str, Mapping[Hashable, Mapping[str, np.ndarray]]],
+    columns: Iterable[Hashable],
+    window: int,
+    ylabels: Sequence[str],
+    xlabel: str,
+    line_labels: Sequence[str],
 ) -> plt.Figure:
-    """Per-state posterior traces around block transitions: mice x transitions.
+    """Lag traces with SEM bands on a mice x columns grid.
 
-    One row per mouse, one column per transition type. Each axes overlays the
-    mean per-state change in posterior (Δ from the pre-transition baseline) for
-    that mouse and transition, state encoded by color (``plt.cm.tab10``), with a
-    shaded ±SEM band across transitions. Dashed lines mark the transition trial
-    (vertical) and the zero-change baseline (horizontal). Each axes is titled
-    ``"{mouse} {transition}"``. Cells for a mouse missing a transition are hidden.
-    State labels are unaligned across mice.
+    One row per mouse, one column per key in ``columns``. Each axes overlays the
+    mean trace of every column of ``mean`` — Δ from each window's own
+    pre-transition baseline — encoded by color (``plt.cm.tab10``), with a shaded
+    ±SEM band. Dashed lines mark the transition (vertical) and zero change
+    (horizontal). Each axes is titled ``"{mouse} {column}"``. What the columns
+    and the overlaid lines mean is the caller's: figure 5 draws block-transition
+    types with one line per state, figure 7 draws NM measures with one line per
+    entered state. Line colors are positional, so labels are unaligned across
+    mice.
 
     Parameters
     ----------
-    aligned_by_mouse : dict of str to dict of str to dict of str to numpy.ndarray
-        Maps each subject to a ``{transition_type: {'mean': arr, 'sem': arr}}``
-        structure, where ``arr`` has shape ``(2*window+1, K)`` — the per-position
-        mean and standard error of the baseline-subtracted posterior across that
-        mouse's transitions, one column per state (assembled by the orchestration
-        script from :func:`iblnm.analysis.align_traces_at_transitions`).
-    transition_types : iterable of str
-        Transition types to draw as columns (keys of the per-mouse inner dicts,
-        e.g. ``('L->R', 'R->L')``).
-    window : int, optional
-        Half-window in trials; the x-axis spans ``[-window, window]``
-        (default 15).
+    traces_by_mouse : mapping of str to mapping
+        ``{mouse: {column_key: {'mean': arr, 'sem': arr}}}``, each ``arr`` of
+        shape ``(2*window+1, n_lines)`` — the per-position mean and standard
+        error across that mouse's transitions.
+    columns : iterable of hashable
+        Column keys drawn left to right; a mouse missing one gets a blank cell.
+    window : int
+        Half-window in trials; the x-axis spans ``[-window, window]``.
+    ylabels : sequence of str
+        Y-axis label per column, in the order of ``columns``.
+    xlabel : str
+        X-axis label, shared by every axes.
+    line_labels : sequence of str
+        Legend entry per overlaid line, drawn once on the top-left axes. Must be
+        at least as long as the widest mouse's ``n_lines``.
 
     Returns
     -------
     matplotlib.figure.Figure
-        Grid of mouse (rows) x transition (columns) axes; missing cells hidden.
+        Grid of mouse (rows) x column axes; cells with no data are hidden.
     """
-    mice = list(aligned_by_mouse)
-    transition_types = list(transition_types)
+    mice = list(traces_by_mouse)
+    columns = list(columns)
     lag = np.arange(-window, window + 1)
 
     # Same figure width, height, and per-axes decoration (one-line title, x/y
     # labels) as the other one-row-per-mouse figures, so axis height and vertical
     # spacing match them exactly under constrained layout.
     fig, axes = plt.subplots(
-        len(mice), len(transition_types),
-        figsize=(3.5 * len(transition_types), ROW_HEIGHT * len(mice)),
+        len(mice), len(columns),
+        figsize=(3.5 * len(columns), ROW_HEIGHT * len(mice)),
         squeeze=False, layout='constrained')
     for row, mouse in zip(axes, mice):
-        for ax, transition in zip(row, transition_types):
-            stats = aligned_by_mouse[mouse].get(transition)
+        for ax, column, ylabel in zip(row, columns, ylabels):
+            stats = traces_by_mouse[mouse].get(column)
             if stats is None:
                 ax.axis('off')
                 continue
             mean, sem = stats['mean'], stats['sem']
-            state_colors = plt.cm.tab10(np.arange(mean.shape[1]))
-            for state, color in enumerate(state_colors):
-                ax.fill_between(lag, mean[:, state] - sem[:, state],
-                                mean[:, state] + sem[:, state],
+            for line, color in enumerate(plt.cm.tab10(np.arange(mean.shape[1]))):
+                ax.fill_between(lag, mean[:, line] - sem[:, line],
+                                mean[:, line] + sem[:, line],
                                 color=color, alpha=0.2, linewidth=0)
-                ax.plot(lag, mean[:, state], color=color,
-                        label=f'state {state + 1}')
+                ax.plot(lag, mean[:, line], color=color,
+                        label=line_labels[line])
             ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
             ax.axhline(0, color='gray', linestyle=':', alpha=0.5)
-            ax.set_xlabel('trial from transition', fontsize=8)
-            ax.set_ylabel('Δ P(state)', fontsize=8)
-            ax.set_title(f'{mouse} {transition}', fontsize=9)
+            ax.set_xlabel(xlabel, fontsize=8)
+            ax.set_ylabel(ylabel, fontsize=8)
+            ax.set_title(f'{mouse} {column}', fontsize=9)
             ax.tick_params(labelsize=7)
     axes[0][0].legend(fontsize=6, frameon=False, loc='best')
     return fig
