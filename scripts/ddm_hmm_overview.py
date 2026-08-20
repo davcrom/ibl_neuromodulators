@@ -37,6 +37,7 @@ from iblnm.config import (
 )
 from iblnm.analysis import (
     align_traces_at_transitions, compute_response_magnitude, pca_2d,
+    transition_delta_stats,
     state_dwell_times,
 )
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
@@ -306,25 +307,14 @@ def _block_transition_traces(
         for transition, (prev, cur) in BLOCK_TRANSITIONS.items():
             idx = np.flatnonzero((p_left[:-1] == prev) & (p_left[1:] == cur)) + 1
             if len(idx):
-                windows, _ = align_traces_at_transitions(values, idx, window)
-                collected[transition].append(windows)
+                collected[transition].append(
+                    align_traces_at_transitions(values, idx, window))
 
-    base_slice = slice(window - baseline, window)
-    aligned = {}
-    for transition, windows in collected.items():
-        if not windows:
-            continue
-        pooled = np.concatenate(windows, axis=0)  # (n_transitions, 2w+1, K)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=RuntimeWarning)
-            pre = np.nanmean(pooled[:, base_slice, :], axis=1, keepdims=True)
-            delta = pooled - pre
-            n_valid = np.sum(~np.isnan(delta), axis=0)
-            aligned[transition] = {
-                'mean': np.nanmean(delta, axis=0),
-                'sem': np.nanstd(delta, axis=0, ddof=1) / np.sqrt(n_valid),
-            }
-    return aligned
+    return {
+        transition: transition_delta_stats(
+            np.concatenate(windows, axis=0), baseline)  # (n_transitions, 2w+1, K)
+        for transition, windows in collected.items() if windows
+    }
 
 
 def _save(fig: plt.Figure, name: str) -> None:

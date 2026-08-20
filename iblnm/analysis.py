@@ -3443,15 +3443,13 @@ def state_dwell_times(states, reset_labels=None):
 
 def align_traces_at_transitions(
     values: np.ndarray, transition_idx, window: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Slice fixed windows around transition rows and average them.
+) -> np.ndarray:
+    """Slice fixed windows around transition rows.
 
     For each index in ``transition_idx``, extract the rows
     ``[idx - window, idx + window]`` (width ``2 * window + 1``) from ``values``.
     Rows falling outside ``[0, len(values))`` at a sequence edge are NaN-padded,
-    so every window keeps the same width and stays centered on its index. The
-    per-position mean across transitions ignores those padded cells
-    (``numpy.nanmean``).
+    so every window keeps the same width and stays centered on its index.
 
     Variable-agnostic: no state, eid, or transition-type names are baked in; the
     caller supplies already-detected transition indices.
@@ -3470,9 +3468,6 @@ def align_traces_at_transitions(
     -------
     windows : np.ndarray, shape (len(transition_idx), 2*window+1, ...)
         Stacked per-transition windows, NaN where a row is off the edge.
-    mean : np.ndarray, shape (2*window+1, ...)
-        Per-position ``nanmean`` across transitions. All-NaN if
-        ``transition_idx`` is empty.
     """
     values = np.asarray(values, dtype=float)
     n = len(values)
@@ -3482,13 +3477,47 @@ def align_traces_at_transitions(
         src_lo, src_hi = max(idx - window, 0), min(idx + window + 1, n)
         dst_lo = src_lo - (idx - window)
         windows[i, dst_lo:dst_lo + (src_hi - src_lo)] = values[src_lo:src_hi]
+    return windows
 
-    if len(transition_idx) == 0:
-        return windows, np.full((width,) + values.shape[1:], np.nan)
+
+def transition_delta_stats(
+    windows: np.ndarray, baseline: int
+) -> dict[str, np.ndarray]:
+    """Express each window as a change from its own pre-transition baseline.
+
+    Every window is zeroed on the mean of the ``baseline`` positions immediately
+    before its centre (``slice(width // 2 - baseline, width // 2)``, i.e. lags
+    ``-baseline … -1``), then the deltas are averaged across windows. All-NaN
+    baseline slices are expected — a window whose baseline positions are all NaN
+    contributes NaN everywhere and drops out of both reductions — so the
+    ``RuntimeWarning`` numpy raises for them is suppressed here.
+
+    Variable-agnostic: the trailing axis carries whatever the caller sliced
+    (state posteriors, NM measures); no column meanings are baked in.
+
+    Parameters
+    ----------
+    windows : np.ndarray, shape (n_transitions, width, n_cols)
+        Transition-centered windows already pooled across sessions by the
+        caller, NaN where a position fell off a sequence edge.
+    baseline : int
+        Number of pre-transition positions averaged as each window's own zero.
+
+    Returns
+    -------
+    dict of str to np.ndarray
+        ``{'mean': arr, 'sem': arr}``, each of shape ``(width, n_cols)``. The
+        SEM divides by the per-position count of non-NaN deltas, so it is NaN
+        where only one window contributes.
+    """
+    width = windows.shape[1]
+    base_slice = slice(width // 2 - baseline, width // 2)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', category=RuntimeWarning)
-        mean = np.nanmean(windows, axis=0)
-    return windows, mean
+        delta = windows - np.nanmean(windows[:, base_slice], axis=1, keepdims=True)
+        n_valid = np.sum(~np.isnan(delta), axis=0)
+        return {'mean': np.nanmean(delta, axis=0),
+                'sem': np.nanstd(delta, axis=0, ddof=1) / np.sqrt(n_valid)}
 
 
 def pca_2d(feature_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

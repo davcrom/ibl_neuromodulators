@@ -5,6 +5,7 @@ import pytest
 
 from iblnm.analysis import (
     align_traces_at_transitions,
+    transition_delta_stats,
     fit_measurement_error_varcomp,
     get_responses,
     normalize_responses,
@@ -3448,16 +3449,15 @@ class TestStateDwellTimes:
 
 
 class TestAlignTracesAtTransitions:
-    def test_windows_centered_padded_and_mean(self):
+    def test_windows_are_centered_and_padded(self):
         # Two state columns, values = row index and 10 * row index, so each
         # sliced window is trivially predictable.
         values = np.column_stack([np.arange(10.0), 10 * np.arange(10.0)])
-        windows, mean = align_traces_at_transitions(
+        windows = align_traces_at_transitions(
             values, transition_idx=[5, 1], window=2)
 
         # Width 2*window+1 = 5, one window per transition, per state column.
         assert windows.shape == (2, 5, 2)
-        assert mean.shape == (5, 2)
 
         # Interior transition (idx=5): rows 3..7, no padding.
         np.testing.assert_array_equal(windows[0, :, 0], [3, 4, 5, 6, 7])
@@ -3467,16 +3467,41 @@ class TestAlignTracesAtTransitions:
         assert np.isnan(windows[1, 0, 0])
         np.testing.assert_array_equal(windows[1, 1:, 0], [0, 1, 2, 3])
 
-        # Mean ignores the NaN-padded cell (nanmean across transitions).
-        np.testing.assert_array_equal(mean[:, 0], [3, 2, 3, 4, 5])
-
     def test_right_edge_padding(self):
         values = np.arange(6.0)
-        windows, _ = align_traces_at_transitions(
+        windows = align_traces_at_transitions(
             values, transition_idx=[5], window=2)
         # idx=5, window=2: rows 3,4,5,(6),(7) -> last two out of range.
         np.testing.assert_array_equal(windows[0, :3], [3, 4, 5])
         assert np.isnan(windows[0, 3:]).all()
+
+
+class TestTransitionDeltaStats:
+    def test_each_window_is_zeroed_on_its_own_baseline(self):
+        # Both windows step 0.2 -> 0.8 at the centre (position 2 of 5), so the
+        # baseline-subtracted mean is 0 at the two baseline lags and +0.6 after.
+        window = np.array([0.2, 0.2, 0.8, 0.8, 0.8]).reshape(5, 1)
+        windows = np.stack([window, window])
+
+        stats = transition_delta_stats(windows, baseline=2)
+
+        assert stats['mean'].shape == (5, 1) and stats['sem'].shape == (5, 1)
+        np.testing.assert_allclose(stats['mean'][:2, 0], 0.0)
+        assert np.isclose(stats['mean'][2, 0], 0.6)
+        np.testing.assert_allclose(stats['sem'], 0.0)
+
+    def test_window_with_an_all_nan_baseline_contributes_nothing(self):
+        # Its baseline mean is NaN, so its delta is NaN everywhere and only the
+        # finite window survives -- n_valid is 1 at every position, so the SEM
+        # (ddof=1) is undefined rather than 0.
+        finite = np.array([0.2, 0.2, 0.8, 0.8, 0.8]).reshape(5, 1)
+        no_baseline = np.array([np.nan, np.nan, 0.5, 0.5, 0.5]).reshape(5, 1)
+        windows = np.stack([finite, no_baseline])
+
+        stats = transition_delta_stats(windows, baseline=2)
+
+        np.testing.assert_allclose(stats['mean'][:, 0], [0.0, 0.0, 0.6, 0.6, 0.6])
+        assert np.isnan(stats['sem']).all()
 
 
 class TestPca2d:
