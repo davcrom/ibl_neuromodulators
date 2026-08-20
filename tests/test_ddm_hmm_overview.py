@@ -474,18 +474,18 @@ def test_state_curves_chronometric_median_rt_by_outcome_and_side():
     assert set(zero['side']) == {'left', 'right'}
 
 
-def _one_transition_eid(eid):
-    """One eid with a single 0.8->0.2 (L->R) switch; state_1 rises 0.2->0.8 at it."""
+def _one_transition_eid(eid, post=0.8):
+    """One eid with a single 0.8->0.2 (L->R) switch; state_1 rises 0.2->``post``."""
     return pd.DataFrame({
         'eid': eid,
         'probabilityLeft': [0.8, 0.8, 0.8, 0.2, 0.2, 0.2],
         'map_state': [1, 1, 1, 1, 1, 1],
-        'state_1': [0.2, 0.2, 0.2, 0.8, 0.8, 0.8],
-        'state_2': [0.8, 0.8, 0.8, 0.2, 0.2, 0.2],
+        'state_1': [0.2, 0.2, 0.2, post, post, post],
+        'state_2': [0.8, 0.8, 0.8, 1 - post, 1 - post, 1 - post],
     })
 
 
-def test_block_transition_traces_are_baseline_deltas_with_sem():
+def test_transition_traces_are_baseline_deltas_with_sem():
     """Traces are Δ from the pre-transition baseline, with a matching SEM array.
 
     Two eids each contribute one identical L->R window (window=2, baseline=2):
@@ -496,7 +496,9 @@ def test_block_transition_traces_are_baseline_deltas_with_sem():
     frame = pd.concat([_one_transition_eid('e1'), _one_transition_eid('e2')],
                       ignore_index=True)
 
-    aligned = ddm._block_transition_traces(frame, window=2, baseline=2)
+    aligned = ddm._transition_traces(
+        frame, ['state_1', 'state_2'], ddm._block_transition_indexers(),
+        window=2, baseline=2)
 
     assert set(aligned) == {'L->R'}
     mean, sem = aligned['L->R']['mean'], aligned['L->R']['sem']
@@ -505,6 +507,43 @@ def test_block_transition_traces_are_baseline_deltas_with_sem():
     assert np.allclose(mean[:2, 0], 0.0)
     assert np.isclose(mean[2, 0], 0.6)
     assert np.allclose(sem, 0.0)
+
+
+def test_transition_traces_omit_a_group_with_no_transition_anywhere():
+    """A group whose indexer finds nothing in any eid gets no entry at all.
+
+    The fixture's blocks only ever step 0.8->0.2, so no R->L transition exists.
+    The 0.2->0.8 step at the boundary between the two concatenated eids is not one
+    either: were detection run over the whole frame instead of per eid it would be
+    picked up as an R->L at row 6.
+    """
+    frame = pd.concat([_one_transition_eid('e1'), _one_transition_eid('e2')],
+                      ignore_index=True)
+
+    aligned = ddm._transition_traces(
+        frame, ['state_1', 'state_2'], ddm._block_transition_indexers(),
+        window=2, baseline=2)
+
+    assert 'R->L' not in aligned
+
+
+def test_transition_traces_pool_one_window_per_eid():
+    """Two eids pool two windows — their own, and nothing from the boundary.
+
+    The eids differ in how far state_1 rises at the switch (Δ 0.6 and 0.4), so the
+    pooled mean at lag 0 is their average and the SEM is finite: exactly two
+    windows contributed. A third, cross-boundary window would move both.
+    """
+    frame = pd.concat([_one_transition_eid('e1', post=0.8),
+                       _one_transition_eid('e2', post=0.6)], ignore_index=True)
+
+    aligned = ddm._transition_traces(
+        frame, ['state_1', 'state_2'], ddm._block_transition_indexers(),
+        window=2, baseline=2)
+
+    mean, sem = aligned['L->R']['mean'], aligned['L->R']['sem']
+    assert np.isclose(mean[2, 0], 0.5)  # (0.6 + 0.4) / 2
+    assert np.isclose(sem[2, 0], 0.1)   # std([0.6, 0.4], ddof=1) / sqrt(2)
 
 
 # =========================================================================
@@ -547,8 +586,9 @@ def test_assemble_mouse_views_measures_view_holds_fit_trials_only(monkeypatch):
     monkeypatch.setattr(ddm, 'build_state_param_table',
                         lambda mouse_frame: pd.DataFrame({'state': [1, 2]}))
     monkeypatch.setattr(ddm, '_state_curves', lambda mouse_frame, params: {})
-    monkeypatch.setattr(ddm, '_block_transition_traces',
-                        lambda mouse_frame, window: {})
+    monkeypatch.setattr(
+        ddm, '_transition_traces',
+        lambda frame, value_cols, groups, window, baseline: {})
 
     views = ddm._assemble_mouse_views(group=None, subjects=['M'], one=None)
 
@@ -587,8 +627,9 @@ def test_assemble_mouse_views_measures_label_outcome_and_drop_no_go(monkeypatch)
     monkeypatch.setattr(ddm, 'build_state_param_table',
                         lambda mouse_frame: pd.DataFrame({'state': [1, 2]}))
     monkeypatch.setattr(ddm, '_state_curves', lambda mouse_frame, params: {})
-    monkeypatch.setattr(ddm, '_block_transition_traces',
-                        lambda mouse_frame, window: {})
+    monkeypatch.setattr(
+        ddm, '_transition_traces',
+        lambda frame, value_cols, groups, window, baseline: {})
 
     views = ddm._assemble_mouse_views(group=None, subjects=['M'], one=None)
 
@@ -634,8 +675,9 @@ def test_assemble_mouse_views_measures_drop_all_nan_and_omit_empty_mouse(monkeyp
     monkeypatch.setattr(ddm, 'build_state_param_table',
                         lambda mouse_frame: pd.DataFrame({'state': [1, 2]}))
     monkeypatch.setattr(ddm, '_state_curves', lambda mouse_frame, params: {})
-    monkeypatch.setattr(ddm, '_block_transition_traces',
-                        lambda mouse_frame, window: {})
+    monkeypatch.setattr(
+        ddm, '_transition_traces',
+        lambda frame, value_cols, groups, window, baseline: {})
 
     views = ddm._assemble_mouse_views(group=None, subjects=['M1', 'M2'],
                                       one=None)

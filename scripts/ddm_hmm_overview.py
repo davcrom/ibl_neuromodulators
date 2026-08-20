@@ -26,6 +26,7 @@ Usage:
     python scripts/ddm_hmm_overview.py            # all modeled mice
 """
 import warnings
+from collections.abc import Callable, Hashable
 
 import numpy as np
 import pandas as pd
@@ -266,54 +267,79 @@ def _state_curves(
             'chronometric': pd.DataFrame(chrono_rows)}
 
 
-def _block_transition_traces(
-    mouse_frame: pd.DataFrame, window: int, baseline: int = BLOCK_BASELINE
-) -> dict[str, dict[str, np.ndarray]]:
-    """Δ-posterior traces (mean + SEM) around each block transition for one mouse.
+def _block_transition_indexers() -> dict[str, Callable[[pd.DataFrame], np.ndarray]]:
+    """Figure 5's transition indexers, one per :data:`BLOCK_TRANSITIONS` entry.
 
-    Detects ``probabilityLeft`` block transitions per eid (0.8->0.2 = L->R,
-    0.2->0.8 = R->L; the initial 0.5 block never triggers), slices ``±window``
-    trials of the per-state posteriors around each with
-    :func:`align_traces_at_transitions`, and pools windows across the mouse's
-    eids. Each window is expressed as a change from its own pre-transition
-    baseline — the mean over the ``baseline`` trials just before the switch
-    (lags ``-baseline … -1``) — then averaged across transitions, with the
-    standard error of that mean.
+    Each indexer takes one eid's sub-frame and returns the positional row indices
+    of the trials at which ``probabilityLeft`` steps from ``prev`` to ``cur``. The
+    index is that of the first trial of the new block, so the initial 0.5 block
+    never triggers a transition.
+    """
+    def indexer(prev: float, cur: float) -> Callable[[pd.DataFrame], np.ndarray]:
+        def find_transitions(eid_df: pd.DataFrame) -> np.ndarray:
+            p_left = eid_df['probabilityLeft'].to_numpy()
+            return np.flatnonzero((p_left[:-1] == prev) & (p_left[1:] == cur)) + 1
+        return find_transitions
+
+    return {label: indexer(prev, cur)
+            for label, (prev, cur) in BLOCK_TRANSITIONS.items()}
+
+
+def _transition_traces(
+    frame: pd.DataFrame,
+    value_cols: list[str],
+    groups: dict[Hashable, Callable[[pd.DataFrame], np.ndarray]],
+    window: int,
+    baseline: int,
+) -> dict[Hashable, dict[str, np.ndarray]]:
+    """Δ traces (mean + SEM) around each group's transitions, for one mouse.
+
+    Slices ``±window`` rows of ``value_cols`` around every transition each group's
+    indexer reports, pooling windows across the mouse's eids. Each window is
+    expressed as a change from its own pre-transition baseline — the mean over the
+    ``baseline`` rows just before the transition (lags ``-baseline … -1``) — then
+    averaged across transitions, with the standard error of that mean.
+
+    Detection is per eid, so no transition is ever found across a session
+    boundary. Rows are used in the order they appear in ``frame``; the caller
+    restricts which rows are present (e.g. to fit trials) before calling.
 
     Parameters
     ----------
-    mouse_frame : pandas.DataFrame
-        One mouse's concatenated trials + state posteriors, with ``eid``,
-        ``probabilityLeft``, ``map_state`` and ``state_1``…``state_K`` columns.
+    frame : pandas.DataFrame
+        One mouse's trials, in trial order within each eid, carrying ``eid``,
+        ``value_cols`` and whatever columns the indexers read.
+    value_cols : list of str
+        Columns sliced into windows; they become the trailing axis of the result.
+    groups : dict of hashable to callable
+        Group label -> a function taking one eid's sub-frame and returning the
+        positional row indices of that group's transitions within it.
     window : int
         Half-window in trials around each transition.
-    baseline : int, optional
-        Number of pre-transition trials averaged as the per-window baseline
-        (default :data:`BLOCK_BASELINE`).
+    baseline : int
+        Number of pre-transition trials averaged as each window's own zero.
 
     Returns
     -------
-    dict of str to dict of str to numpy.ndarray
-        ``{transition_type: {'mean': arr, 'sem': arr}}`` with each ``arr`` of
-        shape ``(2*window+1, K)``; only transition types with at least one
-        occurrence are present.
+    dict of hashable to dict of str to numpy.ndarray
+        ``{group_label: {'mean': arr, 'sem': arr}}`` with each ``arr`` of shape
+        ``(2*window+1, len(value_cols))``; group labels with no transition in any
+        eid are absent.
     """
-    kept = mouse_frame[mouse_frame['map_state'].notna()]
-    state_cols = [c for c in kept.columns if c.startswith('state_')]
-    collected = {t: [] for t in BLOCK_TRANSITIONS}
-    for _, eid_df in kept.groupby('eid'):
-        p_left = eid_df['probabilityLeft'].to_numpy()
-        values = eid_df[state_cols].to_numpy()
-        for transition, (prev, cur) in BLOCK_TRANSITIONS.items():
-            idx = np.flatnonzero((p_left[:-1] == prev) & (p_left[1:] == cur)) + 1
+    collected = {label: [] for label in groups}
+    for _, eid_df in frame.groupby('eid'):
+        values = eid_df[value_cols].to_numpy()
+        for label, find_transitions in groups.items():
+            idx = find_transitions(eid_df)
             if len(idx):
-                collected[transition].append(
+                collected[label].append(
                     align_traces_at_transitions(values, idx, window))
 
     return {
-        transition: transition_delta_stats(
-            np.concatenate(windows, axis=0), baseline)  # (n_transitions, 2w+1, K)
-        for transition, windows in collected.items() if windows
+        label: transition_delta_stats(
+            np.concatenate(windows, axis=0),  # (n_transitions, 2w+1, n_cols)
+            baseline)
+        for label, windows in collected.items() if windows
     }
 
 
@@ -360,9 +386,8 @@ def _assemble_mouse_views(
             print(f"  {subject}: no fit sessions in group — skipped")
             continue
         frame['rt'] = frame['response_times'] - frame['stimOn_times']
-        state_cols = ['map_state'] + [c for c in frame.columns
-                                      if c.startswith('state_')]
-        views['states'][subject] = frame[state_cols]
+        posterior_cols = [c for c in frame.columns if c.startswith('state_')]
+        views['states'][subject] = frame[['map_state', *posterior_cols]]
 
         kept = frame[frame['map_state'].notna()]
         views['dwell'][subject] = state_dwell_times(
@@ -382,7 +407,9 @@ def _assemble_mouse_views(
         param_table['mouse'] = subject
         param_tables.append(param_table)
         views['curves'][subject] = _state_curves(frame, param_table)
-        views['aligned'][subject] = _block_transition_traces(frame, BLOCK_WINDOW)
+        views['aligned'][subject] = _transition_traces(
+            kept, posterior_cols, _block_transition_indexers(),
+            BLOCK_WINDOW, BLOCK_BASELINE)
         print(f"  {subject}: {len(kept)} fit trials, "
               f"{param_table['state'].nunique()} states")
 
