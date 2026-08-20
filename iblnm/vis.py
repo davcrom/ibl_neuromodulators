@@ -1,7 +1,7 @@
 import itertools
 import re
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -4601,6 +4601,8 @@ def _summarize_state_posteriors(
 ROW_HEIGHT = 2.4   # inches per mouse row, so axis heights match across figures
 POINT_ALPHA = 0.5  # alpha for empirical data-point markers
 DOT_JITTER = 0.12  # half-width, in x units, of the per-session dot spread
+OUTCOME_ALPHA = {'correct': 1.0, 'incorrect': 0.5}  # violin body opacity by outcome
+MEASURE_DODGE = 0.18  # x offset of each outcome's violin from its state position
 
 
 def plot_state_posterior_dwell(
@@ -4671,59 +4673,108 @@ def plot_state_posterior_dwell(
     return fig
 
 
-def plot_state_baselines(baselines_by_mouse: dict[str, pd.DataFrame]) -> plt.Figure:
-    """Per-state pre-stimulus NM baseline distributions, one mouse per row.
+def _draw_outcome_violins(ax, trials: pd.DataFrame, column: str) -> None:
+    """Draw one axis of :func:`plot_state_measures`: a state's two outcomes.
 
-    Each mouse gets one axis: a violin of every trial's baseline per MAP state,
-    with that state's per-session median baselines overlaid as dots. The dots
-    matter because the baseline is not re-centered per session — a state's shift
-    can be carried by a single session, and that shows up as one outlying dot
-    rather than a wider violin. States are colored consistently within a mouse by
-    ``plt.cm.tab10``; each mouse is fit separately, so state labels carry no
-    meaning across mice.
-
-    A state with fewer than 10 trials is drawn by :func:`violinplot` as an
-    open-circle scatter of its raw values instead of a violin — rare states
-    therefore appear as points.
+    Each state sits at an integer x position, with its correct trials violined at
+    ``position - MEASURE_DODGE`` and its incorrect trials at
+    ``position + MEASURE_DODGE``, and that group's per-session medians scattered
+    over it. Trials with a NaN in ``column`` are dropped first, so a measure that
+    is entirely NaN leaves the axis empty rather than raising.
 
     Parameters
     ----------
-    baselines_by_mouse : dict of str to pandas.DataFrame
-        Maps each subject to its fit-only trials with columns ``['state',
-        'baseline', 'eid']``. ``baseline`` is the mean preprocessed signal over
-        the pre-stimulus window, in session-SD units (the preprocessing pipeline
-        z-scores each session); NaN baselines are dropped.
+    ax : matplotlib.axes.Axes
+        Axes to draw on. Its x ticks are set to the state labels.
+    trials : pandas.DataFrame
+        One mouse's fit-only trials, with columns ``['state', 'eid', 'outcome']``
+        plus ``column``.
+    column : str
+        The measure column to plot on y.
+    """
+    trials = trials.dropna(subset=[column])
+    states = sorted(trials['state'].unique())
+    positions = np.arange(len(states))
+    ax.set_xticks(positions, [str(state) for state in states])
+    if not states:
+        return
+    state_colors = plt.cm.tab10(positions)
+    # OUTCOME_ALPHA's order puts correct left of incorrect within each state.
+    for (outcome, alpha), dodge in zip(OUTCOME_ALPHA.items(),
+                                       (-MEASURE_DODGE, MEASURE_DODGE)):
+        # Filling absent states keeps the group list aligned with `positions`
+        # when an outcome misses a state entirely; violinplot skips empty groups.
+        by_state = dict(tuple(trials[trials['outcome'] == outcome]
+                              .groupby('state')))
+        groups = [by_state.get(state, trials.iloc[:0]) for state in states]
+        violinplot(ax, [group[column].to_numpy() for group in groups],
+                   positions=positions + dodge, colors=state_colors,
+                   remove_outliers=False, show_outliers=False,
+                   alpha=alpha, widths=0.3)
+        for position, group, color in zip(positions, groups, state_colors):
+            medians = group.groupby('eid')[column].median()
+            # Evenly spaced offsets, endpoints excluded: deterministic, and a
+            # lone session lands on the violin's center.
+            offsets = np.linspace(-DOT_JITTER, DOT_JITTER, len(medians) + 2)[1:-1]
+            ax.scatter(position + dodge + offsets, medians.to_numpy(), s=8,
+                       color=color, alpha=POINT_ALPHA, zorder=3)
+
+
+def plot_state_measures(
+    measures_by_mouse: dict[str, pd.DataFrame], measures: Mapping[str, str]
+) -> plt.Figure:
+    """Per-state NM measure distributions split by outcome, one mouse per row.
+
+    Each axis is one mouse and one measure: a violin of every trial's value per
+    MAP state, split into correct (full opacity, left) and incorrect (half
+    opacity, right) trials, with that group's per-session medians overlaid as
+    dots. The dots matter because the measures are not re-centered per session —
+    a state's shift can be carried by a single session, and that shows up as one
+    outlying dot rather than a wider violin. States are colored consistently
+    within a mouse by ``plt.cm.tab10``; each mouse is fit separately, so state
+    labels carry no meaning across mice.
+
+    y limits are per-axis: a pre-stimulus baseline is an absolute level in
+    session-SD units, while an evoked response is a difference from a pre-event
+    baseline, and a shared scale would flatten whichever is smaller. A group with
+    fewer than 10 trials is drawn by :func:`violinplot` as an open-circle scatter
+    of its raw values instead of a violin — splitting by outcome makes that more
+    common than pooling would.
+
+    Parameters
+    ----------
+    measures_by_mouse : dict of str to pandas.DataFrame
+        Maps each subject to its fit-only, non-no-go trials with columns
+        ``['state', 'eid', 'outcome']`` plus one column per measure. ``outcome``
+        is ``'correct'`` or ``'incorrect'``. NaN values are dropped per measure,
+        so a mouse missing one measure entirely still draws the others.
+    measures : Mapping of str to str
+        Measure column to y-axis label. Iteration order fixes the figure's
+        left-to-right column order.
 
     Returns
     -------
     matplotlib.figure.Figure
-        ``len(baselines_by_mouse)`` rows by 1 column, states along x in ascending
-        label order.
+        ``len(measures_by_mouse)`` rows by ``len(measures)`` columns, states along
+        x in ascending label order, the mouse name titling its first column and
+        the outcome legend on the top-left axis.
     """
-    mice = list(baselines_by_mouse)
-    fig, axes = plt.subplots(len(mice), 1, figsize=(7, ROW_HEIGHT * len(mice)),
-                             squeeze=False, layout='constrained')
-    for (ax,), mouse in zip(axes, mice):
-        # groupby sorts its keys, putting the states in ascending label order.
-        by_state = baselines_by_mouse[mouse].dropna(
-            subset=['baseline']).groupby('state')
-        positions = np.arange(by_state.ngroups)
-        colors = plt.cm.tab10(positions)
-        violinplot(ax, [trials['baseline'].to_numpy() for _, trials in by_state],
-                   positions=positions, colors=colors,
-                   remove_outliers=False, show_outliers=False)
-        for position, (_, trials), color in zip(positions, by_state, colors):
-            medians = trials.groupby('eid')['baseline'].median()
-            # Evenly spaced offsets, endpoints excluded: deterministic, and a
-            # lone session lands on the violin's center.
-            offsets = np.linspace(-DOT_JITTER, DOT_JITTER, len(medians) + 2)[1:-1]
-            ax.scatter(position + offsets, medians.to_numpy(), s=8, color=color,
-                       alpha=POINT_ALPHA, zorder=3)
-        ax.set_xticks(positions, [str(state) for state in by_state.groups])
-        ax.set_xlabel('state', fontsize=8)
-        ax.set_ylabel('baseline (session SD)', fontsize=8)
-        ax.set_title(mouse, fontsize=9)
-        ax.tick_params(labelsize=7)
+    mice = list(measures_by_mouse)
+    fig, axes = plt.subplots(
+        len(mice), len(measures),
+        figsize=(7 * len(measures), ROW_HEIGHT * len(mice)),
+        squeeze=False, layout='constrained')
+    for row, mouse in zip(axes, mice):
+        for ax, column in zip(row, measures):
+            _draw_outcome_violins(ax, measures_by_mouse[mouse], column)
+            ax.set_xlabel('state', fontsize=8)
+            ax.set_ylabel(measures[column], fontsize=8)
+            ax.tick_params(labelsize=7)
+        row[0].set_title(mouse, fontsize=9)
+    axes[0][0].legend(handles=[Line2D([], [], color='gray', alpha=alpha,
+                                      label=outcome)
+                               for outcome, alpha in OUTCOME_ALPHA.items()],
+                      fontsize=6, frameon=False)
     return fig
 
 

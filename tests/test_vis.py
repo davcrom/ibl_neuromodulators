@@ -3417,62 +3417,150 @@ class TestStatePCA:
         plt.close(fig)
 
 
-class TestStateBaselines:
-    """Goal-6 figure: per-state pre-stimulus NM baseline violins per mouse."""
+class TestStateMeasures:
+    """Goal-6 figure: per-state NM measure violins, split by outcome, per mouse."""
 
-    def _baselines(self):
-        """Two mice, states 2 and 1 (unsorted), two sessions each, 12 trials/state.
+    MEASURES = {'baseline': 'baseline (session SD)',
+                'stimOn_response': 'stimOn response (Δ session SD)'}
 
-        State 1 sits near 0, state 2 near 10, so a violin's y range identifies
-        which state it drew. Session medians are exactly the session's constant
-        offset from the state center.
+    def _measures(self):
+        """Two mice, states 2 and 1 (unsorted), two outcomes, two sessions each.
+
+        Each ``(state, outcome)`` cell gets its own center, so a violin's y range
+        identifies both: state 1 near 0/3, state 2 near 10/13 (correct/incorrect).
+        ``stimOn_response`` is offset by 100 so a violin's y range also identifies
+        its measure column. Session medians are exactly the session's constant
+        offset from the cell center.
         """
         rows = []
-        for state, center in [(2, 10.0), (1, 0.0)]:
-            for eid, offset in [('eid-a', -0.5), ('eid-b', 0.5)]:
-                rows += [{'state': state, 'eid': eid,
-                          'baseline': center + offset + step}
-                         for step in np.linspace(-0.1, 0.1, 12)]
+        for state, state_center in [(2, 10.0), (1, 0.0)]:
+            for outcome, outcome_offset in [('correct', 0.0), ('incorrect', 3.0)]:
+                for eid, session_offset in [('eid-a', -0.5), ('eid-b', 0.5)]:
+                    center = state_center + outcome_offset + session_offset
+                    rows += [{'state': state, 'eid': eid, 'outcome': outcome,
+                              'baseline': center + step,
+                              'stimOn_response': center + step + 100.0}
+                             for step in np.linspace(-0.1, 0.1, 12)]
         frame = pd.DataFrame(rows)
         return {'ZFM-A': frame, 'ZFM-B': frame.copy()}
 
-    def test_violins_in_ascending_state_order(self):
-        from iblnm.vis import plot_state_baselines
-        fig = plot_state_baselines(self._baselines())
-        ax = fig.axes[0]  # first mouse's panel
-        bodies = [c for c in ax.collections
-                  if isinstance(c, matplotlib.collections.PolyCollection)]
-        assert len(bodies) == 2  # one violin per state
+    @staticmethod
+    def _violin_centers(ax):
+        """(x, y) center of every violin body on ``ax``, sorted by x position."""
         centers = []
-        for body in bodies:
+        for body in ax.collections:
+            if not isinstance(body, matplotlib.collections.PolyCollection):
+                continue
             vertices = body.get_paths()[0].vertices
             centers.append((vertices[:, 0].mean(), vertices[:, 1].mean()))
-        centers.sort()  # by x position
-        # Ascending state order despite the input frame listing state 2 first:
-        # the leftmost violin holds state 1 (near 0), the next state 2 (near 10).
-        assert np.allclose([x for x, _ in centers], [0.0, 1.0], atol=0.05)
-        assert abs(centers[0][1] - 0.0) < 1.0
-        assert abs(centers[1][1] - 10.0) < 1.0
-        assert [t.get_text() for t in ax.get_xticklabels()] == ['1', '2']
+        return sorted(centers)
+
+    def test_outcome_violins_are_dodged_around_their_state(self):
+        from iblnm.vis import plot_state_measures
+        fig = plot_state_measures(self._measures(), self.MEASURES)
+        ax = fig.axes[0]  # first mouse, first measure
+        centers = self._violin_centers(ax)
+        assert len(centers) == 4  # two states x two outcomes
+        # Correct sits left of incorrect within each state, at position ∓ 0.18.
+        assert np.allclose([x for x, _ in centers], [-0.18, 0.18, 0.82, 1.18],
+                           atol=0.02)
+        # y ranges identify the cells: state 1 correct/incorrect near 0/3,
+        # state 2 correct/incorrect near 10/13.
+        assert np.allclose([y for _, y in centers], [0.0, 3.0, 10.0, 13.0],
+                           atol=1.0)
         plt.close(fig)
 
-    def test_dots_are_per_session_medians_at_their_state_position(self):
-        from iblnm.vis import plot_state_baselines
-        frames = self._baselines()
-        fig = plot_state_baselines(frames)
+    def test_incorrect_violins_are_drawn_at_half_alpha(self):
+        from iblnm.vis import plot_state_measures
+        fig = plot_state_measures(self._measures(), self.MEASURES)
+        ax = fig.axes[0]
+        alpha_by_x = {}
+        for body in ax.collections:
+            if not isinstance(body, matplotlib.collections.PolyCollection):
+                continue
+            x = body.get_paths()[0].vertices[:, 0].mean()
+            alpha_by_x[round(float(x), 2)] = body.get_alpha()
+        # Correct violins (left of each state position) are opaque, incorrect
+        # (right) half-transparent.
+        assert alpha_by_x == {-0.18: 1.0, 0.18: 0.5, 0.82: 1.0, 1.18: 0.5}
+        plt.close(fig)
+
+    def test_dots_are_per_session_medians_at_their_outcome_position(self):
+        from iblnm.vis import plot_state_measures
+        frames = self._measures()
+        fig = plot_state_measures(frames, self.MEASURES)
         ax = fig.axes[0]
         dots = np.vstack([c.get_offsets() for c in ax.collections
                           if isinstance(c, matplotlib.collections.PathCollection)])
-        expected = frames['ZFM-A'].groupby(['state', 'eid'])['baseline'].median()
-        assert len(dots) == len(expected)  # one dot per (state, eid) group
-        # Each dot sits within the jitter band of its state's x position, and
-        # the dots at that position carry that state's session medians.
-        for position, state in enumerate(sorted(frames['ZFM-A']['state'].unique())):
-            at_state = dots[np.abs(dots[:, 0] - position) < 0.5]
-            assert len(at_state) == 2  # two sessions
-            assert np.allclose(sorted(at_state[:, 1]),
-                               sorted(expected.loc[state].to_numpy()))
+        expected = frames['ZFM-A'].groupby(
+            ['state', 'outcome', 'eid'])['baseline'].median()
+        assert len(dots) == len(expected)  # one dot per (state, outcome, eid)
+        for position, state in enumerate([1, 2]):
+            for outcome, dodge in [('correct', -0.18), ('incorrect', 0.18)]:
+                # Dots sit within the jitter band of their own violin, not the
+                # other outcome's: the bands are 0.24 wide and 0.36 apart.
+                at_violin = dots[np.abs(dots[:, 0] - (position + dodge)) < 0.13]
+                assert len(at_violin) == 2  # two sessions
+                assert np.allclose(sorted(at_violin[:, 1]),
+                                   sorted(expected.loc[state, outcome].to_numpy()))
         plt.close(fig)
+
+    def test_one_axis_column_per_measure_plots_its_own_column(self):
+        from iblnm.vis import plot_state_measures
+        fig = plot_state_measures(self._measures(), self.MEASURES)
+        assert len(fig.axes) == 2 * len(self.MEASURES)  # two mice x two measures
+        # The second column draws stimOn_response, offset by 100 from baseline.
+        baseline_ax, response_ax = fig.axes[0], fig.axes[1]
+        baseline_y = [y for _, y in self._violin_centers(baseline_ax)]
+        response_y = [y for _, y in self._violin_centers(response_ax)]
+        assert np.allclose(np.subtract(response_y, baseline_y), 100.0, atol=0.1)
+        plt.close(fig)
+
+    def test_state_ticks_and_measure_labels(self):
+        from iblnm.vis import plot_state_measures
+        fig = plot_state_measures(self._measures(), self.MEASURES)
+        baseline_ax, response_ax = fig.axes[0], fig.axes[1]
+        # Ticks sit at the state positions, ascending despite the input frame
+        # listing state 2 first.
+        assert list(baseline_ax.get_xticks()) == [0, 1]
+        assert [t.get_text() for t in baseline_ax.get_xticklabels()] == ['1', '2']
+        assert baseline_ax.get_ylabel() == self.MEASURES['baseline']
+        assert response_ax.get_ylabel() == self.MEASURES['stimOn_response']
+        # The mouse name titles its first column only.
+        assert baseline_ax.get_title() == 'ZFM-A'
+        assert response_ax.get_title() == ''
+        # The legend labels the outcome split, on the top-left axis only.
+        assert [t.get_text() for t in baseline_ax.get_legend().get_texts()] == [
+            'correct', 'incorrect']
+        assert response_ax.get_legend() is None
+        plt.close(fig)
+
+    def test_all_nan_measure_leaves_an_empty_labeled_axis(self):
+        from iblnm.vis import plot_state_measures
+        frames = self._measures()
+        frames['ZFM-A'] = frames['ZFM-A'].assign(stimOn_response=np.nan)
+        fig = plot_state_measures(frames, self.MEASURES)
+        empty_ax = fig.axes[1]  # ZFM-A's stimOn_response panel
+        assert list(empty_ax.collections) == []  # no violins, no dots
+        assert empty_ax.get_ylabel() == self.MEASURES['stimOn_response']
+        # The other mouse still draws that measure.
+        assert len(self._violin_centers(fig.axes[3])) == 4
+        plt.close(fig)
+
+    def test_state_missing_one_outcome_keeps_the_other_at_its_position(self):
+        from iblnm.vis import plot_state_measures
+        frames = self._measures()
+        # Drop state 1's incorrect trials, leaving that outcome unrepresented
+        # there while state 2 keeps both.
+        frame = frames['ZFM-A']
+        frames['ZFM-A'] = frame[~((frame['state'] == 1)
+                                  & (frame['outcome'] == 'incorrect'))]
+        centers = self._violin_centers(plot_state_measures(
+            frames, self.MEASURES).axes[0])
+        # Three violins: state 1 correct, state 2 correct and incorrect. The
+        # remaining ones keep the x positions they had with all four present.
+        assert np.allclose([x for x, _ in centers], [-0.18, 0.82, 1.18], atol=0.02)
+        plt.close('all')
 
 
 class TestStateParamScatter:
