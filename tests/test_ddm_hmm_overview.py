@@ -547,6 +547,104 @@ def test_transition_traces_pool_one_window_per_eid():
 
 
 # =========================================================================
+# _state_switch_traces
+# =========================================================================
+
+def _states_frame(eids, map_states, **measures):
+    """Fit-trial frame carrying ``map_state`` and the three NM measure columns.
+
+    Any measure left unspecified is filled with zeros, so a test only names the
+    columns whose values it asserts on.
+    """
+    n = len(map_states)
+    columns = {measure: measures.get(measure, np.zeros(n))
+               for measure in ddm.MEASURE_LABELS}
+    return pd.DataFrame({'eid': eids, 'map_state': map_states, **columns})
+
+
+def test_state_switch_detection_is_per_eid():
+    """A state change across a session boundary is not a switch.
+
+    ``map_state`` steps 1 -> 2 exactly once, at the boundary between the two
+    eids, so no state is ever entered and the mouse contributes no trace. The
+    same sequence inside one eid is one switch into state 2 — and state 1, which
+    only ever opens a session, is still not entered.
+    """
+    across = ddm._state_switch_traces(
+        _states_frame(['e1', 'e1', 'e2', 'e2'], [1, 1, 2, 2]),
+        window=1, baseline=1)
+    within = ddm._state_switch_traces(
+        _states_frame(['e1'] * 4, [1, 1, 2, 2]), window=1, baseline=1)
+
+    assert across == {}
+    assert set(within) == set(ddm.MEASURE_LABELS)
+    assert within['baseline']['mean'].shape == (3, 1)
+
+
+def test_state_switch_traces_pool_over_the_origin_state():
+    """Switches into a state pool into one line whatever they came from.
+
+    ``map_state`` enters state 2 twice in one eid, once from 3 and once from 1.
+    Both windows land in state 2's single column: their lag-0 baseline (0.0)
+    deltas of 1.0 and 3.0 average to 2.0 with a finite SEM. Were the origin part
+    of the key they would occupy two columns and each carry zero SEM.
+    """
+    frame = _states_frame(['e1'] * 5, [1, 3, 2, 1, 2],
+                          baseline=[0.0, 0.0, 1.0, 0.0, 3.0])
+
+    traces = ddm._state_switch_traces(frame, window=1, baseline=1)
+
+    mean, sem = traces['baseline']['mean'], traces['baseline']['sem']
+    assert mean.shape == (3, 3)  # states 1, 2 and 3 are each entered
+    assert np.isclose(mean[1, 1], 2.0)  # column 1 is state 2
+    assert np.isclose(sem[1, 1], 1.0)  # std([1, 3], ddof=1) / sqrt(2)
+
+
+def test_state_switch_traces_stack_states_in_ascending_order():
+    """Each measure gets one array whose columns are the states, low to high.
+
+    Runs of three trials alternate between states 1 and 2, with every measure
+    held at ``10 * map_state``. Entering state 2 is then a +10 step and entering
+    state 1 a -10 step, so the sign at lag 0 says which column belongs to which
+    state — the plotter colors columns positionally, so a swapped order would
+    silently mismatch figure 6's state colors.
+    """
+    map_states = [1, 1, 1, 2, 2, 2] * 2
+    frame = _states_frame(['e1'] * len(map_states), map_states,
+                          **{measure: 10.0 * np.array(map_states)
+                             for measure in ddm.MEASURE_LABELS})
+
+    traces = ddm._state_switch_traces(frame, ddm.SWITCH_WINDOW,
+                                      ddm.SWITCH_BASELINE)
+
+    assert set(traces) == set(ddm.MEASURE_LABELS)
+    for measure in ddm.MEASURE_LABELS:
+        mean = traces[measure]['mean']
+        assert mean.shape == (2 * ddm.SWITCH_WINDOW + 1, 2)
+        assert np.isclose(mean[ddm.SWITCH_WINDOW, 0], -10.0)  # column 0: state 1
+        assert np.isclose(mean[ddm.SWITCH_WINDOW, 1], 10.0)  # column 1: state 2
+
+
+def test_state_switch_traces_zero_the_two_trials_before_the_switch():
+    """Δ is measured from the ``SWITCH_BASELINE`` trials just before the switch.
+
+    ``baseline`` holds 0.0 through state 1 and 1.0 from the switch into state 2
+    onward, so every pre-switch lag is 0 and every lag from the switch on is 1.
+    """
+    map_states = [1] * 6 + [2] * 6
+    frame = _states_frame(['e1'] * len(map_states), map_states,
+                          baseline=[0.0] * 6 + [1.0] * 6)
+
+    traces = ddm._state_switch_traces(frame, ddm.SWITCH_WINDOW,
+                                      ddm.SWITCH_BASELINE)
+
+    mean = traces['baseline']['mean']
+    assert mean.shape == (2 * ddm.SWITCH_WINDOW + 1, 1)  # only state 2 is entered
+    assert np.allclose(mean[:ddm.SWITCH_WINDOW, 0], 0.0)
+    assert np.allclose(mean[ddm.SWITCH_WINDOW:, 0], 1.0)
+
+
+# =========================================================================
 # _assemble_mouse_views
 # =========================================================================
 
@@ -589,6 +687,8 @@ def test_assemble_mouse_views_measures_view_holds_fit_trials_only(monkeypatch):
     monkeypatch.setattr(
         ddm, '_transition_traces',
         lambda frame, value_cols, groups, window, baseline: {})
+    monkeypatch.setattr(ddm, '_state_switch_traces',
+                        lambda frame, window, baseline: {})
 
     views = ddm._assemble_mouse_views(group=None, subjects=['M'], one=None)
 
@@ -630,6 +730,8 @@ def test_assemble_mouse_views_measures_label_outcome_and_drop_no_go(monkeypatch)
     monkeypatch.setattr(
         ddm, '_transition_traces',
         lambda frame, value_cols, groups, window, baseline: {})
+    monkeypatch.setattr(ddm, '_state_switch_traces',
+                        lambda frame, window, baseline: {})
 
     views = ddm._assemble_mouse_views(group=None, subjects=['M'], one=None)
 
@@ -678,6 +780,9 @@ def test_assemble_mouse_views_measures_drop_all_nan_and_omit_empty_mouse(monkeyp
     monkeypatch.setattr(
         ddm, '_transition_traces',
         lambda frame, value_cols, groups, window, baseline: {})
+    monkeypatch.setattr(
+        ddm, '_state_switch_traces',
+        lambda frame, window, baseline: {'n_trials': len(frame)})
 
     views = ddm._assemble_mouse_views(group=None, subjects=['M1', 'M2'],
                                       one=None)
@@ -686,5 +791,7 @@ def test_assemble_mouse_views_measures_drop_all_nan_and_omit_empty_mouse(monkeyp
     assert list(measures['stimOn_response']) == [1.0, 2.0]
     assert measures['baseline'].isna().tolist() == [False, True]
     assert 'M2' not in views['measures']
+    # The switch traces follow the same all-NaN rule, over the fit trials.
+    assert views['switches'] == {'M1': {'n_trials': 2}}
     # M2 still contributes to the behavioral views.
     assert 'M2' in views['states'] and 'M2' in views['dwell']

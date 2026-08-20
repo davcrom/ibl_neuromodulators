@@ -58,6 +58,8 @@ FEATURE_COLS = ['bias', 'threshold', 'lapse_left', 'lapse_right']
 BLOCK_TRANSITIONS = {'L->R': (0.8, 0.2), 'R->L': (0.2, 0.8)}
 BLOCK_WINDOW = 15  # half-window in trials around a transition (spec Decision)
 BLOCK_BASELINE = 5  # trials before a transition defining the Δ-posterior baseline
+SWITCH_WINDOW = 5  # half-window in trials around a state switch (figure 7)
+SWITCH_BASELINE = 2  # trials before a switch defining the Δ-measure baseline
 # feedbackType -> outcome label; splits the chronometric curves (figure 2).
 OUTCOMES = {'correct': 1, 'incorrect': -1}
 # Pre-stimulus NM baseline window, s relative to stimOn_times (figure 6). Not
@@ -343,6 +345,71 @@ def _transition_traces(
     }
 
 
+def _state_switch_indexers(
+    states: list[int],
+) -> dict[int, Callable[[pd.DataFrame], np.ndarray]]:
+    """Figure 7's transition indexers, one per entered state.
+
+    Each indexer takes one eid's sub-frame and returns the positional row indices
+    of the trials on which ``map_state`` changes into that state. The first row of
+    a sub-frame is never one, so a session boundary is never a switch, and the
+    origin state does not enter the key — every switch into a state is pooled
+    regardless of where it came from.
+    """
+    def indexer(state: int) -> Callable[[pd.DataFrame], np.ndarray]:
+        def find_switches(eid_df: pd.DataFrame) -> np.ndarray:
+            map_state = eid_df['map_state'].to_numpy()
+            return np.flatnonzero(
+                (map_state[1:] != map_state[:-1]) & (map_state[1:] == state)) + 1
+        return find_switches
+
+    return {state: indexer(state) for state in states}
+
+
+def _state_switch_traces(
+    frame: pd.DataFrame, window: int, baseline: int
+) -> dict[str, dict[str, np.ndarray]]:
+    """Δ traces of the NM measures around entry into each state, for one mouse.
+
+    Runs :func:`_transition_traces` over :data:`MEASURE_LABELS` with one group per
+    state present in ``frame``, then transposes its per-state result into the
+    per-measure layout :func:`iblnm.vis.plot_transition_traces` draws: one axes per
+    measure, one line per entered state.
+
+    Parameters
+    ----------
+    frame : pandas.DataFrame
+        One mouse's fit trials (non-NaN ``map_state``), in trial order within each
+        eid, carrying ``eid``, ``map_state`` and the :data:`MEASURE_LABELS`
+        columns. No-go trials are kept: their measures are NaN, but dropping them
+        would renumber trials and shift the lag axis.
+    window : int
+        Half-window in trials around each switch.
+    baseline : int
+        Number of pre-switch trials averaged as each window's own zero.
+
+    Returns
+    -------
+    dict of str to dict of str to numpy.ndarray
+        ``{measure: {'mean': arr, 'sem': arr}}`` with each ``arr`` of shape
+        ``(2*window+1, n_entered_states)``, states stacked in ascending order so
+        the line colors match figure 6's. States never entered contribute no
+        column; a mouse with no switch at all returns an empty dict.
+    """
+    states = sorted(frame['map_state'].unique().astype(int))
+    traces = _transition_traces(frame, list(MEASURE_LABELS),
+                                _state_switch_indexers(states), window, baseline)
+    entered = [state for state in states if state in traces]
+    if not entered:
+        return {}
+    return {
+        measure: {stat: np.stack([traces[state][stat][:, col]
+                                  for state in entered], axis=1)
+                  for stat in ('mean', 'sem')}
+        for col, measure in enumerate(MEASURE_LABELS)
+    }
+
+
 def _save(fig: plt.Figure, name: str) -> None:
     """Save ``fig`` to ``DDM_HMM_FIGURES_DIR/{name}.svg`` and close it."""
     DDM_HMM_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -356,17 +423,18 @@ def _assemble_mouse_views(
     """Build every modeled mouse's plot inputs from the filtered group.
 
     Iterates ``subjects``, assembling each one's trials+states frame and deriving
-    the per-mouse inputs for figures 1, 2, 5 and 6 plus its per-state feature rows.
-    Mice with no session in the fit are skipped.
+    the per-mouse inputs for figures 1, 2, 5, 6 and 7 plus its per-state feature
+    rows. Mice with no session in the fit are skipped.
 
     Returns
     -------
     dict
         Keys ``'states'``, ``'dwell'``, ``'curves'``, ``'aligned'``,
-        ``'measures'`` each map subject to that figure's plot input;
-        ``'measures'`` holds the fit-only, non-no-go trials carrying at least one
-        of :data:`MEASURE_LABELS`, as ``['state', 'eid', 'outcome']`` plus one
-        column per measure, and omits a mouse whose every session had an
+        ``'measures'``, ``'switches'`` each map subject to that figure's plot
+        input; ``'measures'`` holds the fit-only, non-no-go trials carrying at
+        least one of :data:`MEASURE_LABELS`, as ``['state', 'eid', 'outcome']``
+        plus one column per measure, and ``'switches'`` the per-measure Δ traces
+        around each state switch. Both omit a mouse whose every session had an
         ambiguous fiber — such a mouse still appears in the other views.
         ``'features'`` is the concatenated per-state behavioral-feature
         table (with a ``mouse`` column) for the PCA.
@@ -376,8 +444,8 @@ def _assemble_mouse_views(
     ValueError
         If every subject was skipped, leaving nothing to plot.
     """
-    views = {key: {}
-             for key in ('states', 'dwell', 'curves', 'aligned', 'measures')}
+    views = {key: {} for key in ('states', 'dwell', 'curves', 'aligned',
+                                 'measures', 'switches')}
     param_tables = []
     feedback2outcome = {feedback: label for label, feedback in OUTCOMES.items()}
     for subject in subjects:
@@ -402,6 +470,11 @@ def _assemble_mouse_views(
         if not measured.empty:
             views['measures'][subject] = measured[
                 ['state', 'eid', 'outcome', *MEASURE_LABELS]]
+        # Same all-NaN rule as 'measures', but over every fit trial: the switch
+        # traces keep the no-go trials, which carry the lag axis.
+        if kept[list(MEASURE_LABELS)].notna().any().any():
+            views['switches'][subject] = _state_switch_traces(
+                kept, SWITCH_WINDOW, SWITCH_BASELINE)
 
         param_table = build_state_param_table(frame)
         param_table['mouse'] = subject
