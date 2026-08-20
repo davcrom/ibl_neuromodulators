@@ -61,6 +61,13 @@ OUTCOMES = {'correct': 1, 'incorrect': -1}
 # config.BASELINE_WINDOW, which is (-0.1, 0) and serves evoked-response
 # subtraction — a different quantity.
 NM_BASELINE_WINDOW = [-0.4, -0.1]
+# Per-trial NM measure -> y-axis label (figure 6). Iteration order fixes the
+# figure's left-to-right panel order.
+MEASURE_LABELS = {
+    'baseline': 'pre-stim baseline (session SD)',
+    'stimOn_response': 'stimOn response (Δ session SD)',
+    'feedback_response': 'feedback response (Δ session SD)',
+}
 
 
 def _evoked_magnitudes(
@@ -339,10 +346,11 @@ def _assemble_mouse_views(
     -------
     dict
         Keys ``'states'``, ``'dwell'``, ``'curves'``, ``'aligned'``,
-        ``'baselines'`` each map subject to that figure's plot input;
-        ``'baselines'`` holds the fit-only trials that also carry a baseline, as
-        ``['state', 'baseline', 'eid']``, and omits a mouse whose every session
-        had an ambiguous fiber — such a mouse still appears in the other views.
+        ``'measures'`` each map subject to that figure's plot input;
+        ``'measures'`` holds the fit-only, non-no-go trials carrying at least one
+        of :data:`MEASURE_LABELS`, as ``['state', 'eid', 'outcome']`` plus one
+        column per measure, and omits a mouse whose every session had an
+        ambiguous fiber — such a mouse still appears in the other views.
         ``'features'`` is the concatenated per-state behavioral-feature
         table (with a ``mouse`` column) for the PCA.
 
@@ -352,8 +360,9 @@ def _assemble_mouse_views(
         If every subject was skipped, leaving nothing to plot.
     """
     views = {key: {}
-             for key in ('states', 'dwell', 'curves', 'aligned', 'baselines')}
+             for key in ('states', 'dwell', 'curves', 'aligned', 'measures')}
     param_tables = []
+    feedback2outcome = {feedback: label for label, feedback in OUTCOMES.items()}
     for subject in subjects:
         frame = build_mouse_states_frame(group, subject, one)
         if frame.empty:
@@ -367,13 +376,16 @@ def _assemble_mouse_views(
         kept = frame[frame['map_state'].notna()]
         views['dwell'][subject] = state_dwell_times(
             kept['map_state'].astype(int).to_numpy(), kept['eid'].to_numpy())
-        with_baseline = kept[kept['baseline'].notna()]
-        if not with_baseline.empty:
-            views['baselines'][subject] = pd.DataFrame({
-                'state': with_baseline['map_state'].astype(int),
-                'baseline': with_baseline['baseline'],
-                'eid': with_baseline['eid'],
-            })
+        measured = (
+            kept[kept['choice'] != 0]
+            .dropna(subset=list(MEASURE_LABELS), how='all')
+            .assign(state=lambda df: df['map_state'].astype(int),
+                    outcome=lambda df: df['feedbackType'].map(feedback2outcome))
+            .dropna(subset=['outcome'])
+        )
+        if not measured.empty:
+            views['measures'][subject] = measured[
+                ['state', 'eid', 'outcome', *MEASURE_LABELS]]
 
         param_table = build_state_param_table(frame)
         param_table['mouse'] = subject

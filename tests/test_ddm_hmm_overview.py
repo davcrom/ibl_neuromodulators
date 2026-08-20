@@ -525,8 +525,8 @@ def test_assemble_mouse_views_raises_when_no_mouse_is_in_the_fit(monkeypatch):
         ddm._assemble_mouse_views(group=None, subjects=['M1', 'M2'], one=None)
 
 
-def test_assemble_mouse_views_baselines_view_holds_fit_trials_only(monkeypatch):
-    """The 'baselines' view carries (state, baseline, eid) for fit trials only.
+def test_assemble_mouse_views_measures_view_holds_fit_trials_only(monkeypatch):
+    """The 'measures' view carries the three measures for fit trials only.
 
     The trial the fit dropped (NaN ``map_state``) is absent, and ``state`` comes
     back as an integer label rather than the joined float.
@@ -534,6 +534,10 @@ def test_assemble_mouse_views_baselines_view_holds_fit_trials_only(monkeypatch):
     frame = pd.DataFrame({
         'map_state': [1.0, np.nan, 2.0],
         'baseline': [0.5, 9.9, -0.5],
+        'stimOn_response': [1.0, 9.9, 2.0],
+        'feedback_response': [-1.0, 9.9, -2.0],
+        'feedbackType': [1.0, 1.0, -1.0],
+        'choice': [1.0, 1.0, -1.0],
         'eid': ['e1', 'e1', 'e2'],
         'stimOn_times': [1.0, 2.0, 3.0],
         'response_times': [1.5, 2.5, 3.5],
@@ -548,26 +552,67 @@ def test_assemble_mouse_views_baselines_view_holds_fit_trials_only(monkeypatch):
 
     views = ddm._assemble_mouse_views(group=None, subjects=['M'], one=None)
 
-    baselines = views['baselines']['M']
-    assert list(baselines.columns) == ['state', 'baseline', 'eid']
-    assert list(baselines['state']) == [1, 2]
-    assert pd.api.types.is_integer_dtype(baselines['state'])
-    assert list(baselines['baseline']) == [0.5, -0.5]
-    assert list(baselines['eid']) == ['e1', 'e2']
+    measures = views['measures']['M']
+    assert list(measures.columns) == ['state', 'eid', 'outcome', 'baseline',
+                                      'stimOn_response', 'feedback_response']
+    assert list(measures['state']) == [1, 2]
+    assert pd.api.types.is_integer_dtype(measures['state'])
+    assert list(measures['baseline']) == [0.5, -0.5]
+    assert list(measures['stimOn_response']) == [1.0, 2.0]
+    assert list(measures['feedback_response']) == [-1.0, -2.0]
+    assert list(measures['eid']) == ['e1', 'e2']
 
 
-def test_assemble_mouse_views_baselines_drops_nan_and_omits_empty_mouse(monkeypatch):
-    """Ambiguous-fiber sessions leave NaN baselines; they never reach the view.
+def test_assemble_mouse_views_measures_label_outcome_and_drop_no_go(monkeypatch):
+    """``outcome`` comes from ``feedbackType``; no-go and unknown trials go.
 
-    ``M1`` has one usable session and one whose fiber was ambiguous (NaN
-    baseline) — only the usable trials survive. ``M2``'s every session was
-    ambiguous, so it is absent from the view entirely while still contributing
-    to the behavioral views.
+    A no-go trial (``choice == 0``) carries ``feedbackType == -1`` like a real
+    error, so only the choice filter can separate the two. A ``feedbackType``
+    outside ``OUTCOMES`` has no outcome label and is dropped rather than
+    plotted under a guessed one.
+    """
+    frame = pd.DataFrame({
+        'map_state': [1.0, 1.0, 2.0, 2.0],
+        'baseline': [0.5, -0.5, 0.1, 0.2],
+        'stimOn_response': [1.0, 2.0, 3.0, 4.0],
+        'feedback_response': [-1.0, -2.0, -3.0, -4.0],
+        'feedbackType': [1.0, -1.0, -1.0, 0.0],
+        'choice': [1.0, -1.0, 0.0, 1.0],
+        'eid': ['e1', 'e1', 'e1', 'e1'],
+        'stimOn_times': [1.0, 2.0, 3.0, 4.0],
+        'response_times': [1.5, 2.5, 3.5, 4.5],
+    })
+    monkeypatch.setattr(ddm, 'build_mouse_states_frame',
+                        lambda group, subject, one: frame.copy())
+    monkeypatch.setattr(ddm, 'build_state_param_table',
+                        lambda mouse_frame: pd.DataFrame({'state': [1, 2]}))
+    monkeypatch.setattr(ddm, '_state_curves', lambda mouse_frame, params: {})
+    monkeypatch.setattr(ddm, '_block_transition_traces',
+                        lambda mouse_frame, window: {})
+
+    views = ddm._assemble_mouse_views(group=None, subjects=['M'], one=None)
+
+    measures = views['measures']['M']
+    assert list(measures['outcome']) == ['correct', 'incorrect']
+    assert list(measures['baseline']) == [0.5, -0.5]
+
+
+def test_assemble_mouse_views_measures_drop_all_nan_and_omit_empty_mouse(monkeypatch):
+    """A trial survives on any one measure; an all-NaN mouse leaves the view.
+
+    ``M1``'s second trial lost its baseline to the response-window mask but kept
+    a finite ``stimOn_response``, so it stays. ``M2``'s every session had an
+    ambiguous fiber (all three measures NaN), so it is absent from the view
+    entirely while still contributing to the behavioral views.
     """
     frames = {
         'M1': pd.DataFrame({
             'map_state': [1.0, 2.0],
             'baseline': [0.5, np.nan],
+            'stimOn_response': [1.0, 2.0],
+            'feedback_response': [np.nan, np.nan],
+            'feedbackType': [1.0, -1.0],
+            'choice': [1.0, -1.0],
             'eid': ['e1', 'e2'],
             'stimOn_times': [1.0, 2.0],
             'response_times': [1.5, 2.5],
@@ -575,6 +620,10 @@ def test_assemble_mouse_views_baselines_drops_nan_and_omits_empty_mouse(monkeypa
         'M2': pd.DataFrame({
             'map_state': [1.0, 2.0],
             'baseline': [np.nan, np.nan],
+            'stimOn_response': [np.nan, np.nan],
+            'feedback_response': [np.nan, np.nan],
+            'feedbackType': [1.0, -1.0],
+            'choice': [1.0, -1.0],
             'eid': ['e3', 'e3'],
             'stimOn_times': [1.0, 2.0],
             'response_times': [1.5, 2.5],
@@ -591,7 +640,9 @@ def test_assemble_mouse_views_baselines_drops_nan_and_omits_empty_mouse(monkeypa
     views = ddm._assemble_mouse_views(group=None, subjects=['M1', 'M2'],
                                       one=None)
 
-    assert list(views['baselines']['M1']['baseline']) == [0.5]
-    assert 'M2' not in views['baselines']
+    measures = views['measures']['M1']
+    assert list(measures['stimOn_response']) == [1.0, 2.0]
+    assert measures['baseline'].isna().tolist() == [False, True]
+    assert 'M2' not in views['measures']
     # M2 still contributes to the behavioral views.
     assert 'M2' in views['states'] and 'M2' in views['dwell']
