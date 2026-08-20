@@ -1,4 +1,5 @@
 """Tests for scripts/ddm_hmm_overview.py assembly functions."""
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -45,6 +46,8 @@ def test_build_mouse_states_frame_attaches_window_mean_baseline(monkeypatch):
 
     class FakePS:
         extract_responses = PhotometrySession.extract_responses
+        mask_subsequent_events = PhotometrySession.mask_subsequent_events
+        subtract_baseline = PhotometrySession.subtract_baseline
 
         def __init__(self, row, one=None):
             self.eid = row['eid']
@@ -52,6 +55,7 @@ def test_build_mouse_states_frame_attaches_window_mean_baseline(monkeypatch):
 
         def load_h5(self, groups=None):
             self.trials = pd.DataFrame({'stimOn_times': stim_times,
+                                        'feedback_times': [6.0, 11.0, 16.0],
                                         'choice': [1, -1, 1]})
             self.photometry = _step_photometry(levels, stim_times)
 
@@ -77,6 +81,8 @@ def test_build_mouse_states_frame_baseline_stays_aligned_to_its_trial(monkeypatc
 
     class FakePS:
         extract_responses = PhotometrySession.extract_responses
+        mask_subsequent_events = PhotometrySession.mask_subsequent_events
+        subtract_baseline = PhotometrySession.subtract_baseline
 
         def __init__(self, row, one=None):
             self.eid = row['eid']
@@ -84,6 +90,7 @@ def test_build_mouse_states_frame_baseline_stays_aligned_to_its_trial(monkeypatc
 
         def load_h5(self, groups=None):
             self.trials = pd.DataFrame({'stimOn_times': stim_times,
+                                        'feedback_times': [6.0, 11.0, 16.0],
                                         'choice': [1, -1, 1]})
             self.photometry = _step_photometry(levels, stim_times)
 
@@ -126,8 +133,11 @@ def _ambiguous_fiber_frame(monkeypatch, columns, brain_region):
     return ddm.build_mouse_states_frame(group, 'M', one=None)
 
 
-def test_bilateral_session_yields_nan_baseline(monkeypatch):
-    """Two photometry columns -> no fiber to pick, so baseline is NaN, not an error.
+MEASURE_COLS = ['baseline', 'stimOn_response', 'feedback_response']
+
+
+def test_bilateral_session_yields_nan_measures(monkeypatch):
+    """Two photometry columns -> no fiber to pick, so measures are NaN, not an error.
 
     The bilateral sessions name their columns ``LC-l``/``LC-r``, which the
     session's ``brain_region`` entry (``'LC'``) does not match. The trials
@@ -137,12 +147,12 @@ def test_bilateral_session_yields_nan_baseline(monkeypatch):
         monkeypatch, columns=['LC-l', 'LC-r'], brain_region=['LC', 'LC'])
 
     assert len(frame) == 3
-    assert frame['baseline'].isna().all()
+    assert frame[MEASURE_COLS].isna().all().all()
     assert frame['map_state'].notna().all()
 
 
-def test_duplicated_brain_region_yields_nan_baseline(monkeypatch):
-    """One column but two brain_region entries -> ambiguous, so baseline is NaN.
+def test_duplicated_brain_region_yields_nan_measures(monkeypatch):
+    """One column but two brain_region entries -> ambiguous, so measures are NaN.
 
     These sessions carry ``['LC', 'LC']`` against a single data column, so which
     fiber the column came from is unknown even though only one signal exists.
@@ -151,7 +161,125 @@ def test_duplicated_brain_region_yields_nan_baseline(monkeypatch):
         monkeypatch, columns=['LC'], brain_region=['LC', 'LC'])
 
     assert len(frame) == 3
-    assert frame['baseline'].isna().all()
+    assert frame[MEASURE_COLS].isna().all().all()
+
+
+def _evoked_photometry(stim_levels, feedback_levels, stim_times, feedback_times,
+                       offset=0.0, fs=100, duration=20.0):
+    """Photometry dict whose LC signal is a known step in each response window.
+
+    The signal is ``offset`` everywhere except the (0.1, 0.35) s after each event
+    — ``config.RESPONSE_WINDOWS['early']``, pinned here so the test fixes the
+    window independently — where it holds that trial's level above ``offset``.
+    The pre-event baseline window (-0.1, 0) is therefore flat at ``offset``, so a
+    baseline-subtracted magnitude must come out as the level exactly, whatever
+    ``offset`` is.
+    """
+    times = np.arange(0, duration, 1 / fs)
+    signal = np.zeros_like(times)
+    for event_times, levels in ((stim_times, stim_levels),
+                                (feedback_times, feedback_levels)):
+        for event_time, level in zip(event_times, levels):
+            signal[(times >= event_time + 0.1) & (times < event_time + 0.35)] = level
+    return {'GCaMP_preprocessed': pd.DataFrame({'LC': signal + offset},
+                                               index=times)}
+
+
+def _evoked_frame(monkeypatch, photometry, stim_times, feedback_times):
+    """Run build_mouse_states_frame on a one-fiber session with the given signal."""
+    sessions = pd.DataFrame({'eid': ['e1'], 'subject': ['M']})
+    group = SimpleNamespace(sessions=sessions)
+    n_trials = len(stim_times)
+
+    class FakePS:
+        extract_responses = PhotometrySession.extract_responses
+        mask_subsequent_events = PhotometrySession.mask_subsequent_events
+        subtract_baseline = PhotometrySession.subtract_baseline
+
+        def __init__(self, row, one=None):
+            self.eid = row['eid']
+            self.brain_region = ['LC']
+
+        def load_h5(self, groups=None):
+            self.trials = pd.DataFrame({'stimOn_times': stim_times,
+                                        'feedback_times': feedback_times,
+                                        'choice': [1] * n_trials})
+            self.photometry = photometry
+
+        def load_states(self):
+            self.states = pd.DataFrame({'map_state': [1.0] * n_trials})
+
+    monkeypatch.setattr(ddm, 'PhotometrySession', FakePS)
+    return ddm.build_mouse_states_frame(group, 'M', one=None)
+
+
+def test_build_mouse_states_frame_attaches_evoked_response_magnitudes(monkeypatch):
+    """``stimOn_response``/``feedback_response`` are the post-event step levels.
+
+    Each trial steps to a distinct known level in its post-stimulus and its
+    post-feedback response window, so the two magnitude columns must reproduce
+    those levels trial by trial and independently of each other.
+    """
+    stim_times = [5.0, 10.0, 15.0]
+    feedback_times = [6.0, 11.0, 16.0]
+    stim_levels = [1.0, 2.0, 3.0]
+    feedback_levels = [-1.0, -2.0, -3.0]
+
+    frame = _evoked_frame(
+        monkeypatch,
+        _evoked_photometry(stim_levels, feedback_levels, stim_times, feedback_times),
+        stim_times, feedback_times)
+
+    assert np.allclose(frame['stimOn_response'], stim_levels)
+    assert np.allclose(frame['feedback_response'], feedback_levels)
+
+
+def test_evoked_magnitudes_are_baseline_subtracted(monkeypatch):
+    """Shifting the whole signal by a constant leaves both magnitudes unchanged.
+
+    Only per-trial baseline subtraction can remove a session-wide DC offset, so
+    this pins that the raw window mean is not what lands in the columns.
+    """
+    stim_times = [5.0, 10.0, 15.0]
+    feedback_times = [6.0, 11.0, 16.0]
+    stim_levels = [1.0, 2.0, 3.0]
+    feedback_levels = [-1.0, -2.0, -3.0]
+
+    shifted = _evoked_frame(
+        monkeypatch,
+        _evoked_photometry(stim_levels, feedback_levels, stim_times,
+                           feedback_times, offset=7.5),
+        stim_times, feedback_times)
+
+    assert np.allclose(shifted['stimOn_response'], stim_levels)
+    assert np.allclose(shifted['feedback_response'], feedback_levels)
+
+
+def test_stimOn_response_uses_only_samples_before_feedback(monkeypatch):
+    """Masking at the next event shortens, or empties, the stimOn early window.
+
+    Trial 0's feedback lands mid-window, so its magnitude must average only the
+    samples before feedback — where the signal is 1.0 — not the window-wide mean
+    of 0.4. Trial 1's feedback precedes the window, leaving nothing to average:
+    NaN, with no ``RuntimeWarning`` escaping to the caller.
+    """
+    stim_times = [5.0, 10.0]
+    feedback_times = [5.195, 10.05]
+    times = np.arange(0, 20.0, 0.01)
+    signal = np.zeros_like(times)
+    # 1.0 over only the first 0.1 s of the (0.1, 0.35) s early window, so the
+    # masked mean (1.0) and the unmasked mean (10 of 25 samples, 0.4) differ.
+    for stim_time in stim_times:
+        signal[(times >= stim_time + 0.1) & (times < stim_time + 0.2)] = 1.0
+    photometry = {'GCaMP_preprocessed': pd.DataFrame({'LC': signal}, index=times)}
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        frame = _evoked_frame(monkeypatch, photometry, stim_times, feedback_times)
+
+    assert np.isclose(frame['stimOn_response'].iloc[0], 1.0)
+    assert np.isnan(frame['stimOn_response'].iloc[1])
+    assert not [w for w in caught if issubclass(w.category, RuntimeWarning)]
 
 
 def test_build_mouse_states_frame_drops_unfit_and_other_subjects(monkeypatch):
@@ -166,15 +294,19 @@ def test_build_mouse_states_frame_drops_unfit_and_other_subjects(monkeypatch):
     group = SimpleNamespace(sessions=sessions)
 
     trials = {'e1': pd.DataFrame({'choice': [1, -1, 1],
-                                  'stimOn_times': [5.0, 10.0, 15.0]}),
+                                  'stimOn_times': [5.0, 10.0, 15.0],
+                                  'feedback_times': [6.0, 11.0, 16.0]}),
               'e2': pd.DataFrame({'choice': [1, 1],
-                                  'stimOn_times': [5.0, 10.0]})}
+                                  'stimOn_times': [5.0, 10.0],
+                                  'feedback_times': [6.0, 11.0]})}
     states = {'e1': pd.DataFrame({'map_state': [1.0, 2.0, 1.0],
                                   'state_1': [0.9, 0.2, 0.8]}),
               'e2': None}  # session absent from the fit
 
     class FakePS:
         extract_responses = PhotometrySession.extract_responses
+        mask_subsequent_events = PhotometrySession.mask_subsequent_events
+        subtract_baseline = PhotometrySession.subtract_baseline
 
         def __init__(self, row, one=None):
             self.eid = row['eid']
@@ -227,11 +359,14 @@ def test_build_mouse_states_frame_skips_sessions_without_trials(monkeypatch):
 
     trials = {'e1': pd.DataFrame(),
               'e2': pd.DataFrame({'choice': [1, -1],
-                                  'stimOn_times': [5.0, 10.0]})}
+                                  'stimOn_times': [5.0, 10.0],
+                                  'feedback_times': [6.0, 11.0]})}
     states = {'e2': pd.DataFrame({'map_state': [1.0, 2.0]})}
 
     class FakePS:
         extract_responses = PhotometrySession.extract_responses
+        mask_subsequent_events = PhotometrySession.mask_subsequent_events
+        subtract_baseline = PhotometrySession.subtract_baseline
 
         def __init__(self, row, one=None):
             self.eid = row['eid']

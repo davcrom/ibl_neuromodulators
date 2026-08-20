@@ -32,8 +32,12 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_H5_DIR, DDM_HMM_PARAMS_FPATH, DDM_HMM_FIGURES_DIR,
+    RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS,
 )
-from iblnm.analysis import align_traces_at_transitions, pca_2d, state_dwell_times
+from iblnm.analysis import (
+    align_traces_at_transitions, compute_response_magnitude, pca_2d,
+    state_dwell_times,
+)
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.task import (
@@ -59,6 +63,40 @@ OUTCOMES = {'correct': 1, 'incorrect': -1}
 NM_BASELINE_WINDOW = [-0.4, -0.1]
 
 
+def _evoked_magnitudes(
+    ps: PhotometrySession, signals: pd.DataFrame, column: str
+) -> pd.DataFrame:
+    """Per-trial evoked response magnitudes for one session's single fiber.
+
+    Runs the project's canonical evoked path on ``signals[column]``: peri-event
+    matrices over ``RESPONSE_WINDOW``, samples later than the trial's next event
+    masked out, per-trial pre-event baseline subtracted, then averaged over
+    ``RESPONSE_WINDOWS['early']``. ``mask_subsequent_events`` masks only the
+    non-terminal events, so a trial whose feedback lands inside the early window
+    averages the surviving samples only, and one whose feedback precedes the
+    window start leaves it empty and yields NaN — hence the suppressed
+    all-NaN-slice ``RuntimeWarning``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``stimOn_response`` and ``feedback_response``, in session-SD
+        units, indexed by ``ps.trials.index``.
+    """
+    responses = ps.extract_responses(
+        signals, events=RESPONSE_EVENTS, window=RESPONSE_WINDOW)[column]
+    evoked = ps.subtract_baseline(ps.mask_subsequent_events(responses))
+    tpts = evoked.coords['time'].values
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        magnitudes = {
+            f"{event.removesuffix('_times')}_response": compute_response_magnitude(
+                evoked.sel(event=event).values, tpts, RESPONSE_WINDOWS['early'])
+            for event in RESPONSE_EVENTS
+        }
+    return pd.DataFrame(magnitudes, index=evoked.coords['trial'].values)
+
+
 def build_mouse_states_frame(
     group: PhotometrySessionGroup, subject: str, one
 ) -> pd.DataFrame:
@@ -69,16 +107,16 @@ def build_mouse_states_frame(
     offline, and attaches the fitted per-trial states via
     :meth:`PhotometrySession.load_states`. Sessions absent from the fit
     (``states is None``) are dropped. The surviving per-session frames — trials
-    joined with their state columns and pre-stimulus NM baseline, tagged with
-    ``eid`` — are concatenated in session order.
+    joined with their state columns and the three per-trial NM measures, tagged
+    with ``eid`` — are concatenated in session order.
 
-    One fiber per mouse: a session yields a baseline only when its data and its
+    One fiber per mouse: a session yields measures only when its data and its
     metadata agree on exactly one fiber — ``GCaMP_preprocessed`` has one column
     and ``brain_region`` one entry. The bilateral sessions name their columns
     ``LC-l``/``LC-r`` (which is why the column, not ``brain_region[0]``, selects
     the signal), and some sessions carry a duplicated ``['LC', 'LC']`` against a
-    single column. Both are ambiguous, so they get a NaN baseline and keep their
-    trials, which still feed the behavioral figures.
+    single column. Both are ambiguous, so all three measures are NaN and the
+    trials are kept, since they still feed the behavioral figures.
 
     Parameters
     ----------
@@ -93,12 +131,14 @@ def build_mouse_states_frame(
     -------
     pandas.DataFrame
         Full trials columns plus ``map_state``/``state_1``…``state_K`` (NaN on
-        trials dropped from the fit), a ``baseline`` column — the mean of the
-        session's preprocessed signal over :data:`NM_BASELINE_WINDOW` before
-        ``stimOn_times``, in session-SD units, NaN where the window runs off the
-        recording or the session's fiber was ambiguous — and an ``eid`` column,
-        one row per trial across the mouse's
-        fit sessions. Empty when no session was in the fit.
+        trials dropped from the fit), three per-trial NM measure columns in
+        session-SD units, and an ``eid`` column, one row per trial across the
+        mouse's fit sessions. ``baseline`` is the mean of the session's
+        preprocessed signal over :data:`NM_BASELINE_WINDOW` before
+        ``stimOn_times``; ``stimOn_response`` and ``feedback_response`` are the
+        baseline-subtracted evoked magnitudes from :func:`_evoked_magnitudes`.
+        All three are NaN where their window runs off the recording or the
+        session's fiber was ambiguous. Empty when no session was in the fit.
     """
     rows = group.sessions[group.sessions['subject'] == subject]
     frames = []
@@ -114,15 +154,17 @@ def build_mouse_states_frame(
         frame = ps.trials.join(ps.states)
         signals = ps.photometry['GCaMP_preprocessed']
         if len(signals.columns) == 1 and len(ps.brain_region) == 1:
+            column = signals.columns[0]
             responses = ps.extract_responses(
                 signals, events=['stimOn_times'], window=NM_BASELINE_WINDOW,
             )
-            frame['baseline'] = responses[signals.columns[0]].sel(
+            frame['baseline'] = responses[column].sel(
                 event='stimOn_times').mean('time').to_series()
+            frame = frame.join(_evoked_magnitudes(ps, signals, column))
         else:
             print(f"  {ps.eid}: {len(signals.columns)} photometry columns, "
-                  f"{len(ps.brain_region)} brain regions — no baseline")
-            frame['baseline'] = np.nan
+                  f"{len(ps.brain_region)} brain regions — no measures")
+            frame[['baseline', 'stimOn_response', 'feedback_response']] = np.nan
         frame['eid'] = ps.eid
         frames.append(frame)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
