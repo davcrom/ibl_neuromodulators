@@ -4756,8 +4756,9 @@ def plot_state_measures(
     -------
     matplotlib.figure.Figure
         ``len(measures_by_mouse)`` rows by ``len(measures)`` columns, states along
-        x in ascending label order, the mouse name titling its first column and
-        the outcome legend on the top-left axis.
+        x in ascending label order, the measure labels titling the top row, the
+        mouse names on the first column's y axes, and the outcome legend on the
+        top-left axis.
     """
     mice = list(measures_by_mouse)
     fig, axes = plt.subplots(
@@ -4768,9 +4769,11 @@ def plot_state_measures(
         for ax, column in zip(row, measures):
             _draw_outcome_violins(ax, measures_by_mouse[mouse], column)
             ax.set_xlabel('state', fontsize=8)
-            ax.set_ylabel(measures[column], fontsize=8)
             ax.tick_params(labelsize=7)
-        row[0].set_title(mouse, fontsize=9)
+        # One label per grid edge: the row is a mouse, the column a measure.
+        row[0].set_ylabel(mouse, fontsize=9)
+    for ax, label in zip(axes[0], measures.values()):
+        ax.set_title(label, fontsize=9)
     axes[0][0].legend(handles=[Line2D([], [], color='gray', alpha=alpha,
                                       label=outcome)
                                for outcome, alpha in OUTCOME_ALPHA.items()],

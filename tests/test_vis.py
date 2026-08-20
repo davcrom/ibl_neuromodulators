@@ -3524,11 +3524,15 @@ class TestStateMeasures:
         # listing state 2 first.
         assert list(baseline_ax.get_xticks()) == [0, 1]
         assert [t.get_text() for t in baseline_ax.get_xticklabels()] == ['1', '2']
-        assert baseline_ax.get_ylabel() == self.MEASURES['baseline']
-        assert response_ax.get_ylabel() == self.MEASURES['stimOn_response']
-        # The mouse name titles its first column only.
-        assert baseline_ax.get_title() == 'ZFM-A'
-        assert response_ax.get_title() == ''
+        # One label per grid edge: measures title the top row, mice label the
+        # first column's y axis, and the interior axes carry neither.
+        assert baseline_ax.get_title() == self.MEASURES['baseline']
+        assert response_ax.get_title() == self.MEASURES['stimOn_response']
+        assert baseline_ax.get_ylabel() == 'ZFM-A'
+        assert response_ax.get_ylabel() == ''
+        second_row = fig.axes[2], fig.axes[3]  # ZFM-B
+        assert [ax.get_title() for ax in second_row] == ['', '']
+        assert [ax.get_ylabel() for ax in second_row] == ['ZFM-B', '']
         # The legend labels the outcome split, on the top-left axis only.
         assert [t.get_text() for t in baseline_ax.get_legend().get_texts()] == [
             'correct', 'incorrect']
@@ -3542,7 +3546,7 @@ class TestStateMeasures:
         fig = plot_state_measures(frames, self.MEASURES)
         empty_ax = fig.axes[1]  # ZFM-A's stimOn_response panel
         assert list(empty_ax.collections) == []  # no violins, no dots
-        assert empty_ax.get_ylabel() == self.MEASURES['stimOn_response']
+        assert empty_ax.get_title() == self.MEASURES['stimOn_response']
         # The other mouse still draws that measure.
         assert len(self._violin_centers(fig.axes[3])) == 4
         plt.close(fig)
