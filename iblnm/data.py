@@ -66,7 +66,7 @@ RESPONSE_OLS_DROPONE_COLUMNS = [
 # Per-mouse drop-one significance table: one row per (target_NM, event,
 # predictor, subject) cell, pooling the cell's sessions by bootstrap resampling
 # their per-session donor null ΔR² vectors.
-RESPONSE_OLS_PERSESSION_PVAL_COLUMNS = [
+RESPONSE_OLS_MOUSE_PVAL_COLUMNS = [
     'target_NM', 'event', 'predictor', 'subject', 'mean_delta_r2', 'p_value',
     'n_sessions',
 ]
@@ -80,7 +80,7 @@ PERSESSION_COEFS_COLUMNS = [
 ]
 
 
-def assemble_persession_pvalue_table(
+def assemble_mouse_pvalue_table(
     observed: pd.DataFrame,
     null_vectors: dict[tuple[str, str, str], np.ndarray],
     n_bootstrap: int = 1000,
@@ -115,7 +115,7 @@ def assemble_persession_pvalue_table(
     -------
     pd.DataFrame
         One row per scorable ``(target_NM, event, predictor, subject)`` cell in
-        ``RESPONSE_OLS_PERSESSION_PVAL_COLUMNS`` order. ``mean_delta_r2`` is the
+        ``RESPONSE_OLS_MOUSE_PVAL_COLUMNS`` order. ``mean_delta_r2`` is the
         pooled observed statistic, ``p_value`` the one-sided (greater) bootstrap
         p, and ``n_sessions`` the pooled session count.
     """
@@ -141,7 +141,7 @@ def assemble_persession_pvalue_table(
             'subject': subject, 'mean_delta_r2': mean_delta_r2,
             'p_value': p_value, 'n_sessions': len(scorable),
         })
-    return pd.DataFrame(rows, columns=RESPONSE_OLS_PERSESSION_PVAL_COLUMNS)
+    return pd.DataFrame(rows, columns=RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
 
 
 # =============================================================================
@@ -2190,7 +2190,7 @@ class PhotometrySessionGroup:
         self.mean_traces = None
         self.response_magnitudes = None
         self.response_ols_dropone_results = None
-        self.response_ols_persession_pvalues = None
+        self.response_ols_mouse_pvalues = None
         self.response_ols_coefficients = None
         self.response_varcomp_summary = None
         self.response_varcomp_violin = None
@@ -2817,7 +2817,7 @@ class PhotometrySessionGroup:
         all other same-event recordings (focal excluded). The per-session null
         vectors are pooled per mouse against the observed
         ``self.response_ols_dropone_results`` by
-        :func:`assemble_persession_pvalue_table`.
+        :func:`assemble_mouse_pvalue_table`.
 
         Parameters
         ----------
@@ -2846,7 +2846,7 @@ class PhotometrySessionGroup:
         -------
         pandas.DataFrame
             Per-mouse p-value table at grain ``(target_NM, event, predictor,
-            subject)``, columns ``RESPONSE_OLS_PERSESSION_PVAL_COLUMNS``.
+            subject)``, columns ``RESPONSE_OLS_MOUSE_PVAL_COLUMNS``.
         """
         from tqdm import tqdm
 
@@ -2867,7 +2867,7 @@ class PhotometrySessionGroup:
                     predictor, response_col, rng=rng, n_bootstrap=n_bootstrap)
                 if null.size:
                     null_vectors[(eid, event, predictor)] = null
-        return assemble_persession_pvalue_table(
+        return assemble_mouse_pvalue_table(
             self.response_ols_dropone_results, null_vectors,
             n_bootstrap=n_bootstrap, random_state=random_state)
 
@@ -2981,13 +2981,13 @@ class PhotometrySessionGroup:
         """Load per-session coefficients from parquet, filtered to current recordings."""
         self.response_ols_coefficients = self._load_parquet(path)
 
-    def load_response_ols_persession_pvalues(self, path):
+    def load_response_ols_mouse_pvalues(self, path):
         """Load the per-mouse drop-one permutation p-value table from parquet.
 
         Keyed by ``(target_NM, event, predictor, subject)`` with no ``eid``
         column, so it is a plain read — not the eid-filtered ``_load_parquet``.
         """
-        self.response_ols_persession_pvalues = self._read_parquet(path)
+        self.response_ols_mouse_pvalues = self._read_parquet(path)
 
     @staticmethod
     def _read_parquet(path):

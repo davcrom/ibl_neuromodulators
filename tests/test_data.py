@@ -3761,8 +3761,8 @@ class TestLoaderMethods:
         group.load_response_varcomp_summary(tmp_path / 'nonexistent.parquet')
         assert group.response_varcomp_summary is None
 
-    def test_load_response_ols_persession_pvalues(self, tmp_path):
-        from iblnm.data import RESPONSE_OLS_PERSESSION_PVAL_COLUMNS
+    def test_load_response_ols_mouse_pvalues(self, tmp_path):
+        from iblnm.data import RESPONSE_OLS_MOUSE_PVAL_COLUMNS
         group = self._make_group()
         df = pd.DataFrame([
             {'target_NM': 'target-0', 'event': 'stimOn_times',
@@ -3771,17 +3771,17 @@ class TestLoaderMethods:
             {'target_NM': 'target-0', 'event': 'feedback_times',
              'predictor': 'reward', 'subject': 'subj-1',
              'mean_delta_r2': 0.08, 'p_value': 0.30, 'n_sessions': 2},
-        ])[RESPONSE_OLS_PERSESSION_PVAL_COLUMNS]
-        path = tmp_path / 'response_ols_persession_dropone_pvalues.parquet'
+        ])[RESPONSE_OLS_MOUSE_PVAL_COLUMNS]
+        path = tmp_path / 'response_ols_persession_dropone_mouse_pvalues.parquet'
         df.to_parquet(path, index=False)
 
-        group.load_response_ols_persession_pvalues(path)
+        group.load_response_ols_mouse_pvalues(path)
         # No eid column: the loader reads and assigns the frame verbatim.
-        pd.testing.assert_frame_equal(group.response_ols_persession_pvalues, df)
+        pd.testing.assert_frame_equal(group.response_ols_mouse_pvalues, df)
 
-        group.load_response_ols_persession_pvalues(
+        group.load_response_ols_mouse_pvalues(
             tmp_path / 'nonexistent.parquet')
-        assert group.response_ols_persession_pvalues is None
+        assert group.response_ols_mouse_pvalues is None
 
     def test_load_response_varcomp_violin(self, tmp_path):
         from iblnm.config import RESPONSE_VARCOMP_VIOLIN_COLUMNS
@@ -6074,8 +6074,8 @@ class TestDeltaRSquared:
         assert set(deltas.index) == set(fit.slices)
 
 
-class TestAssemblePersessionPvalueTable:
-    """assemble_persession_pvalue_table — per-mouse drop-one permutation p."""
+class TestAssembleMousePvalueTable:
+    """assemble_mouse_pvalue_table — per-mouse drop-one permutation p."""
 
     def _observed(self, rows):
         """Build an observed drop-one frame from (eid, subject, delta_r2) rows."""
@@ -6091,7 +6091,7 @@ class TestAssemblePersessionPvalueTable:
         to mean 0.08; every bootstrap draw is mean(0.02, 0.01) = 0.015 < 0.08, so
         p hits its floor 1/(n_bootstrap+1). Ragged lengths do not raise (the
         crash this fixes)."""
-        from iblnm.data import assemble_persession_pvalue_table
+        from iblnm.data import assemble_mouse_pvalue_table
 
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)])
         null_vectors = {
@@ -6099,7 +6099,7 @@ class TestAssemblePersessionPvalueTable:
             ('e2', 'feedback', 'reward'): np.full(2, 0.01),
         }
 
-        table = assemble_persession_pvalue_table(
+        table = assemble_mouse_pvalue_table(
             observed, null_vectors, n_bootstrap=99, random_state=0)
 
         assert len(table) == 1
@@ -6112,7 +6112,7 @@ class TestAssemblePersessionPvalueTable:
     def test_two_mice_pool_only_their_own_sessions(self):
         """Two mice in the same cell yield two rows; each mouse's mean pools
         only its own sessions."""
-        from iblnm.data import assemble_persession_pvalue_table
+        from iblnm.data import assemble_mouse_pvalue_table
 
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06),
                                    ('e3', 'm2', 0.20)])
@@ -6122,7 +6122,7 @@ class TestAssemblePersessionPvalueTable:
             ('e3', 'feedback', 'reward'): np.array([0.04, 0.02, 0.05]),
         }
 
-        table = assemble_persession_pvalue_table(observed, null_vectors)
+        table = assemble_mouse_pvalue_table(observed, null_vectors)
 
         by_subject = table.set_index('subject')
         assert set(by_subject.index) == {'m1', 'm2'}
@@ -6132,26 +6132,26 @@ class TestAssemblePersessionPvalueTable:
         assert by_subject.loc['m2', 'n_sessions'] == 1
 
     def test_output_columns_match_schema(self):
-        """Output columns equal RESPONSE_OLS_PERSESSION_PVAL_COLUMNS in order."""
-        from iblnm.data import (assemble_persession_pvalue_table,
-                                RESPONSE_OLS_PERSESSION_PVAL_COLUMNS)
+        """Output columns equal RESPONSE_OLS_MOUSE_PVAL_COLUMNS in order."""
+        from iblnm.data import (assemble_mouse_pvalue_table,
+                                RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
 
         observed = self._observed([('e1', 'm1', 0.10)])
         null_vectors = {('e1', 'feedback', 'reward'): np.array([0.02, 0.01])}
 
-        table = assemble_persession_pvalue_table(observed, null_vectors)
+        table = assemble_mouse_pvalue_table(observed, null_vectors)
 
-        assert list(table.columns) == RESPONSE_OLS_PERSESSION_PVAL_COLUMNS
+        assert list(table.columns) == RESPONSE_OLS_MOUSE_PVAL_COLUMNS
 
     def test_group_with_no_null_vectors_is_skipped(self):
         """A cell whose sessions have no null vectors produces no row; sessions
         that do have vectors still pool."""
-        from iblnm.data import assemble_persession_pvalue_table
+        from iblnm.data import assemble_mouse_pvalue_table
 
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm2', 0.20)])
         null_vectors = {('e2', 'feedback', 'reward'): np.array([0.04, 0.05])}
 
-        table = assemble_persession_pvalue_table(observed, null_vectors)
+        table = assemble_mouse_pvalue_table(observed, null_vectors)
 
         assert list(table['subject']) == ['m2']
         assert table.iloc[0]['n_sessions'] == 1
@@ -6244,7 +6244,7 @@ class TestResponseOlsDroponePermutation:
     def test_grain_and_columns(self, monkeypatch):
         """Returned table has grain (target_NM, event, predictor, subject) and
         the schema column order."""
-        from iblnm.data import RESPONSE_OLS_PERSESSION_PVAL_COLUMNS
+        from iblnm.data import RESPONSE_OLS_MOUSE_PVAL_COLUMNS
         group = self._group()
         group.response_ols_dropone_results = self._observed()
         self._patch(group, monkeypatch)
@@ -6252,7 +6252,7 @@ class TestResponseOlsDroponePermutation:
         table = group.response_ols_dropone_permutation(
             self._FORMULAS, events=['feedback_times'])
 
-        assert list(table.columns) == RESPONSE_OLS_PERSESSION_PVAL_COLUMNS
+        assert list(table.columns) == RESPONSE_OLS_MOUSE_PVAL_COLUMNS
         assert set(table['subject']) == {'m1', 'm2'}
         assert set(zip(table['target_NM'], table['event'],
                        table['predictor'])) == {

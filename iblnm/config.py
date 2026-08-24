@@ -23,7 +23,7 @@ RESPONSE_MATRIX_FPATH = RESPONSES_DIR / 'response_matrix.pqt'
 RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 MEAN_TRACES_FPATH = RESPONSES_DIR / 'mean_traces.pqt'
 RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.parquet'
-RESPONSE_OLS_PERSESSION_PVAL_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone_pvalues.parquet'
+RESPONSE_OLS_MOUSE_PVAL_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone_mouse_pvalues.parquet'
 # Donor-pool sizes (recordings, mice) per (target_NM, event) backing the null.
 RESPONSE_OLS_PERSESSION_POPULATION_FPATH = RESPONSES_DIR / 'response_ols_persession_population.csv'
 RESPONSE_OLS_COEFS_FPATH = RESPONSES_DIR / 'response_ols_persession_coefs.parquet'

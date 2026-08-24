@@ -27,7 +27,7 @@ from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     MEAN_TRACES_FPATH,
-    RESPONSE_OLS_PERSESSION_FPATH, RESPONSE_OLS_PERSESSION_PVAL_FPATH,
+    RESPONSE_OLS_PERSESSION_FPATH, RESPONSE_OLS_MOUSE_PVAL_FPATH,
     RESPONSE_OLS_PERSESSION_POPULATION_FPATH,
     RESPONSE_OLS_COEFS_FPATH,
     RESPONSE_VARCOMP_SUMMARY_FPATH, RESPONSE_VARCOMP_VIOLIN_FPATH,
@@ -426,7 +426,7 @@ def plot_persession_figures(group, figures_dir, display='session'):
     how each session's values are drawn — per-session dots (``session``),
     per-subject median+IQR (``subject``), or a per-target violin (``target``) —
     via ``_PERSESSION_DISPLAY_FNS``; the SVG filenames are the same in every
-    mode. ``pvalues`` (``group.response_ols_persession_pvalues``, per-mouse
+    mode. ``pvalues`` (``group.response_ols_mouse_pvalues``, per-mouse
     permutation) is threaded into the ``session`` drop-one figure only.
 
     Also writes the donor-pool sizes (recordings and mice per
@@ -437,7 +437,7 @@ def plot_persession_figures(group, figures_dir, display='session'):
     ----------
     group : PhotometrySessionGroup
         Must have ``response_ols_dropone_results`` populated, and
-        ``response_ols_persession_pvalues`` when ``display='session'``.
+        ``response_ols_mouse_pvalues`` when ``display='session'``.
     figures_dir : Path
         Output directory for the SVG figures.
     display : {'session', 'subject', 'target'}
@@ -453,7 +453,7 @@ def plot_persession_figures(group, figures_dir, display='session'):
     print(counts.to_string(index=False))
     print(f"  Saved to {RESPONSE_OLS_PERSESSION_POPULATION_FPATH}")
 
-    dropone_kwargs = ({'pvalues': group.response_ols_persession_pvalues,
+    dropone_kwargs = ({'pvalues': group.response_ols_mouse_pvalues,
                        'counts': counts}
                       if display == 'session' else {})
     fig = dropone_fn(
@@ -572,15 +572,15 @@ if __name__ == '__main__':
 
         # --- Per-mouse drop-one permutation significance ---
         print("Computing per-mouse drop-one permutation p-values...")
-        group.response_ols_persession_pvalues = (
+        group.response_ols_mouse_pvalues = (
             group.response_ols_dropone_permutation(
                 LMM_FORMULAS['persession'],
                 n_bootstrap=PERSESSION_PVAL_N_BOOTSTRAP,
                 random_state=PERSESSION_PVAL_SEED))
-        group.response_ols_persession_pvalues.to_parquet(
-            RESPONSE_OLS_PERSESSION_PVAL_FPATH, index=False)
+        group.response_ols_mouse_pvalues.to_parquet(
+            RESPONSE_OLS_MOUSE_PVAL_FPATH, index=False)
         print(f"Saved per-mouse drop-one p-values to "
-              f"{RESPONSE_OLS_PERSESSION_PVAL_FPATH}")
+              f"{RESPONSE_OLS_MOUSE_PVAL_FPATH}")
 
         # --- Per-cell variance components (mouse vs session) ---
         print("Fitting per-cell variance-components model (PyMC sampling)...")
@@ -604,7 +604,7 @@ if __name__ == '__main__':
         # =================================================================
         for fpath in (RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
                       RESPONSE_OLS_PERSESSION_FPATH,
-                      RESPONSE_OLS_PERSESSION_PVAL_FPATH,
+                      RESPONSE_OLS_MOUSE_PVAL_FPATH,
                       RESPONSE_VARCOMP_SUMMARY_FPATH,
                       RESPONSE_VARCOMP_VIOLIN_FPATH):
             if not fpath.exists():
@@ -615,8 +615,8 @@ if __name__ == '__main__':
         group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
         group.load_mean_traces(MEAN_TRACES_FPATH)
         group.load_response_ols_dropone(RESPONSE_OLS_PERSESSION_FPATH)
-        group.load_response_ols_persession_pvalues(
-            RESPONSE_OLS_PERSESSION_PVAL_FPATH)
+        group.load_response_ols_mouse_pvalues(
+            RESPONSE_OLS_MOUSE_PVAL_FPATH)
         group.load_response_ols_coefficients(RESPONSE_OLS_COEFS_FPATH)
         group.load_response_varcomp_summary(RESPONSE_VARCOMP_SUMMARY_FPATH)
         group.load_response_varcomp_violin(RESPONSE_VARCOMP_VIOLIN_FPATH)
