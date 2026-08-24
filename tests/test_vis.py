@@ -1399,8 +1399,139 @@ class TestPlotOlsDropone:
                 for c in ax.collections
                 if isinstance(c, PathCollection) and len(c.get_offsets()) == 1}
 
+    @staticmethod
+    def _dot_color_by_y(ax):
+        """Map each session dot's rounded y to its marker edge color.
+
+        Session dots are the multi-point scatter collections (the mean dash is
+        a single-point collection); a scatter drawn with one shared color
+        reports one edge color for all its points, so it is broadcast back out
+        to the point count before pairing with the offsets.
+        """
+        from matplotlib.collections import PathCollection
+        colors = {}
+        for c in ax.collections:
+            offsets = c.get_offsets()
+            if not isinstance(c, PathCollection) or len(offsets) <= 1:
+                continue
+            edges = np.asarray(c.get_edgecolors())
+            if len(edges) == 1:
+                edges = np.repeat(edges, len(offsets), axis=0)
+            for (_, y), edge in zip(offsets, edges):
+                colors[round(float(y), 6)] = tuple(edge[:3])
+        return colors
+
+    def test_session_pvalues_color_dots_per_session(self):
+        """With ``session_pvalues``, each dot takes its color from its own
+        session's ``q_value`` — significant sessions keep the target-NM color,
+        non-significant ones gray — while the dash follows the mouse."""
+        from iblnm.vis import plot_ols_dropone
+        from iblnm.config import TARGETNM_COLORS
+        import matplotlib.colors as mcolors
+        rows = [
+            {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+             'subject': 'm_a', 'predictor': 'contrast', 'r2': 0.5,
+             'delta_r2': v}
+            for eid, v in [('e_sig', 0.1), ('e_ns', 0.3)]
+        ]
+        session_pvalues = pd.DataFrame([
+            {'eid': 'e_sig', 'event': 'stimOn_times', 'predictor': 'contrast',
+             'q_value': 0.01},
+            {'eid': 'e_ns', 'event': 'stimOn_times', 'predictor': 'contrast',
+             'q_value': 0.5},
+        ])
+        fig = plot_ols_dropone(pd.DataFrame(rows), 't', alpha=0.05,
+                               session_pvalues=session_pvalues)
+        colors = self._dot_color_by_y(fig.axes[0])
+        assert np.allclose(colors[0.1],
+                           mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))
+        assert np.allclose(colors[0.3], mcolors.to_rgb('gray'))
+        plt.close(fig)
+
+    @staticmethod
+    def _two_session_rows():
+        """One mouse, two sessions ('e_1' at 0.1, 'e_2' at 0.3) in one cell."""
+        return pd.DataFrame([
+            {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+             'subject': 'm_a', 'predictor': 'contrast', 'r2': 0.5,
+             'delta_r2': v}
+            for eid, v in [('e_1', 0.1), ('e_2', 0.3)]
+        ])
+
+    @staticmethod
+    def _pvalue_frame(q_by_key, key_col):
+        """Significance table for the one cell, keyed by ``eid`` or ``subject``."""
+        return pd.DataFrame([
+            {key_col: key, 'event': 'stimOn_times', 'predictor': 'contrast',
+             'q_value': q}
+            for key, q in q_by_key.items()
+        ])
+
+    def test_dot_and_dash_grains_are_independent(self):
+        """Session dots follow the session table and the mean dash follows the
+        mouse table, each way round: all-significant sessions under a
+        non-significant mouse, and the reverse."""
+        from iblnm.vis import plot_ols_dropone
+        from iblnm.config import TARGETNM_COLORS
+        import matplotlib.colors as mcolors
+        vta = mcolors.to_rgb(TARGETNM_COLORS['VTA-DA'])
+        gray = mcolors.to_rgb('gray')
+        df = self._two_session_rows()
+        sig_sessions = self._pvalue_frame({'e_1': 0.01, 'e_2': 0.01}, 'eid')
+        ns_sessions = self._pvalue_frame({'e_1': 0.5, 'e_2': 0.5}, 'eid')
+
+        # Sessions significant, mouse not: dots colored, dash gray.
+        fig = plot_ols_dropone(df, 't', pvalues=self._pvalue_frame(
+            {'m_a': 0.5}, 'subject'), alpha=0.05,
+            session_pvalues=sig_sessions)
+        dots = self._dot_color_by_y(fig.axes[0])
+        assert np.allclose(dots[0.1], vta) and np.allclose(dots[0.3], vta)
+        assert np.allclose(self._marker_color_by_y(fig.axes[0])[0.2], gray)
+        plt.close(fig)
+
+        # Mouse significant, sessions not: dots gray, dash colored.
+        fig = plot_ols_dropone(df, 't', pvalues=self._pvalue_frame(
+            {'m_a': 0.01}, 'subject'), alpha=0.05,
+            session_pvalues=ns_sessions)
+        dots = self._dot_color_by_y(fig.axes[0])
+        assert np.allclose(dots[0.1], gray) and np.allclose(dots[0.3], gray)
+        assert np.allclose(self._marker_color_by_y(fig.axes[0])[0.2], vta)
+        plt.close(fig)
+
+    def test_session_missing_from_table_is_gray(self):
+        """A session with no row in ``session_pvalues`` is grayed."""
+        from iblnm.vis import plot_ols_dropone
+        from iblnm.config import TARGETNM_COLORS
+        import matplotlib.colors as mcolors
+        fig = plot_ols_dropone(
+            self._two_session_rows(), 't', alpha=0.05,
+            session_pvalues=self._pvalue_frame({'e_1': 0.01}, 'eid'))
+        dots = self._dot_color_by_y(fig.axes[0])
+        assert np.allclose(dots[0.1],
+                           mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))
+        assert np.allclose(dots[0.3], mcolors.to_rgb('gray'))  # 'e_2' absent
+        plt.close(fig)
+
+    def test_no_session_table_gives_dots_the_dash_color(self):
+        """Without ``session_pvalues`` every dot takes the mouse's color — the
+        target-NM color when the mouse is significant, gray when it is not."""
+        from iblnm.vis import plot_ols_dropone
+        from iblnm.config import TARGETNM_COLORS
+        import matplotlib.colors as mcolors
+        df = self._two_session_rows()
+        for q, expected in [(0.01, TARGETNM_COLORS['VTA-DA']), (0.5, 'gray')]:
+            fig = plot_ols_dropone(
+                df, 't', pvalues=self._pvalue_frame({'m_a': q}, 'subject'),
+                alpha=0.05)
+            ax = fig.axes[0]
+            dash = self._marker_color_by_y(ax)[0.2]
+            assert np.allclose(dash, mcolors.to_rgb(expected))
+            assert all(np.allclose(dot, dash)
+                       for dot in self._dot_color_by_y(ax).values())
+            plt.close(fig)
+
     def test_pvalues_gray_nonsignificant_subjects(self):
-        """A p-value table grays subjects whose cell ``p_value >= alpha`` while
+        """A per-mouse table grays subjects whose cell ``q_value >= alpha`` while
         significant subjects keep their target-NM color."""
         from iblnm.vis import plot_ols_dropone
         from iblnm.config import TARGETNM_COLORS
@@ -1413,9 +1544,9 @@ class TestPlotOlsDropone:
         ]
         pvalues = pd.DataFrame([
             {'target_NM': 'VTA-DA', 'event': 'stimOn_times',
-             'predictor': 'contrast', 'subject': 'm_sig', 'p_value': 0.01},
+             'predictor': 'contrast', 'subject': 'm_sig', 'q_value': 0.01},
             {'target_NM': 'VTA-DA', 'event': 'stimOn_times',
-             'predictor': 'contrast', 'subject': 'm_ns', 'p_value': 0.5},
+             'predictor': 'contrast', 'subject': 'm_ns', 'q_value': 0.5},
         ])
         fig = plot_ols_dropone(pd.DataFrame(rows), 't', pvalues=pvalues,
                                alpha=0.05)

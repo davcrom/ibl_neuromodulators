@@ -3032,13 +3032,15 @@ def _group_xslots(df, targets):
     return subjects_by_target, slots_by_target, ticks
 
 
-def _scatter_subject(ax, x, deltas, color):
+def _scatter_subject(ax, x, deltas, point_colors, summary_color):
     """Plot one subject's sessions and its mean at ``x``.
 
-    Each session is a translucent open dot edge-colored by ``color`` (no fill)
-    stacked at the subject's x; the subject's mean is a single thicker ``'_'``
-    marker in the same color on top. ``color`` is gray for a subject grayed out
-    as non-significant (see ``_subject_significance_color``).
+    Each session is a translucent open dot (no fill) stacked at the subject's x,
+    edge-colored by its own entry of ``point_colors``; the subject's mean is a
+    single thicker ``'_'`` marker in ``summary_color`` on top. Either color is
+    gray where significance routing marks that grain non-significant (see
+    ``_significance_color``). The dots stay one ``scatter`` call so a
+    single-point collection unambiguously identifies the mean marker.
 
     Parameters
     ----------
@@ -3047,21 +3049,26 @@ def _scatter_subject(ax, x, deltas, color):
         The subject's x position.
     deltas : np.ndarray
         That subject's per-session ΔR² in one cell.
-    color : color
-        Marker color (the subject's target-NM color, or gray).
+    point_colors : sequence of color
+        One color per session, aligned element-wise to ``deltas``.
+    summary_color : color
+        Color of the mean dash (the subject's target-NM color, or gray).
     """
     ax.scatter(np.full(len(deltas), x), deltas, marker='o', facecolors='none',
-               edgecolors=color, s=_SESSION_MARKER_SIZE, alpha=0.5, zorder=3)
-    ax.scatter(x, np.mean(deltas), marker='_', color=color,
+               edgecolors=point_colors, s=_SESSION_MARKER_SIZE, alpha=0.5,
+               zorder=3)
+    ax.scatter(x, np.mean(deltas), marker='_', color=summary_color,
                s=_MEAN_MARKER_SIZE, linewidths=_MEAN_LINEWIDTH, zorder=4)
 
 
-def _median_iqr_subject(ax, x, vals, color):
+def _median_iqr_subject(ax, x, vals, point_colors, summary_color):
     """Draw one subject as a median point with a Q1–Q3 whisker at ``x``.
 
-    The median is a filled point in ``color``; the whisker spans the subject's
-    interquartile range (25th–75th percentile of its per-session ``vals``).
-    Mirrors ``_scatter_subject``'s zorder conventions.
+    The median is a filled point in ``summary_color``; the whisker spans the
+    subject's interquartile range (25th–75th percentile of its per-session
+    ``vals``). Mirrors ``_scatter_subject``'s zorder conventions; ``point_colors``
+    is accepted for that shared draw-mark signature and ignored, since this mode
+    draws no per-session mark.
 
     Parameters
     ----------
@@ -3070,12 +3077,14 @@ def _median_iqr_subject(ax, x, vals, color):
         The subject's x position.
     vals : np.ndarray
         That subject's per-session values in one cell.
-    color : color
+    point_colors : sequence of color
+        Unused.
+    summary_color : color
         Marker and whisker color (the subject's target-NM color).
     """
     median, q1, q3 = _median_iqr(vals)
     ax.errorbar(x, median, yerr=[[median - q1], [q3 - median]], fmt='o',
-                color=color, markersize=_MEDIAN_MARKER_SIZE, zorder=4)
+                color=summary_color, markersize=_MEDIAN_MARKER_SIZE, zorder=4)
 
 
 def _median_iqr(vals):
@@ -3095,34 +3104,35 @@ def _median_iqr(vals):
     return float(np.median(vals)), float(q1), float(q3)
 
 
-def _subject_significance_color(base_color, pvalues, event, predictor, subject,
-                                alpha):
-    """Resolve a subject's marker color from its drop-one significance.
+def _significance_color(base_color, pvalues, keys, alpha):
+    """Resolve a marker color from a permutation q-value at either grain.
 
-    Returns ``base_color`` (the target-NM color) when ``pvalues`` is ``None``
-    (no significance routing, e.g. ``plot_ols_total_r2``) or the subject's
-    ``p_value`` for this ``(event, predictor)`` cell is below ``alpha``.
-    Otherwise returns ``'gray'`` — including when the subject has no p-value row
-    for the cell.
+    Serves both the per-mouse table (matched on ``event``, ``predictor``,
+    ``subject``) and the per-session table (matched on ``eid``, ``event``,
+    ``predictor``): the grain is set purely by which columns ``keys`` names.
+    Returns ``base_color`` (the target-NM color) when the matched row's
+    ``q_value`` is below ``alpha``. Returns ``'gray'`` otherwise — when the
+    q-value is at or above ``alpha``, when no row matches, and when ``pvalues``
+    is ``None`` (no significance routing, e.g. ``plot_ols_total_r2``).
 
     Parameters
     ----------
     base_color : color
-        The subject's target-NM color, used when significant.
+        The target-NM color, used when significant.
     pvalues : pd.DataFrame or None
-        Per-mouse permutation p-values with columns ``event``, ``predictor``,
-        ``subject``, ``p_value`` (the ticket-03 table). ``None`` disables fading.
-    event, predictor, subject : str
-        The cell and subject to look up.
+        Permutation results carrying ``q_value`` plus every column named in
+        ``keys``. ``None`` disables fading.
+    keys : dict[str, str]
+        Column name -> value the row must equal, jointly identifying one row.
     alpha : float
-        Significance threshold; ``p_value < alpha`` keeps the color.
+        False-discovery-rate threshold; ``q_value < alpha`` keeps the color.
     """
     if pvalues is None:
         return base_color
-    row = pvalues[(pvalues['event'] == event)
-                  & (pvalues['predictor'] == predictor)
-                  & (pvalues['subject'] == subject)]
-    if len(row) and row['p_value'].iloc[0] < alpha:
+    match = np.logical_and.reduce([(pvalues[col] == value).to_numpy()
+                                   for col, value in keys.items()])
+    row = pvalues[match]
+    if len(row) and row['q_value'].iloc[0] < alpha:
         return base_color
     return 'gray'
 
@@ -3196,7 +3206,7 @@ def _target_tick_label(tnm, event, counts_lookup):
 
 def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
                              pvalues=None, alpha=PERSESSION_SIGNIFICANCE_ALPHA,
-                             counts=None):
+                             counts=None, session_pvalues=None):
     """Per-subject-slot grid: ``rows`` by event columns, sharing one y-axis.
 
     Shared layout for the per-session figures that use a subject-slot x-axis.
@@ -3205,10 +3215,12 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
     target-NM with a gap so a target-NM's width scales with its subject count
     (see ``_group_xslots``); subjects are placed left to right in the
     alphanumeric order ``_group_xslots`` returns. Each subject's cell values are
-    drawn by ``draw_mark`` in the subject's target-NM color, grayed when
-    ``pvalues`` marks the subject non-significant for that cell. One x-tick per
-    target-NM is centred on its subjects. All panels share one y-axis; the
-    figure size scales with the total subject count and the number of rows.
+    drawn by ``draw_mark`` in the subject's target-NM color, grayed at whichever
+    grain a significance table marks non-significant for that cell: ``pvalues``
+    grays the subject's summary mark, ``session_pvalues`` grays individual
+    session marks. One x-tick per target-NM is centred on its subjects. All
+    panels share one y-axis; the figure size scales with the total subject count
+    and the number of rows.
 
     Parameters
     ----------
@@ -3224,18 +3236,25 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
     supylabel : str
         Shared y-axis label.
     draw_mark : callable
-        ``draw_mark(ax, x, vals, color)`` drawing one subject's cell values at
-        ``x`` (e.g. ``_scatter_subject``).
+        ``draw_mark(ax, x, vals, point_colors, summary_color)`` drawing one
+        subject's cell values at ``x`` (e.g. ``_scatter_subject``), with one
+        color per value and one for the subject's summary mark.
     pvalues : pd.DataFrame or None
-        Per-mouse permutation p-values. When given, each subject whose cell
-        ``p_value >= alpha`` (or has no p-value row) is grayed rather than drawn
-        in its target-NM color (see ``_subject_significance_color``).
+        Per-mouse permutation results. When given, each subject whose cell
+        ``q_value >= alpha`` (or has no row) has its summary mark grayed rather
+        than drawn in its target-NM color (see ``_significance_color``).
     alpha : float
-        Significance threshold; a subject keeps its color when ``p_value < alpha``.
+        False-discovery-rate threshold; a mark keeps its color when
+        ``q_value < alpha``.
     counts : pd.DataFrame or None
         Donor-pool sizes per ``(target_NM, event)`` (columns ``n_recordings``,
         ``n_mice``). When given, each target's x-tick label gains a
         ``n=<recordings>, m=<mice>`` line (see ``_target_tick_label``).
+    session_pvalues : pd.DataFrame or None
+        Per-session permutation results, matched on ``eid``, ``event``,
+        ``predictor``; requires an ``eid`` column on ``df``. When given, each
+        session's mark is colored by its own ``q_value``. ``None`` leaves every
+        session mark in the subject's summary color and never reads ``eid``.
 
     Returns
     -------
@@ -3275,13 +3294,24 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
             for tnm, subjects in subjects_by_target.items():
                 base_color = TARGETNM_COLORS.get(tnm, 'gray')
                 for subject, x in zip(subjects, slots_by_target[tnm]):
-                    vals = df_cell.loc[df_cell['subject'] == subject,
-                                       value_col].values
+                    subject_rows = df_cell[df_cell['subject'] == subject]
+                    vals = subject_rows[value_col].values
                     if len(vals):
-                        color = _subject_significance_color(
-                            base_color, pvalues, event, predictor, subject,
-                            alpha)
-                        draw_mark(ax, x, vals, color)
+                        summary_color = _significance_color(
+                            base_color, pvalues,
+                            {'event': event, 'predictor': predictor,
+                             'subject': subject}, alpha)
+                        # Reading 'eid' is guarded: frames plotted without a
+                        # session table need not carry the column at all.
+                        point_colors = (
+                            [_significance_color(
+                                base_color, session_pvalues,
+                                {'eid': eid, 'event': event,
+                                 'predictor': predictor}, alpha)
+                             for eid in subject_rows['eid']]
+                            if session_pvalues is not None
+                            else [summary_color] * len(vals))
+                        draw_mark(ax, x, vals, point_colors, summary_color)
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
                 ax.set_title(event)
@@ -3297,7 +3327,8 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
 
 
 def plot_ols_dropone(df, title, pvalues=None,
-                     alpha=PERSESSION_SIGNIFICANCE_ALPHA, counts=None):
+                     alpha=PERSESSION_SIGNIFICANCE_ALPHA, counts=None,
+                     session_pvalues=None):
     """Per-session drop-one ΔR² — dropped-regressor rows × event columns.
 
     One row per dropped regressor (``_PERSESSION_REGRESSORS`` order),
@@ -3311,20 +3342,27 @@ def plot_ols_dropone(df, title, pvalues=None,
     title : str
         Figure suptitle.
     pvalues : pd.DataFrame or None
-        Per-mouse permutation p-values. When given, a subject non-significant
-        for a cell (``p_value >= alpha`` or no row) is grayed instead of drawn in
-        its target-NM color (see ``_subject_significance_color``).
+        Per-mouse permutation results. When given, a subject non-significant for
+        a cell (``q_value >= alpha`` or no row) has its mean dash grayed instead
+        of drawn in its target-NM color (see ``_significance_color``).
     alpha : float
-        Significance threshold; a subject keeps its color when ``p_value < alpha``.
+        False-discovery-rate threshold; a mark keeps its color when
+        ``q_value < alpha``.
     counts : pd.DataFrame or None
         Donor-pool sizes per ``(target_NM, event)`` (columns ``n_recordings``,
         ``n_mice``, e.g. from ``count_population_by_target_event``). When given,
         each target's x-tick label gains a ``n=<recordings>, m=<mice>`` line.
+    session_pvalues : pd.DataFrame or None
+        Per-session permutation results (matched on ``eid``, ``event``,
+        ``predictor``). When given, each session dot is colored by its own
+        ``q_value`` instead of following its mouse; ``df`` then needs an ``eid``
+        column.
     """
     rows, supylabel = _dropone_rows()
     return _persession_subject_grid(df, title, rows, supylabel,
                                     draw_mark=_scatter_subject,
-                                    pvalues=pvalues, alpha=alpha, counts=counts)
+                                    pvalues=pvalues, alpha=alpha, counts=counts,
+                                    session_pvalues=session_pvalues)
 
 
 def plot_ols_total_r2(df, title):
