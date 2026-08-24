@@ -2248,6 +2248,7 @@ class PhotometrySessionGroup:
         self.mean_traces = None
         self.response_magnitudes = None
         self.response_ols_dropone_results = None
+        self.response_ols_session_pvalues = None
         self.response_ols_mouse_pvalues = None
         self.response_ols_coefficients = None
         self.response_varcomp_summary = None
@@ -2872,10 +2873,11 @@ class PhotometrySessionGroup:
         dropped predictor (the non-``reference`` ``formulas`` keys), the
         cross-session swap null
         (:func:`iblnm.analysis.permutation_null_delta_r2`) is computed against
-        all other same-event recordings (focal excluded). The per-session null
-        vectors are pooled per mouse against the observed
-        ``self.response_ols_dropone_results`` by
-        :func:`assemble_mouse_pvalue_table`.
+        all other same-event recordings (focal excluded). Those null vectors
+        score the observed ``self.response_ols_dropone_results`` at two grains:
+        each recording against its own null
+        (:func:`assemble_session_pvalue_table`), and each mouse's sessions
+        pooled (:func:`assemble_mouse_pvalue_table`).
 
         Parameters
         ----------
@@ -2902,9 +2904,15 @@ class PhotometrySessionGroup:
 
         Returns
         -------
-        pandas.DataFrame
+        session_pvalues : pandas.DataFrame
+            Per-recording p-value table at grain ``(eid, event, predictor)``,
+            columns ``RESPONSE_OLS_SESSION_PVAL_COLUMNS``.
+        mouse_pvalues : pandas.DataFrame
             Per-mouse p-value table at grain ``(target_NM, event, predictor,
             subject)``, columns ``RESPONSE_OLS_MOUSE_PVAL_COLUMNS``.
+
+        Neither table carries q-values: the caller applies
+        :func:`iblnm.analysis.add_fdr_qvalues` with its own choice of families.
         """
         from tqdm import tqdm
 
@@ -2925,9 +2933,12 @@ class PhotometrySessionGroup:
                     predictor, response_col, rng=rng, n_bootstrap=n_bootstrap)
                 if null.size:
                     null_vectors[(eid, event, predictor)] = null
-        return assemble_mouse_pvalue_table(
+        session_pvalues = assemble_session_pvalue_table(
+            self.response_ols_dropone_results, null_vectors)
+        mouse_pvalues = assemble_mouse_pvalue_table(
             self.response_ols_dropone_results, null_vectors,
             n_bootstrap=n_bootstrap, random_state=random_state)
+        return session_pvalues, mouse_pvalues
 
     def response_varcomp(self, coefficients, *, mcmc, tau_prior, min_mice,
                          min_sessions_per_mouse, grid_size, hdi_prob):
@@ -3038,6 +3049,16 @@ class PhotometrySessionGroup:
     def load_response_ols_coefficients(self, path):
         """Load per-session coefficients from parquet, filtered to current recordings."""
         self.response_ols_coefficients = self._load_parquet(path)
+
+    def load_response_ols_session_pvalues(self, path):
+        """Load the per-recording drop-one p-value table from parquet.
+
+        Keyed by ``(eid, event, predictor)``, so unlike
+        :meth:`load_response_ols_mouse_pvalues` it goes through the
+        eid-filtered :meth:`_load_parquet` and keeps only rows for the group's
+        current recordings.
+        """
+        self.response_ols_session_pvalues = self._load_parquet(path)
 
     def load_response_ols_mouse_pvalues(self, path):
         """Load the per-mouse drop-one permutation p-value table from parquet.

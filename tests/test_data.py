@@ -3785,6 +3785,32 @@ class TestLoaderMethods:
             tmp_path / 'nonexistent.parquet')
         assert group.response_ols_mouse_pvalues is None
 
+    def test_load_response_ols_session_pvalues(self, tmp_path):
+        """Unlike the per-mouse loader, this table has an eid column, so rows
+        outside the group's recordings are filtered out."""
+        from iblnm.data import RESPONSE_OLS_SESSION_PVAL_COLUMNS
+        group = self._make_group()
+        assert group.response_ols_session_pvalues is None
+        df = pd.DataFrame([
+            {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
+             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'predictor': 'contrast', 'delta_r2': 0.1, 'p_value': 0.01,
+             'q_value': 0.03},
+            {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
+             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'predictor': 'contrast', 'delta_r2': 0.2, 'p_value': 0.02,
+             'q_value': 0.04},  # not in group
+        ])[RESPONSE_OLS_SESSION_PVAL_COLUMNS]
+        path = tmp_path / 'response_ols_persession_dropone_session_pvalues.parquet'
+        df.to_parquet(path, index=False)
+
+        group.load_response_ols_session_pvalues(path)
+        assert list(group.response_ols_session_pvalues['eid']) == ['eid-0']
+
+        group.load_response_ols_session_pvalues(
+            tmp_path / 'nonexistent.parquet')
+        assert group.response_ols_session_pvalues is None
+
     def test_load_response_varcomp_violin(self, tmp_path):
         from iblnm.config import RESPONSE_VARCOMP_VIOLIN_COLUMNS
         group = self._make_group()
@@ -6362,15 +6388,19 @@ class TestResponseOlsDroponePermutation:
         assert 'e4' not in donors_for_e1       # different event excluded
 
     def test_grain_and_columns(self, monkeypatch):
-        """Returned table has grain (target_NM, event, predictor, subject) and
-        the schema column order."""
-        from iblnm.data import RESPONSE_OLS_MOUSE_PVAL_COLUMNS
+        """Returns (session, mouse) tables: the first at session grain, one row
+        per scorable recording, the second the existing per-mouse table."""
+        from iblnm.data import (RESPONSE_OLS_MOUSE_PVAL_COLUMNS,
+                                RESPONSE_OLS_SESSION_PVAL_COLUMNS)
         group = self._group()
         group.response_ols_dropone_results = self._observed()
         self._patch(group, monkeypatch)
 
-        table = group.response_ols_dropone_permutation(
+        session_table, table = group.response_ols_dropone_permutation(
             self._FORMULAS, events=['feedback_times'])
+
+        assert list(session_table.columns) == RESPONSE_OLS_SESSION_PVAL_COLUMNS
+        assert list(session_table['eid']) == ['e1', 'e2', 'e3']
 
         assert list(table.columns) == RESPONSE_OLS_MOUSE_PVAL_COLUMNS
         assert set(table['subject']) == {'m1', 'm2'}
@@ -6380,8 +6410,8 @@ class TestResponseOlsDroponePermutation:
 
     def test_empty_null_session_excluded(self, monkeypatch):
         """A recording whose primitive returns an empty null vector is dropped
-        from its mouse's pooled cell (``n_sessions`` counts only scorable
-        sessions)."""
+        from both grains: no session row of its own, and it does not count
+        toward its mouse's ``n_sessions``."""
         group = self._group()
         group.response_ols_dropone_results = self._observed()
         scorable = [(eid, 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': [eid]}))
@@ -6399,9 +6429,10 @@ class TestResponseOlsDroponePermutation:
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
                             fake_null)
 
-        table = group.response_ols_dropone_permutation(
+        session_table, table = group.response_ols_dropone_permutation(
             self._FORMULAS, events=['feedback_times'], n_bootstrap=50)
 
+        assert list(session_table['eid']) == ['e1', 'e3']
         m1_sessions = table.loc[table['subject'] == 'm1', 'n_sessions']
         assert m1_sessions.tolist() == [1]
 
@@ -6426,20 +6457,21 @@ class TestResponseOlsDroponePermutation:
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
                             fake_null)
 
-        table1 = group.response_ols_dropone_permutation(
+        session1, table1 = group.response_ols_dropone_permutation(
             self._FORMULAS, events=['feedback_times'], n_bootstrap=32,
             random_state=7)
         first_draws = {eid: v[0] for eid, v in draws.items()}
         draws.clear()
-        table2 = group.response_ols_dropone_permutation(
+        session2, table2 = group.response_ols_dropone_permutation(
             self._FORMULAS, events=['feedback_times'], n_bootstrap=32,
             random_state=7)
 
         # One advancing rng: the three per-recording draws are all distinct.
         stacked = np.vstack(list(first_draws.values()))
         assert len({tuple(row) for row in stacked}) == len(first_draws)
-        # Same seed reproduces the table.
+        # Same seed reproduces both tables.
         pd.testing.assert_frame_equal(table1, table2)
+        pd.testing.assert_frame_equal(session1, session2)
 
 
 # =============================================================================

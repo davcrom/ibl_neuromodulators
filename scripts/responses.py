@@ -572,7 +572,8 @@ if __name__ == '__main__':
 
         # --- Per-mouse drop-one permutation significance ---
         print("Computing per-mouse drop-one permutation p-values...")
-        group.response_ols_mouse_pvalues = (
+        (group.response_ols_session_pvalues,
+         group.response_ols_mouse_pvalues) = (
             group.response_ols_dropone_permutation(
                 LMM_FORMULAS['persession'],
                 n_bootstrap=PERSESSION_PVAL_N_BOOTSTRAP,
