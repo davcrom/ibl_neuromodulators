@@ -216,6 +216,10 @@ class TestPlotPersessionFigures:
         from scripts import responses
         group = MagicMock()
         group.response_ols_dropone_results = self._stub_frame()
+        # Both grains' q-value tables are absent here: this test exercises the
+        # real drop-one figure, which reads them as frames, not as mocks.
+        group.response_ols_mouse_pvalues = None
+        group.response_ols_session_pvalues = None
 
         fig_dir = tmp_path / 'persession'
         fig_dir.mkdir()
@@ -241,8 +245,9 @@ class TestPlotPersessionFigures:
         assert total_r2_fn is getattr(vis, total_r2_name)
 
     def test_invokes_mapped_pair_and_threads_pvalues(self, tmp_path):
-        """Each mode calls the pair from the dispatch table; ``pvalues`` reaches
-        the drop-one call only in ``session`` mode (subject/violin take none)."""
+        """Each mode calls the pair from the dispatch table; both p-value tables
+        (``pvalues`` per mouse, ``session_pvalues`` per session) reach the
+        drop-one call only in ``session`` mode (subject/violin take neither)."""
         import matplotlib.pyplot as plt
         from scripts import responses
         group = MagicMock()
@@ -262,9 +267,14 @@ class TestPlotPersessionFigures:
         for mode, (dropone_mock, total_r2_mock) in mocks.items():
             dropone_mock.assert_called_once()
             total_r2_mock.assert_called_once()
-        assert 'pvalues' in mocks['session'][0].call_args.kwargs
-        assert 'pvalues' not in mocks['subject'][0].call_args.kwargs
-        assert 'pvalues' not in mocks['target'][0].call_args.kwargs
+        session_kwargs = mocks['session'][0].call_args.kwargs
+        assert session_kwargs['pvalues'] is group.response_ols_mouse_pvalues
+        assert (session_kwargs['session_pvalues']
+                is group.response_ols_session_pvalues)
+        for mode in ('subject', 'target'):
+            kwargs = mocks[mode][0].call_args.kwargs
+            assert 'pvalues' not in kwargs
+            assert 'session_pvalues' not in kwargs
 
 
 def _responses_source():
@@ -308,6 +318,24 @@ def _reprocess_and_default_branches():
     _, main_block = _responses_source()
     reprocess, default = main_block.split('\n    else:', 1)
     return reprocess, default
+
+
+class TestPersessionPvalueWiring:
+    """Source-level wiring: --reprocess FDR-corrects and caches both drop-one
+    p-value tables, and the default branch loads both back."""
+
+    def test_reprocess_corrects_and_caches_both_grains(self):
+        reprocess, _ = _reprocess_and_default_branches()
+        assert reprocess.count('add_fdr_qvalues(') == 2
+        assert reprocess.count('PERSESSION_FDR_GROUP_COLS') == 2
+        assert 'RESPONSE_OLS_MOUSE_PVAL_FPATH' in reprocess
+        assert 'RESPONSE_OLS_SESSION_PVAL_FPATH' in reprocess
+
+    def test_default_loads_both_grains(self):
+        _, default = _reprocess_and_default_branches()
+        assert 'load_response_ols_mouse_pvalues(' in default
+        assert 'load_response_ols_session_pvalues(' in default
+        assert 'RESPONSE_OLS_SESSION_PVAL_FPATH' in default
 
 
 class TestVarcompWiring:

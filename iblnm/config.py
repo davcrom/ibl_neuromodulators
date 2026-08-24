@@ -24,6 +24,7 @@ RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 MEAN_TRACES_FPATH = RESPONSES_DIR / 'mean_traces.pqt'
 RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.parquet'
 RESPONSE_OLS_MOUSE_PVAL_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone_mouse_pvalues.parquet'
+RESPONSE_OLS_SESSION_PVAL_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone_session_pvalues.parquet'
 # Donor-pool sizes (recordings, mice) per (target_NM, event) backing the null.
 RESPONSE_OLS_PERSESSION_POPULATION_FPATH = RESPONSES_DIR / 'response_ols_persession_population.csv'
 RESPONSE_OLS_COEFS_FPATH = RESPONSES_DIR / 'response_ols_persession_coefs.parquet'
@@ -697,9 +698,13 @@ LMM_FORMULAS = {
 # and minimum recordings per mouse (per cell) for that mouse to be plotted.
 MIN_TRIALS_PERSESSION = 50
 MIN_RECORDINGS_PERMOUSE = 3
-# Per-mouse drop-one significance: a mouse with p_value >= this alpha is drawn
-# gray in the per-session ΔR² grid (not significant).
+# Drop-one significance: false-discovery-rate threshold on q_value, applied at
+# both grains (per-mouse mean dashes, per-session dots). A mark whose q_value is
+# at or above this alpha is drawn gray in the per-session ΔR² grid.
 PERSESSION_SIGNIFICANCE_ALPHA = 0.05
+# Correction families for that threshold: each (event, predictor) cell of the
+# grid is its own question, so each is corrected on its own.
+PERSESSION_FDR_GROUP_COLS = ('event', 'predictor')
 # Per-mouse drop-one p-value: bootstrap draws for the pooled donor null (one
 # draw resampled per session per iteration) and the rng seed for reproducibility.
 PERSESSION_PVAL_N_BOOTSTRAP = 1000
