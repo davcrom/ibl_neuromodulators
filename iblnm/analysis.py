@@ -1,6 +1,6 @@
 import re
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -858,6 +858,50 @@ def bootstrap_pooled_pvalue(
     ])
     pooled_null = draws.mean(axis=1)
     return observed_stat, permutation_pvalue(observed_stat, pooled_null, alternative)
+
+
+def add_fdr_qvalues(
+    df: pd.DataFrame,
+    p_col: str = 'p_value',
+    group_cols: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """Add Benjamini-Hochberg false-discovery-rate q-values to a p-value table.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Any frame carrying a p-value column. Not modified; a copy is returned.
+    p_col : str
+        Name of the p-value column to correct.
+    group_cols : sequence of str, optional
+        Columns defining independent correction families. ``None`` corrects the
+        whole frame as one family; otherwise each group of ``group_cols`` is
+        corrected on its own, so a group's family size is its own row count.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``df`` in its original row order with a float ``q_value``
+        column. Rows whose ``p_col`` is NaN get a NaN ``q_value`` and are left
+        out of the correction, so they do not inflate the family size.
+    """
+    from statsmodels.stats.multitest import multipletests
+
+    p = df[p_col].to_numpy(dtype=float)
+    if group_cols is None:
+        families = [np.arange(len(df))]
+    else:
+        families = list(df.groupby(list(group_cols), sort=False).indices.values())
+
+    q = np.full(len(df), np.nan)
+    for positions in families:
+        scored = positions[~np.isnan(p[positions])]
+        if scored.size:
+            q[scored] = multipletests(p[scored], method='fdr_bh')[1]
+
+    out = df.copy()
+    out['q_value'] = q
+    return out
 
 
 # =============================================================================

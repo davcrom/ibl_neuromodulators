@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from iblnm.analysis import (
+    add_fdr_qvalues,
     align_traces_at_transitions,
     transition_delta_stats,
     fit_measurement_error_varcomp,
@@ -3502,6 +3503,89 @@ class TestTransitionDeltaStats:
 
         np.testing.assert_allclose(stats['mean'][:, 0], [0.0, 0.0, 0.6, 0.6, 0.6])
         assert np.isnan(stats['sem']).all()
+
+
+class TestAddFdrQvalues:
+    def test_ungrouped_matches_multipletests(self):
+        from statsmodels.stats.multitest import multipletests
+
+        p = [0.01, 0.02, 0.03, 0.04, 0.05]
+        df = pd.DataFrame({'p_value': p})
+
+        out = add_fdr_qvalues(df)
+
+        expected = multipletests(p, method='fdr_bh')[1]
+        np.testing.assert_allclose(out['q_value'].values, expected)
+
+    def test_groups_are_separate_families(self):
+        # p=0.04 has rank 2 of 3 in family 'a' (q = 0.04 * 3/2 = 0.06) and rank
+        # 1 of 2 in family 'b' (q = 0.04 * 2/1 = 0.08), so the same p-value
+        # gets a different q in each family.
+        df = pd.DataFrame({
+            'event': ['a', 'a', 'a', 'b', 'b'],
+            'p_value': [0.01, 0.04, 0.9, 0.04, 0.9],
+        })
+
+        out = add_fdr_qvalues(df, group_cols=['event'])
+
+        q_a = out.loc[out['event'] == 'a', 'q_value'].values
+        q_b = out.loc[out['event'] == 'b', 'q_value'].values
+        assert np.isclose(q_a[1], 0.06)
+        assert np.isclose(q_b[0], 0.08)
+
+    def test_interleaved_groups_keep_row_order(self):
+        from statsmodels.stats.multitest import multipletests
+
+        df = pd.DataFrame({
+            'event': ['a', 'b', 'a', 'b', 'a', 'b'],
+            'p_value': [0.01, 0.5, 0.04, 0.002, 0.9, 0.3],
+        })
+
+        out = add_fdr_qvalues(df, group_cols=['event'])
+
+        assert list(out['event']) == list(df['event'])
+        for group, rows in df.groupby('event'):
+            expected = multipletests(rows['p_value'].values, method='fdr_bh')[1]
+            np.testing.assert_allclose(out.loc[rows.index, 'q_value'].values, expected)
+
+    def test_nan_pvalue_is_excluded_from_the_family(self):
+        from statsmodels.stats.multitest import multipletests
+
+        df = pd.DataFrame({'p_value': [0.01, np.nan, 0.04, 0.9]})
+
+        out = add_fdr_qvalues(df)
+
+        assert np.isnan(out['q_value'].iloc[1])
+        # Family size is 3, not 4: q for 0.04 is 0.04 * 3/2, not 0.04 * 4/2.
+        expected = multipletests([0.01, 0.04, 0.9], method='fdr_bh')[1]
+        np.testing.assert_allclose(
+            out['q_value'].iloc[[0, 2, 3]].values, expected)
+
+    def test_singleton_group_keeps_its_pvalue(self):
+        df = pd.DataFrame({
+            'event': ['a', 'b', 'b'],
+            'p_value': [0.03, 0.01, 0.2],
+        })
+
+        out = add_fdr_qvalues(df, group_cols=['event'])
+
+        assert np.isclose(out['q_value'].iloc[0], 0.03)
+
+    def test_empty_frame_gets_a_float_qvalue_column(self):
+        df = pd.DataFrame({'event': [], 'p_value': []})
+
+        out = add_fdr_qvalues(df, group_cols=['event'])
+
+        assert len(out) == 0
+        assert out['q_value'].dtype == float
+
+    def test_input_frame_is_not_modified(self):
+        df = pd.DataFrame({'p_value': [0.01, 0.04, 0.9]})
+        before = df.copy()
+
+        add_fdr_qvalues(df)
+
+        pd.testing.assert_frame_equal(df, before)
 
 
 class TestPca2d:
