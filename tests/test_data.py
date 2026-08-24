@@ -6074,6 +6074,119 @@ class TestDeltaRSquared:
         assert set(deltas.index) == set(fit.slices)
 
 
+class TestAssembleSessionPvalueTable:
+    """assemble_session_pvalue_table — per-recording drop-one permutation p."""
+
+    def _observed(self, rows):
+        """Build an observed drop-one frame from (eid, subject, delta_r2) rows."""
+        return pd.DataFrame(
+            [{'eid': eid, 'subject': subject, 'target_NM': 'VTA-DA',
+              'brain_region': 'VTA', 'event': 'feedback', 'predictor': 'reward',
+              'r2': 0.3, 'delta_r2': delta_r2, 'n_trials': 100}
+             for eid, subject, delta_r2 in rows]
+        )
+
+    def test_one_row_per_scorable_observed_row(self):
+        """Every observed row with a null vector yields one output row carrying
+        its identity columns and its observed ΔR² unchanged."""
+        from iblnm.data import assemble_session_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)])
+        null_vectors = {
+            ('e1', 'feedback', 'reward'): np.full(4, 0.02),
+            ('e2', 'feedback', 'reward'): np.full(4, 0.01),
+        }
+
+        table = assemble_session_pvalue_table(observed, null_vectors)
+
+        assert list(table['eid']) == ['e1', 'e2']
+        assert list(table['subject']) == ['m1', 'm1']
+        assert list(table['target_NM']) == ['VTA-DA', 'VTA-DA']
+        assert list(table['brain_region']) == ['VTA', 'VTA']
+        assert list(table['event']) == ['feedback', 'feedback']
+        assert list(table['predictor']) == ['reward', 'reward']
+        assert table['delta_r2'].tolist() == pytest.approx([0.10, 0.06])
+
+    def test_row_without_null_vector_is_skipped(self):
+        """An unscorable recording — no entry in null_vectors — contributes no
+        output row, so its dot has no session p-value to color from."""
+        from iblnm.data import assemble_session_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm2', 0.20)])
+        null_vectors = {('e2', 'feedback', 'reward'): np.full(4, 0.01)}
+
+        table = assemble_session_pvalue_table(observed, null_vectors)
+
+        assert list(table['eid']) == ['e2']
+
+    def test_pvalue_matches_permutation_primitive(self):
+        """p_value is analysis.permutation_pvalue against that row's null. e1's
+        ΔR² exceeds every null draw, so it sits at the add-one floor
+        1/(len(null)+1); e2's ΔR² is beaten by half its null."""
+        from iblnm import analysis
+        from iblnm.data import assemble_session_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm2', 0.01)])
+        beaten_null = np.array([0.0, 0.0, 0.02, 0.03])
+        null_vectors = {
+            ('e1', 'feedback', 'reward'): np.full(4, 0.02),
+            ('e2', 'feedback', 'reward'): beaten_null,
+        }
+
+        table = assemble_session_pvalue_table(observed, null_vectors)
+
+        by_eid = table.set_index('eid')['p_value']
+        assert by_eid['e1'] == pytest.approx(1 / 5)
+        assert by_eid['e2'] == pytest.approx(
+            analysis.permutation_pvalue(0.01, beaten_null, 'greater'))
+
+    def test_alternative_is_forwarded(self):
+        """The alternative argument reaches the primitive: the same row scored
+        'less' gives the lower-tail p, not the upper-tail one."""
+        from iblnm import analysis
+        from iblnm.data import assemble_session_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10)])
+        null = np.array([0.0, 0.05, 0.2, 0.3])
+        null_vectors = {('e1', 'feedback', 'reward'): null}
+
+        table = assemble_session_pvalue_table(observed, null_vectors,
+                                              alternative='less')
+
+        assert table.iloc[0]['p_value'] == pytest.approx(
+            analysis.permutation_pvalue(0.10, null, 'less'))
+
+    def test_output_columns_match_schema_with_unfilled_qvalue(self):
+        """Columns equal RESPONSE_OLS_SESSION_PVAL_COLUMNS in order, and
+        q_value is left NaN for the caller's FDR correction to fill."""
+        from iblnm.data import (assemble_session_pvalue_table,
+                                RESPONSE_OLS_SESSION_PVAL_COLUMNS)
+
+        observed = self._observed([('e1', 'm1', 0.10)])
+        null_vectors = {('e1', 'feedback', 'reward'): np.full(4, 0.02)}
+
+        table = assemble_session_pvalue_table(observed, null_vectors)
+
+        assert list(table.columns) == RESPONSE_OLS_SESSION_PVAL_COLUMNS
+        assert table['q_value'].isna().all()
+
+    @pytest.mark.parametrize('empty', ['observed', 'null_vectors'])
+    def test_empty_input_gives_empty_schema_frame(self, empty):
+        """Either input empty gives an empty frame with the schema columns."""
+        from iblnm.data import (assemble_session_pvalue_table,
+                                RESPONSE_OLS_SESSION_PVAL_COLUMNS)
+
+        observed = self._observed(
+            [] if empty == 'observed' else [('e1', 'm1', 0.10)])
+        null_vectors = ({} if empty == 'null_vectors'
+                        else {('e1', 'feedback', 'reward'): np.full(4, 0.02)})
+
+        table = assemble_session_pvalue_table(observed, null_vectors)
+
+        assert len(table) == 0
+        assert list(table.columns) == RESPONSE_OLS_SESSION_PVAL_COLUMNS
+
+
 class TestAssembleMousePvalueTable:
     """assemble_mouse_pvalue_table — per-mouse drop-one permutation p."""
 

@@ -71,6 +71,13 @@ RESPONSE_OLS_MOUSE_PVAL_COLUMNS = [
     'n_sessions',
 ]
 
+# Per-recording drop-one significance table: one row per (eid, event,
+# predictor), scoring that recording's observed ΔR² against its own donor null.
+RESPONSE_OLS_SESSION_PVAL_COLUMNS = [
+    'eid', 'subject', 'target_NM', 'brain_region', 'event', 'predictor',
+    'delta_r2', 'p_value', 'q_value',
+]
+
 # Per-recording full-model main-effect coefficients (one row per event ×
 # regressor for a single recording). The group method tags these with
 # eid/subject to reach RESPONSE_OLS_COEFS_COLUMNS.
@@ -142,6 +149,54 @@ def assemble_mouse_pvalue_table(
             'p_value': p_value, 'n_sessions': len(scorable),
         })
     return pd.DataFrame(rows, columns=RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
+
+
+def assemble_session_pvalue_table(
+    observed: pd.DataFrame,
+    null_vectors: dict[tuple[str, str, str], np.ndarray],
+    alternative: str = 'greater',
+) -> pd.DataFrame:
+    """Score each recording's drop-one ΔR² against its own donor null vector.
+
+    Pure assembler, the session-grain counterpart of
+    :func:`assemble_mouse_pvalue_table`: no grouping and no pooling, one output
+    row per scorable observed row.
+
+    Parameters
+    ----------
+    observed : pd.DataFrame
+        Observed drop-one frame (``RESPONSE_OLS_DROPONE_COLUMNS``), one row per
+        ``(eid, subject, target_NM, brain_region, event, predictor)`` carrying
+        the in-sample ``delta_r2``.
+    null_vectors : dict
+        Maps ``(eid, event, predictor)`` to that recording's donor null ΔR²
+        vector (lengths may differ across recordings). A row whose key is
+        absent is unscorable — it had no scorable donor — and is dropped.
+    alternative : {'greater', 'less', 'two-sided'}
+        Tail passed to :func:`iblnm.analysis.permutation_pvalue`.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per scorable observed row, in
+        ``RESPONSE_OLS_SESSION_PVAL_COLUMNS`` order. ``p_value`` is add-one
+        corrected, so it is floored at ``1 / (len(null) + 1)``. ``q_value`` is
+        present but NaN — the caller fills it with
+        :func:`iblnm.analysis.add_fdr_qvalues`, which chooses the correction
+        families.
+    """
+    rows = [
+        {'eid': row['eid'], 'subject': row['subject'],
+         'target_NM': row['target_NM'], 'brain_region': row['brain_region'],
+         'event': row['event'], 'predictor': row['predictor'],
+         'delta_r2': row['delta_r2'],
+         'p_value': analysis.permutation_pvalue(
+             row['delta_r2'], null_vectors[(row['eid'], row['event'],
+                                            row['predictor'])], alternative)}
+        for _, row in observed.iterrows()
+        if (row['eid'], row['event'], row['predictor']) in null_vectors
+    ]
+    return pd.DataFrame(rows, columns=RESPONSE_OLS_SESSION_PVAL_COLUMNS)
 
 
 # =============================================================================
