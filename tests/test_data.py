@@ -3767,10 +3767,12 @@ class TestLoaderMethods:
         df = pd.DataFrame([
             {'target_NM': 'target-0', 'event': 'stimOn_times',
              'predictor': 'contrast', 'subject': 'subj-0',
-             'mean_delta_r2': 0.12, 'p_value': 0.01, 'n_sessions': 3},
+             'mean_delta_r2': 0.12, 'p_value': 0.01, 'q_value': 0.03,
+             'n_sessions': 3},
             {'target_NM': 'target-0', 'event': 'feedback_times',
              'predictor': 'reward', 'subject': 'subj-1',
-             'mean_delta_r2': 0.08, 'p_value': 0.30, 'n_sessions': 2},
+             'mean_delta_r2': 0.08, 'p_value': 0.30, 'q_value': 0.45,
+             'n_sessions': 2},
         ])[RESPONSE_OLS_MOUSE_PVAL_COLUMNS]
         path = tmp_path / 'response_ols_persession_dropone_mouse_pvalues.parquet'
         df.to_parquet(path, index=False)
@@ -6255,6 +6257,11 @@ class TestAssembleMousePvalueTable:
         table = assemble_mouse_pvalue_table(observed, null_vectors)
 
         assert list(table.columns) == RESPONSE_OLS_MOUSE_PVAL_COLUMNS
+        # q_value sits between p_value and n_sessions and is left for the
+        # caller's FDR correction to fill, as at session grain.
+        assert RESPONSE_OLS_MOUSE_PVAL_COLUMNS.index('q_value') == (
+            RESPONSE_OLS_MOUSE_PVAL_COLUMNS.index('p_value') + 1)
+        assert table['q_value'].isna().all()
 
     def test_group_with_no_null_vectors_is_skipped(self):
         """A cell whose sessions have no null vectors produces no row; sessions

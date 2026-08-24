@@ -68,7 +68,7 @@ RESPONSE_OLS_DROPONE_COLUMNS = [
 # their per-session donor null ΔR² vectors.
 RESPONSE_OLS_MOUSE_PVAL_COLUMNS = [
     'target_NM', 'event', 'predictor', 'subject', 'mean_delta_r2', 'p_value',
-    'n_sessions',
+    'q_value', 'n_sessions',
 ]
 
 # Per-recording drop-one significance table: one row per (eid, event,
@@ -124,7 +124,10 @@ def assemble_mouse_pvalue_table(
         One row per scorable ``(target_NM, event, predictor, subject)`` cell in
         ``RESPONSE_OLS_MOUSE_PVAL_COLUMNS`` order. ``mean_delta_r2`` is the
         pooled observed statistic, ``p_value`` the one-sided (greater) bootstrap
-        p, and ``n_sessions`` the pooled session count.
+        p, and ``n_sessions`` the pooled session count. ``q_value`` is present
+        but NaN — the caller fills it with
+        :func:`iblnm.analysis.add_fdr_qvalues`, which chooses the correction
+        families.
     """
     rng = np.random.default_rng(random_state)
     rows = []
