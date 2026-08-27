@@ -237,6 +237,18 @@ class TestInit:
         assert ps.hemisphere == ['l']
         assert ps.target_NM == ['VTA-DA']
 
+    def test_init_without_one(self, full_session_series):
+        """Constructing with no ONE connection populates all metadata."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(full_session_series)
+
+        assert ps.one is None
+        assert ps.eid == 'test-eid-full'
+        assert ps.subject == 'test_mouse'
+        assert ps.brain_region == ['VTA', 'SNc']
+        assert ps.hemisphere == ['l', 'r']
+        assert ps.target_NM == ['VTA-DA', 'SNc-DA']
+
 
 class TestToDict:
     """Tests for PhotometrySession.to_dict and to_series."""
@@ -755,16 +767,34 @@ class TestFromH5:
         ps2 = PhotometrySession.from_h5(fpath, one=mock_one)
         assert ps2.one is mock_one
 
-    def test_from_h5_without_one(self, full_session_series, tmp_path):
-        """from_h5 works without ONE for cached data."""
+    @pytest.mark.parametrize('with_one', [False, True])
+    def test_from_h5_restores_same_metadata_with_or_without_one(
+            self, full_session_series, tmp_path, with_one):
+        """Metadata read back from H5 matches what was saved, ONE or not."""
         from iblnm.data import PhotometrySession
-        mock_one = MagicMock()
-        ps = PhotometrySession(full_session_series, one=mock_one, load_data=False)
+        ps = PhotometrySession(full_session_series, one=MagicMock(), load_data=False)
         fpath = tmp_path / f'{ps.eid}.h5'
         ps.save_h5(fpath, groups=['metadata'])
 
-        ps2 = PhotometrySession.from_h5(fpath)
-        assert ps2.eid == 'test-eid-full'
+        ps2 = PhotometrySession.from_h5(fpath, one=MagicMock() if with_one else None)
+        assert ps2.to_dict() == ps.to_dict()
+
+    @pytest.mark.parametrize('with_one', [False, True])
+    def test_from_h5_initializes_data_attributes(
+            self, full_session_series, tmp_path, with_one):
+        """from_h5 leaves the same empty data attributes as a plain init."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(full_session_series, one=MagicMock(), load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession.from_h5(fpath, one=MagicMock() if with_one else None)
+        assert ps2.photometry_responses == {}
+        assert ps2.movement_responses == {}
+        assert ps2.ols_fits == {}
+        assert ps2.video_qc == {}
+        assert ps2.states is None
+        assert ps2.pose is None
 
 
 # =============================================================================
@@ -2897,6 +2927,14 @@ class TestPhotometrySessionGroup:
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=2, regions_per=2)
         group = PhotometrySessionGroup(recs, one=MagicMock())
+        assert len(group) == 4
+
+    def test_constructs_without_one(self):
+        """A group builds with no ONE connection and still counts recordings."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=2, regions_per=2)
+        group = PhotometrySessionGroup(recs)
+        assert group.one is None
         assert len(group) == 4
 
     def test_iter_yields_series_and_session(self):

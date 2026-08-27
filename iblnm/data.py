@@ -688,6 +688,10 @@ class PhotometrySession(PhotometrySessionLoader):
             session_series (pd.Series): A pandas Series containing session metadata.
                 Required fields: eid, subject, start_time, number.
                 All other fields are optional and default to safe empty values.
+
+        Keyword arguments are forwarded to the loader parent. `one` is optional:
+        without it the session still constructs, and only the load methods that
+        fetch from Alyx will fail.
         """
         self.eid = session_series['eid']
         self.filepath = SESSIONS_H5_DIR / f'{self.eid}.h5'
@@ -752,6 +756,19 @@ class PhotometrySession(PhotometrySessionLoader):
         if load_data:
             self.load_trials()
             self.load_photometry()
+
+
+    def __post_init__(self) -> None:
+        """Resolve the session path, unless there is no ONE connection.
+
+        ``SessionLoader.__post_init__`` raises when ``one`` is None, because it
+        needs the connection to turn an eid into a session path. Sessions read
+        back from H5 never touch Alyx, so with no connection leave
+        ``session_path`` and ``data_info`` at their dataclass defaults; any
+        load method that does need Alyx then fails on ``self.one`` being None.
+        """
+        if self.one is not None:
+            super().__post_init__()
 
 
     def __str__(self) -> str:
@@ -842,51 +859,7 @@ class PhotometrySession(PhotometrySessionLoader):
                             val = None
                         data[attr] = val
 
-        series = pd.Series(data)
-        if one is not None:
-            ps = cls(series, one=one, load_data=False)
-        else:
-            # Bypass parent __init__ which requires ONE connection.
-            # All attributes are set manually from the H5 metadata.
-            ps = object.__new__(cls)
-            ps.one = None
-            ps.session_path = ''
-            ps.eid = series.get('eid', '')
-            ps.revision = ''
-            ps.photometry = {}
-            ps.qc = pd.DataFrame()
-            ps.errors = []
-            # Set all metadata attrs from series
-            ps.subject = series.get('subject', '')
-            start_time = series.get('start_time', '')
-            if isinstance(start_time, str) and start_time:
-                ps.start_time = datetime.fromisoformat(start_time)
-            else:
-                ps.start_time = start_time
-            ps.number = int(series.get('number', 0))
-            ps.lab = series.get('lab')
-            ps.projects = list(series.get('projects', []))
-            ps.url = series.get('url')
-            ps.session_n = series.get('session_n')
-            ps.task_protocol = series.get('task_protocol', '')
-            ps.session_type = series.get('session_type', '')
-            ps.NM = series.get('NM')
-            ps.strain = series.get('strain')
-            ps.line = series.get('line')
-            raw_gt = series.get('genotype', [])
-            ps.genotype = list(raw_gt) if isinstance(raw_gt, (list, np.ndarray)) else (
-                [raw_gt] if raw_gt else [])
-            ps.users = list(series.get('users', []))
-            ps.end_time = series.get('end_time')
-            ps.datasets = list(series.get('datasets', []))
-            ps.session_length = series.get('session_length')
-            ps.day_n = series.get('day_n')
-            raw_br = series.get('brain_region', [])
-            ps.brain_region = list(raw_br) if isinstance(raw_br, (list, np.ndarray)) else []
-            raw_hm = series.get('hemisphere', [])
-            ps.hemisphere = list(raw_hm) if isinstance(raw_hm, (list, np.ndarray)) else []
-            raw_tnm = series.get('target_NM', [])
-            ps.target_NM = list(raw_tnm) if isinstance(raw_tnm, (list, np.ndarray)) else []
+        ps = cls(pd.Series(data), one=one, load_data=False)
 
         # Load remaining groups from the same file
         ps.filepath = Path(fpath)
@@ -2229,13 +2202,14 @@ class PhotometrySessionGroup:
     ----------
     recordings : pd.DataFrame
         One row per recording (session × region).
-    one : one.api.One
-        ONE connection instance.
+    one : one.api.One, optional
+        ONE connection instance. Only needed when a load method has to fetch
+        from Alyx; sessions read back from H5 need none.
     h5_dir : Path, optional
         Directory containing {eid}.h5 files.
     """
 
-    def __init__(self, sessions, one, h5_dir=None):
+    def __init__(self, sessions, one=None, h5_dir=None):
         self._catalog = sessions.reset_index(drop=True)
         self._filter_mask = pd.Series(True, index=self._catalog.index)
         self._dedup_mask = pd.Series(True, index=self._catalog.index)
