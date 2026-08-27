@@ -8,8 +8,8 @@ from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
 
 from iblnm.config import (
-    LABEL2EVENT, LP_QC_LABELS, MOVEMENT_EVENTS, RESPONSE_WINDOW)
-from iblnm.data import _save_pose_xcorr, _save_responses
+    LABEL2EVENT, LP_QC_LABELS, MOVEMENT_EVENTS, resolve_product_spec)
+from iblnm.data import _save_peri_event_matrix, _save_pose_xcorr
 from iblnm.lp_viewer import (
     HISTOGRAM_MEASURES,
     HISTOGRAM_TITLES,
@@ -601,7 +601,9 @@ def cohort_model(tmp_path):
         with h5py.File(h5_dir / f'{eid}.h5', 'w') as f:
             grp = f.create_group('video')
             for label, da in responses.items():
-                _save_responses(grp.create_group(label), da, RESPONSE_WINDOW)
+                _save_peri_event_matrix(
+                    grp.create_group(f'{label}/responses'), da,
+                    resolve_product_spec('video/responses'))
             _save_pose_xcorr(grp, xcorr)
 
     df_cohort = pd.DataFrame({

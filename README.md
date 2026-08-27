@@ -484,7 +484,7 @@ movement channel.
 │       ├── preprocessed/
 │       │   ├── times     float64 (N,)    sample times at 30 Hz
 │       │   ├── signal    float64 (N,)    z-scored, isosbestic-corrected GCaMP
-│       │   └── attrs: fs=30
+│       │   └── attrs: spec_json (carries fs=30), built_at
 │       │
 │       ├── responses/
 │       │   ├── times                float64 (W,)     time relative to event
@@ -492,7 +492,7 @@ movement channel.
 │       │   ├── stimOn_times         float64 (T, W)
 │       │   ├── firstMovement_times  float64 (T, W)
 │       │   ├── feedback_times       float64 (T, W)
-│       │   └── attrs: response_window=[-1.0, 1.0]
+│       │   └── attrs: spec_json (carries window=[-1.0, 1.0]), built_at
 │       │
 │       └── qc/
 │           └── one dataset per QC metric column (band, brain_region,
@@ -526,7 +526,7 @@ movement channel.
     │       ├── stimOn_times         float64 (T, W)
     │       ├── firstMovement_times  float64 (T, W)
     │       ├── feedback_times       float64 (T, W)
-    │       └── attrs: response_window=[-1.0, 1.0]
+    │       └── attrs: spec_json (carries window=[-1.0, 1.0]), built_at
     │
     └── crosscorr/                   paw–wheel timing diagnostic
         ├── functions   float64 (3, L)   per-third cross-correlation

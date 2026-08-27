@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 from unittest.mock import MagicMock, patch
 
 from iblnm.util import contrast_transform
@@ -419,6 +420,128 @@ class TestProductStatus:
               spec=ps.spec['photometry/responses'] | {upstream_key: 15})
         assert ps.spec['photometry/responses'][upstream_key] != 15
         assert ps.product_status('photometry/responses') == 'stale'
+
+
+class TestLoadingPrimitives:
+    """Round-trip tests for the three save/load pairs keyed by data structure."""
+
+    @pytest.fixture
+    def stamped_writer(self, minimal_session_series, tmp_path):
+        """Session with an H5 path, plus its resolved spec for stamping."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(minimal_session_series)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
+        return ps
+
+    def test_time_series_roundtrip_series(self, stamped_writer):
+        """A time-indexed Series survives the round trip as float64."""
+        import h5py
+        from iblnm.data import _load_time_series, _save_time_series
+        ps = stamped_writer
+        signal = pd.Series(np.array([1.0, 2.5, -3.25]),
+                           index=np.array([0.0, 0.1, 0.2]))
+
+        with h5py.File(ps.filepath, 'w') as h5:
+            _save_time_series(h5.create_group('photometry/VTA/preprocessed'),
+                              signal, ps.spec['photometry/preprocessed'])
+        with h5py.File(ps.filepath, 'r') as h5:
+            out = _load_time_series(h5['photometry/VTA/preprocessed'])
+
+        assert isinstance(out, pd.Series)
+        assert out.dtype == np.float64
+        np.testing.assert_array_equal(out.index.values, signal.index.values)
+        np.testing.assert_array_equal(out.values, signal.values)
+
+    def test_time_series_roundtrip_dataframe(self, stamped_writer):
+        """A multi-column time-indexed DataFrame survives with its columns."""
+        import h5py
+        from iblnm.data import _load_time_series, _save_time_series
+        ps = stamped_writer
+        frame = pd.DataFrame(
+            {'VTA': [1.0, 2.0, 3.0], 'SNc': [-1.0, -2.0, -3.0]},
+            index=np.array([0.0, 0.1, 0.2]),
+        )
+
+        with h5py.File(ps.filepath, 'w') as h5:
+            _save_time_series(h5.create_group('photometry/preprocessed'),
+                              frame, ps.spec['photometry/preprocessed'])
+        with h5py.File(ps.filepath, 'r') as h5:
+            out = _load_time_series(h5['photometry/preprocessed'])
+
+        assert isinstance(out, pd.DataFrame)
+        pd.testing.assert_frame_equal(out[frame.columns], frame)
+
+    def test_time_series_save_reports_current(self, stamped_writer):
+        """The stamp written by the save makes product_status report current."""
+        import h5py
+        from iblnm.data import _save_time_series
+        ps = stamped_writer
+        signal = pd.Series([1.0, 2.0], index=[0.0, 0.1])
+
+        with h5py.File(ps.filepath, 'w') as h5:
+            grp = h5.create_group('photometry/VTA/preprocessed')
+            _save_time_series(grp, signal, ps.spec['photometry/preprocessed'])
+            assert 'spec_json' in grp.attrs and 'built_at' in grp.attrs
+
+        assert ps.product_status('photometry/preprocessed') == 'current'
+
+    def test_peri_event_matrix_roundtrip(self, stamped_writer):
+        """A DataArray(event, trial, time) survives with its coords intact.
+
+        Trial coords are non-contiguous integers: the trial axis is keyed by
+        the raw ONE trials-table index, so extraction that drops trials leaves
+        gaps that must not be re-indexed away.
+        """
+        import h5py
+        from iblnm.data import _load_peri_event_matrix, _save_peri_event_matrix
+        ps = stamped_writer
+        trials = np.array([0, 3, 7, 12])
+        responses = xr.DataArray(
+            np.arange(2 * 4 * 5, dtype=np.float64).reshape(2, 4, 5),
+            dims=['event', 'trial', 'time'],
+            coords={'event': ['stimOn_times', 'feedback_times'],
+                    'trial': trials,
+                    'time': np.linspace(-0.2, 0.8, 5)},
+        )
+
+        with h5py.File(ps.filepath, 'w') as h5:
+            grp = h5.create_group('photometry/VTA/responses')
+            _save_peri_event_matrix(grp, responses,
+                                    ps.spec['photometry/responses'])
+            assert 'spec_json' in grp.attrs and 'built_at' in grp.attrs
+        with h5py.File(ps.filepath, 'r') as h5:
+            out = _load_peri_event_matrix(h5['photometry/VTA/responses'])
+
+        xr.testing.assert_allclose(out.sortby('event'), responses.sortby('event'))
+        np.testing.assert_array_equal(out.coords['trial'].values, trials)
+        assert ps.product_status('photometry/responses') == 'current'
+
+    def test_scalars_roundtrip_with_nan(self, stamped_writer):
+        """A flat scalar mapping survives as attrs, NaN included.
+
+        A metric that could not be computed is stored as NaN rather than
+        omitted, so the reader must not confuse it with a missing key.
+        """
+        import h5py
+        from iblnm.data import _load_scalars, _save_scalars
+        ps = stamped_writer
+        qc = {'n_unique_samples_GCaMP': 0.031,
+              'median_absolute_deviance_GCaMP': np.nan,
+              'ar_score_GCaMP': -1.5}
+
+        with h5py.File(ps.filepath, 'w') as h5:
+            grp = h5.create_group('photometry/VTA/raw/qc')
+            _save_scalars(grp, qc, ps.spec['photometry/raw/qc'])
+            assert 'spec_json' in grp.attrs and 'built_at' in grp.attrs
+        with h5py.File(ps.filepath, 'r') as h5:
+            out = _load_scalars(h5['photometry/VTA/raw/qc'])
+
+        assert set(out) == set(qc)
+        assert np.isnan(out['median_absolute_deviance_GCaMP'])
+        assert out['n_unique_samples_GCaMP'] == pytest.approx(0.031)
+        assert out['ar_score_GCaMP'] == pytest.approx(-1.5)
+        assert ps.product_status('photometry/raw/qc') == 'current'
+
 
 class TestToDict:
     """Tests for PhotometrySession.to_dict and to_series."""
@@ -1609,6 +1732,7 @@ class TestWriteReadDataframe:
 class TestSaveLoadH5:
     def test_save_preprocessed_float64(self, mock_photometry_session, tmp_path):
         """save_h5 should write preprocessed signal as float64 with timestamps."""
+        from iblnm.data import _read_stamp
         session = mock_photometry_session
         session.preprocess()
         fpath = tmp_path / f'{session.eid}.h5'
@@ -1617,7 +1741,8 @@ class TestSaveLoadH5:
         import h5py
         with h5py.File(fpath, 'r') as f:
             pp_grp = f['photometry/VTA/preprocessed']
-            assert pp_grp.attrs['fs'] == 30
+            # fs is no longer an ad-hoc attr: it lives inside the spec stamp.
+            assert _read_stamp(pp_grp)['fs'] == 30
             assert pp_grp['signal'].dtype == np.float64
             np.testing.assert_allclose(
                 pp_grp['signal'][:],
@@ -1629,6 +1754,30 @@ class TestSaveLoadH5:
                 session.photometry['GCaMP_preprocessed'].index.values,
                 rtol=1e-10
             )
+
+    def test_saved_photometry_products_report_current(
+            self, mock_photometry_session, tmp_path):
+        """save_h5 stamps what it writes, so product_status sees it as current.
+
+        Covers the orchestrator wiring, not the primitives: `_save_photometry`
+        must hand each product its own resolved spec, or the file it just wrote
+        reads back as stale.
+        """
+        session = mock_photometry_session
+        session.preprocess()
+        n = 50
+        session.trials = pd.DataFrame({
+            'stimOn_times': np.linspace(99.5, 499.5, n),
+            'firstMovement_times': np.linspace(100.3, 500.3, n),
+            'feedback_times': np.linspace(101, 501, n),
+        })
+        session.photometry_responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed'])
+        session.filepath = tmp_path / f'{session.eid}.h5'
+        session.save_h5()
+
+        assert session.product_status('photometry/preprocessed') == 'current'
+        assert session.product_status('photometry/responses') == 'current'
 
     def test_save_trials_and_responses(self, mock_photometry_session, tmp_path):
         """save_h5 in append mode should add trials and xarray responses."""

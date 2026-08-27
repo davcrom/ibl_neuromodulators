@@ -212,10 +212,12 @@ def assemble_session_pvalue_table(
 # group. `save_h5` / `load_h5` on PhotometrySession are thin dispatchers over
 # the _SAVE_HANDLERS / _LOAD_HANDLERS registries at the bottom of this block.
 #
-# Photometry sub-handlers (_save_preprocessed, _save_responses, _save_qc and
-# their load counterparts) are pure: they take a parent group and a payload,
-# with no coupling to PhotometrySession. The region loop and session→payload
-# extraction live in the _save_photometry / _load_photometry orchestrators.
+# Below them sit three save/load pairs keyed by the data structure they carry
+# rather than by modality — _save_time_series, _save_peri_event_matrix,
+# _save_scalars and their load counterparts. They are pure: they take one H5
+# group and a payload, with no coupling to PhotometrySession. Creating the
+# group, looping over regions or labels, and extracting the payload from the
+# session are the orchestrators' job (_save_photometry, _save_video, ...).
 
 
 def _replace_group(parent, name):
@@ -247,6 +249,10 @@ def _read_dataframe(h5_group):
             values = values.astype(str)
         data[col] = values
     return pd.DataFrame(data)
+
+
+# Attrs written by _write_stamp; readers of a group's own attrs must skip them.
+_STAMP_ATTRS = frozenset({'spec_json', 'built_at'})
 
 
 def _write_stamp(group: h5py.Group, spec: dict) -> None:
@@ -423,78 +429,123 @@ def _load_wheel(session, h5_file, band):
 
 # ----- Photometry sub-handlers (pure: parent_group + payload only) -----
 
-def _save_preprocessed(parent_group, signal_series):
-    """Write preprocessed/ subgroup from a time-indexed Series."""
-    pp_group = _replace_group(parent_group, 'preprocessed')
-    pp_group.attrs['fs'] = TARGET_FS
-    pp_group.create_dataset('times', data=signal_series.index.values)
-    pp_group.create_dataset(
-        'signal',
-        data=signal_series.values.astype(np.float64),
-        compression='gzip', compression_opts=4,
-    )
+def _save_time_series(
+    group: h5py.Group, obj: pd.Series | pd.DataFrame, spec: dict,
+) -> None:
+    """Write a time-indexed pandas object into `group`, stamped with `spec`.
 
+    The index becomes the `times` dataset; each signal becomes its own dataset
+    beside it, named after the DataFrame column it came from. A Series has no
+    column name to use, so it is written as `signal`.
 
-def _load_preprocessed(parent_group):
-    """Read preprocessed/ subgroup into a time-indexed Series, or None."""
-    if 'preprocessed' not in parent_group:
-        return None
-    pp_group = parent_group['preprocessed']
-    return pd.Series(
-        pp_group['signal'][:].astype(np.float64),
-        index=pp_group['times'][:],
-    )
-
-
-def _save_responses(parent_group, responses, response_window):
-    """Write responses/ subgroup from a DataArray(event, trial, time)."""
-    responses_group = _replace_group(parent_group, 'responses')
-    responses_group.attrs['response_window'] = response_window
-    responses_group.create_dataset(
-        'times', data=responses.coords['time'].values,
-    )
-    responses_group.create_dataset(
-        'trials', data=responses.coords['trial'].values,
-    )
-    for event_name in responses.coords['event'].values:
-        responses_group.create_dataset(
-            event_name,
-            data=responses.sel(event=event_name).values.astype(np.float64),
+    Parameters
+    ----------
+    group : h5py.Group
+        Destination group, created (and any predecessor replaced) by the caller.
+    obj : pandas.Series or pandas.DataFrame
+        Time-indexed signal(s); index and values are stored as float64.
+    spec : dict
+        Resolved product spec, written as the group's stamp (`_write_stamp`).
+    """
+    frame = obj.to_frame('signal') if isinstance(obj, pd.Series) else obj
+    group.create_dataset('times', data=frame.index.to_numpy(dtype=np.float64))
+    for name, column in frame.items():
+        group.create_dataset(
+            name, data=column.to_numpy(dtype=np.float64),
             compression='gzip', compression_opts=4,
         )
+    _write_stamp(group, spec)
 
 
-def _load_responses(parent_group):
-    """Read responses/ subgroup into a DataArray(event, trial, time), or None."""
-    if 'responses' not in parent_group:
-        return None
-    responses_group = parent_group['responses']
-    event_names = [k for k in responses_group.keys()
-                   if k not in _RESPONSES_RESERVED_KEYS]
+def _load_time_series(group: h5py.Group) -> pd.Series | pd.DataFrame:
+    """Read a time-indexed pandas object written by `_save_time_series`.
+
+    Returns a Series when the group holds a single signal dataset beside
+    `times` and a DataFrame when it holds several, so a one-signal product
+    (photometry, one group per region) and a multi-signal one both fit. The
+    Series is unnamed: the dataset name is the placeholder `signal`, not data.
+    """
+    signals = {name: group[name][:].astype(np.float64)
+               for name in group if name != 'times'}
+    times = group['times'][:]
+    if len(signals) == 1:
+        return pd.Series(next(iter(signals.values())), index=times)
+    return pd.DataFrame(signals, index=times)
+
+
+def _save_peri_event_matrix(
+    group: h5py.Group, da: xr.DataArray, spec: dict,
+) -> None:
+    """Write a peri-event matrix into `group`, stamped with `spec`.
+
+    The `time` and `trial` coords become the `times` and `trials` datasets;
+    each event's `(trial, time)` slice becomes a dataset named after the event,
+    so the event axis is readable without loading the others.
+
+    Parameters
+    ----------
+    group : h5py.Group
+        Destination group, created (and any predecessor replaced) by the caller.
+    da : xarray.DataArray
+        Dims `(event, trial, time)`. The `trial` coord is the raw ONE
+        trials-table index and need not be contiguous.
+    spec : dict
+        Resolved product spec, written as the group's stamp (`_write_stamp`).
+    """
+    group.create_dataset('times', data=da.coords['time'].values)
+    group.create_dataset('trials', data=da.coords['trial'].values)
+    for event_name in da.coords['event'].values:
+        group.create_dataset(
+            event_name, data=da.sel(event=event_name).values.astype(np.float64),
+            compression='gzip', compression_opts=4,
+        )
+    _write_stamp(group, spec)
+
+
+def _load_peri_event_matrix(group: h5py.Group) -> xr.DataArray:
+    """Read a peri-event matrix written by `_save_peri_event_matrix`.
+
+    Every dataset other than the reserved coord datasets
+    (`_RESPONSES_RESERVED_KEYS`) is one event's `(trial, time)` slice, stacked
+    back into dims `(event, trial, time)`.
+    """
+    event_names = [k for k in group.keys() if k not in _RESPONSES_RESERVED_KEYS]
     return xr.DataArray(
-        np.stack([
-            responses_group[name][:].astype(np.float64)
-            for name in event_names
-        ]),
+        np.stack([group[name][:].astype(np.float64) for name in event_names]),
         dims=['event', 'trial', 'time'],
         coords={
             'event': event_names,
-            'trial': responses_group['trials'][:],
-            'time':  responses_group['times'][:],
+            'trial': group['trials'][:],
+            'time':  group['times'][:],
         },
     )
 
 
-def _save_qc(parent_group, qc_rows):
-    """Write qc/ subgroup from a DataFrame."""
-    _write_dataframe(_replace_group(parent_group, 'qc'), qc_rows)
+def _save_scalars(group: h5py.Group, mapping: dict[str, float], spec: dict) -> None:
+    """Write a flat scalar mapping into `group` as attrs, stamped with `spec`.
+
+    Values are coerced to float, so a metric that could not be computed stays
+    a NaN attr rather than a missing key.
+
+    Parameters
+    ----------
+    group : h5py.Group
+        Destination group, created (and any predecessor replaced) by the caller.
+    mapping : dict
+        Metric name -> value. Where a channel axis exists it is suffixed into
+        the name (`n_unique_samples_GCaMP`), so the mapping stays flat.
+    spec : dict
+        Resolved product spec, written as the group's stamp (`_write_stamp`).
+    """
+    for key, value in mapping.items():
+        group.attrs[key] = float(value)
+    _write_stamp(group, spec)
 
 
-def _load_qc(parent_group):
-    """Read qc/ subgroup into a DataFrame, or None."""
-    if 'qc' not in parent_group:
-        return None
-    return _read_dataframe(parent_group['qc'])
+def _load_scalars(group: h5py.Group) -> dict[str, float]:
+    """Read the scalar attrs written by `_save_scalars`, dropping the stamp."""
+    return {key: float(value) for key, value in group.attrs.items()
+            if key not in _STAMP_ATTRS}
 
 
 def _save_photometry(session, h5_file, band):
@@ -514,17 +565,22 @@ def _save_photometry(session, h5_file, band):
         region_group = photometry_group.require_group(region)
 
         if preprocessed is not None and region in preprocessed.columns:
-            _save_preprocessed(region_group, preprocessed[region])
+            _save_time_series(
+                _replace_group(region_group, 'preprocessed'),
+                preprocessed[region], session.spec['photometry/preprocessed'],
+            )
 
         if region in session.photometry_responses:
-            _save_responses(
-                region_group, session.photometry_responses[region], session.RESPONSE_WINDOW,
+            _save_peri_event_matrix(
+                _replace_group(region_group, 'responses'),
+                session.photometry_responses[region],
+                session.spec['photometry/responses'],
             )
 
         if has_qc:
             qc_rows = session.qc[session.qc['brain_region'] == region]
             if len(qc_rows) > 0:
-                _save_qc(region_group, qc_rows)
+                _write_dataframe(_replace_group(region_group, 'qc'), qc_rows)
 
 
 def _load_photometry(session, h5_file, band):
@@ -534,21 +590,19 @@ def _load_photometry(session, h5_file, band):
     regions = sorted(photometry_group.keys())
 
     preprocessed_by_region = {
-        region: series for region in regions
-        if (series := _load_preprocessed(photometry_group[region])) is not None
+        region: _load_time_series(photometry_group[f'{region}/preprocessed'])
+        for region in regions if 'preprocessed' in photometry_group[region]
     }
     if preprocessed_by_region:
         session.photometry[band] = pd.DataFrame(preprocessed_by_region)
 
     session.photometry_responses = {
-        region: region_responses for region in regions
-        if (region_responses := _load_responses(photometry_group[region])) is not None
+        region: _load_peri_event_matrix(photometry_group[f'{region}/responses'])
+        for region in regions if 'responses' in photometry_group[region]
     }
 
-    qc_frames = [
-        qc_frame for region in regions
-        if (qc_frame := _load_qc(photometry_group[region])) is not None
-    ]
+    qc_frames = [_read_dataframe(photometry_group[f'{region}/qc'])
+                 for region in regions if 'qc' in photometry_group[region]]
     if qc_frames:
         session.qc = pd.concat(qc_frames, ignore_index=True)
 
@@ -565,8 +619,10 @@ def _load_movement_responses(video_group):
     """Read every ``video/{label}/responses`` subgroup into a label -> DataArray
     dict. Subgroups holding diagnostics rather than a movement channel (see
     ``_VIDEO_NON_LABEL_KEYS``) are skipped."""
-    return {label: _load_responses(video_group[label]) for label in video_group
-            if label not in _VIDEO_NON_LABEL_KEYS}
+    return {label: _load_peri_event_matrix(video_group[f'{label}/responses'])
+            for label in video_group
+            if label not in _VIDEO_NON_LABEL_KEYS
+            and 'responses' in video_group[label]}
 
 
 def _save_pose_xcorr(parent_group, xcorr):
@@ -607,7 +663,10 @@ def _save_video(session, h5_file, band):
     grp.attrs['length_discrepancy'] = session.length_discrepancy
     grp.attrs['framerate_from_tpts'] = session.framerate_from_tpts
     for label, responses in session.movement_responses.items():
-        _save_responses(grp.require_group(label), responses, RESPONSE_WINDOW)
+        _save_peri_event_matrix(
+            _replace_group(grp.require_group(label), 'responses'),
+            responses, session.spec['video/responses'],
+        )
     if session.pose_xcorr is not None:
         _save_pose_xcorr(grp, session.pose_xcorr)
     for label in LP_QC_LABELS:

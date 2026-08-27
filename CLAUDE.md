@@ -187,13 +187,24 @@ HDF5 round-trip: `save_h5()` writes all available data groups.
 `load_h5(fpath)` populates all available groups. Both dispatch to per-group
 handler functions via `_SAVE_HANDLERS` / `_LOAD_HANDLERS` registries keyed
 by top-level group name (`metadata`, `errors`, `photometry`, `trials`,
-`wheel`, `video`). Sub-handlers (`_save_preprocessed`, `_save_responses`,
-`_save_qc`) are pure: they take a parent `h5py.Group` plus the payload and
-do not touch the session object. `_save_responses` / `_load_responses` serve
-both modalities, so responses live under `{group}/{label}/responses/` whether
-the label is a brain region (`photometry/`) or a movement channel (`video/`).
-Adding a new top-level group means writing a handler pair and registering it
-in both dicts. See README for the on-disk layout.
+`wheel`, `video`). Adding a new top-level group means writing a handler pair
+and registering it in both dicts. See README for the on-disk layout.
+
+Beneath the top-level handlers sit three save/load pairs keyed by the **data
+structure** they carry rather than by modality. Each is pure: it takes one
+`h5py.Group` plus a payload and never touches the session object. The
+orchestrator creates the group (`_replace_group`), loops over regions or
+labels, and passes the product's resolved spec, which the save writes as the
+group's stamp (`_write_stamp`, read back by `product_status`).
+
+| pair | payload | used for |
+|---|---|---|
+| `_save_time_series` / `_load_time_series` | time-indexed `pd.Series` (one signal, dataset `signal`) or `pd.DataFrame` (one dataset per column) | preprocessed photometry, wheel |
+| `_save_peri_event_matrix` / `_load_peri_event_matrix` | `xr.DataArray(event, trial, time)` | responses, whether the label is a brain region (`photometry/`) or a movement channel (`video/`) |
+| `_save_scalars` / `_load_scalars` | flat `dict[str, float]` stored as group attrs | QC metrics |
+
+`video/pose/qc` is the exception: it holds arrays plus a scalar, so it keeps
+its own pair (`_save_pose_xcorr` / `_load_pose_xcorr`).
 
 ### 3b. PhotometrySessionGroup Lifecycle
 
