@@ -1,7 +1,8 @@
+import json
 import warnings
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import h5py
@@ -22,7 +23,7 @@ from iblnm.config import (
     LOGGED_ERRORS_FPATH, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
     N_UNIQUE_SAMPLES_THRESHOLD,
-    POSE_MEASURES,
+    POSE_MEASURES, PRODUCT_SPEC,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
     RESPONSE_EVENTS, RESPONSE_OLS_COEFS_COLUMNS,
@@ -31,6 +32,7 @@ from iblnm.config import (
     RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
+    resolve_product_spec,
     _PERSESSION_REGRESSORS,
 )
 from iblnm.analysis import (
@@ -245,6 +247,40 @@ def _read_dataframe(h5_group):
             values = values.astype(str)
         data[col] = values
     return pd.DataFrame(data)
+
+
+def _write_stamp(group: h5py.Group, spec: dict) -> None:
+    """Stamp a stored product's group with the spec that produced it.
+
+    Writes two attrs: `spec_json`, the resolved spec (`resolve_product_spec`)
+    serialized with `json.dumps`, and `built_at`, an ISO-8601 UTC timestamp.
+    The stamp is what `product_status` compares against to decide whether the
+    stored product still matches the parameters in `config.py`.
+    """
+    group.attrs['spec_json'] = json.dumps(spec)
+    group.attrs['built_at'] = datetime.now(timezone.utc).isoformat()
+
+
+def _read_stamp(group: h5py.Group) -> dict | None:
+    """Return the spec stamped on `group`, or None if it carries no stamp."""
+    if 'spec_json' not in group.attrs:
+        return None
+    return json.loads(group.attrs['spec_json'])
+
+
+def _stamp_matches(attrs: h5py.AttributeManager, spec: dict) -> bool:
+    """Whether the spec stamped in `attrs` equals the expected `spec`.
+
+    Compares key by key: a key stored but not expected, or expected but not
+    stored, is a mismatch. The expected spec is round-tripped through JSON
+    first, so tuples that came back from `spec_json` as lists (e.g. the
+    ('GCaMP', 'Isosbestic') bands) compare equal instead of reporting stale on
+    every read. Attrs with no `spec_json` — written before stamping existed —
+    never match.
+    """
+    if 'spec_json' not in attrs:
+        return False
+    return json.loads(attrs['spec_json']) == json.loads(json.dumps(spec))
 
 
 _METADATA_NONE_SENTINEL = '__none__'
@@ -735,6 +771,12 @@ class PhotometrySession(PhotometrySessionLoader):
 
         self.errors = []
 
+        # Resolved once per session: product_status compares stored stamps
+        # against these, and an inspecting user reads the same dicts.
+        self.spec = {product: resolve_product_spec(product)
+                     for product in PRODUCT_SPEC}
+        self.rebuild = set()
+
         super().__init__(*args, eid=self.eid, **kwargs)
         if not isinstance(self.photometry, dict):
             self.photometry = {}
@@ -946,6 +988,41 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         from iblnm.validation import make_log_entry
         self.errors.append(make_log_entry(self.eid, error=error))
+
+    def product_status(self, product: str) -> str:
+        """Report whether a stored product is usable, without loading it.
+
+        Parameters
+        ----------
+        product : str
+            A `config.PRODUCT_SPEC` key, e.g. 'photometry/raw/qc'. Keys omit
+            the label level, so this one is searched for at both
+            'photometry/raw/qc' and 'photometry/{region}/raw/qc'.
+
+        Returns
+        -------
+        str
+            'current' if the product is stored with a stamp matching the spec
+            resolved at construction, 'stale' if the stamp disagrees, 'absent'
+            if the file, the modality group, or the product group is missing.
+
+        Reads H5 attrs only: no datasets are loaded and no ONE connection is
+        needed, so a script can survey many sessions before deciding what to
+        rebuild.
+        """
+        modality, _, name = product.partition('/')
+        if not self.filepath.exists():
+            return 'absent'
+        with h5py.File(self.filepath, 'r') as h5:
+            modality_grp = h5.get(modality)
+            if modality_grp is None:
+                return 'absent'
+            for path in [name] + [f'{label}/{name}' for label in modality_grp]:
+                grp = modality_grp.get(path)
+                if grp is not None:
+                    return ('current' if _stamp_matches(grp.attrs, self.spec[product])
+                            else 'stale')
+        return 'absent'
 
     # Metadata fields: (attr_name, is_list)
     # Scalars are stored as H5 attrs, lists as H5 datasets.

@@ -52,6 +52,11 @@ class TestCustomExceptions:
         from iblnm.validation import EarlySamples
         assert issubclass(EarlySamples, Exception)
 
+    def test_stale_product_names_the_product(self):
+        from iblnm.validation import StaleProduct
+        assert issubclass(StaleProduct, Exception)
+        assert 'photometry/preprocessed' in str(StaleProduct('photometry/preprocessed'))
+
 
 # =============================================================================
 # Fixtures
@@ -249,6 +254,171 @@ class TestInit:
         assert ps.hemisphere == ['l', 'r']
         assert ps.target_NM == ['VTA-DA', 'SNc-DA']
 
+
+class TestProductSpecState:
+    """Tests for the product spec and rebuild set held on a session."""
+
+    def test_spec_covers_every_product_resolved(self, minimal_session_series):
+        """self.spec maps every product key to its resolved (not raw) spec."""
+        from iblnm.data import PhotometrySession
+        from iblnm.config import PRODUCT_SPEC, resolve_product_spec
+        ps = PhotometrySession(minimal_session_series)
+
+        assert set(ps.spec) == set(PRODUCT_SPEC)
+        assert ps.spec == {product: resolve_product_spec(product)
+                           for product in PRODUCT_SPEC}
+
+    def test_rebuild_defaults_to_empty_set(self, minimal_session_series):
+        """self.rebuild starts empty, so nothing is forced to rebuild."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(minimal_session_series)
+        assert ps.rebuild == set()
+
+
+class TestSpecStamps:
+    """Tests for the spec stamp written beside every stored product."""
+
+    def test_stamp_roundtrip_for_every_product(self, minimal_session_series, tmp_path):
+        """Every resolved spec is writable, readable, and matches itself.
+
+        Catches both non-JSON values in PRODUCT_SPEC (the write raises) and
+        tuple/list drift through JSON (the match returns False).
+        """
+        import h5py
+        from iblnm.data import (
+            PhotometrySession, _read_stamp, _stamp_matches, _write_stamp)
+        from iblnm.config import PRODUCT_SPEC
+        ps = PhotometrySession(minimal_session_series)
+
+        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
+            for product in PRODUCT_SPEC:
+                grp = h5.create_group(product)
+                _write_stamp(grp, ps.spec[product])
+                assert _read_stamp(grp) == _read_stamp(grp)
+                assert set(_read_stamp(grp)) == set(ps.spec[product])
+                assert _stamp_matches(grp.attrs, ps.spec[product])
+
+    def test_stamp_records_build_time(self, minimal_session_series, tmp_path):
+        """built_at is an ISO-8601 UTC timestamp of when the product was built."""
+        import h5py
+        from datetime import datetime, timezone
+        from iblnm.data import PhotometrySession, _write_stamp
+        ps = PhotometrySession(minimal_session_series)
+
+        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
+            grp = h5.create_group('trials')
+            _write_stamp(grp, ps.spec['trials/table'])
+            built_at = datetime.fromisoformat(grp.attrs['built_at'])
+
+        assert built_at.tzinfo is not None
+        assert abs((datetime.now(timezone.utc) - built_at).total_seconds()) < 60
+
+    def test_stamp_mismatch_on_altered_value(self, minimal_session_series, tmp_path):
+        """A stored value that differs from the expected spec is a mismatch."""
+        import h5py
+        from iblnm.data import PhotometrySession, _stamp_matches, _write_stamp
+        ps = PhotometrySession(minimal_session_series)
+
+        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
+            grp = h5.create_group('photometry')
+            _write_stamp(grp, ps.spec['photometry/preprocessed'] | {'fs': 15})
+            assert not _stamp_matches(grp.attrs, ps.spec['photometry/preprocessed'])
+
+    def test_stamp_mismatch_on_extra_or_missing_key(self, minimal_session_series,
+                                                    tmp_path):
+        """Keys present on one side only are a mismatch, either direction."""
+        import h5py
+        from iblnm.data import PhotometrySession, _stamp_matches, _write_stamp
+        ps = PhotometrySession(minimal_session_series)
+        spec = ps.spec['photometry/preprocessed']
+
+        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
+            extra = h5.create_group('extra')
+            _write_stamp(extra, spec | {'unexpected': 1})
+            assert not _stamp_matches(extra.attrs, spec)
+
+            missing = h5.create_group('missing')
+            _write_stamp(missing, {'fs': spec['fs']})
+            assert not _stamp_matches(missing.attrs, spec)
+
+    def test_unstamped_group_does_not_match(self, minimal_session_series, tmp_path):
+        """A group written before stamping exists carries no spec, so cannot match."""
+        import h5py
+        from iblnm.data import PhotometrySession, _stamp_matches
+        ps = PhotometrySession(minimal_session_series)
+
+        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
+            grp = h5.create_group('photometry')
+            grp.attrs['fs'] = 30
+            assert not _stamp_matches(grp.attrs, ps.spec['photometry/preprocessed'])
+
+
+class TestProductStatus:
+    """Tests for PhotometrySession.product_status."""
+
+    @pytest.fixture
+    def stamped_session(self, minimal_session_series, tmp_path):
+        """Session whose H5 file is built by hand, with a stamping helper."""
+        import h5py
+        from iblnm.data import PhotometrySession, _write_stamp
+
+        ps = PhotometrySession(minimal_session_series)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
+
+        def write(path, product, spec=None):
+            """Create `path` in the session's H5 file, stamped for `product`."""
+            with h5py.File(ps.filepath, 'a') as h5:
+                _write_stamp(h5.require_group(path),
+                             ps.spec[product] if spec is None else spec)
+
+        return ps, write
+
+    def test_absent_when_file_missing(self, stamped_session):
+        """No H5 file at all means every product is absent."""
+        ps, _ = stamped_session
+        assert not ps.filepath.exists()
+        assert ps.product_status('trials/table') == 'absent'
+
+    def test_absent_when_modality_group_missing(self, stamped_session):
+        """A file holding other modalities still reports this one absent."""
+        ps, write = stamped_session
+        write('trials/table', 'trials/table')
+        assert ps.product_status('photometry/preprocessed') == 'absent'
+
+    def test_absent_when_product_group_missing(self, stamped_session):
+        """The modality exists but not this product under it."""
+        ps, write = stamped_session
+        write('photometry/VTA/preprocessed', 'photometry/preprocessed')
+        assert ps.product_status('photometry/responses') == 'absent'
+
+    def test_current_for_unlabelled_product(self, stamped_session):
+        """A product with no label level is found directly under its modality."""
+        ps, write = stamped_session
+        write('trials/table', 'trials/table')
+        assert ps.product_status('trials/table') == 'current'
+
+    def test_current_for_labelled_product(self, stamped_session):
+        """A labelled product is found by walking the label level."""
+        ps, write = stamped_session
+        write('photometry/VTA/raw/qc', 'photometry/raw/qc')
+        write('photometry/SNc/raw/qc', 'photometry/raw/qc')
+        assert ps.product_status('photometry/raw/qc') == 'current'
+
+    def test_stale_when_stamped_value_differs(self, stamped_session):
+        """A stored spec value that no longer matches config reports stale."""
+        ps, write = stamped_session
+        write('photometry/VTA/preprocessed', 'photometry/preprocessed',
+              spec=ps.spec['photometry/preprocessed'] | {'fs': 15})
+        assert ps.product_status('photometry/preprocessed') == 'stale'
+
+    def test_stale_when_upstream_parameter_differs(self, stamped_session):
+        """An ancestor's parameter change marks the downstream product stale."""
+        ps, write = stamped_session
+        upstream_key = 'photometry/preprocessed.fs'
+        write('photometry/VTA/responses', 'photometry/responses',
+              spec=ps.spec['photometry/responses'] | {upstream_key: 15})
+        assert ps.spec['photometry/responses'][upstream_key] != 15
+        assert ps.product_status('photometry/responses') == 'stale'
 
 class TestToDict:
     """Tests for PhotometrySession.to_dict and to_series."""

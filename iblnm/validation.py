@@ -118,6 +118,15 @@ class QCValidationError(Exception):
 class AmbiguousRegionMapping(Exception):
     """Photometry columns cannot be unambiguously mapped to session brain_region metadata."""
 
+class StaleProduct(Exception):
+    """Stored product was built with parameters that no longer match config.
+
+    Raised by load methods and propagated to the script's top level; never
+    written to a session's errors group, since it reports a config-vs-store
+    mismatch that is identical across every session rather than a per-session
+    failure.
+    """
+
 
 # =============================================================================
 # Exceptions — video QC / data
