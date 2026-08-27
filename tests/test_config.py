@@ -1,4 +1,6 @@
 """Tests for config constants and static config structures."""
+import json
+
 from iblnm import config
 from iblnm.config import LMM_FORMULAS, MOVEMENT_VARS
 
@@ -195,3 +197,44 @@ def test_persession_thresholds_and_path():
     assert config.MIN_TRIALS_PERSESSION == 50
     assert config.MIN_RECORDINGS_PERMOUSE == 3
     assert config.RESPONSE_OLS_PERSESSION_FPATH.name == 'response_ols_persession_dropone.parquet'
+
+
+# --- Product registry ------------------------------------------------------
+
+def test_every_product_appears_in_the_input_graph():
+    assert set(config.PRODUCT_SPEC) == set(config.PRODUCT_INPUTS)
+
+
+def test_product_with_no_parameters_and_no_inputs_resolves_empty():
+    assert config.resolve_product_spec('trials/table') == {}
+
+
+def test_resolved_spec_prefixes_ancestor_parameters():
+    spec = config.resolve_product_spec('photometry/responses')
+    assert spec['events'] == config.RESPONSE_EVENTS
+    assert spec['window'] == config.RESPONSE_WINDOW
+    assert spec['photometry/preprocessed.fs'] == config.TARGET_FS
+    assert 'photometry/preprocessed.pipeline' in spec
+
+
+def test_resolved_pipeline_stamps_steps_by_function_name():
+    steps = config.resolve_product_spec(
+        'photometry/responses')['photometry/preprocessed.pipeline']
+    assert [step['function'] for step in steps] == [
+        'lowpass_bleachcorrect', 'lowpass_bleachcorrect',
+        'isosbestic_correct', 'zscore',
+    ]
+    assert steps[3]['parameters'] == {'mode': 'classic'}
+
+
+def test_resolved_spec_reaches_ancestors_through_the_whole_graph():
+    # video/pose/qc cross-correlates paw speed against wheel velocity, so
+    # changing WHEEL_FS must mark it stale.
+    spec = config.resolve_product_spec('video/pose/qc')
+    assert spec['wheel/preprocessed.fs'] == config.WHEEL_FS
+    assert 'wheel/raw' not in config.PRODUCT_INPUTS['video/pose/qc']  # reached transitively
+
+
+def test_every_resolved_spec_is_json_serializable():
+    for product in config.PRODUCT_SPEC:
+        json.dumps(config.resolve_product_spec(product))

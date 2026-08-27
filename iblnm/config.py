@@ -398,6 +398,18 @@ QC_SLIDING_KWARGS = {
     'detrend': True
 }
 
+# How each sliding metric is reduced over windows to one value per recording.
+# Strings, not callables, so the mapping is serializable into the QC product's
+# spec stamp. 'q10' is the 10th percentile: n_unique_samples flags a channel by
+# its worst windows, the rest describe the recording on average.
+QC_SLIDING_AGG = {
+    'n_unique_samples':         'q10',
+    'median_absolute_deviance': 'mean',
+    'percentile_distance':      'mean',
+    'percentile_asymmetry':     'mean',
+    'ar_score':                 'mean',
+}
+
 PREPROCESSING_PIPELINES = {
     'isosbestic_correction': [
         dict(
@@ -491,6 +503,120 @@ MOVEMENT_EVENTS = sorted(
     {event for event, _, _ in POSE_MEASURES.values()} | {MOTION_ENERGY_EVENT})
 LABEL2EVENT = ({label: event for label, (event, _, _) in POSE_MEASURES.items()}
                | {'motion_energy': MOTION_ENERGY_EVENT})
+
+
+# Product registry
+# ----------------
+# A "product" is one stored result of the pipeline, named '{modality}/{product}'.
+# The same key string is the --rebuild value typed at the command line, the
+# product_status argument, and the key of the stamp written beside the data.
+# Keys omit the label level: region and channel names are data, so
+# 'photometry/raw/qc' names a kind of product whose H5 path is
+# 'photometry/{region}/raw/qc'.
+
+# The parameters that produced each product directly. Inputs' parameters are not
+# copied in here; resolve_product_spec pulls them through PRODUCT_INPUTS.
+PRODUCT_SPEC = {
+    'trials/table':                 {},
+    'trials/performance':           {'min_block_length': MIN_BLOCK_LENGTH},
+    'photometry/neurophotometrics': {},
+    'photometry/neurophotometrics/qc': {'metrics': QC_RAW_METRICS},
+    'photometry/raw':               {'bands': ('GCaMP', 'Isosbestic')},
+    'photometry/raw/qc':            {'metrics': QC_SLIDING_METRICS,
+                                     'metrics_kwargs': QC_METRICS_KWARGS,
+                                     'sliding_kwargs': QC_SLIDING_KWARGS,
+                                     'agg': QC_SLIDING_AGG},
+    'photometry/preprocessed':      {'pipeline': PREPROCESSING_PIPELINES['isosbestic_correction'],
+                                     'fs': TARGET_FS},
+    'photometry/responses':         {'events': RESPONSE_EVENTS, 'window': RESPONSE_WINDOW},
+    'wheel/raw':                    {},
+    'wheel/preprocessed':           {'fs': WHEEL_FS},
+    'wheel/responses':              {'t0_event': 'stimOn_times', 't1_event': 'feedback_times'},
+    'video/times':                  {},
+    'video/times/qc':               {},
+    'video/pose':                   {},
+    'video/pose/qc':                {},
+    'video/motion_energy':          {},
+    'video/preprocessed':           {'fs': POSE_FS, 'measures': POSE_MEASURES},
+    'video/responses':              {'events': MOVEMENT_EVENTS, 'window': MOVEMENT_RESPONSE_WINDOW},
+}
+
+# Which products each product is built from. A product built only from Alyx data
+# has an empty tuple. The graph is acyclic. Declaring inputs here is what makes a
+# change anywhere upstream mark every product downstream of it stale, rather than
+# only the ones somebody remembered to annotate.
+PRODUCT_INPUTS = {
+    'trials/table':                 (),
+    'trials/performance':           ('trials/table',),
+    'photometry/neurophotometrics': (),
+    'photometry/neurophotometrics/qc': ('photometry/neurophotometrics',),
+    'photometry/raw':               (),
+    'photometry/raw/qc':            ('photometry/raw',),
+    'photometry/preprocessed':      ('photometry/raw',),
+    'photometry/responses':         ('photometry/preprocessed', 'trials/table'),
+    'wheel/raw':                    (),
+    'wheel/preprocessed':           ('wheel/raw',),
+    'wheel/responses':              ('wheel/preprocessed', 'trials/table'),
+    'video/times':                  (),
+    'video/times/qc':               ('video/times',),
+    'video/pose':                   (),
+    'video/pose/qc':                ('video/pose', 'video/times', 'wheel/preprocessed'),
+    'video/motion_energy':          (),
+    'video/preprocessed':           ('video/pose', 'video/motion_energy', 'video/times'),
+    'video/responses':              ('video/preprocessed', 'trials/table'),
+}
+
+if set(PRODUCT_SPEC) != set(PRODUCT_INPUTS):
+    raise ValueError(
+        'PRODUCT_SPEC and PRODUCT_INPUTS must cover the same products; '
+        f'symmetric difference: {set(PRODUCT_SPEC) ^ set(PRODUCT_INPUTS)}'
+    )
+
+
+def _ancestors(product: str) -> list[str]:
+    """Every product upstream of `product`, depth-first, each listed once."""
+    seen = []
+    stack = list(PRODUCT_INPUTS[product])
+    while stack:
+        ancestor = stack.pop()
+        if ancestor not in seen:
+            seen.append(ancestor)
+            stack.extend(PRODUCT_INPUTS[ancestor])
+    return seen
+
+
+def _stamp_params(params: dict) -> dict:
+    """Render one product's parameters JSON-serializable.
+
+    Only 'pipeline' needs rendering: its steps hold live function objects (see
+    PREPROCESSING_PIPELINES), which json.dumps rejects. Each step is reduced to
+    its function's __name__ plus its parameter dict, which is what actually
+    distinguishes one preprocessing run from another.
+    """
+    return {
+        key: ([{'function': step['function'].__name__,
+                'parameters': step['parameters']} for step in value]
+              if key == 'pipeline' else value)
+        for key, value in params.items()
+    }
+
+
+def resolve_product_spec(product: str) -> dict:
+    """Merge a product's own parameters with every ancestor's.
+
+    Walks PRODUCT_INPUTS depth-first from `product`. The product's own keys stay
+    bare; an ancestor's key `k` under ancestor `p` becomes `f'{p}.{k}'`, so two
+    ancestors can carry the same parameter name without colliding. A product
+    reached by more than one path (e.g. 'trials/table' under 'video/responses')
+    contributes its keys once. The result is JSON-serializable: it is written
+    beside the stored product as its stamp, and compared against a freshly
+    resolved spec to decide whether the stored product is stale.
+    """
+    resolved = _stamp_params(PRODUCT_SPEC[product])
+    for ancestor in _ancestors(product):
+        resolved |= {f'{ancestor}.{key}': value
+                     for key, value in _stamp_params(PRODUCT_SPEC[ancestor]).items()}
+    return resolved
 
 
 # Single-session photometry encoding model (kernel-based ridge regression).
