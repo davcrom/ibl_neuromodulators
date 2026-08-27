@@ -122,7 +122,8 @@ The decorated function's signature always includes `exlog=None` as the last
 parameter. The decorator handles it transparently — the function body never
 references `exlog` directly.
 
-Error log entry schema: `{'eid': str, 'error_type': str, 'error_message': str, 'traceback': str}`.
+Error log entry schema: `{'eid': str, 'error_type': str, 'error_message': str,
+'traceback': str, 'product': str | None}`.
 
 When adding new validation or processing functions that can fail during batch
 processing, decorate them with `@exception_logger` and accept `exlog=None`.
@@ -272,8 +273,10 @@ and initializes list columns (replaces NaN with `[]`). Called when loading
 - **Analysis outputs go in `results/`**: each analysis script writes to its
   own subdirectory (`results/responses/`, `results/task_encoding/`). Output
   paths are defined in `config.py`.
-- **Error logs**: unified schema `['eid', 'error_type', 'error_message', 'traceback']`.
-  One parquet log per pipeline stage in `metadata/`.
+- **Error logs**: unified schema `['eid', 'error_type', 'error_message',
+  'traceback', 'product']` (`util.LOG_COLUMNS`). Each session's errors live in
+  its H5 `errors/` tree, one group per product, rewritten whole on every build
+  attempt of that product.
 - **Signed-zero in `signed_contrast`**: zero-contrast trials encode stimulus
   side via IEEE 754 signed zero (`-0.0` = left, `0.0` = right). `unique()`,
   `sorted()`, `set()`, `==`, and pandas `groupby` all treat `-0.0 == 0.0` and

@@ -744,6 +744,24 @@ class TestLogError:
         assert ps.errors[1]['error_type'] == 'InvalidLine'
         assert ps.errors[0]['eid'] == 'test-eid-123'
 
+    def test_log_error_records_product(self, mock_session_series):
+        """The product being built is carried on the entry; default is None."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+
+        try:
+            raise ValueError("pose failed")
+        except ValueError as e:
+            ps.log_error(e, product='video/pose')
+        try:
+            raise ValueError("no product")
+        except ValueError as e:
+            ps.log_error(e)
+
+        assert ps.errors[0]['product'] == 'video/pose'
+        assert ps.errors[1]['product'] is None
+
     def test_log_error_preserves_traceback(self, mock_session_series):
         """Traceback string is captured."""
         from iblnm.data import PhotometrySession
@@ -784,6 +802,43 @@ class TestH5Errors:
         assert ps2.errors[0]['error_message'] == 'bad strain'
         assert 'InvalidStrain' in ps2.errors[0]['traceback']
 
+    def test_errors_sort_into_their_product_groups(self, mock_session_series,
+                                                   tmp_path):
+        """Each entry lands under errors/{product} with all five fields intact."""
+        import h5py
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import MissingRawData, MissingLP
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        try:
+            raise MissingRawData("no photometry")
+        except MissingRawData as e:
+            ps.log_error(e, product='photometry/raw')
+        try:
+            raise MissingLP("no pose")
+        except MissingLP as e:
+            ps.log_error(e, product='video/pose')
+
+        ps.save_h5(fpath, groups=['metadata', 'errors'])
+
+        with h5py.File(fpath, 'r') as f:
+            assert f['errors/photometry/raw/error_type'][0].decode() \
+                == 'MissingRawData'
+            assert f['errors/video/pose/error_type'][0].decode() \
+                == 'MissingLP'
+
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps2.load_h5(fpath, groups=['errors'])
+        by_product = {e['product']: e for e in ps2.errors}
+        assert set(by_product) == {'photometry/raw', 'video/pose'}
+        entry = by_product['photometry/raw']
+        assert entry['eid'] == ps.eid
+        assert entry['error_type'] == 'MissingRawData'
+        assert entry['error_message'] == 'no photometry'
+        assert 'MissingRawData' in entry['traceback']
+
     def test_save_errors_empty_list(self, mock_session_series, tmp_path):
         """Saving with no errors creates empty /errors group."""
         import h5py
@@ -799,28 +854,6 @@ class TestH5Errors:
         ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
         ps2.load_h5(fpath, groups=['errors'])
         assert ps2.errors == []
-
-    def test_save_deduplicates_errors(self, mock_session_series, tmp_path):
-        """Duplicate errors (same eid/type/message) are written only once."""
-        from iblnm.data import PhotometrySession
-        from iblnm.validation import InvalidStrain
-        mock_one = MagicMock()
-        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        fpath = tmp_path / f'{ps.eid}.h5'
-
-        # Log the same error three times (simulates repeated pipeline runs)
-        for _ in range(3):
-            try:
-                raise InvalidStrain("bad strain")
-            except InvalidStrain as e:
-                ps.log_error(e)
-
-        ps.save_h5(fpath, groups=['metadata', 'errors'])
-
-        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        ps2.load_h5(fpath, groups=['errors'])
-        assert len(ps2.errors) == 1
-        assert ps2.errors[0]['error_type'] == 'InvalidStrain'
 
     def test_save_errors_append_mode(self, mock_session_series, tmp_path):
         """Errors can be saved in append mode to existing H5."""
@@ -843,64 +876,110 @@ class TestH5Errors:
         assert ps2.strain is None  # metadata loaded
         assert len(ps2.errors) == 1  # errors loaded
 
-    def test_save_errors_append_merges_existing(self, mock_session_series, tmp_path):
-        """Append mode merges new errors with existing ones in H5."""
+    def test_rebuild_replaces_that_products_group_only(self, mock_session_series,
+                                                       tmp_path):
+        """Last attempt wins for the rebuilt product; other products survive."""
         from iblnm.data import PhotometrySession
-        from iblnm.validation import InvalidStrain, MissingRawData
+        from iblnm.validation import MissingRawData, MissingLP
         mock_one = MagicMock()
         fpath = tmp_path / f"{mock_session_series['eid']}.h5"
 
-        # First session: write with one error
+        # First pass: photometry/raw and video/pose both fail.
         ps1 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
         try:
-            raise InvalidStrain("bad strain")
-        except InvalidStrain as e:
-            ps1.log_error(e)
-        ps1.save_h5(fpath, groups=['metadata', 'errors'], mode='w')
-
-        # Second session: append a different error
-        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        try:
-            raise MissingRawData("no raw data")
+            raise MissingRawData("first attempt")
         except MissingRawData as e:
-            ps2.log_error(e)
+            ps1.log_error(e, product='photometry/raw')
+        try:
+            raise MissingLP("no pose")
+        except MissingLP as e:
+            ps1.log_error(e, product='video/pose')
+        ps1.save_h5(fpath, groups=['metadata', 'errors'], mode='w')
+
+        # Second pass: only photometry/raw is retried, and fails differently.
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        try:
+            raise MissingRawData("second attempt")
+        except MissingRawData as e:
+            ps2.log_error(e, product='photometry/raw')
         ps2.save_h5(fpath, groups=['errors'], mode='a')
 
-        # Both errors should be present
         ps3 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
         ps3.load_h5(fpath, groups=['errors'])
-        error_types = {e['error_type'] for e in ps3.errors}
-        assert error_types == {'InvalidStrain', 'MissingRawData'}
+        by_product = {e['product']: e for e in ps3.errors}
         assert len(ps3.errors) == 2
+        assert by_product['photometry/raw']['error_message'] == 'second attempt'
+        assert by_product['video/pose']['error_message'] == 'no pose'
 
-    def test_save_errors_append_deduplicates(self, mock_session_series, tmp_path):
-        """Append mode deduplicates errors across existing and new."""
+    def test_error_without_data_group_roundtrips(self, mock_session_series,
+                                                 tmp_path):
+        """A failed build leaves an error group and no data group."""
+        import h5py
         from iblnm.data import PhotometrySession
-        from iblnm.validation import InvalidStrain
+        from iblnm.validation import MissingLP
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        try:
+            raise MissingLP("no pose")
+        except MissingLP as e:
+            ps.log_error(e, product='video/pose')
+        ps.save_h5(fpath, groups=['metadata', 'errors'])
+
+        with h5py.File(fpath, 'r') as f:
+            assert 'errors/video/pose' in f
+            assert 'video' not in f
+
+        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps2.load_h5(fpath, groups=['errors'])
+        assert [e['product'] for e in ps2.errors] == ['video/pose']
+
+    def test_reads_group_written_before_product_field(self, mock_session_series,
+                                                      tmp_path):
+        """Groups in the store predating the product field still load."""
+        import h5py
+        from iblnm.data import PhotometrySession
         mock_one = MagicMock()
         fpath = tmp_path / f"{mock_session_series['eid']}.h5"
 
-        # First write
-        ps1 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        try:
-            raise InvalidStrain("bad strain")
-        except InvalidStrain as e:
-            ps1.log_error(e)
-        ps1.save_h5(fpath, groups=['metadata', 'errors'], mode='w')
+        with h5py.File(fpath, 'w') as f:
+            grp = f.create_group('errors')
+            for col, value in [('eid', 'test-eid-123'),
+                               ('error_type', 'MissingRawData'),
+                               ('error_message', 'no raw data'),
+                               ('traceback', '')]:
+                grp.create_dataset(col, data=[value],
+                                   dtype=h5py.string_dtype())
 
-        # Append the same error again
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps.load_h5(fpath, groups=['errors'])
+        assert len(ps.errors) == 1
+        assert ps.errors[0]['error_type'] == 'MissingRawData'
+        assert ps.errors[0]['product'] is None
+
+    def test_blocking_and_stale_errors_are_not_written(self, mock_session_series,
+                                                       tmp_path):
+        """A file lock or a spec mismatch must not mark the session failed."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import StaleProduct
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        try:
+            raise BlockingIOError("file locked")
+        except BlockingIOError as e:
+            ps.log_error(e, product='photometry/raw')
+        try:
+            raise StaleProduct("spec changed")
+        except StaleProduct as e:
+            ps.log_error(e, product='video/pose')
+        ps.save_h5(fpath, groups=['metadata', 'errors'])
+
         ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        try:
-            raise InvalidStrain("bad strain")
-        except InvalidStrain as e:
-            ps2.log_error(e)
-        ps2.save_h5(fpath, groups=['errors'], mode='a')
-
-        # Should be deduplicated to one
-        ps3 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        ps3.load_h5(fpath, groups=['errors'])
-        assert len(ps3.errors) == 1
-        assert ps3.errors[0]['error_type'] == 'InvalidStrain'
+        ps2.load_h5(fpath, groups=['errors'])
+        assert ps2.errors == []
 
 
 class TestFromAlyx:

@@ -1,5 +1,6 @@
 import json
 import warnings
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -290,7 +291,9 @@ def _stamp_matches(attrs: h5py.AttributeManager, spec: dict) -> bool:
 
 
 _METADATA_NONE_SENTINEL = '__none__'
-_ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback')
+_ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback', 'product')
+# Never persisted to errors/ — see _save_errors.
+_UNRECORDED_ERROR_TYPES = frozenset({'BlockingIOError', 'StaleProduct'})
 _RESPONSES_RESERVED_KEYS = {'times', 'trials'}
 
 
@@ -337,52 +340,94 @@ def _load_metadata(session, h5_file, band):
         setattr(session, attr, value)
 
 
-def _read_existing_errors(h5_file):
-    if 'errors' not in h5_file or not h5_file['errors'].keys():
+def _write_error_entries(group: h5py.Group, entries: list[dict]) -> None:
+    """Replace `group`'s error datasets with one row per entry in `entries`.
+
+    Writes `_ERROR_FIELDS` as parallel string datasets. Existing datasets are
+    deleted first: an error group records a single build attempt, so the last
+    attempt replaces the previous one rather than accumulating alongside it.
+    """
+    for col in _ERROR_FIELDS:
+        if col in group:
+            del group[col]
+        group.create_dataset(
+            col,
+            data=[str(entry.get(col, '') or '') for entry in entries],
+            dtype=h5py.string_dtype(),
+        )
+
+
+def _read_error_entries(group: h5py.Group) -> list[dict]:
+    """Read one group's error rows back as dicts, or [] if it holds none.
+
+    An empty `product` field means the entry was logged without a product and
+    comes back as None, as does a `product` dataset missing altogether — the
+    shape of every error group written into the store before the field existed.
+    """
+    if 'eid' not in group:
         return []
-    err_grp = h5_file['errors']
-    n = len(err_grp['eid'])
+    n_entries = len(group['eid'])
+    columns = {
+        col: ([v.decode() if isinstance(v, bytes) else str(v)
+               for v in group[col][:]] if col in group else [None] * n_entries)
+        for col in _ERROR_FIELDS
+    }
     return [
-        {
-            col: (err_grp[col][i].decode()
-                  if isinstance(err_grp[col][i], bytes)
-                  else str(err_grp[col][i]))
-            for col in _ERROR_FIELDS
-        }
-        for i in range(n)
+        {col: (values[i] or None) if col == 'product' else values[i]
+         for col, values in columns.items()}
+        for i in range(n_entries)
     ]
 
 
-def _dedup_errors(errors):
-    seen = set()
-    unique = []
-    for entry in errors:
-        key = (entry.get('eid', ''), entry.get('error_type', ''),
-               entry.get('error_message', ''))
-        if key not in seen:
-            seen.add(key)
-            unique.append(entry)
-    return unique
-
-
 def _save_errors(session, h5_file, band):
-    merged = _dedup_errors(_read_existing_errors(h5_file) + session.errors)
-    grp = _replace_group(h5_file, 'errors')
+    """Write `session.errors` into `errors/`, mirroring the product tree.
+
+    Entries are sorted by their `product` field: each product's entries replace
+    whatever `errors/{product}` held before, and products absent from this
+    attempt keep their existing groups. Entries with no product go to the
+    `errors/` root.
+
+    `BlockingIOError` and `StaleProduct` are never written. The first is a
+    transient file lock that `process()` retries, and the second reports a
+    `config.py`/store mismatch rather than a failed build; recording either
+    would mark the session permanently failed under the absent-data +
+    present-error rule.
+    """
     # Empty group signals "no errors" — distinguishable from "not yet written".
-    if not merged:
-        return
-    for col in _ERROR_FIELDS:
-        grp.create_dataset(
-            col,
-            data=[str(e.get(col, '') or '') for e in merged],
-            dtype=h5py.string_dtype(),
+    grp = h5_file.require_group('errors')
+    by_product = defaultdict(list)
+    for entry in session.errors:
+        if entry['error_type'] not in _UNRECORDED_ERROR_TYPES:
+            by_product[entry['product']].append(entry)
+    for product, entries in by_product.items():
+        _write_error_entries(
+            grp if product is None else grp.require_group(product), entries
         )
+
+
+def read_error_tree(h5_file: h5py.File) -> list[dict]:
+    """Read every error entry under `errors/`, walking the product tree.
+
+    Returns entries grouped by product — those logged without a product (the
+    `errors/` root) first, then each product group in depth-first order. An
+    open file with no `errors/` group yields [].
+    """
+    if 'errors' not in h5_file:
+        return []
+    root = h5_file['errors']
+    descendants = []
+    root.visit(descendants.append)
+    return _read_error_entries(root) + [
+        entry for path in descendants
+        if isinstance(root[path], h5py.Group)
+        for entry in _read_error_entries(root[path])
+    ]
 
 
 def _load_errors(session, h5_file, band):
     if 'errors' not in h5_file:
         return
-    session.errors = _read_existing_errors(h5_file)
+    session.errors = read_error_tree(h5_file)
 
 
 def _save_trials(session, h5_file, band):
@@ -1037,16 +1082,22 @@ class PhotometrySession(PhotometrySessionLoader):
         self.errors.extend(exlog)
         return self
 
-    def log_error(self, error):
+    def log_error(self, error, product=None):
         """Log an exception to the session's error list.
 
         Parameters
         ----------
         error : Exception
             The exception to log. Type, message, and traceback are captured.
+        product : str, optional
+            The `config.PRODUCT_SPEC` key whose build raised, e.g.
+            'video/pose'. Decides which `errors/{product}` group the entry is
+            saved under; None writes it to the `errors/` root.
         """
         from iblnm.validation import make_log_entry
-        self.errors.append(make_log_entry(self.eid, error=error))
+        self.errors.append(
+            make_log_entry(self.eid, error=error, product=product)
+        )
 
     def product_status(self, product: str) -> str:
         """Report whether a stored product is usable, without loading it.

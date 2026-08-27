@@ -1276,6 +1276,29 @@ class TestCollectErrors:
         df = collect_errors(tmp_path)
         assert list(df.columns) == LOG_COLUMNS
 
+    def test_collects_errors_from_product_groups(self, tmp_path):
+        """Errors nested under errors/{product} are collected with their product."""
+        from unittest.mock import MagicMock
+        from iblnm.data import PhotometrySession
+
+        series = pd.Series({
+            'eid': 'eid-1', 'subject': 'mouse_A',
+            'start_time': '2024-01-01T10:00:00', 'number': 1,
+            'session_type': 'biased',
+            'brain_region': [], 'hemisphere': [], 'target_NM': [],
+        })
+        ps = PhotometrySession(series, one=MagicMock(), load_data=False)
+        try:
+            raise ValueError("bad value")
+        except ValueError as e:
+            ps.log_error(e, product='photometry/raw')
+        ps.save_h5(tmp_path / 'eid-1.h5', groups=['metadata', 'errors'])
+
+        df = collect_errors(tmp_path)
+        assert len(df) == 1
+        assert df.iloc[0]['product'] == 'photometry/raw'
+        assert df.iloc[0]['error_type'] == 'ValueError'
+
     def test_skips_h5_without_errors_group(self, tmp_path):
         import h5py
         with h5py.File(tmp_path / 'old.h5', 'w') as f:

@@ -155,11 +155,17 @@ class MissingMotionEnergy(Exception):
 # Logging helpers
 # =============================================================================
 
-def make_log_entry(eid, error=None, error_type=None, error_message=None):
+def make_log_entry(eid, error=None, error_type=None, error_message=None,
+                   product=None):
     """Create a standardized log entry.
 
     Provide either an exception via `error`, or explicit `error_type`/`error_message`.
     When `error` is given, type/message/traceback are extracted from it.
+
+    `product` is the `config.PRODUCT_SPEC` key whose build raised, e.g.
+    'video/pose'. It is what sorts the entry into its `errors/{product}` group
+    in the session H5; None means the failure is not attributable to one
+    product and lands in the `errors/` root.
     """
     if error is not None:
         return {
@@ -167,6 +173,7 @@ def make_log_entry(eid, error=None, error_type=None, error_message=None):
             'error_type': type(error).__name__,
             'error_message': str(error),
             'traceback': tb_module.format_exc(),
+            'product': product,
         }
     if error_type is not None:
         return {
@@ -174,6 +181,7 @@ def make_log_entry(eid, error=None, error_type=None, error_message=None):
             'error_type': error_type,
             'error_message': error_message,
             'traceback': None,
+            'product': product,
         }
     raise ValueError("Provide either error or error_type")
 

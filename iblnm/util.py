@@ -15,7 +15,7 @@ from iblnm.validation import (
 )
 
 
-LOG_COLUMNS = ['eid', 'error_type', 'error_message', 'traceback']
+LOG_COLUMNS = ['eid', 'error_type', 'error_message', 'traceback', 'product']
 
 
 def fill_qc_labels(df: pd.DataFrame) -> pd.DataFrame:
@@ -195,8 +195,9 @@ def collect_catalog(h5_dir):
 def collect_errors(h5_dir):
     """Aggregate error logs from all H5 files in a directory.
 
-    Reads the /errors group from each .h5 file. Files without an /errors
-    group or with an empty /errors group are skipped.
+    Reads the /errors tree from each .h5 file, including the per-product
+    subgroups. Files without an /errors group, or with an empty one, contribute
+    no rows.
 
     Parameters
     ----------
@@ -209,23 +210,13 @@ def collect_errors(h5_dir):
         Error log with LOG_COLUMNS schema.
     """
     import h5py
+    from iblnm.data import read_error_tree
 
     h5_dir = Path(h5_dir)
     rows = []
     for fpath in sorted(h5_dir.glob('*.h5')):
         with h5py.File(fpath, 'r') as f:
-            if 'errors' not in f:
-                continue
-            err_grp = f['errors']
-            if 'error_type' not in err_grp:
-                continue
-            n = len(err_grp['error_type'])
-            for i in range(n):
-                entry = {}
-                for col in LOG_COLUMNS:
-                    val = err_grp[col][i]
-                    entry[col] = val.decode() if isinstance(val, bytes) else val
-                rows.append(entry)
+            rows.extend(read_error_tree(f))
 
     if not rows:
         return pd.DataFrame(columns=LOG_COLUMNS)

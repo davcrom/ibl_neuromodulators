@@ -349,7 +349,11 @@ with pytest.raises(InvalidBrainRegion):
     validate_brain_region(bad_session)
 ```
 
-Error log entries follow the schema: `['eid', 'error_type', 'error_message', 'traceback']`.
+Error log entries follow the schema: `['eid', 'error_type', 'error_message',
+'traceback', 'product']`. `product` names the `config.PRODUCT_SPEC` key whose
+build raised — `ps.log_error(e, product='video/pose')` — and decides which
+`errors/{product}` group the entry is saved under. It is None for failures not
+attributable to a single product, which land in the `errors/` root.
 
 Downstream scripts read each session's errors from its H5 `/errors` group —
 `from_catalog(..., h5_dir=...)` scans them into a `logged_errors` column (via
@@ -473,11 +477,14 @@ movement channel.
 │       genotype, projects, users, brain_region, hemisphere,
 │       target_NM, datasets
 │
-├── errors/
-│   ├── eid               str[M]
-│   ├── error_type        str[M]
-│   ├── error_message     str[M]
-│   └── traceback         str[M]
+├── errors/                          # mirrors the product tree; a group holds
+│   │                                # the last build attempt of its product,
+│   │                                # rewritten whole, never accumulated
+│   ├── eid, error_type, error_message, traceback, product
+│   │                     str[M]     # failures logged with no product
+│   └── {product}/                   # e.g. photometry/raw, video/pose
+│       └── eid, error_type, error_message, traceback, product
+│                         str[M]
 │
 ├── photometry/
 │   └── {brain_region}/
