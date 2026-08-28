@@ -294,6 +294,13 @@ def _stamp_matches(attrs: h5py.AttributeManager, spec: dict) -> bool:
 # 'photometry/preprocessed' product. The raw bands sit beside it under their own
 # names ('GCaMP', 'Isosbestic').
 PREPROCESSED_BAND = 'GCaMP_preprocessed'
+# The wheel's H5 label. It has one channel, so the label level carries no
+# information for it, but keeping it makes every modality's handlers walk labels
+# the same way. The label names the preprocessed product — velocity — not the
+# raw encoder position stored underneath it.
+WHEEL_LABEL = 'velocity'
+# The event the wheel matrix is cut from, hence its only event coordinate.
+_WHEEL_T0_EVENT = PRODUCT_SPEC['wheel/responses']['t0_event']
 _METADATA_NONE_SENTINEL = '__none__'
 _ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback', 'product')
 # Never persisted to errors/ — see _save_errors.
@@ -453,34 +460,6 @@ def _load_trials(session, h5_file):
     if 'trials/table' not in h5_file:
         return
     session.trials = _read_dataframe(h5_file['trials/table'])
-
-
-def _save_wheel(session, h5_file):
-    if getattr(session, 'wheel_velocity', None) is None:
-        return
-    wheel_group = h5_file.require_group('wheel')
-    responses_group = _replace_group(wheel_group, 'responses')
-    responses_group.create_dataset(
-        'velocity', data=session.wheel_velocity,
-        compression='gzip', compression_opts=4,
-    )
-    responses_group.attrs['fs'] = session.wheel_fs
-    responses_group.attrs['t0_event'] = getattr(
-        session, '_wheel_t0_event', 'stimOn_times',
-    )
-    responses_group.attrs['t1_event'] = getattr(
-        session, '_wheel_t1_event', 'feedback_times',
-    )
-
-
-def _load_wheel(session, h5_file):
-    if 'wheel' not in h5_file or 'responses' not in h5_file['wheel']:
-        return
-    responses_group = h5_file['wheel/responses']
-    session.wheel_velocity = responses_group['velocity'][:].astype(np.float32)
-    session.wheel_fs = responses_group.attrs['fs']
-    session._wheel_t0_event = responses_group.attrs['t0_event']
-    session._wheel_t1_event = responses_group.attrs['t1_event']
 
 
 # ----- Photometry sub-handlers (pure: parent_group + payload only) -----
@@ -764,6 +743,43 @@ def _load_photometry(session, h5_file):
             photometry_group['neurophotometrics/qc'])
 
 
+def _save_wheel(session, h5_file):
+    """Write the wheel's three products under `wheel/{WHEEL_LABEL}/`.
+
+    Raw position and preprocessed velocity sit on different time bases, so each
+    is its own time-series group; the responses matrix is written by the same
+    peri-event pair every modality uses.
+    """
+    wheel_group = h5_file.require_group('wheel')
+    label_group = wheel_group.require_group(WHEEL_LABEL)
+    if session.wheel_position is not None:
+        _save_time_series(_replace_group(label_group, 'raw'),
+                          session.wheel_position, session.spec['wheel/raw'])
+    if session.wheel_velocity is not None:
+        _save_time_series(_replace_group(label_group, 'preprocessed'),
+                          session.wheel_velocity,
+                          session.spec['wheel/preprocessed'])
+    for label, responses in session.wheel_responses.items():
+        _save_peri_event_matrix(
+            _replace_group(wheel_group.require_group(label), 'responses'),
+            responses, session.spec['wheel/responses'],
+        )
+
+
+def _load_wheel(session, h5_file):
+    if 'wheel' not in h5_file:
+        return
+    wheel_group = h5_file['wheel']
+    label_group = wheel_group.get(WHEEL_LABEL)
+    if label_group is not None:
+        if 'raw' in label_group:
+            session.wheel_position = _load_time_series(label_group['raw'])
+        if 'preprocessed' in label_group:
+            session.wheel_velocity = _load_time_series(
+                label_group['preprocessed'])
+    session.wheel_responses = _read_label_responses(wheel_group)
+
+
 # ----- Video / LightningPose sub-handlers (pure: parent_group + payload) -----
 
 LP_QC_NOT_SET = 'NOT_SET'
@@ -846,10 +862,18 @@ def _load_video(session, h5_file):
 
 
 # What `load_responses(modality)` needs per modality: the method returning that
-# modality's preprocessed signals as a label -> Series mapping, and the session
-# attribute its response matrices are assigned to.
+# modality's preprocessed signals as a label -> Series mapping, the session
+# attribute its response matrices are assigned to, and the extraction arguments
+# to fall back on when the caller names none. Photometry's fallback is empty
+# because `extract_responses` already defaults to the photometry window; the
+# wheel's cut is its own, and is read off the product spec so the matrix and its
+# stamp cannot disagree about which events were used.
 _RESPONSE_MODALITIES = {
-    'photometry': ('load_photometry', 'photometry_responses'),
+    'photometry': ('load_photometry', 'photometry_responses', {}),
+    'wheel':      ('_wheel_signals', 'wheel_responses', {
+        'events': [_WHEEL_T0_EVENT],
+        'window': (0.0, PRODUCT_SPEC['wheel/responses']['t1_event']),
+    }),
 }
 
 _SAVE_HANDLERS = {
@@ -1000,6 +1024,11 @@ class PhotometrySession(PhotometrySessionLoader):
         # region -> band-suffixed metric -> value for the raw bands.
         self.neurophotometrics_qc = {}
         self.photometry_qc = {}
+        # Wheel products: raw encoder position on its own irregular index, the
+        # velocity differentiated from it at WHEEL_FS, and the cut responses.
+        self.wheel_position = None
+        self.wheel_velocity = None
+        self.wheel_responses = {}
         self.pose = None
         self.pose_times = None
         self.motion_energy = None
@@ -1622,7 +1651,7 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
-        load_signals, attribute = _RESPONSE_MODALITIES[modality]
+        load_signals, attribute, defaults = _RESPONSE_MODALITIES[modality]
         responses = None
         if self.stored_is_current(f'{modality}/responses'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -1632,8 +1661,10 @@ class PhotometrySession(PhotometrySessionLoader):
             signals = getattr(self, load_signals)()
             if self.trials is None:
                 self.load_trials()
-            responses = self.extract_responses(signals, events=events,
-                                               window=window)
+            named = {key: value for key, value in
+                     (('events', events), ('window', window))
+                     if value is not None}
+            responses = self.extract_responses(signals, **(defaults | named))
         setattr(self, attribute, responses)
         if was_cut:
             self.save_h5(groups=[modality])
@@ -1741,10 +1772,13 @@ class PhotometrySession(PhotometrySessionLoader):
                      or self.pose_xcorr is not None
                      or np.isfinite(self.length_discrepancy)
                      or np.isfinite(self.framerate_from_tpts))
+        has_wheel = (self.wheel_position is not None
+                     or self.wheel_velocity is not None
+                     or bool(self.wheel_responses))
         return [name for name, available in (
             ('photometry', has_photometry),
             ('trials',     getattr(self, 'trials', None) is not None),
-            ('wheel',      getattr(self, 'wheel_velocity', None) is not None),
+            ('wheel',      has_wheel),
             ('video',      has_video),
         ) if available]
 
@@ -1754,7 +1788,10 @@ class PhotometrySession(PhotometrySessionLoader):
         Parameters
         ----------
         fpath : Path or str, optional
-            Path to the HDF5 file. Defaults to ``self.filepath``.
+            Path to the HDF5 file. Defaults to ``self.filepath``; naming another
+            path adopts it as ``self.filepath``, so the load methods and
+            :meth:`product_status` go on reading the file this data came from
+            rather than the default one for this eid.
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
             'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video'.
@@ -1762,6 +1799,8 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         if fpath is None:
             fpath = self.filepath
+        else:
+            self.filepath = Path(fpath)
         group_names = list(_LOAD_HANDLERS) if groups is None else list(groups)
         with h5py.File(fpath, 'r') as h5_file:
             for group_name in group_names:
@@ -2114,42 +2153,107 @@ class PhotometrySession(PhotometrySessionLoader):
     # Wheel Methods
     # =========================================================================
 
-    def load_wheel(self, fs=None):
-        """Load wheel position and velocity from ONE.
+    def load_raw_wheel(self) -> pd.Series:
+        """Fetch the raw encoder position from Alyx.
 
-        Interpolates to WHEEL_FS Hz and computes velocity via Butterworth filter.
-        Stores result in self.wheel (DataFrame: times, position, velocity, acceleration).
+        Returns
+        -------
+        pandas.Series
+            Wheel position (radians) indexed by the encoder's own timestamps
+            (seconds, session clock). The encoder samples on movement, not on a
+            clock, so the index is irregular — that is what the `wheel/raw`
+            product stores, leaving the uniform grid to
+            :meth:`differentiate_wheel`. Also assigned to
+            ``self.wheel_position``.
         """
-        if fs is None:
-            fs = WHEEL_FS
         try:
-            super().load_wheel(fs=fs)
+            wheel = self.one.load_object(
+                self.eid, 'wheel',
+                collection=self._find_behaviour_collection('wheel'),
+                revision=self.revision or None,
+            )
         except ALFObjectNotFound:
             try:
                 self.one.load_dataset(self.eid, '_iblrig_encoderPositions.raw.ssv')
             except ALFObjectNotFound:
                 raise MissingRawData("_iblrig_encoderPositions.raw.ssv")
             raise MissingExtractedData("_ibl_wheel.position.npy")
-        self.wheel_fs = fs
+        self.wheel_position = pd.Series(np.asarray(wheel['position'], dtype=float),
+                                        index=np.asarray(wheel['timestamps'],
+                                                         dtype=float))
+        return self.wheel_position
 
-    def extract_wheel_velocity(self, t0_event='stimOn_times', t1_event='feedback_times'):
-        """Extract per-trial wheel velocity from t0_event to t1_event.
+    def load_wheel(self) -> pd.Series:
+        """Return the preprocessed wheel velocity, building it if absent.
 
-        Returns a float32 (T, W) matrix where W is the longest trial in samples.
-        Shorter trials and NaN-event trials are NaN-padded on the right.
-        Stores result in self.wheel_velocity and returns it.
+        Reads `wheel/{WHEEL_LABEL}/preprocessed` when it is stored and its stamp
+        still matches `config.PRODUCT_SPEC`; otherwise fetches the raw encoder
+        position from Alyx and differentiates it, which writes and stamps the
+        product on the way out. A product named in `self.rebuild` skips the read
+        and is rebuilt.
+
+        Returns
+        -------
+        pandas.Series
+            Velocity (radians per second) on a uniform ``WHEEL_FS`` time index
+            (seconds). Also assigned to ``self.wheel_velocity``.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
         """
-        wheel_signal = pd.Series(
-            self.wheel['velocity'].values,
-            index=self.wheel['times'].values,
-        )
-        t0_times = self.trials[t0_event].values
-        t1_times = self.trials[t1_event].values
-        velocity_matrix, _ = get_responses(wheel_signal, events=t0_times, t0=0.0, t1=t1_times)
-        self.wheel_velocity = velocity_matrix.astype(np.float32)
-        self._wheel_t0_event = t0_event
-        self._wheel_t1_event = t1_event
+        velocity = None
+        if self.stored_is_current('wheel/preprocessed'):
+            with h5py.File(self.filepath, 'r') as h5:
+                velocity = _load_time_series(
+                    h5[f'wheel/{WHEEL_LABEL}/preprocessed'])
+        if velocity is None:
+            self.load_raw_wheel()
+            velocity = self.differentiate_wheel()
+        self.wheel_velocity = velocity
+        return velocity
+
+    def differentiate_wheel(self, fs: float = WHEEL_FS) -> pd.Series:
+        """Differentiate the raw encoder position into velocity, and write it.
+
+        The encoder samples irregularly, so the position is first interpolated
+        onto a uniform `fs` grid; velocity is then the sample-to-sample
+        difference of the low-pass filtered position, following
+        :func:`brainbox.behavior.wheel.velocity_filtered` at its default corner
+        frequency and filter order. Only the velocity is kept on the grid — the
+        position stays raw, in its own product.
+
+        Parameters
+        ----------
+        fs : float
+            Grid rate in Hz. Defaults to ``config.WHEEL_FS``, which is what the
+            `wheel/preprocessed` stamp records.
+
+        Returns
+        -------
+        pandas.Series
+            Velocity (radians per second) indexed by grid time (seconds), also
+            assigned to ``self.wheel_velocity`` and written to H5.
+        """
+        from brainbox.behavior.wheel import interpolate_position, velocity_filtered
+
+        position, times = interpolate_position(
+            self.wheel_position.index.to_numpy(),
+            self.wheel_position.to_numpy(), freq=fs)
+        velocity, _ = velocity_filtered(position, fs=fs)
+        self.wheel_velocity = pd.Series(velocity, index=times)
+        self.save_h5(groups=['wheel'])
         return self.wheel_velocity
+
+    def _wheel_signals(self) -> dict[str, pd.Series]:
+        """The wheel's preprocessed velocity keyed by its H5 label.
+
+        The wheel has one channel, so this mapping has one entry; it exists so
+        `load_responses` can hand every modality's signals to
+        :meth:`extract_responses` in the same shape.
+        """
+        return {WHEEL_LABEL: self.load_wheel()}
 
     def load_camera_times(self):
         """Load left-camera frame timestamps, independently of LightningPose.
@@ -2260,7 +2364,8 @@ class PhotometrySession(PhotometrySessionLoader):
         finite = np.isfinite(paw_speed)  # drop untracked frames (NaN speed)
         functions, lags, peak_lags, drift = per_third_crosscorr(
             paw_speed[finite], self.pose_times[finite],
-            np.abs(self.wheel['velocity'].values), self.wheel['times'].values,
+            np.abs(self.wheel_velocity.to_numpy()),
+            self.wheel_velocity.index.to_numpy(),
         )
         self.pose_xcorr = {'functions': functions, 'lags': lags,
                            'peak_lags': peak_lags, 'drift': drift}
@@ -2574,8 +2679,9 @@ class PhotometrySession(PhotometrySessionLoader):
         ]
         long = pd.concat(magnitude_frames, ignore_index=True)
 
+        wheel = self.load_responses('wheel')[WHEEL_LABEL]
         regressors = analysis.build_trial_regressors(
-            self.trials, getattr(self, 'wheel_velocity', None))
+            self.trials, wheel.sel(event=_WHEEL_T0_EVENT).values)
         df = long.merge(regressors, on='trial', how='left')
         df['hemisphere'] = self.hemisphere[
             self.brain_region.index(brain_region)]
@@ -4803,7 +4909,7 @@ class PhotometrySessionGroup:
         """Collect per-trial predictors for every in-scope session.
 
         Reads each session's H5 file directly (group ``trials`` and, when
-        present, ``wheel/responses/velocity``) and assembles one row per
+        present, ``wheel/{WHEEL_LABEL}/responses``) and assembles one row per
         ``eid × trial``. Derived timing columns are NaN for a session when
         the underlying event-time columns are absent; ``peak_velocity`` is
         NaN when the wheel group is missing or holds no finite samples.
@@ -4824,8 +4930,11 @@ class PhotometrySessionGroup:
             h5_path = Path(self.h5_dir) / f'{eid}.h5'
             with h5py.File(h5_path, 'r') as f:
                 trials = _read_dataframe(f['trials/table'])
-                wheel_vel = (f['wheel/responses/velocity'][:]
-                             if 'wheel/responses/velocity' in f else None)
+                wheel_group = f.get(f'wheel/{WHEEL_LABEL}/responses')
+                wheel_vel = (
+                    _load_peri_event_matrix(wheel_group)
+                    .sel(event=_WHEEL_T0_EVENT).values
+                    if wheel_group is not None else None)
 
             df = analysis.build_trial_regressors(trials, wheel_vel)
             df.insert(0, 'eid', eid)

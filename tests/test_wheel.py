@@ -1,8 +1,8 @@
-"""Tests for wheel velocity extraction (PhotometrySession methods + wheel.py script)."""
+"""Tests for the wheel products: raw position, preprocessed velocity, responses."""
 import numpy as np
 import pandas as pd
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -29,217 +29,254 @@ def mock_session_series():
     })
 
 
-def _make_session(mock_session_series):
+def _raw_wheel(duration=10.0, rate=250.0, seed=0):
+    """Encoder samples at an irregular rate, position ramping at 1 rad/s.
+
+    Real encoder timestamps are event-driven rather than uniform, so the sample
+    spacing is jittered — that irregularity is what `wheel/raw` must preserve.
+    """
+    rng = np.random.default_rng(seed)
+    steps = rng.uniform(0.5, 1.5, int(duration * rate)) / rate
+    timestamps = np.cumsum(steps)
+    return {'timestamps': timestamps, 'position': timestamps.copy()}
+
+
+def _make_session(mock_session_series, tmp_path, raw_wheel=None):
+    """Session whose H5 lives in `tmp_path` and whose ONE serves `raw_wheel`."""
     from iblnm.data import PhotometrySession
-    return PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-
-
-def _make_wheel_df(duration=5.0, fs=1000):
-    """Constant-velocity wheel at `fs` Hz."""
-    t = np.arange(0, duration, 1 / fs, dtype=np.float32)
-    vel = np.ones(len(t), dtype=np.float32)
-    return pd.DataFrame({'times': t, 'velocity': vel})
+    ps = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+    ps.filepath = tmp_path / f'{ps.eid}.h5'
+    ps.one.load_object.return_value = (
+        _raw_wheel() if raw_wheel is None else raw_wheel)
+    return ps
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# extract_wheel_velocity
+# wheel/raw — the irregular encoder samples
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestExtractWheelVelocity:
+class TestRawWheelProduct:
 
-    def test_output_shape(self, mock_session_series):
-        """Matrix shape is (n_trials, longest_trial_samples)."""
-        ps = _make_session(mock_session_series)
-        ps.wheel = _make_wheel_df(duration=5.0)
-        ps.wheel_fs = 1000
-        # trial lengths: 500, 500, 1000 samples
-        ps.trials = pd.DataFrame({
-            'stimOn_times':  [0.5,  1.5, 2.5],
-            'feedback_times': [1.0,  2.0, 3.5],
-        })
-        result = ps.extract_wheel_velocity()
-        assert result.shape == (3, 1000)
+    def test_keeps_the_irregular_sample_times(self, mock_session_series, tmp_path):
+        """The fetched position keeps ONE's own timestamps, ungridded."""
+        raw = _raw_wheel()
+        ps = _make_session(mock_session_series, tmp_path, raw)
+        position = ps.load_raw_wheel()
 
-    def test_valid_values_not_nan(self, mock_session_series):
-        """Samples within the trial window are not NaN."""
-        ps = _make_session(mock_session_series)
-        ps.wheel = _make_wheel_df(duration=5.0)
-        ps.wheel_fs = 1000
-        ps.trials = pd.DataFrame({
-            'stimOn_times':   [1.0],
-            'feedback_times': [2.0],
-        })
-        result = ps.extract_wheel_velocity()
-        assert not np.any(np.isnan(result[0]))
+        np.testing.assert_allclose(position.index.to_numpy(), raw['timestamps'])
+        np.testing.assert_allclose(position.to_numpy(), raw['position'])
+        assert ps.wheel_position is position
 
-    def test_short_trials_padded_with_nan(self, mock_session_series):
-        """Rows shorter than the max length are NaN-padded on the right."""
-        ps = _make_session(mock_session_series)
-        ps.wheel = _make_wheel_df(duration=5.0)
-        ps.wheel_fs = 1000
-        # trial 0: 0.5 s; trial 1: 1.0 s (longest)
-        # get_responses masks tpts > t1_relative (strict), so the sample at
-        # exactly t=0.5 (index 500) is included; NaN starts at index 501.
-        ps.trials = pd.DataFrame({
-            'stimOn_times':   [0.5, 1.5],
-            'feedback_times': [1.0, 2.5],
-        })
-        result = ps.extract_wheel_velocity()
-        assert result.shape == (2, 1000)
-        assert np.all(np.isnan(result[0, 501:]))  # NaN after boundary sample
-        assert not np.any(np.isnan(result[1]))    # trial 1 fully valid
+    def test_roundtrips_through_the_raw_group(self, mock_session_series, tmp_path):
+        """Saved position and timestamps come back unchanged."""
+        raw = _raw_wheel()
+        ps = _make_session(mock_session_series, tmp_path, raw)
+        ps.load_raw_wheel()
+        ps.save_h5(groups=['wheel'])
 
-    def test_nan_trial_gives_all_nan_row(self, mock_session_series):
-        """Trial with NaN stimOn or feedback produces an all-NaN row."""
-        ps = _make_session(mock_session_series)
-        ps.wheel = _make_wheel_df(duration=5.0)
-        ps.wheel_fs = 1000
-        ps.trials = pd.DataFrame({
-            'stimOn_times':   [0.5,  np.nan],
-            'feedback_times': [1.0,  2.0],
-        })
-        result = ps.extract_wheel_velocity()
-        assert np.all(np.isnan(result[1]))
+        fresh = _make_session(mock_session_series, tmp_path)
+        fresh.load_h5(groups=['wheel'])
+        np.testing.assert_allclose(fresh.wheel_position.index.to_numpy(),
+                                   raw['timestamps'])
+        np.testing.assert_allclose(fresh.wheel_position.to_numpy(),
+                                   raw['position'])
 
-    def test_stores_on_self(self, mock_session_series):
-        """extract_wheel_velocity stores result on self.wheel_velocity."""
-        ps = _make_session(mock_session_series)
-        ps.wheel = _make_wheel_df(duration=3.0)
-        ps.wheel_fs = 1000
-        ps.trials = pd.DataFrame({
-            'stimOn_times':   [0.5],
-            'feedback_times': [1.0],
-        })
-        result = ps.extract_wheel_velocity()
-        assert hasattr(ps, 'wheel_velocity')
-        np.testing.assert_array_equal(ps.wheel_velocity, result)
-
-    def test_output_dtype_float32(self, mock_session_series):
-        """Output matrix is float32 to match SessionLoader convention."""
-        ps = _make_session(mock_session_series)
-        ps.wheel = _make_wheel_df(duration=3.0)
-        ps.wheel_fs = 1000
-        ps.trials = pd.DataFrame({
-            'stimOn_times':   [0.5],
-            'feedback_times': [1.0],
-        })
-        result = ps.extract_wheel_velocity()
-        assert result.dtype == np.float32
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# save_h5(mode='a') — wheel group
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestSaveWheelToH5:
-
-    def test_roundtrip_values(self, mock_session_series, tmp_path):
-        """velocity matrix is preserved exactly after save/read."""
-        import h5py
-        ps = _make_session(mock_session_series)
-        ps.wheel_velocity = np.array(
-            [[1., 2., np.nan], [3., 4., 5.]], dtype=np.float32
-        )
-        ps.wheel_fs = 1000
-        fpath = tmp_path / f'{ps.eid}.h5'
-        ps.save_h5(fpath, mode='a')
-
-        with h5py.File(fpath, 'r') as f:
-            v = f['wheel/responses/velocity'][:]
-        assert v.shape == (2, 3)
-        assert v.dtype == np.float32
-        assert np.isnan(v[0, 2])
-        np.testing.assert_allclose(v[0, :2], [1., 2.])
-        np.testing.assert_allclose(v[1], [3., 4., 5.])
-
-    def test_saves_fs_and_event_attrs(self, mock_session_series, tmp_path):
-        """HDF5 wheel group carries fs, t0_event, t1_event attributes."""
-        import h5py
-        ps = _make_session(mock_session_series)
-        ps.wheel_velocity = np.ones((2, 500), dtype=np.float32)
-        ps.wheel_fs = 1000
-        fpath = tmp_path / f'{ps.eid}.h5'
-        ps.save_h5(fpath, mode='a')
-
-        with h5py.File(fpath, 'r') as f:
-            assert f['wheel/responses'].attrs['fs'] == 1000
-            assert f['wheel/responses'].attrs['t0_event'] == 'stimOn_times'
-            assert f['wheel/responses'].attrs['t1_event'] == 'feedback_times'
-
-    def test_overwrites_existing_wheel_group(self, mock_session_series, tmp_path):
-        """Saving twice replaces the wheel group rather than raising an error."""
-        import h5py
-        ps = _make_session(mock_session_series)
-        fpath = tmp_path / f'{ps.eid}.h5'
-        ps.wheel_velocity = np.ones((2, 100), dtype=np.float32)
-        ps.wheel_fs = 1000
-        ps.save_h5(fpath, mode='a')
-
-        ps.wheel_velocity = np.full((3, 200), 2.0, dtype=np.float32)
-        ps.save_h5(fpath, mode='a')  # should not raise
-
-        with h5py.File(fpath, 'r') as f:
-            assert f['wheel/responses/velocity'].shape == (3, 200)
-
-    def test_uses_default_path_from_config(self, mock_session_series, tmp_path):
-        """Without fpath arg, saves to SESSIONS_H5_DIR / {eid}.h5.
-
-        ``self.filepath`` is computed from SESSIONS_H5_DIR at construction, so
-        the patch must precede ``_make_session``.
-        """
-        with patch('iblnm.data.SESSIONS_H5_DIR', tmp_path):
-            ps = _make_session(mock_session_series)
-            ps.wheel_velocity = np.ones((1, 10), dtype=np.float32)
-            ps.wheel_fs = 1000
-            ps.save_h5(mode='a')
-            saved = tmp_path / f'{ps.eid}.h5'
-            assert saved.exists()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# load_wheel
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestLoadWheel:
-
-    def test_raises_missing_raw_data_when_no_task_file(self, mock_session_series):
-        """When wheel ALF missing AND raw task data missing → MissingRawData."""
-        from iblnm.data import PhotometrySession
-        from iblnm.validation import MissingRawData
-        from one.alf.exceptions import ALFObjectNotFound
-        ps = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        with patch.object(type(ps).__bases__[0].__bases__[0], 'load_wheel',
-                          side_effect=ALFObjectNotFound('wheel')):
-            ps.one.load_dataset.side_effect = ALFObjectNotFound('taskData')
-            with pytest.raises(MissingRawData):
-                ps.load_wheel()
-
-    def test_raises_missing_extracted_data_when_raw_present(self, mock_session_series):
-        """When wheel ALF missing BUT raw task data exists → MissingExtractedData."""
-        from iblnm.data import PhotometrySession
+    def test_missing_extracted_data_when_raw_ssv_present(self, mock_session_series,
+                                                         tmp_path):
+        """Wheel ALF missing but the raw encoder file present → not extracted."""
         from iblnm.validation import MissingExtractedData
         from one.alf.exceptions import ALFObjectNotFound
-        ps = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        with patch.object(type(ps).__bases__[0].__bases__[0], 'load_wheel',
-                          side_effect=ALFObjectNotFound('wheel')):
-            ps.one.load_dataset.return_value = MagicMock()  # raw task data found
-            with pytest.raises(MissingExtractedData):
-                ps.load_wheel()
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.one.load_object.side_effect = ALFObjectNotFound('wheel')
+        ps.one.load_dataset.return_value = MagicMock()
 
-    def test_sets_wheel_dataframe_on_success(self, mock_session_series):
-        """On success, self.wheel is a DataFrame with times and velocity columns."""
-        from iblnm.data import PhotometrySession
-        ps = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        mock_wheel = pd.DataFrame({
-            'times': np.arange(0, 3, 0.001, dtype=np.float32),
-            'velocity': np.zeros(3000, dtype=np.float32),
-            'position': np.zeros(3000, dtype=np.float32),
-            'acceleration': np.zeros(3000, dtype=np.float32),
-        })
-        with patch.object(type(ps).__bases__[0].__bases__[0], 'load_wheel',
-                          side_effect=lambda **kw: setattr(ps, 'wheel', mock_wheel)):
+        with pytest.raises(MissingExtractedData):
+            ps.load_raw_wheel()
+
+    def test_missing_raw_data_when_encoder_file_absent(self, mock_session_series,
+                                                       tmp_path):
+        """Neither the ALF nor the raw encoder file → nothing was recorded."""
+        from iblnm.validation import MissingRawData
+        from one.alf.exceptions import ALFObjectNotFound
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.one.load_object.side_effect = ALFObjectNotFound('wheel')
+        ps.one.load_dataset.side_effect = ALFObjectNotFound('encoderPositions')
+
+        with pytest.raises(MissingRawData):
+            ps.load_raw_wheel()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# wheel/preprocessed — velocity on the WHEEL_FS grid
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPreprocessedWheelProduct:
+
+    def test_velocity_is_uniformly_sampled_at_wheel_fs(self, mock_session_series,
+                                                       tmp_path):
+        """Position ramping at 1 rad/s differentiates to 1 rad/s at WHEEL_FS."""
+        from iblnm.config import WHEEL_FS
+        ps = _make_session(mock_session_series, tmp_path)
+        velocity = ps.load_wheel()
+
+        steps = np.diff(velocity.index.to_numpy())
+        np.testing.assert_allclose(steps, 1 / WHEEL_FS, atol=1e-9)
+        # The filter's edges ring, so score the settled interior only.
+        interior = velocity.iloc[WHEEL_FS:-WHEEL_FS]
+        np.testing.assert_allclose(interior.to_numpy(), 1.0, atol=1e-3)
+        assert ps.wheel_velocity is velocity
+
+    def test_matches_the_brainbox_differentiation(self, mock_session_series,
+                                                  tmp_path):
+        """The velocity is what brainbox computed before the product split."""
+        from brainbox.behavior.wheel import interpolate_position, velocity_filtered
+        from iblnm.config import WHEEL_FS
+        raw = _raw_wheel(seed=3)
+        ps = _make_session(mock_session_series, tmp_path, raw)
+        velocity = ps.load_wheel()
+
+        position, times = interpolate_position(
+            raw['timestamps'], raw['position'], freq=WHEEL_FS)
+        expected, _ = velocity_filtered(position, fs=WHEEL_FS)
+        np.testing.assert_allclose(velocity.index.to_numpy(), times)
+        np.testing.assert_allclose(velocity.to_numpy(), expected)
+
+    def test_reads_stored_product_without_fetching(self, mock_session_series,
+                                                   tmp_path):
+        """A second session over the same file reads it and never fetches."""
+        ps = _make_session(mock_session_series, tmp_path)
+        built = ps.load_wheel()
+        assert ps.product_status('wheel/preprocessed') == 'current'
+
+        fresh = _make_session(mock_session_series, tmp_path)
+        velocity = fresh.load_wheel()
+
+        fresh.one.load_object.assert_not_called()
+        pd.testing.assert_series_equal(velocity, built)
+
+    def test_raises_on_stale_stamp(self, mock_session_series, tmp_path):
+        """A velocity computed at a rate that changed is not reused."""
+        import h5py
+        from iblnm.data import WHEEL_LABEL, _write_stamp
+        from iblnm.validation import StaleProduct
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.load_wheel()
+        with h5py.File(ps.filepath, 'a') as h5:
+            _write_stamp(h5[f'wheel/{WHEEL_LABEL}/preprocessed'],
+                         ps.spec['wheel/preprocessed'] | {'fs': 1000})
+
+        assert ps.product_status('wheel/preprocessed') == 'stale'
+        with pytest.raises(StaleProduct, match='wheel/preprocessed'):
             ps.load_wheel()
-        assert isinstance(ps.wheel, pd.DataFrame)
-        assert 'times' in ps.wheel.columns
-        assert 'velocity' in ps.wheel.columns
 
+    def test_rebuild_skips_the_stored_product(self, mock_session_series, tmp_path):
+        """A product named in self.rebuild is refetched even when current."""
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.load_wheel()
+        ps.rebuild.add('wheel/preprocessed')
+        ps.load_wheel()
+
+        assert ps.one.load_object.call_count == 2
+
+    def test_absent_before_anything_is_stored(self, mock_session_series, tmp_path):
+        ps = _make_session(mock_session_series, tmp_path)
+        assert ps.product_status('wheel/raw') == 'absent'
+        assert ps.product_status('wheel/preprocessed') == 'absent'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# wheel/responses — the stimOn → feedback cut
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_trials():
+    """Two trials whose windows differ, so the shared time axis is testable."""
+    return pd.DataFrame({
+        'trial': [7, 9],
+        'stimOn_times':   [1.0, 3.0],
+        'feedback_times': [1.5, 4.0],
+    })
+
+
+class TestWheelResponsesProduct:
+
+    @pytest.fixture
+    def wheeled_session(self, mock_session_series, tmp_path):
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.trials = _make_trials()
+        return ps
+
+    def test_nan_tail_starts_at_each_trials_feedback(self, wheeled_session):
+        """One time axis spanning the longest trial; each trial masked at its own end."""
+        from iblnm.config import WHEEL_FS
+        responses = wheeled_session.load_responses('wheel')
+        matrix = responses['velocity'].sel(event='stimOn_times')
+
+        tpts = matrix.coords['time'].to_numpy()
+        np.testing.assert_allclose(tpts[0], 0.0)
+        np.testing.assert_allclose(tpts[-1], 1.0 - 1 / WHEEL_FS)
+        assert matrix.shape == (2, WHEEL_FS)
+        # Trial 0 runs 0.5 s; get_responses masks tpts strictly greater than
+        # that, so the boundary sample survives and NaN starts after it.
+        assert not np.isnan(matrix.values[0, :51]).any()
+        assert np.isnan(matrix.values[0, 51:]).all()
+        assert not np.isnan(matrix.values[1]).any()
+
+    def test_trial_coord_comes_from_the_trials_table(self, wheeled_session):
+        responses = wheeled_session.load_responses('wheel')
+        np.testing.assert_array_equal(
+            responses['velocity'].coords['trial'].to_numpy(), [7, 9])
+
+    def test_events_live_in_the_stamp_not_standalone_attrs(self, wheeled_session):
+        """t0_event / t1_event are read back from the product's spec stamp."""
+        import h5py
+        from iblnm.data import WHEEL_LABEL, _read_stamp
+        wheeled_session.load_responses('wheel')
+
+        with h5py.File(wheeled_session.filepath, 'r') as h5:
+            group = h5[f'wheel/{WHEEL_LABEL}/responses']
+            stamp = _read_stamp(group)
+            assert 't0_event' not in group.attrs
+            assert 't1_event' not in group.attrs
+        assert stamp['t0_event'] == 'stimOn_times'
+        assert stamp['t1_event'] == 'feedback_times'
+        assert wheeled_session.product_status('wheel/responses') == 'current'
+
+    def test_roundtrips_through_h5(self, wheeled_session, mock_session_series,
+                                   tmp_path):
+        import xarray as xr
+        built = wheeled_session.load_responses('wheel')
+
+        fresh = _make_session(mock_session_series, tmp_path)
+        reloaded = fresh.load_responses('wheel')
+
+        assert set(reloaded) == {'velocity'}
+        xr.testing.assert_allclose(reloaded['velocity'], built['velocity'])
+
+    def test_raises_on_stale_stamp(self, wheeled_session):
+        import h5py
+        from iblnm.data import WHEEL_LABEL, _write_stamp
+        from iblnm.validation import StaleProduct
+        wheeled_session.load_responses('wheel')
+        with h5py.File(wheeled_session.filepath, 'a') as h5:
+            _write_stamp(h5[f'wheel/{WHEEL_LABEL}/responses'],
+                         wheeled_session.spec['wheel/responses']
+                         | {'t1_event': 'response_times'})
+
+        with pytest.raises(StaleProduct, match='wheel/responses'):
+            wheeled_session.load_responses('wheel')
+
+    def test_peak_velocity_matches_the_old_matrix(self, wheeled_session):
+        """`_peak_velocity` on the responses product reproduces the old values."""
+        from iblnm.analysis import _peak_velocity, get_responses
+        velocity = wheeled_session.load_wheel()
+        old_matrix, _ = get_responses(
+            velocity,
+            events=wheeled_session.trials['stimOn_times'].to_numpy(),
+            t0=0.0,
+            t1=wheeled_session.trials['feedback_times'].to_numpy(),
+        )
+        responses = wheeled_session.load_responses('wheel')
+        new_matrix = responses['velocity'].sel(event='stimOn_times').values
+
+        np.testing.assert_allclose(_peak_velocity(new_matrix, 2),
+                                   _peak_velocity(old_matrix, 2))

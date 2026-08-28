@@ -100,9 +100,9 @@ Computes per-session metrics: fraction correct, no-go fraction, psychometric fun
 
 ### Stage 4: `wheel.py` — Per-trial wheel velocity
 
-Extracts wheel velocity for each trial (stimOn → feedback), NaN-padded to the longest trial. Appends a `wheel/` group to existing HDF5 files.
+Downloads the raw encoder position, differentiates it into velocity at `WHEEL_FS`, and cuts the per-trial matrix (stimOn → that trial's feedback), NaN-padded to the longest trial. Appends a `wheel/` group to existing HDF5 files.
 
-**Output**: appended `data/sessions/{eid}.h5` (wheel velocity and `/errors`)
+**Output**: appended `data/sessions/{eid}.h5` (`wheel/velocity/{raw,preprocessed,responses}` and `/errors`)
 
 ### Stage 5: `dataset_overview.py` — Session coverage figures
 
@@ -128,7 +128,7 @@ Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and the errors sca
 
 `PhotometrySession` wraps a row from `sessions.pqt` and provides methods for loading, validating, preprocessing, and extracting responses. It extends `PhotometrySessionLoader` from `brainbox.io.one`.
 
-Data attributes are lazy-loaded: `trials`, `photometry`, `responses`, `qc`, and `wheel_velocity` start empty and are populated by explicit method calls.
+Data attributes are lazy-loaded: `trials`, `photometry`, `responses`, `qc`, `wheel_position`, and `wheel_velocity` start empty and are populated by explicit method calls.
 
 ### Loading from ONE
 
@@ -162,7 +162,8 @@ from iblnm.config import SESSIONS_H5_DIR
 ps = PhotometrySession(session_row, one=one)
 ps.load_h5(SESSIONS_H5_DIR / f'{ps.eid}.h5')
 # → ps.photometry['GCaMP_preprocessed'], ps.trials, ps.photometry_responses,
-#   ps.movement_responses, ps.wheel_velocity
+#   ps.movement_responses, ps.wheel_position, ps.wheel_velocity,
+#   ps.wheel_responses
 ```
 
 ### Validation
@@ -247,11 +248,10 @@ endpoint — the cut the wheel needs, from stimulus onset to that trial's
 feedback:
 
 ```python
-ps.extract_responses(
-    {'velocity': wheel_velocity},
-    events=['stimOn_times'], window=(0.0, 'feedback_times'))
-# → trials share one time axis spanning to the longest trial;
-#   each is NaN-padded from its own feedback onward
+ps.load_responses('wheel')   # events=['stimOn_times'],
+                             # window=(0.0, 'feedback_times')
+# → {'velocity': DataArray}; trials share one time axis spanning to the
+#   longest trial, each NaN-padded from its own feedback onward
 ```
 
 Every channel carries the full event axis. A channel's own response event is
@@ -572,9 +572,20 @@ movement channel.
 │       └── attrs: spec_json, built_at
 │
 ├── wheel/
-│   └── responses/
-│       ├── velocity   float32 (T, W)  per-trial wheel velocity; NaN-padded
-│       └── attrs: fs=100, t0_event='stimOn_times', t1_event='feedback_times'
+│   └── velocity/                    the wheel's one label, named for the
+│       ├── raw/                     preprocessed signal, not the raw position
+│       │   ├── times     float64 (E,)   irregular encoder timestamps
+│       │   ├── signal    float64 (E,)   wheel position, radians
+│       │   └── attrs: spec_json, built_at
+│       ├── preprocessed/
+│       │   ├── times     float64 (V,)   uniform grid at WHEEL_FS
+│       │   ├── signal    float64 (V,)   velocity, radians per second
+│       │   └── attrs: spec_json (carries fs=100), built_at
+│       └── responses/
+│           ├── times          float64 (Wf,)  0 → longest trial's feedback
+│           ├── trials         int64   (T,)
+│           ├── stimOn_times   float64 (T, Wf)  NaN past each trial's feedback
+│           └── attrs: spec_json (carries t0_event, t1_event), built_at
 │
 └── video/
     ├── attrs: length_discrepancy, framerate_from_tpts, qc_lp, qc_movement,
@@ -598,7 +609,8 @@ movement channel.
 
 `N` = samples at 30 Hz, `T` = trial count, `W` = response window samples
 (60 for [-1, 1] s at 30 Hz), `M` = logged error count, `L` = cross-correlation
-lag count.
+lag count, `E` = encoder sample count, `V` = wheel samples at 100 Hz, `Wf` =
+samples from stimulus onset to the longest trial's feedback at 100 Hz.
 
 `save_h5(groups=...)` and `load_h5(groups=...)` accept the top-level group
 names (`'metadata'`, `'errors'`, `'photometry'`, `'trials'`, `'wheel'`,

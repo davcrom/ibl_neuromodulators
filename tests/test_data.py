@@ -1,11 +1,20 @@
 """Tests for iblnm.data module."""
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 from unittest.mock import MagicMock, patch
 
+from iblnm.data import WHEEL_LABEL
 from iblnm.util import contrast_transform
+
+# Session-lifetime scratch directory for the helpers that must write a real H5
+# (a load method reads its own stored product back, so an in-memory attribute
+# is not enough). Cleaned up when the interpreter exits.
+_SCRATCH_H5_DIR = tempfile.TemporaryDirectory()
 
 
 # =============================================================================
@@ -2725,10 +2734,8 @@ class TestPoseMethods:
             'paw_r_likelihood': np.zeros(n),  # untracked → does not contribute
         })
         ps.pose_times = t
-        ps.wheel = pd.DataFrame({
-            'times': t if wheel_times is None else wheel_times,
-            'position': np.cumsum(wheel_velocity) / fs, 'velocity': wheel_velocity})
-        ps.wheel_fs = fs
+        ps.wheel_velocity = pd.Series(
+            wheel_velocity, index=t if wheel_times is None else wheel_times)
         return ps, shift, fs
 
     def test_extract_paw_wheel_xcorr_recovers_drift(self, mock_session_series):
@@ -2744,8 +2751,9 @@ class TestPoseMethods:
         ps, shift, fs = self._xcorr_session(mock_session_series)
         # float32 storage makes consecutive dt non-uniform well above the 1e-10
         # tolerance that brainbox.movements() asserted on (the crash class).
-        ps.wheel['times'] = ps.wheel['times'].values.astype(np.float32)
-        assert not np.all(np.abs(np.diff(ps.wheel['times'].values)
+        ps.wheel_velocity.index = ps.wheel_velocity.index.to_numpy().astype(
+            np.float32)
+        assert not np.all(np.abs(np.diff(ps.wheel_velocity.index.to_numpy())
                                  - (1 / fs)) < 1e-10)  # genuinely non-uniform
         ps.extract_paw_wheel_xcorr()
         assert np.isfinite(ps.pose_xcorr['drift'])
@@ -5448,8 +5456,20 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
         'choice': rng.choice([-1, 1], n_trials),
         'probabilityLeft': np.full(n_trials, 0.5),
     })
-    ps.wheel_velocity = rng.normal(0, 1, (n_trials, 50))
-    ps.wheel_fs = 30.0
+    # `_response_modeling_frame` reads the wheel through `load_responses`, so
+    # the matrix has to be stored, not just assigned. Each session gets its own
+    # H5 under a directory that lives as long as the test session.
+    ps.filepath = Path(_SCRATCH_H5_DIR.name) / f'{eid}.h5'
+    ps.filepath.unlink(missing_ok=True)
+    ps.wheel_responses = {
+        WHEEL_LABEL: xr.DataArray(
+            rng.normal(0, 1, (1, n_trials, 50)),
+            dims=['event', 'trial', 'time'],
+            coords={'event': ['stimOn_times'], 'trial': np.arange(n_trials),
+                    'time': np.arange(50) / 100},
+        )
+    }
+    ps.save_h5(groups=['wheel'])
     return ps
 
 
@@ -6564,11 +6584,14 @@ def _write_trial_regressor_h5(path, with_wheel=True):
         grp.create_dataset('feedbackType', data=np.array([1, -1, 1]))
         grp.create_dataset('probabilityLeft', data=np.full(3, 0.5))
         if with_wheel:
-            wheel_grp = f.create_group('wheel/responses')
+            from iblnm.data import WHEEL_LABEL
+            wheel_grp = f.create_group(f'wheel/{WHEEL_LABEL}/responses')
             velocity = np.array([[0.0, 1.0, -3.0],
                                  [np.nan, np.nan, np.nan],
                                  [2.0, -5.0, 1.0]])
-            wheel_grp.create_dataset('velocity', data=velocity)
+            wheel_grp.create_dataset('stimOn_times', data=velocity)
+            wheel_grp.create_dataset('trials', data=np.arange(3))
+            wheel_grp.create_dataset('times', data=np.arange(3) / 100)
     return stim_on, first_move, feedback
 
 

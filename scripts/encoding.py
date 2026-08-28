@@ -148,14 +148,13 @@ if __name__ == '__main__':
     ps.load_raw_photometry()
     ps.preprocess(targets=[args.brain_region])
     target = ps.photometry['GCaMP_preprocessed'][args.brain_region]
-    ps.load_wheel()
+    wheel_velocity = ps.load_wheel()
     ps.load_camera_times()
     ps.load_pose()
 
     # --- Continuous regressors (variable-specific session wiring): wheel velocity
     #     plus per-keypoint pose speed and raw coordinate traces.
-    continuous = {'wheel_velocity': pd.Series(
-        ps.wheel['velocity'].to_numpy(), index=ps.wheel['times'].to_numpy())}
+    continuous = {'wheel_velocity': wheel_velocity}
     for kp in ENCODING_POSE_KEYPOINTS:
         speed = keypoint_speed(
             ps.pose[f'{kp}_x'].to_numpy(), ps.pose[f'{kp}_y'].to_numpy(),

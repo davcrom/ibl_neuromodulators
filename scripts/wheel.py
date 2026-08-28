@@ -3,9 +3,9 @@ Wheel Velocity Pipeline
 
 For each session that has an existing HDF5 file:
 1. Load trials (stimOn_times, feedback_times) from the HDF5 file
-2. Download wheel position + timestamps from ONE and compute velocity
-3. Extract per-trial wheel velocity (stimOn → feedback), NaN-padded to longest trial
-4. Append wheel/velocity to the HDF5 file
+2. Build the wheel products: raw encoder position from ONE, velocity
+   differentiated from it, and the per-trial stimOn → feedback matrix
+3. Append the wheel/ group to the HDF5 file
 
 Input:  metadata/sessions.pqt, data/sessions/{eid}.h5 (created by photometry.py)
 Output: data/sessions/{eid}.h5 (wheel/ group appended)
@@ -25,20 +25,11 @@ def process_wheel(ps, reprocess=False):
 
     Fatal errors are raised (caught by group.process()).
     """
-    import h5py
-
-    # Skip if already processed (wheel group exists in H5)
-    if not reprocess:
-        h5_path = SESSIONS_H5_DIR / f'{ps.eid}.h5'
-        if h5_path.exists():
-            with h5py.File(h5_path, 'r') as f:
-                if 'wheel/responses' in f:
-                    return 'skipped'
+    if not reprocess and ps.product_status('wheel/responses') == 'current':
+        return 'skipped'
 
     ps.load_trials()
-    ps.load_wheel()
-    ps.extract_wheel_velocity()
-    ps.save_h5(groups=['wheel'])
+    ps.load_responses('wheel')
 
     return 'processed'
 

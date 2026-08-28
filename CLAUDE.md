@@ -159,7 +159,8 @@ Lazy loading — all data attributes start empty:
 ps = PhotometrySession(session_row, one=one)
 # ps.trials = None, ps.photometry = {}, ps.photometry_responses = {},
 # ps.movement_responses = {}, ps.photometry_qc = {},
-# ps.neurophotometrics_qc = {}
+# ps.neurophotometrics_qc = {}, ps.wheel_position = None,
+# ps.wheel_velocity = None, ps.wheel_responses = {}
 
 ps.load_trials()          # populates ps.trials
 ps.load_raw_photometry()  # ps.photometry['GCaMP'], ps.photometry['Isosbestic']
@@ -168,6 +169,10 @@ ps.load_photometry()      # the preprocessed signal, from H5 or built as above
 ps.load_responses('photometry')   # ps.photometry_responses, from H5 or cut
 ps.load_photometry_qc()           # ps.photometry_qc, from H5 or scored
 ps.load_neurophotometrics_qc()    # ps.neurophotometrics_qc, from H5 or scored
+ps.load_raw_wheel()       # ps.wheel_position, the irregular encoder samples
+ps.differentiate_wheel()  # ps.wheel_velocity at WHEEL_FS, writes it
+ps.load_wheel()           # the velocity, from H5 or built as above
+ps.load_responses('wheel')        # ps.wheel_responses, from H5 or cut
 ```
 
 Load methods are not pure readers. Each attempts its stored product, falls back
@@ -188,8 +193,19 @@ attrs, with the band suffixed into the metric name
 reduces each metric's windows by `config.QC_SLIDING_AGG`.
 
 `load_responses(modality, events, window)` serves every modality, dispatching
-through `_RESPONSE_MODALITIES` to that modality's preprocessed-signal loader and
-result attribute.
+through `_RESPONSE_MODALITIES` to that modality's preprocessed-signal loader,
+result attribute, and the extraction arguments to fall back on when the caller
+names none — that fallback is how `load_responses('wheel')` alone cuts
+stimOn → feedback rather than the photometry window.
+
+The wheel's H5 label is `velocity`: one channel, but the label level stays so
+every modality's handlers walk labels the same way, and it names the
+preprocessed product rather than the raw position stored underneath it.
+`load_raw_wheel` fetches ONE's `_ibl_wheel.position` + `.timestamps` — the
+irregular encoder samples, kept irregular — and `differentiate_wheel`
+interpolates them onto the `WHEEL_FS` grid before differentiating, matching
+`brainbox.behavior.wheel.velocity_filtered` at its default corner frequency and
+order. Only the velocity is gridded; the position stays raw.
 
 `extract_responses(signals, events=..., window=...)` is signal-source agnostic:
 it cuts peri-event matrices out of any `label -> pd.Series` mapping and returns
@@ -217,7 +233,9 @@ Access data attributes directly, not through getters. The class extends
 `PhotometrySessionLoader` from `brainbox.io.one`.
 
 HDF5 round-trip: `save_h5()` writes all available data groups.
-`load_h5(fpath)` populates all available groups. Both dispatch to per-group
+`load_h5(fpath)` populates all available groups and adopts `fpath` as
+`self.filepath`, so later `product_status` checks read the file the data
+actually came from. Both dispatch to per-group
 handler functions via `_SAVE_HANDLERS` / `_LOAD_HANDLERS` registries keyed
 by top-level group name (`metadata`, `errors`, `photometry`, `trials`,
 `wheel`, `video`). Adding a new top-level group means writing a handler pair
@@ -232,8 +250,8 @@ group's stamp (`_write_stamp`, read back by `product_status`).
 
 | pair | payload | used for |
 |---|---|---|
-| `_save_time_series` / `_load_time_series` | time-indexed `pd.Series` (one signal, dataset `signal`) or `pd.DataFrame` (one dataset per column) | preprocessed photometry, wheel |
-| `_save_peri_event_matrix` / `_load_peri_event_matrix` | `xr.DataArray(event, trial, time)` | responses, whether the label is a brain region (`photometry/`) or a movement channel (`video/`) |
+| `_save_time_series` / `_load_time_series` | time-indexed `pd.Series` (one signal, dataset `signal`) or `pd.DataFrame` (one dataset per column) | preprocessed photometry, raw wheel position, preprocessed wheel velocity |
+| `_save_peri_event_matrix` / `_load_peri_event_matrix` | `xr.DataArray(event, trial, time)` | responses, whether the label is a brain region (`photometry/`), the wheel (`wheel/`) or a movement channel (`video/`) |
 | `_save_scalars` / `_load_scalars` | flat `dict[str, float]` stored as group attrs | QC metrics, preprocessing diagnostics |
 
 `_read_label_responses(modality_group)` reads every `{label}/responses` subgroup
@@ -333,7 +351,7 @@ Tests use `pytest` with synthetic fixtures. No Alyx calls.
 | `test_io.py` | Query functions (mocked ONE) |
 | `test_vis.py` | Plotting functions |
 | `test_dataset_overview.py` | Dataset flag construction |
-| `test_wheel.py` | Wheel velocity extraction |
+| `test_wheel.py` | Wheel raw, preprocessed and response products |
 
 Key fixtures in test files:
 - `mock_session_series()` — synthetic session metadata row
