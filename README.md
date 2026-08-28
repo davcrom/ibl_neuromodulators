@@ -212,6 +212,18 @@ ps.movement_responses = ps.extract_responses(
 #   'tongue_likelihood', 'motion_energy'), same (event, trial, time) dims
 ```
 
+The window end may instead name a trials column, giving each trial its own
+endpoint — the cut the wheel needs, from stimulus onset to that trial's
+feedback:
+
+```python
+ps.extract_responses(
+    {'velocity': wheel_velocity},
+    events=['stimOn_times'], window=(0.0, 'feedback_times'))
+# → trials share one time axis spanning to the longest trial;
+#   each is NaN-padded from its own feedback onward
+```
+
 Every channel carries the full event axis. A channel's own response event is
 `config.LABEL2EVENT[label]`; its baseline is the `stimOn_times` cell over
 `BASELINE_WINDOW`. Both are read-time selections, not separate stored arrays.

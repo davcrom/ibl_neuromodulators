@@ -176,6 +176,13 @@ channels) and assigns `ps.movement_responses`. Each movement channel carries
 the full event axis; its own response event is selected at read time via
 `config.LABEL2EVENT`, and its baseline is the `stimOn_times` cell.
 
+The window is `(t0, t1)`. `t1` is either seconds relative to the event, or the
+name of a `ps.trials` column holding each trial's own window end — that second
+form is the wheel's cut, `window=(0.0, 'feedback_times')`. Every trial still
+shares one time axis spanning to the longest trial and is NaN-padded beyond its
+own endpoint. The `trial` coordinate is the `trial` column of `ps.trials`, not
+the row position, so responses stay aligned to their trials after filtering.
+
 Truthiness (`if ps.photometry_responses`) checks whether any label has been
 extracted; use `region in ps.photometry_responses` to check a specific one.
 `subtract_baseline` and `mask_subsequent_events` operate on one label's
