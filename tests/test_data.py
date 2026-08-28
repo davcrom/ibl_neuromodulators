@@ -2414,26 +2414,11 @@ class TestSaveLoadH5:
         assert ps2.qc_lp == 'FAIL'
         assert ps2.qc_movement == 'CRITICAL'
 
-    def test_save_load_video_qc_roundtrip(self, mock_session_series, tmp_path):
-        """The 8 live-fetched VIDEO_QC_COLS round-trip via the video group."""
-        from iblnm.config import VIDEO_QC_COLS
-        from iblnm.data import PhotometrySession
-        ps = self._make_video_session(mock_session_series)
-        ps.video_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
-        ps.video_qc['qc_videoLeft_pin_state'] = 'FAIL'
-        fpath = tmp_path / f'{ps.eid}.h5'
-        ps.save_h5(fpath, groups=['video'])
-
-        ps2 = PhotometrySession(mock_session_series, one=MagicMock(),
-                                load_data=False)
-        ps2.load_h5(fpath, groups=['video'])
-        assert ps2.video_qc == ps.video_qc
-
 
 class TestFetchVideoQC:
-    """PhotometrySession.fetch_video_qc selects and stores the 8 VIDEO_QC_COLS."""
+    """PhotometrySession.fetch_video_qc selects the 8 VIDEO_QC_COLS, unstored."""
 
-    def test_stores_eight_qc_cols(self, mock_session_series):
+    def test_returns_eight_qc_cols(self, mock_session_series):
         from iblnm.config import VIDEO_QC_COLS
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
@@ -2441,10 +2426,11 @@ class TestFetchVideoQC:
         fetched = pd.Series({col: 'PASS' for col in VIDEO_QC_COLS})
         fetched['qc_videoLeft_timestamps'] = 'FAIL'
         with patch('iblnm.io.get_extended_qc', return_value=fetched):
-            ps.fetch_video_qc()
-        assert set(ps.video_qc) == set(VIDEO_QC_COLS)
-        assert ps.video_qc['qc_videoLeft_timestamps'] == 'FAIL'
-        assert ps.video_qc['qc_videoLeft_focus'] == 'PASS'
+            video_qc = ps.fetch_video_qc()
+        assert set(video_qc) == set(VIDEO_QC_COLS)
+        assert video_qc['qc_videoLeft_timestamps'] == 'FAIL'
+        assert video_qc['qc_videoLeft_focus'] == 'PASS'
+        assert ps.video_qc == video_qc
 
     def test_missing_cols_default_not_set(self, mock_session_series):
         from iblnm.config import VIDEO_QC_COLS
@@ -2552,18 +2538,19 @@ class TestPoseMethods:
         with pytest.raises(MissingMotionEnergy):
             ps.load_motion_energy()
 
-    def test_compute_video_measures(self, mock_session_series):
+    def test_compute_video_measures(self, mock_session_series, tmp_path):
         """compute_video_measures yields hand-computed discrepancy and framerate."""
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
                                load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
         ps.pose_times = np.array([1.0, 1.1, 1.2, 1.35])
         ps.session_length = 0.3
-        ps.compute_video_measures()
+        measures = ps.compute_video_measures()
         # video span 0.35 - session_length 0.3 = 0.05
-        assert ps.length_discrepancy == pytest.approx(0.05)
+        assert measures['length_discrepancy'] == pytest.approx(0.05)
         # diffs: [0.1, 0.1, 0.15] -> median 0.1
-        assert ps.framerate_from_tpts == pytest.approx(0.1)
+        assert measures['framerate_from_tpts'] == pytest.approx(0.1)
 
     def test_video_measures_round_trip_without_responses(self, mock_session_series,
                                                           tmp_path):
@@ -2572,8 +2559,8 @@ class TestPoseMethods:
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
                                load_data=False)
-        ps.length_discrepancy = 0.05
-        ps.framerate_from_tpts = 0.0333
+        ps.video_times_qc = {'length_discrepancy': 0.05,
+                             'framerate_from_tpts': 0.0333}
         fpath = tmp_path / f'{ps.eid}.h5'
         ps.save_h5(fpath, groups=['video'])
 
@@ -2581,8 +2568,7 @@ class TestPoseMethods:
                                 load_data=False)
         ps2.load_h5(fpath, groups=['video'])
         assert ps2.movement_responses == {}
-        assert ps2.length_discrepancy == pytest.approx(0.05)
-        assert ps2.framerate_from_tpts == pytest.approx(0.0333)
+        assert ps2.video_times_qc == pytest.approx(ps.video_times_qc)
 
     def test_available_save_groups_includes_video_for_measures_only(
             self, mock_session_series):
@@ -2591,7 +2577,7 @@ class TestPoseMethods:
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
                                load_data=False)
-        ps.length_discrepancy = 0.05
+        ps.video_times_qc = {'length_discrepancy': 0.05}
         assert 'video' in ps._available_save_groups()
 
     def _make_pose_session(self, mock_session_series, tmp_path, fs=30, dur=60.0,

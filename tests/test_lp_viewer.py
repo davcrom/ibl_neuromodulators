@@ -604,7 +604,8 @@ def cohort_model(tmp_path):
                 _save_peri_event_matrix(
                     grp.create_group(f'{label}/responses'), da,
                     resolve_product_spec('video/responses'))
-            _save_pose_xcorr(grp, xcorr)
+            _save_pose_xcorr(grp.create_group('pose/qc'), xcorr,
+                             resolve_product_spec('video/pose/qc'))
 
     df_cohort = pd.DataFrame({
         'eid': ['eid1', 'eid2'],

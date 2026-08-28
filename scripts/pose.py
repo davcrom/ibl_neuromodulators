@@ -22,6 +22,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from iblnm.analysis import movement_delta
 from iblnm.config import (
@@ -47,10 +48,11 @@ from iblnm.data import (
     _read_label_responses,
     _read_video_qc,
 )
-from iblnm.io import _get_default_connection
+from iblnm.io import _get_default_connection, get_video_qc
 from iblnm.util import collect_errors
 from iblnm.validation import (
-    MissingLP, MissingMotionEnergy, MissingVideoTimestamps,
+    MissingExtractedData, MissingLP, MissingMotionEnergy, MissingRawData,
+    MissingVideoTimestamps,
     VideoLengthError, VideoTimestampsQCError,
     VideoDroppedFramesQCError, VideoPinStateQCError,
     validate_video_length, validate_video_timestamps_qc,
@@ -81,12 +83,12 @@ POSE_TRACE_COLUMNS = [*POSE_MEASURES, 'motion_energy']
 def run_video_validations(ps):
     """Run the four leftCamera QC checks, logging any failure non-blocking.
 
-    Builds a row-like dict from ``ps.length_discrepancy`` and the eight
+    Builds a row-like dict from ``ps.video_times_qc`` and the eight
     ``ps.video_qc`` labels and runs each ``validate_video_*`` check. Any raised
     QC error is routed to ``ps.log_error`` so extraction continues regardless
     of the verdict.
     """
-    qc_row = {'length_discrepancy': ps.length_discrepancy, **ps.video_qc}
+    qc_row = {**ps.video_times_qc, **ps.video_qc}
     for validate in VIDEO_QC_VALIDATORS:
         try:
             validate(qc_row)
@@ -115,11 +117,10 @@ def process_pose(ps, reprocess=False):
                     return 'skipped'
 
     try:
-        ps.load_camera_times()
+        ps.load_video_times_qc()
     except MissingVideoTimestamps as e:
-        ps.log_error(e)
+        ps.log_error(e, product='video/times')
         return 'skipped'
-    ps.compute_video_measures()
     ps.fetch_video_qc()
     run_video_validations(ps)
     ps.load_trials()
@@ -127,16 +128,21 @@ def process_pose(ps, reprocess=False):
     try:
         ps.load_pose()
     except MissingLP as e:
-        ps.log_error(e)
+        ps.log_error(e, product='video/pose')
     try:
         ps.load_motion_energy()
     except MissingMotionEnergy as e:
-        ps.log_error(e)
+        ps.log_error(e, product='video/motion_energy')
     if ps.pose is not None or ps.motion_energy is not None:
         ps.movement_responses = ps.extract_responses(
             ps.resample_movement_signals(), events=MOVEMENT_EVENTS)
     if ps.pose is not None:
-        ps.extract_paw_wheel_xcorr()
+        # Cross-modal: the wheel is an input, so its absence is a pose-QC
+        # failure and is logged against that product, not against the pose.
+        try:
+            ps.load_pose_qc()
+        except (MissingRawData, MissingExtractedData) as e:
+            ps.log_error(e, product='video/pose/qc')
     ps.save_h5(groups=['video'])
 
     return 'processed'
@@ -167,24 +173,24 @@ def _has_lp_channel(movement_responses: dict) -> bool:
     return any(label != 'motion_energy' for label in movement_responses)
 
 
-def _score_video_qc(attrs, error_types: set[str]) -> float:
+def _score_video_qc(video_qc: dict, error_types: set[str]) -> float:
     """Video QC score in [0, 1], or ``-1`` when a disqualifying error is logged.
 
-    The five ``VIDEO_QC_QUALITY_COLS`` labels in the ``video`` group ``attrs``
-    are mapped through ``config.QCVAL2NUM`` and averaged with ``nanmean``. Any
-    error type in ``VIDEO_QC_DISQUALIFYING_ERRORS`` forces the score to ``-1``.
+    The five ``VIDEO_QC_QUALITY_COLS`` labels in ``video_qc`` — the extended-QC
+    outcomes fetched live from Alyx, never stored in the H5 — are mapped through
+    ``config.QCVAL2NUM`` and averaged with ``nanmean``. Any error type in
+    ``VIDEO_QC_DISQUALIFYING_ERRORS`` forces the score to ``-1``.
 
     ``NOT_SET`` labels are dropped rather than scored: the check produced no
     outcome, so it carries no evidence either way. Its ``QCVAL2NUM`` value
-    exists to place it on the QC colormap, not to weigh in an average. A group
+    exists to place it on the QC colormap, not to weigh in an average. A session
     with no scorable label left scores NaN.
     """
     if error_types & VIDEO_QC_DISQUALIFYING_ERRORS:
         return -1.0
-    labels = [_decode(attrs[col]) for col in VIDEO_QC_QUALITY_COLS
-              if col in attrs]
-    quality = [QCVAL2NUM.get(label, np.nan) for label in labels
-               if label != LP_QC_NOT_SET]
+    quality = [QCVAL2NUM.get(video_qc[col], np.nan)
+               for col in VIDEO_QC_QUALITY_COLS
+               if col in video_qc and video_qc[col] != LP_QC_NOT_SET]
     return float(np.nanmean(quality)) if quality else np.nan
 
 
@@ -220,7 +226,8 @@ def _add_xcorr_scalars(row: dict, xcorr) -> None:
         np.nanmax(xcorr['functions'], axis=1)
 
 
-def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
+def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH,
+                 video_qc=None) -> pd.DataFrame:
     """Roll up the per-session ``video`` H5 groups into the unified pose table.
 
     Emits one row per session with a ``video`` group (LP-absent sessions
@@ -230,10 +237,11 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
     (post-minus-pre, see ``_add_trace_deltas``), read the cross-correlation
     scalars, the manual QC labels (``LP_QC_LABELS``), the eight
     ``VIDEO_QC_COLS`` and the basic-video measures (``length_discrepancy``,
-    ``framerate_from_tpts``) from the group attrs, and derive ``lp_exists`` and
-    ``video_qc_score`` (``_score_video_qc``). Recomputing the deltas here keeps
-    both windows adjustable without re-extracting traces. ``fraction_correct`` is
-    left-joined from ``performance.pqt`` by ``eid``; rows are not sorted.
+    ``framerate_from_tpts``) from ``video/times/qc``, and derive ``lp_exists``
+    and ``video_qc_score`` (``_score_video_qc``). Recomputing the deltas here
+    keeps both windows adjustable without re-extracting traces.
+    ``fraction_correct`` is left-joined from ``performance.pqt`` by ``eid``;
+    rows are not sorted.
 
     Parameters
     ----------
@@ -242,6 +250,11 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
     performance_fpath : Path or str
         Per-eid performance table (``performance.pqt``) holding
         ``fraction_correct``.
+    video_qc : dict, optional
+        eid -> the eight ``VIDEO_QC_COLS`` labels fetched from Alyx. Passed in
+        rather than read from the H5: the labels change when IBL re-runs its
+        QC, so nothing in this repo could tell a stored copy had gone stale.
+        Sessions absent from it contribute no QC columns and score NaN.
 
     Returns
     -------
@@ -256,30 +269,34 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
         ``video_qc_score``, and ``fraction_correct``.
     """
     errors_by_eid = _collect_error_types(h5_dir)
+    video_qc = video_qc or {}
     rows = []
     eids_with_video = set()
     for fpath in sorted(Path(h5_dir).glob('*.h5')):
         eid = fpath.stem
         error_types = errors_by_eid.get(eid, set())
+        session_qc = video_qc.get(eid, {})
         with h5py.File(fpath, 'r') as f:
             if 'video' not in f:
                 continue
             eids_with_video.add(eid)
             video = f['video']
             movement_responses = _read_label_responses(video)
-            xcorr = _load_pose_xcorr(video)
+            xcorr = (_load_pose_xcorr(video['pose/qc'])
+                     if 'pose/qc' in video else None)
+            times_qc = dict(video['times/qc'].attrs) if 'times/qc' in video else {}
             qc = _read_video_qc(f)
             row = {
                 'eid': eid,
                 'session_type': _read_session_type(f),
                 'lp_exists': _has_lp_channel(movement_responses),
                 'mean_rt': _read_mean_rt(f),
-                'length_discrepancy': video.attrs.get('length_discrepancy', np.nan),
-                'framerate_from_tpts': video.attrs.get('framerate_from_tpts', np.nan),
-                'video_qc_score': _score_video_qc(video.attrs, error_types),
+                'length_discrepancy': times_qc.get('length_discrepancy', np.nan),
+                'framerate_from_tpts': times_qc.get('framerate_from_tpts', np.nan),
+                'video_qc_score': _score_video_qc(session_qc, error_types),
             }
-            row.update({col: _decode(video.attrs[col])
-                        for col in VIDEO_QC_COLS if col in video.attrs})
+            row.update({col: session_qc[col]
+                        for col in VIDEO_QC_COLS if col in session_qc})
             _add_trace_deltas(row, movement_responses)
             _add_xcorr_scalars(row, xcorr)
         row.update({label: _decode(qc.get(label, LP_QC_NOT_SET))
@@ -373,8 +390,12 @@ if __name__ == '__main__':
         print(f"\nResults: {n_processed} processed, {n_skipped} skipped, {n_failed} failed")
 
 
-    # Roll up the video H5 groups into the pose table
-    df_pose = collect_pose(SESSIONS_H5_DIR)
+    # Roll up the video H5 groups into the pose table. The Alyx QC labels are
+    # not in those files, so they are fetched here — one REST call per session.
+    stored_eids = [fpath.stem for fpath in sorted(SESSIONS_H5_DIR.glob('*.h5'))]
+    video_qc = {eid: get_video_qc(eid, one=one)
+                for eid in tqdm(stored_eids, desc='Fetching video QC')}
+    df_pose = collect_pose(SESSIONS_H5_DIR, video_qc=video_qc)
     df_pose.to_parquet(POSE_FPATH)
     print(f"\nWrote {len(df_pose)} session rows to {POSE_FPATH}")
 

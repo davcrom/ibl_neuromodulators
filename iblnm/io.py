@@ -5,7 +5,7 @@ from one.api import ONE
 from one.alf.spec import QC
 from one.alf.exceptions import ALFObjectNotFound
 
-from iblnm.config import STRAIN2NM, LINE2NM
+from iblnm.config import STRAIN2NM, LINE2NM, VIDEO_QC_COLS
 
 from iblnm.validation import exception_logger
 
@@ -210,6 +210,24 @@ def get_extended_qc(series, one=None):
             raise ValueError(f"Unexpected QC value type for '{key}': {type(val)}")
 
     return series
+
+
+def get_video_qc(eid: str, one=None) -> dict[str, str]:
+    """Fetch one session's eight leftCamera extended-QC labels from Alyx.
+
+    One REST call. These labels are never stored in an H5: they change whenever
+    IBL re-runs its QC, and no parameter in this repo feeds them, so no stamp
+    could tell a stored copy had gone stale.
+
+    Returns
+    -------
+    dict
+        Every `config.VIDEO_QC_COLS` name mapped to its outcome label; checks
+        Alyx does not report default to `NOT_SET`.
+    """
+    qc = get_extended_qc(pd.Series({'eid': eid}), one=one)
+    return {col: qc.get(col, QC.NOT_SET.name) for col in VIDEO_QC_COLS}
+
 
 @exception_logger
 def get_fiber_coordinates(session, all_trajectories=None, one=None):

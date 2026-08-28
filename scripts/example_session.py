@@ -145,7 +145,8 @@ def select_example_session(group, target_nm=DEFAULT_TARGET_NM):
     for _, rec in candidates.iterrows():
         h5_path = Path(SESSIONS_H5_DIR) / f"{rec['eid']}.h5"
         with h5py.File(h5_path, 'r') as f:
-            pose_xcorr = _load_pose_xcorr(f['video']) if 'video' in f else None
+            pose_xcorr = (_load_pose_xcorr(f['video/pose/qc'])
+                          if 'video/pose/qc' in f else None)
         if pose_xcorr is not None and camera_timing_ok(pose_xcorr):
             return rec
 

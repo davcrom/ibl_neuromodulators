@@ -592,40 +592,46 @@ movement channel.
 │           └── attrs: spec_json (carries t0_event, t1_event), built_at
 │
 └── video/
-    ├── attrs: length_discrepancy, framerate_from_tpts, qc_lp, qc_movement,
-    │          qc_timing, the 8 VIDEO_QC_COLS labels
+    ├── attrs: qc_lp, qc_movement, qc_timing
     │
     ├── times/                       raw, one group per independently
     │   ├── values   float64 (F,)    fetched dataset, each separately
-    │   └── attrs: spec_json, built_at    stamped
+    │   ├── attrs: spec_json, built_at    stamped
+    │   └── qc/
+    │       └── attrs: length_discrepancy, framerate_from_tpts,
+    │                  spec_json, built_at
     ├── pose/
     │   ├── {keypoint}_x           float64 (F,)   LightningPose columns
     │   ├── {keypoint}_y           float64 (F,)
     │   ├── {keypoint}_likelihood  float64 (F,)
-    │   └── attrs: spec_json, built_at
+    │   ├── attrs: spec_json, built_at
+    │   └── qc/                      paw–wheel timing diagnostic; cross-modal,
+    │       ├── functions   float64 (3, L)   so its stamp carries the wheel's
+    │       ├── lags        float64 (L,)     parameters too
+    │       ├── peak_lags   float64 (3,)
+    │       └── attrs: drift, spec_json, built_at
     │
-    ├── {movement_channel}/          paw, nose, tongue_speed,
-    │   ├── preprocessed/            tongue_likelihood, motion_energy.
-    │   │   ├── times     float64 (P,)   uniform grid at POSE_FS
-    │   │   ├── signal    float64 (P,)
-    │   │   └── attrs: spec_json (carries fs=30), built_at
-    │   └── responses/
-    │       ├── times                float64 (W,)
-    │       ├── trials               int64   (T,)
-    │       ├── stimOn_times         float64 (T, W)
-    │       ├── firstMovement_times  float64 (T, W)
-    │       ├── feedback_times       float64 (T, W)
-    │       └── attrs: spec_json (carries events, window), built_at
-    │                                The motion_energy channel's group also
-    │                                holds its raw `values` dataset, since the
-    │                                raw product and the channel share a name.
-    │
-    └── crosscorr/                   paw–wheel timing diagnostic
-        ├── functions   float64 (3, L)   per-third cross-correlation
-        ├── lags        float64 (L,)
-        ├── peak_lags   float64 (3,)
-        └── attrs: drift
+    └── {movement_channel}/          paw, nose, tongue_speed,
+        ├── preprocessed/            tongue_likelihood, motion_energy.
+        │   ├── times     float64 (P,)   uniform grid at POSE_FS
+        │   ├── signal    float64 (P,)
+        │   └── attrs: spec_json (carries fs=30), built_at
+        └── responses/
+            ├── times                float64 (W,)
+            ├── trials               int64   (T,)
+            ├── stimOn_times         float64 (T, W)
+            ├── firstMovement_times  float64 (T, W)
+            ├── feedback_times       float64 (T, W)
+            └── attrs: spec_json (carries events, window), built_at
+                                     The motion_energy channel's group also
+                                     holds its raw `values` dataset, since the
+                                     raw product and the channel share a name.
 ```
+
+The eight leftCamera extended-QC labels from Alyx are deliberately absent: they
+change when IBL re-runs its QC and no parameter in this repo feeds them, so no
+stamp could tell a stored copy had gone stale. `io.get_video_qc(eid, one)`
+fetches them on demand instead, one REST call per session.
 
 `N` = samples at 30 Hz, `T` = trial count, `W` = response window samples,
 `M` = logged error count, `L` = cross-correlation lag count, `E` = encoder

@@ -176,7 +176,10 @@ ps.load_responses('wheel')        # ps.wheel_responses, from H5 or cut
 ps.load_camera_times()    # ps.pose_times, from H5 or Alyx
 ps.load_pose()            # ps.pose, from H5 or Alyx
 ps.load_motion_energy()   # ps.motion_energy, from H5 or Alyx
+ps.load_video_times_qc()          # ps.video_times_qc, from H5 or scored
+ps.load_pose_qc()                 # ps.pose_xcorr, from H5 or correlated
 ps.load_responses('video')        # ps.movement_responses, from H5 or cut
+ps.fetch_video_qc()               # ps.video_qc, always from Alyx, never stored
 ```
 
 Load methods are not pure readers. Each attempts its stored product, falls back
@@ -195,6 +198,21 @@ attrs, with the band suffixed into the metric name
 `run_sliding_qc` issues two `qc_signals` calls over the same windows —
 `config.QC_UNDETRENDED_METRICS` without detrending, the rest with it — and
 reduces each metric's windows by `config.QC_SLIDING_AGG`.
+
+Video's QC hangs off the product it characterizes rather than off the modality:
+`compute_video_measures` scores the camera clock into `video/times/qc`
+(`length_discrepancy`, `framerate_from_tpts`), and `extract_paw_wheel_xcorr`
+correlates paw speed against wheel speed into `video/pose/qc`. The latter is the
+one cross-modal product — it needs the wheel as well as the pose, so its stamp
+carries `wheel/preprocessed`'s parameters and a session with good pose but no
+wheel fails it with the wheel's own missing-data error.
+
+The eight `config.VIDEO_QC_COLS` leftCamera labels are **not** a product.
+`io.get_video_qc(eid, one)` fetches them from Alyx on every use and nothing
+stores them: they change when IBL re-runs its QC and no repo parameter feeds
+them, so no stamp could detect that a stored copy had gone stale.
+`PhotometrySession.fetch_video_qc` is the per-session wrapper; the pose rollup
+fetches the whole set itself and passes it to `collect_pose(video_qc=...)`.
 
 `load_responses(modality, events, window)` serves every modality, dispatching
 through `_RESPONSE_MODALITIES` to that modality's preprocessed-signal loader,
@@ -282,10 +300,12 @@ group's stamp (`_write_stamp`, read back by `product_status`).
 `_read_label_products(modality_group, product, read)` reads every
 `{label}/{product}` subgroup of one modality in one call, for the loads that
 want the whole mapping rather than one label; `_read_label_responses` is the
-`responses` case of it.
+`responses` case of it. Subgroups that do not carry the named product — the raw
+and QC groups sitting beside the labels — drop out on their own, so there is no
+skip list to keep in sync.
 
 `video/pose/qc` is the exception: it holds arrays plus a scalar, so it keeps
-its own pair (`_save_pose_xcorr` / `_load_pose_xcorr`).
+its own pair (`_save_pose_xcorr` / `_load_pose_xcorr`), stamped like the rest.
 
 ### 3b. PhotometrySessionGroup Lifecycle
 

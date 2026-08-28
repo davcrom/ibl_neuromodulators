@@ -32,7 +32,7 @@ from iblnm.config import (
     RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
-    TARGET_FS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
+    TARGET_FS, WHEEL_FS, POSE_FS,
     resolve_product_spec,
     _PERSESSION_REGRESSORS,
 )
@@ -556,11 +556,6 @@ def _load_peri_event_matrix(group: h5py.Group) -> xr.DataArray:
     )
 
 
-# Modality subgroup that holds a diagnostic rather than one label's responses,
-# so label iteration must skip it.
-_NON_LABEL_KEYS = {'crosscorr'}
-
-
 def _read_label_products(
     modality_group: h5py.Group, product: str, read,
 ) -> dict:
@@ -568,8 +563,8 @@ def _read_label_products(
 
     Serves any modality: the label is a brain region under `photometry/`, the
     single wheel channel under `wheel/`, and a movement channel under `video/`.
-    Subgroups holding a diagnostic rather than a label (see `_NON_LABEL_KEYS`)
-    are skipped, as are labels that do not carry this product.
+    Subgroups that do not carry this product are skipped, which is what keeps
+    the raw and QC groups sitting beside the labels out of the result.
 
     Parameters
     ----------
@@ -582,8 +577,7 @@ def _read_label_products(
     """
     return {label: read(modality_group[f'{label}/{product}'])
             for label in modality_group
-            if label not in _NON_LABEL_KEYS
-            and product in modality_group[label]}
+            if product in modality_group[label]}
 
 
 def _read_label_responses(modality_group: h5py.Group) -> dict[str, xr.DataArray]:
@@ -855,25 +849,27 @@ def _load_frame_data(group: h5py.Group) -> np.ndarray | pd.DataFrame | None:
     return pd.DataFrame(datasets)
 
 
-def _save_pose_xcorr(parent_group, xcorr):
-    """Write crosscorr/ subgroup from a dict (functions, lags, peak_lags, drift)."""
-    grp = _replace_group(parent_group, 'crosscorr')
-    grp.create_dataset('functions', data=np.asarray(xcorr['functions'], dtype=np.float64))
-    grp.create_dataset('lags', data=np.asarray(xcorr['lags'], dtype=np.float64))
-    grp.create_dataset('peak_lags', data=np.asarray(xcorr['peak_lags'], dtype=np.float64))
-    grp.attrs['drift'] = xcorr['drift']
+def _save_pose_xcorr(group: h5py.Group, xcorr: dict, spec: dict) -> None:
+    """Write the paw–wheel cross-correlation into `group`, stamped with `spec`.
+
+    `video/pose/qc` is the one QC product that is not flat scalars — three
+    arrays (`functions`, `lags`, `peak_lags`) beside the scalar `drift` — so it
+    keeps its own handler pair rather than going through `_save_scalars`.
+    """
+    for field in ('functions', 'lags', 'peak_lags'):
+        group.create_dataset(field, data=np.asarray(xcorr[field],
+                                                    dtype=np.float64))
+    group.attrs['drift'] = xcorr['drift']
+    _write_stamp(group, spec)
 
 
-def _load_pose_xcorr(parent_group):
-    """Read crosscorr/ subgroup into a dict, or None."""
-    if 'crosscorr' not in parent_group:
-        return None
-    grp = parent_group['crosscorr']
+def _load_pose_xcorr(group: h5py.Group) -> dict:
+    """Read the cross-correlation written by `_save_pose_xcorr`."""
     return {
-        'functions': grp['functions'][:].astype(np.float64),
-        'lags':      grp['lags'][:].astype(np.float64),
-        'peak_lags': grp['peak_lags'][:].astype(np.float64),
-        'drift':     grp.attrs['drift'],
+        'functions': group['functions'][:].astype(np.float64),
+        'lags':      group['lags'][:].astype(np.float64),
+        'peak_lags': group['peak_lags'][:].astype(np.float64),
+        'drift':     group.attrs['drift'],
     }
 
 
@@ -899,14 +895,15 @@ def _save_video(session, h5_file):
     # writes them back unchanged rather than resetting a manual verdict.
     preserved_qc = _read_video_qc(h5_file)
     grp = h5_file.require_group('video')
-    grp.attrs['length_discrepancy'] = session.length_discrepancy
-    grp.attrs['framerate_from_tpts'] = session.framerate_from_tpts
     for product, payload in (('video/times', session.pose_times),
                              ('video/pose', session.pose),
                              ('video/motion_energy', session.motion_energy)):
         if payload is not None:
             _save_frame_data(grp.require_group(product.rpartition('/')[2]),
                              payload, session.spec[product])
+    if session.video_times_qc:
+        _save_scalars(_replace_group(grp.require_group('times'), 'qc'),
+                      session.video_times_qc, session.spec['video/times/qc'])
     for label, signal in session.movement_signals.items():
         _save_time_series(_replace_group(grp.require_group(label), 'preprocessed'),
                           signal, session.spec['video/preprocessed'])
@@ -916,24 +913,21 @@ def _save_video(session, h5_file):
             responses, session.spec['video/responses'],
         )
     if session.pose_xcorr is not None:
-        _save_pose_xcorr(grp, session.pose_xcorr)
+        _save_pose_xcorr(_replace_group(grp.require_group('pose'), 'qc'),
+                         session.pose_xcorr, session.spec['video/pose/qc'])
     for label in LP_QC_LABELS:
         value = getattr(session, label)
         if value in (None, LP_QC_NOT_SET):
             value = preserved_qc.get(label, LP_QC_NOT_SET)
         grp.attrs[label] = value
-    for col in VIDEO_QC_COLS:
-        grp.attrs[col] = session.video_qc.get(col, LP_QC_NOT_SET)
 
 
 def _load_video(session, h5_file):
     if 'video' not in h5_file:
         return
     grp = h5_file['video']
-    if 'length_discrepancy' in grp.attrs:
-        session.length_discrepancy = grp.attrs['length_discrepancy']
-    if 'framerate_from_tpts' in grp.attrs:
-        session.framerate_from_tpts = grp.attrs['framerate_from_tpts']
+    if 'times/qc' in grp:
+        session.video_times_qc = _load_scalars(grp['times/qc'])
     for attribute, name in (('pose_times', 'times'), ('pose', 'pose'),
                             ('motion_energy', 'motion_energy')):
         if name in grp:
@@ -941,18 +935,13 @@ def _load_video(session, h5_file):
     session.movement_signals = _read_label_products(grp, 'preprocessed',
                                                     _load_time_series)
     session.movement_responses = _read_label_responses(grp)
-    session.pose_xcorr = _load_pose_xcorr(grp)
+    if 'pose/qc' in grp:
+        session.pose_xcorr = _load_pose_xcorr(grp['pose/qc'])
     for label in LP_QC_LABELS:
         if label in grp.attrs:
             value = grp.attrs[label]
             setattr(session, label,
                     value.decode() if isinstance(value, bytes) else value)
-    session.video_qc = {}
-    for col in VIDEO_QC_COLS:
-        if col in grp.attrs:
-            value = grp.attrs[col]
-            session.video_qc[col] = (
-                value.decode() if isinstance(value, bytes) else value)
 
 
 # The video modality's three raw products, each its own ONE fetch:
@@ -1144,8 +1133,7 @@ class PhotometrySession(PhotometrySessionLoader):
         self.pose = None
         self.pose_times = None
         self.motion_energy = None
-        self.length_discrepancy = np.nan
-        self.framerate_from_tpts = np.nan
+        self.video_times_qc = {}
         self.movement_signals = {}
         self.movement_responses = {}
         self.pose_xcorr = None
@@ -1887,8 +1875,7 @@ class PhotometrySession(PhotometrySessionLoader):
                      or bool(self.movement_signals)
                      or bool(self.movement_responses)
                      or self.pose_xcorr is not None
-                     or np.isfinite(self.length_discrepancy)
-                     or np.isfinite(self.framerate_from_tpts))
+                     or bool(self.video_times_qc))
         has_wheel = (self.wheel_position is not None
                      or self.wheel_velocity is not None
                      or bool(self.wheel_responses))
@@ -2450,31 +2437,63 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         return self._load_raw_video('video/motion_energy')
 
-    def compute_video_measures(self):
-        """Compute basic-video scalars from the loaded camera timestamps.
+    def load_video_times_qc(self) -> dict[str, float]:
+        """Return the camera-clock QC metrics, computing them if absent.
 
-        Sets ``self.length_discrepancy`` (video duration minus
-        ``session_length``, seconds) and ``self.framerate_from_tpts`` (median
-        inter-frame interval, seconds) from ``self.pose_times``. Requires
-        ``load_camera_times`` to have populated ``self.pose_times``.
+        Reads `video/times/qc` when it is stored and its stamp still matches
+        `config.PRODUCT_SPEC`; otherwise fetches the camera times from Alyx and
+        scores them with :meth:`compute_video_measures`, which writes and stamps
+        the product. A product named in `self.rebuild` skips the read.
+
+        Returns
+        -------
+        dict
+            Metric name -> value, also assigned to `self.video_times_qc`.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
         """
-        self.length_discrepancy = (
-            (self.pose_times[-1] - self.pose_times[0]) - self.session_length)
-        self.framerate_from_tpts = np.median(np.diff(self.pose_times))
+        if self.stored_is_current('video/times/qc'):
+            with h5py.File(self.filepath, 'r') as h5:
+                self.video_times_qc = _load_scalars(h5['video/times/qc'])
+            return self.video_times_qc
+        self.load_camera_times()
+        return self.compute_video_measures()
 
-    def fetch_video_qc(self):
-        """Live-fetch leftCamera extended QC and store the 8 ``VIDEO_QC_COLS``.
+    def compute_video_measures(self) -> dict[str, float]:
+        """Score the camera clock and store the result, from the loaded times.
 
-        Queries Alyx via ``io.get_extended_qc`` and retains the eight
-        ``config.VIDEO_QC_COLS`` outcome labels in ``self.video_qc`` (a dict
-        keyed by column name). Columns absent from the source default to
-        ``LP_QC_NOT_SET``. The Alyx call is the only network access in this
-        method, keeping the downstream validation/storage logic testable with
-        an injected ``video_qc`` dict.
+        Requires ``load_camera_times`` to have populated ``self.pose_times``.
+
+        Returns
+        -------
+        dict
+            ``length_discrepancy`` (video duration minus ``session_length``,
+            seconds) and ``framerate_from_tpts`` (median inter-frame interval,
+            seconds), also assigned to ``self.video_times_qc`` and written to
+            `video/times/qc` as group attrs.
         """
-        from iblnm.io import get_extended_qc
-        qc = get_extended_qc(self.to_series(), one=self.one)
-        self.video_qc = {col: qc.get(col, LP_QC_NOT_SET) for col in VIDEO_QC_COLS}
+        self.video_times_qc = {
+            'length_discrepancy': float(
+                (self.pose_times[-1] - self.pose_times[0]) - self.session_length),
+            'framerate_from_tpts': float(np.median(np.diff(self.pose_times))),
+        }
+        self.save_h5(groups=['video'])
+        return self.video_times_qc
+
+    def fetch_video_qc(self) -> dict[str, str]:
+        """Live-fetch the eight ``VIDEO_QC_COLS`` labels, without storing them.
+
+        Unlike every other QC on this class these labels are not a product:
+        they change when IBL re-runs its QC and no repo parameter feeds them,
+        so they are refetched rather than stamped and cached. Assigned to
+        ``self.video_qc`` and returned.
+        """
+        from iblnm.io import get_video_qc
+        self.video_qc = get_video_qc(self.eid, one=self.one)
+        return self.video_qc
 
     def _movement_signals(self) -> dict[str, pd.Series]:
         """Return the preprocessed movement channels, resampling them if absent.
@@ -2554,11 +2573,48 @@ class PhotometrySession(PhotometrySessionLoader):
         self.save_h5(groups=['video'])
         return signals
 
-    def extract_paw_wheel_xcorr(self):
-        """Compute the per-third paw–wheel cross-correlation timing diagnostic.
+    def load_pose_qc(self) -> dict:
+        """Return the paw–wheel timing diagnostic, computing it if absent.
 
-        Stores ``functions``, ``lags``, ``peak_lags``, and ``drift`` on
-        ``self.pose_xcorr``.
+        Reads `video/pose/qc` when it is stored and its stamp still matches
+        `config.PRODUCT_SPEC`; otherwise loads the pose, the camera times and
+        the wheel velocity and correlates them with
+        :meth:`extract_paw_wheel_xcorr`, which writes and stamps the product. A
+        product named in `self.rebuild` skips the read.
+
+        This is the one cross-modal QC product: good pose is not enough, so a
+        session with no wheel fails here with the wheel's own missing-data
+        error rather than a pose one.
+
+        Returns
+        -------
+        dict
+            ``functions``, ``lags``, ``peak_lags`` and ``drift``, also assigned
+            to ``self.pose_xcorr``.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
+        """
+        if self.stored_is_current('video/pose/qc'):
+            with h5py.File(self.filepath, 'r') as h5:
+                self.pose_xcorr = _load_pose_xcorr(h5['video/pose/qc'])
+            return self.pose_xcorr
+        self.load_camera_times()
+        self.load_pose()
+        self.load_wheel()
+        return self.extract_paw_wheel_xcorr()
+
+    def extract_paw_wheel_xcorr(self) -> dict:
+        """Correlate paw speed against wheel speed per third, and write it.
+
+        Returns
+        -------
+        dict
+            ``functions`` (one cross-correlation per third), ``lags``,
+            ``peak_lags`` and the scalar ``drift``, also assigned to
+            ``self.pose_xcorr`` and written to `video/pose/qc`.
         """
         paw_speed = movement_trace(self.pose, ['paw_l', 'paw_r'], 'sum_speed')
         finite = np.isfinite(paw_speed)  # drop untracked frames (NaN speed)
@@ -2569,6 +2625,8 @@ class PhotometrySession(PhotometrySessionLoader):
         )
         self.pose_xcorr = {'functions': functions, 'lags': lags,
                            'peak_lags': peak_lags, 'drift': drift}
+        self.save_h5(groups=['video'])
+        return self.pose_xcorr
 
     # =========================================================================
     # Response Vector

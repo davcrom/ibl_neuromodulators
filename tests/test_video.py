@@ -51,12 +51,21 @@ def _motion_energy(seed=1):
     return np.random.default_rng(seed).standard_normal(N_FRAMES)
 
 
-def _one_serving(times=None, pose=None, motion_energy=None):
-    """Mock ONE dispatching on the dataset name, raising where a source is None.
+def _raw_wheel(seed=2):
+    """Irregular encoder samples spanning the camera's frames, ramping at 1 rad/s."""
+    rng = np.random.default_rng(seed)
+    steps = rng.uniform(0.5, 1.5, int(N_FRAMES / CAMERA_FS * 250)) / 250
+    timestamps = np.cumsum(steps)
+    return {'timestamps': timestamps, 'position': timestamps.copy()}
+
+
+def _one_serving(times=None, pose=None, motion_energy=None, wheel=None):
+    """Mock ONE dispatching on the dataset name, raising where a source is False.
 
     Each of the three video datasets is fetched by its own `load_dataset` call,
-    so a test drops one source by passing None for it and leaves the others
-    served.
+    so a test drops one source by passing False for it and leaves the others
+    served. The wheel arrives through `load_object` instead, because
+    `video/pose/qc` is cross-modal and needs it alongside the pose.
     """
     payloads = {
         'times': _camera_times() if times is None else times,
@@ -72,8 +81,14 @@ def _one_serving(times=None, pose=None, motion_energy=None):
                 return payload
         raise ALFObjectNotFound(name)
 
+    def load_object(_eid, name, **_kwargs):
+        if wheel is False:
+            raise ALFObjectNotFound(name)
+        return _raw_wheel() if wheel is None else wheel
+
     one = MagicMock()
     one.load_dataset.side_effect = load_dataset
+    one.load_object.side_effect = load_object
     return one
 
 
@@ -146,6 +161,133 @@ class TestRawVideoProducts:
         ps.load_pose()
 
         assert ps.one.load_dataset.call_count == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# video/times/qc — the camera-clock measures
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVideoTimesQcProduct:
+
+    def test_measures_are_stamped_attrs_of_the_times_qc_group(
+            self, mock_session_series, tmp_path):
+        """Both measures live under video/times/qc, none on the video group."""
+        import h5py
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.session_length = 5.0
+        measures = ps.load_video_times_qc()
+
+        # 600 frames at 60 Hz span 599/60 s; session_length is 5 s.
+        assert measures['length_discrepancy'] == pytest.approx(599 / 60 - 5.0)
+        assert measures['framerate_from_tpts'] == pytest.approx(1 / 60)
+        assert ps.product_status('video/times/qc') == 'current'
+        with h5py.File(ps.filepath, 'r') as f:
+            assert set(measures) <= set(f['video/times/qc'].attrs)
+            assert not set(measures) & set(f['video'].attrs)
+
+    def test_reads_stored_product_without_refetching(self, mock_session_series,
+                                                     tmp_path):
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.session_length = 5.0
+        built = ps.load_video_times_qc()
+
+        fresh = _make_session(mock_session_series, tmp_path)
+        assert fresh.load_video_times_qc() == built
+        fresh.one.load_dataset.assert_not_called()
+
+    def test_alyx_qc_labels_are_never_written(self, mock_session_series, tmp_path):
+        """The eight VIDEO_QC_COLS are fetched live, so no save path stores them.
+
+        No stamp could tell a stored copy had gone stale: the labels change when
+        IBL re-runs its QC and no parameter in this repo feeds them.
+        """
+        import h5py
+        from iblnm.config import VIDEO_QC_COLS
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.session_length = 5.0
+        ps.video_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
+        ps.load_video_times_qc()
+        ps.load_pose()
+
+        with h5py.File(ps.filepath, 'r') as f:
+            written = {name for group in (f['video'], f['video/times/qc'],
+                                          f['video/pose'])
+                       for name in group.attrs}
+        assert not written & set(VIDEO_QC_COLS)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# video/pose/qc — the paw–wheel cross-correlation, cross-modal with the wheel
+# ─────────────────────────────────────────────────────────────────────────────
+
+XCORR_FIELDS = ('functions', 'lags', 'peak_lags', 'drift')
+# Each session third must outlast the ±CROSSCORR_LAG_WINDOW lag range, so the
+# cross-correlation needs a longer recording than the other video products do.
+XCORR_N_FRAMES = 60 * int(CAMERA_FS)
+
+
+def _xcorr_one(wheel=None):
+    """ONE serving a recording long enough for the per-third cross-correlation."""
+    times = np.arange(XCORR_N_FRAMES) / CAMERA_FS
+    pose = pd.DataFrame({
+        f'{keypoint}_{field}': np.random.default_rng(4).standard_normal(
+            XCORR_N_FRAMES)
+        for keypoint in KEYPOINTS for field in ('x', 'y', 'likelihood')
+    })
+    wheel_times = np.cumsum(
+        np.random.default_rng(5).uniform(0.5, 1.5, 60 * 250) / 250)
+    return _one_serving(
+        times=times, pose=pose, motion_energy=np.zeros(XCORR_N_FRAMES),
+        wheel=({'timestamps': wheel_times, 'position': wheel_times.copy()}
+               if wheel is None else wheel))
+
+
+class TestPoseQcProduct:
+
+    def test_roundtrips_the_xcorr_fields_and_reports_current(
+            self, mock_session_series, tmp_path):
+        ps = _make_session(mock_session_series, tmp_path, _xcorr_one())
+        xcorr = ps.load_pose_qc()
+
+        assert set(xcorr) == set(XCORR_FIELDS)
+        assert ps.product_status('video/pose/qc') == 'current'
+        # The QC group hangs under `video/pose`, so writing it must not leave
+        # the raw pose product looking unstamped.
+        assert ps.product_status('video/pose') == 'current'
+
+        fresh = _make_session(mock_session_series, tmp_path, _xcorr_one())
+        stored = fresh.load_pose_qc()
+        for field in ('functions', 'lags', 'peak_lags'):
+            np.testing.assert_allclose(stored[field], xcorr[field])
+        assert stored['drift'] == pytest.approx(xcorr['drift'])
+        fresh.one.load_dataset.assert_not_called()
+
+    def test_goes_stale_when_the_wheel_rate_changes(self, mock_session_series,
+                                                    tmp_path):
+        """The wheel is an input, so its parameters ride in the pose-QC stamp."""
+        import h5py
+        from iblnm.data import _write_stamp
+        from iblnm.validation import StaleProduct
+        ps = _make_session(mock_session_series, tmp_path, _xcorr_one())
+        ps.load_pose_qc()
+        with h5py.File(ps.filepath, 'a') as f:
+            _write_stamp(f['video/pose/qc'],
+                         ps.spec['video/pose/qc']
+                         | {'wheel/preprocessed.fs': 1000})
+
+        assert ps.product_status('video/pose/qc') == 'stale'
+        with pytest.raises(StaleProduct, match='video/pose/qc'):
+            ps.load_pose_qc()
+
+    def test_missing_wheel_blocks_the_build_and_names_the_wheel(
+            self, mock_session_series, tmp_path):
+        """Good pose is not enough: the error must point at the wheel, not pose."""
+        from iblnm.validation import MissingRawData
+        ps = _make_session(mock_session_series, tmp_path, _xcorr_one(wheel=False))
+
+        with pytest.raises(MissingRawData, match='encoderPositions'):
+            ps.load_pose_qc()
+        assert ps.product_status('video/pose/qc') == 'absent'
 
 
 # ─────────────────────────────────────────────────────────────────────────────

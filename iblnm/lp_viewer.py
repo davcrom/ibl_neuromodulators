@@ -447,7 +447,8 @@ class LPViewerModel:
         `fraction_correct` (or None when unavailable)."""
         with h5py.File(self.h5_dir / f'{eid}.h5', 'r') as f:
             movement_responses = _read_label_responses(f['video'])
-            xcorr = _load_pose_xcorr(f['video'])
+            xcorr = (_load_pose_xcorr(f['video/pose/qc'])
+                     if 'video/pose/qc' in f else None)
         trial_means = {
             label: responses.sel(event=LABEL2EVENT[label]).mean('trial').values
             for label, responses in movement_responses.items()

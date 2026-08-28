@@ -30,8 +30,7 @@ def mock_session_series():
 
 def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
                         series, baselines=None, trials=None, functions=None,
-                        video_qc=None, length_discrepancy=np.nan,
-                        framerate_from_tpts=np.nan):
+                        length_discrepancy=np.nan, framerate_from_tpts=np.nan):
     """Write an H5 with metadata + video groups carrying known responses.
 
     ``steps`` maps movement label -> the post-event level of its own event cell
@@ -40,21 +39,21 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
     (default 0). Every other (label, event, window) combination is filled with
     ``DECOY_LEVEL``, so a collected scalar of ``step - baseline`` can only come
     from selecting the right two cells and windows. Pass ``steps=None`` to write
-    a video group with measures + QC attrs but no responses (LP-absent case).
+    a video group with `video/times/qc` but no responses (LP-absent case).
     ``trials``, when given, maps ``stimOn_times`` / ``feedback_times`` to 1D
     arrays written as flat datasets under a ``trials`` group. ``functions``,
-    when given, is the (3, n_lags) xcorr array; defaults to zeros. ``video_qc``
-    maps ``VIDEO_QC_COLS`` names to IBL QC labels written as video-group attrs
-    (default all ``NOT_SET``).
+    when given, is the (3, n_lags) xcorr array; defaults to zeros.
+
+    The eight Alyx QC labels are not written: they are fetched live and handed
+    to ``collect_pose`` as its ``video_qc`` argument.
     """
     baselines = baselines or {}
     series = series.copy()
     series['eid'] = eid
     ps = PhotometrySession(series, one=MagicMock(), load_data=False)
     ps.qc_lp = qc_lp
-    ps.video_qc = dict(video_qc) if video_qc else {}
-    ps.length_discrepancy = length_discrepancy
-    ps.framerate_from_tpts = framerate_from_tpts
+    ps.video_times_qc = {'length_discrepancy': length_discrepancy,
+                         'framerate_from_tpts': framerate_from_tpts}
 
     if steps is not None:
         time = np.linspace(-0.5, 0.5, 101)
@@ -145,7 +144,7 @@ def fake_ps():
     ps = MagicMock()
     ps.eid = 'test-eid'
     ps.video_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
-    ps.length_discrepancy = 0.0
+    ps.video_times_qc = {'length_discrepancy': 0.0}
     return ps
 
 
@@ -163,7 +162,7 @@ class TestProcessPoseSkip:
 
         assert result == 'skipped'
         fake_ps.extract_responses.assert_not_called()
-        fake_ps.extract_paw_wheel_xcorr.assert_not_called()
+        fake_ps.load_pose_qc.assert_not_called()
 
     def test_reprocess_extracts_despite_existing_group(self, fake_ps, tmp_path,
                                                        monkeypatch):
@@ -174,7 +173,7 @@ class TestProcessPoseSkip:
 
         assert result == 'processed'
         fake_ps.extract_responses.assert_called_once()
-        fake_ps.extract_paw_wheel_xcorr.assert_called_once()
+        fake_ps.load_pose_qc.assert_called_once()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
     def test_missing_lp_logs_and_continues_with_motion_energy(self, fake_ps,
@@ -190,7 +189,7 @@ class TestProcessPoseSkip:
         assert result == 'processed'
         fake_ps.log_error.assert_called_once()
         fake_ps.extract_responses.assert_called_once()
-        fake_ps.extract_paw_wheel_xcorr.assert_not_called()
+        fake_ps.load_pose_qc.assert_not_called()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
     def test_missing_motion_energy_logs_and_continues_with_lp(self, fake_ps,
@@ -208,7 +207,7 @@ class TestProcessPoseSkip:
                   for call in fake_ps.log_error.call_args_list}
         assert logged == {'MissingMotionEnergy'}
         fake_ps.extract_responses.assert_called_once()
-        fake_ps.extract_paw_wheel_xcorr.assert_called_once()
+        fake_ps.load_pose_qc.assert_called_once()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
     def test_no_lp_no_motion_energy_writes_basic_group(self, fake_ps, tmp_path,
@@ -226,13 +225,13 @@ class TestProcessPoseSkip:
 
         assert result == 'processed'
         fake_ps.extract_responses.assert_not_called()
-        fake_ps.extract_paw_wheel_xcorr.assert_not_called()
+        fake_ps.load_pose_qc.assert_not_called()
         fake_ps.save_h5.assert_called_once_with(groups=['video'])
 
     def test_failing_video_qc_logs_and_proceeds(self, fake_ps, tmp_path,
                                                 monkeypatch):
         monkeypatch.setattr(pose, 'SESSIONS_H5_DIR', tmp_path)
-        fake_ps.length_discrepancy = 200.0  # >= LENGTH_MISMATCH_THRESHOLD
+        fake_ps.video_times_qc = {'length_discrepancy': 200.0}  # >= threshold
         fake_ps.video_qc.update({
             'qc_videoLeft_timestamps': 'FAIL',
             'qc_videoLeft_dropped_frames': 'WARNING',
@@ -417,17 +416,19 @@ class TestCollectPose:
         assert np.isnan(df.loc['eid-c', 'tongue_speed'])
         assert np.isfinite(df.loc['eid-c', 'paw'])
 
-    def test_video_qc_score_from_h5_quality_cols(self, tmp_path,
-                                                 mock_session_series, perf_fpath):
+    def test_video_qc_score_from_fetched_quality_cols(self, tmp_path,
+                                                      mock_session_series,
+                                                      perf_fpath):
         """Traces + motion energy + clean QC: lp_exists, finite ME, scored QC."""
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5, 'motion_energy': 4.0}
         clean_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
         _write_pose_session(tmp_path, 'eid-q', steps, drift=0.1,
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
-                            series=mock_session_series, video_qc=clean_qc)
+                            series=mock_session_series)
 
-        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath,
+                               video_qc={'eid-q': clean_qc}).set_index('eid')
 
         assert df.loc['eid-q', 'lp_exists']
         assert np.isfinite(df.loc['eid-q', 'motion_energy'])
@@ -441,9 +442,10 @@ class TestCollectPose:
         qc['qc_videoLeft_wheel_alignment'] = 'NOT_SET'
         _write_pose_session(tmp_path, 'eid-ns', steps=None, drift=np.nan,
                             peak_lags=None, qc_lp='NOT_SET',
-                            series=mock_session_series, video_qc=qc)
+                            series=mock_session_series)
 
-        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath,
+                               video_qc={'eid-ns': qc}).set_index('eid')
 
         np.testing.assert_allclose(df.loc['eid-ns', 'video_qc_score'],
                                    QCVAL2NUM['PASS'])
@@ -453,9 +455,10 @@ class TestCollectPose:
         qc = {col: 'NOT_SET' for col in VIDEO_QC_COLS}
         _write_pose_session(tmp_path, 'eid-allns', steps=None, drift=np.nan,
                             peak_lags=None, qc_lp='NOT_SET',
-                            series=mock_session_series, video_qc=qc)
+                            series=mock_session_series)
 
-        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath,
+                               video_qc={'eid-allns': qc}).set_index('eid')
 
         assert np.isnan(df.loc['eid-allns', 'video_qc_score'])
 
@@ -465,10 +468,11 @@ class TestCollectPose:
         qc = {col: 'PASS' for col in VIDEO_QC_COLS}
         _write_pose_session(tmp_path, 'eid-nolp', steps=None, drift=np.nan,
                             peak_lags=None, qc_lp='NOT_SET',
-                            series=mock_session_series, video_qc=qc,
+                            series=mock_session_series,
                             length_discrepancy=12.0, framerate_from_tpts=30.0)
 
-        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath,
+                               video_qc={'eid-nolp': qc}).set_index('eid')
 
         assert not df.loc['eid-nolp', 'lp_exists']
         assert np.isnan(df.loc['eid-nolp', 'paw'])
@@ -484,10 +488,11 @@ class TestCollectPose:
         clean_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
         _write_pose_session(tmp_path, 'eid-err', steps, drift=0.1,
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
-                            series=mock_session_series, video_qc=clean_qc)
+                            series=mock_session_series)
         _write_errors(tmp_path, 'eid-err', ['VideoLengthError'])
 
-        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
+        df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath,
+                               video_qc={'eid-err': clean_qc}).set_index('eid')
 
         assert df.loc['eid-err', 'video_qc_score'] == -1
 
