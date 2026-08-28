@@ -301,7 +301,7 @@ _UNRECORDED_ERROR_TYPES = frozenset({'BlockingIOError', 'StaleProduct'})
 _RESPONSES_RESERVED_KEYS = {'times', 'trials'}
 
 
-def _save_metadata(session, h5_file, band):
+def _save_metadata(session, h5_file):
     grp = _replace_group(h5_file, 'metadata')
     for attr, is_list in session._METADATA_FIELDS:
         value = getattr(session, attr, None)
@@ -318,7 +318,7 @@ def _save_metadata(session, h5_file, band):
             grp.attrs[attr] = _METADATA_NONE_SENTINEL if value is None else value
 
 
-def _load_metadata(session, h5_file, band):
+def _load_metadata(session, h5_file):
     if 'metadata' not in h5_file:
         return
     grp = h5_file['metadata']
@@ -383,7 +383,7 @@ def _read_error_entries(group: h5py.Group) -> list[dict]:
     ]
 
 
-def _save_errors(session, h5_file, band):
+def _save_errors(session, h5_file):
     """Write `session.errors` into `errors/`, mirroring the product tree.
 
     Entries are sorted by their `product` field: each product's entries replace
@@ -428,13 +428,13 @@ def read_error_tree(h5_file: h5py.File) -> list[dict]:
     ]
 
 
-def _load_errors(session, h5_file, band):
+def _load_errors(session, h5_file):
     if 'errors' not in h5_file:
         return
     session.errors = read_error_tree(h5_file)
 
 
-def _save_trials(session, h5_file, band):
+def _save_trials(session, h5_file):
     """Write the trials table verbatim to `trials/table`.
 
     Every column is stored, ONE's own and the ones `load_trials` derives. Trial
@@ -449,13 +449,13 @@ def _save_trials(session, h5_file, band):
     _write_stamp(group, session.spec['trials/table'])
 
 
-def _load_trials(session, h5_file, band):
+def _load_trials(session, h5_file):
     if 'trials/table' not in h5_file:
         return
     session.trials = _read_dataframe(h5_file['trials/table'])
 
 
-def _save_wheel(session, h5_file, band):
+def _save_wheel(session, h5_file):
     if getattr(session, 'wheel_velocity', None) is None:
         return
     wheel_group = h5_file.require_group('wheel')
@@ -473,7 +473,7 @@ def _save_wheel(session, h5_file, band):
     )
 
 
-def _load_wheel(session, h5_file, band):
+def _load_wheel(session, h5_file):
     if 'wheel' not in h5_file or 'responses' not in h5_file['wheel']:
         return
     responses_group = h5_file['wheel/responses']
@@ -632,9 +632,9 @@ def _read_photometry_preprocessed(
             {region: _load_scalars(group) for region, group in groups.items()})
 
 
-def _save_photometry(session, h5_file, band):
+def _save_photometry(session, h5_file):
     photometry_group = h5_file.require_group('photometry')
-    preprocessed = session.photometry.get(band)
+    preprocessed = session.photometry.get(PREPROCESSED_BAND)
     has_qc = (getattr(session, 'qc', None) is not None
               and len(session.qc) > 0)
 
@@ -670,7 +670,7 @@ def _save_photometry(session, h5_file, band):
                 _write_dataframe(_replace_group(region_group, 'qc'), qc_rows)
 
 
-def _load_photometry(session, h5_file, band):
+def _load_photometry(session, h5_file):
     if 'photometry' not in h5_file:
         return
     photometry_group = h5_file['photometry']
@@ -678,7 +678,7 @@ def _load_photometry(session, h5_file, band):
 
     preprocessed, diagnostics = _read_photometry_preprocessed(photometry_group)
     if preprocessed is not None:
-        session.photometry[band] = preprocessed
+        session.photometry[PREPROCESSED_BAND] = preprocessed
         session.preprocessing_diagnostics = diagnostics
 
     session.photometry_responses = {
@@ -740,7 +740,7 @@ def _read_video_qc(h5_file):
     return {label: attrs[label] for label in LP_QC_LABELS if label in attrs}
 
 
-def _save_video(session, h5_file, band):
+def _save_video(session, h5_file):
     # Read manual labels before _replace_group wipes them, so re-saving
     # automatic data (extraction --overwrite) never clobbers a manual verdict.
     preserved_qc = _read_video_qc(h5_file)
@@ -763,7 +763,7 @@ def _save_video(session, h5_file, band):
         grp.attrs[col] = session.video_qc.get(col, LP_QC_NOT_SET)
 
 
-def _load_video(session, h5_file, band):
+def _load_video(session, h5_file):
     if 'video' not in h5_file:
         return
     grp = h5_file['video']
@@ -1576,7 +1576,7 @@ class PhotometrySession(PhotometrySessionLoader):
             )
         return responses
 
-    def save_h5(self, fpath=None, groups=None, band='GCaMP_preprocessed', mode='a'):
+    def save_h5(self, fpath=None, groups=None, mode='a'):
         """Save session data to HDF5.
 
         Parameters
@@ -1596,15 +1596,15 @@ class PhotometrySession(PhotometrySessionLoader):
         fpath.parent.mkdir(parents=True, exist_ok=True)
 
         if groups is None:
-            groups = self._available_save_groups(band)
+            groups = self._available_save_groups()
 
         with h5py.File(fpath, mode) as h5_file:
             for group_name in groups:
-                _SAVE_HANDLERS[group_name](self, h5_file, band)
+                _SAVE_HANDLERS[group_name](self, h5_file)
 
-    def _available_save_groups(self, band):
+    def _available_save_groups(self):
         has_photometry = (
-            band in self.photometry
+            PREPROCESSED_BAND in self.photometry
             or bool(getattr(self, 'photometry_responses', None))
             or (getattr(self, 'qc', None) is not None and len(self.qc) > 0)
         )
@@ -1619,7 +1619,7 @@ class PhotometrySession(PhotometrySessionLoader):
             ('video',      has_video),
         ) if available]
 
-    def load_h5(self, fpath=None, groups=None, band='GCaMP_preprocessed'):
+    def load_h5(self, fpath=None, groups=None):
         """Load session data from HDF5 file.
 
         Parameters
@@ -1630,16 +1630,13 @@ class PhotometrySession(PhotometrySessionLoader):
             Which data groups to load. Any subset of:
             'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video'.
             None loads all groups present in the file.
-        band : str
-            Preprocessed band name used as the key in `self.photometry`
-            when loading photometry.
         """
         if fpath is None:
             fpath = self.filepath
         group_names = list(_LOAD_HANDLERS) if groups is None else list(groups)
         with h5py.File(fpath, 'r') as h5_file:
             for group_name in group_names:
-                _LOAD_HANDLERS[group_name](self, h5_file, band)
+                _LOAD_HANDLERS[group_name](self, h5_file)
 
     def _append_qc(self, brain_region: str, band: str, metrics: dict) -> None:
         """Append or update a QC row in the DataFrame."""

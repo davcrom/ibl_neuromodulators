@@ -2115,6 +2115,28 @@ class TestSaveLoadH5:
         assert session.product_status('photometry/preprocessed') == 'current'
         assert session.product_status('photometry/responses') == 'current'
 
+    def test_preprocessed_band_comes_from_the_product(self, mock_photometry_session,
+                                                       mock_session_series, tmp_path):
+        """Which self.photometry key holds the preprocessed signal is fixed.
+
+        It is named by the `photometry/preprocessed` product, so neither the
+        save nor the load takes it as an argument.
+        """
+        from iblnm.data import PREPROCESSED_BAND, PhotometrySession
+        session = mock_photometry_session
+        session.preprocess()
+        fpath = tmp_path / f'{session.eid}.h5'
+        session.save_h5(fpath)
+
+        reloaded = PhotometrySession(mock_session_series, one=MagicMock(),
+                                     load_data=False)
+        reloaded.load_h5(fpath, groups=['photometry'])
+
+        assert PREPROCESSED_BAND in reloaded.photometry
+        np.testing.assert_allclose(
+            reloaded.photometry[PREPROCESSED_BAND]['VTA'].values,
+            session.photometry[PREPROCESSED_BAND]['VTA'].values)
+
     def test_save_trials_and_responses(self, mock_photometry_session, tmp_path):
         """save_h5 in append mode should add trials and xarray responses."""
         session = mock_photometry_session
@@ -2521,7 +2543,7 @@ class TestPoseMethods:
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
                                load_data=False)
         ps.length_discrepancy = 0.05
-        assert 'video' in ps._available_save_groups('GCaMP_preprocessed')
+        assert 'video' in ps._available_save_groups()
 
     def _make_pose_session(self, mock_session_series, fs=30, dur=60.0,
                            tongue_like=(0.2, 0.9), accelerate=False,
