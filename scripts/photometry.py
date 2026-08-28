@@ -4,7 +4,7 @@ Photometry Processing Pipeline
 For each session:
 1. Load trials + photometry from ONE
 2. Validate trials in photometry time (fatal)
-3. Run QC metrics; validate band inversions + early samples (fatal), few unique samples (logged)
+3. Run QC metrics; validate band inversions + early samples (fatal)
 4. Preprocess (bleach correct -> isosbestic correct -> zscore via pipeline; resample separately)
 5. Save preprocessed signal + QC to HDF5
 6. Validate n_trials (fatal for response extraction)
@@ -60,12 +60,6 @@ def process_session(ps, reprocess=False):
 
     # Sliding QC (fatal)
     ps.run_sliding_qc()
-
-    # Few unique samples (non-fatal)
-    try:
-        ps.validate_few_unique_samples()
-    except Exception as e:
-        ps.log_error(e)
 
     # Block 3: Preprocess + save signal and QC (fatal)
     ps.preprocess()

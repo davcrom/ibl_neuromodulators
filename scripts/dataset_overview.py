@@ -66,7 +66,7 @@ RAW_DATA_BLOCKERS = {'MissingRawData'}
 COMPLETE_DATA_BLOCKERS = RAW_DATA_BLOCKERS | {
     'MissingExtractedData', 'InsufficientTrials', 'TrialsNotInPhotometryTime',
 }
-QC_BLOCKERS = COMPLETE_DATA_BLOCKERS | {'QCValidationError', 'FewUniqueSamples'}
+QC_BLOCKERS = COMPLETE_DATA_BLOCKERS | {'QCValidationError'}
 VIDEO_QC_COLS = [
     'qc_videoLeft_timestamps', 'qc_videoLeft_dropped_frames', 'qc_videoLeft_pin_state',
 ]

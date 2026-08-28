@@ -23,10 +23,10 @@ from iblnm.config import (
     EVENT_COMPLETENESS_THRESHOLD,
     LOGGED_ERRORS_FPATH, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
-    N_UNIQUE_SAMPLES_THRESHOLD,
     POSE_MEASURES, PRODUCT_SPEC,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
-    QC_SLIDING_KWARGS, QC_SLIDING_METRICS, REQUIRED_CONTRASTS,
+    QC_SLIDING_AGG, QC_SLIDING_KWARGS, QC_SLIDING_METRICS,
+    QC_UNDETRENDED_METRICS, REQUIRED_CONTRASTS,
     RESPONSE_EVENTS, RESPONSE_OLS_COEFS_COLUMNS,
     RESPONSE_VARCOMP_SUMMARY_COLUMNS, RESPONSE_VARCOMP_VIOLIN_COLUMNS,
     RESPONSE_WINDOW,
@@ -48,7 +48,7 @@ from iblnm.validation import (
     MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
     MissingMotionEnergy,
     InsufficientTrials, BlockStructureBug, MissingBlockInfo,
-    IncompleteEventTimes, TrialsNotInPhotometryTime, FewUniqueSamples,
+    IncompleteEventTimes, TrialsNotInPhotometryTime,
     QCValidationError, AmbiguousRegionMapping, StaleProduct,
 )
 
@@ -622,6 +622,46 @@ def _load_scalars(group: h5py.Group) -> dict[str, float]:
             if key not in _STAMP_ATTRS}
 
 
+# How a metric's sliding windows are reduced to the one value that is stored.
+# Named by string in config.QC_SLIDING_AGG so the choice is part of the QC
+# product's spec stamp; a callable could not be serialized into it.
+_QC_AGGREGATORS = {
+    'mean': lambda values: values.mean(),
+    'q10':  lambda values: values.quantile(0.10),
+}
+
+
+def _aggregate_qc_windows(
+    qc_tidy: pd.DataFrame, agg: dict[str, str],
+) -> dict[str, dict[str, float]]:
+    """Reduce a tidy sliding-QC frame to one scalar per (region, band, metric).
+
+    Parameters
+    ----------
+    qc_tidy : pandas.DataFrame
+        `qc_signals` output: columns `band`, `brain_region`, `metric`, `value`,
+        and `window` (the window centre, NaN on the whole-signal row). Only the
+        windowed rows are aggregated — the whole-signal row scores a different
+        thing and would otherwise be averaged in as if it were a window.
+    agg : dict
+        Metric name -> aggregator name in `_QC_AGGREGATORS`.
+
+    Returns
+    -------
+    dict
+        Region -> {f'{metric}_{band}': value}. QC is stored per region but not
+        per band, so the band is suffixed into the metric name to keep each
+        region's mapping flat.
+    """
+    windows = qc_tidy[qc_tidy['window'].notna()]
+    aggregated = {}
+    for (region, band, metric), rows in windows.groupby(
+            ['brain_region', 'band', 'metric']):
+        aggregated.setdefault(region, {})[f'{metric}_{band}'] = (
+            _QC_AGGREGATORS[agg[metric]](rows['value']))
+    return aggregated
+
+
 def _read_photometry_preprocessed(
     photometry_group: h5py.Group,
 ) -> tuple[pd.DataFrame | None, dict[str, dict[str, float]]]:
@@ -650,18 +690,34 @@ def _read_photometry_preprocessed(
             {region: _load_scalars(group) for region, group in groups.items()})
 
 
+def _read_photometry_qc(
+    photometry_group: h5py.Group,
+) -> dict[str, dict[str, float]]:
+    """Read every region's `raw/qc` attrs into region -> metric -> value.
+
+    Regions with no stored QC are absent from the result rather than present
+    with an empty mapping, so a caller can tell "never scored" from "scored".
+    """
+    return {region: _load_scalars(photometry_group[f'{region}/raw/qc'])
+            for region in photometry_group
+            if 'raw/qc' in photometry_group[region]}
+
+
 def _save_photometry(session, h5_file):
     photometry_group = h5_file.require_group('photometry')
     preprocessed = session.photometry.get(PREPROCESSED_BAND)
-    has_qc = (getattr(session, 'qc', None) is not None
-              and len(session.qc) > 0)
 
-    regions = set()
+    if session.neurophotometrics_qc:
+        _save_scalars(
+            _replace_group(photometry_group.require_group('neurophotometrics'),
+                           'qc'),
+            session.neurophotometrics_qc,
+            session.spec['photometry/neurophotometrics/qc'],
+        )
+
+    regions = set(session.photometry_responses) | set(session.photometry_qc)
     if preprocessed is not None:
         regions.update(preprocessed.columns)
-    regions.update(session.photometry_responses.keys())
-    if has_qc:
-        regions.update(session.qc['brain_region'].unique())
 
     for region in sorted(regions):
         region_group = photometry_group.require_group(region)
@@ -682,17 +738,19 @@ def _save_photometry(session, h5_file):
                 session.spec['photometry/responses'],
             )
 
-        if has_qc:
-            qc_rows = session.qc[session.qc['brain_region'] == region]
-            if len(qc_rows) > 0:
-                _write_dataframe(_replace_group(region_group, 'qc'), qc_rows)
+        # The raw bands themselves may or may not be stored; their QC always is.
+        if region in session.photometry_qc:
+            _save_scalars(
+                _replace_group(region_group.require_group('raw'), 'qc'),
+                session.photometry_qc[region],
+                session.spec['photometry/raw/qc'],
+            )
 
 
 def _load_photometry(session, h5_file):
     if 'photometry' not in h5_file:
         return
     photometry_group = h5_file['photometry']
-    regions = sorted(photometry_group.keys())
 
     preprocessed, diagnostics = _read_photometry_preprocessed(photometry_group)
     if preprocessed is not None:
@@ -700,11 +758,10 @@ def _load_photometry(session, h5_file):
         session.preprocessing_diagnostics = diagnostics
 
     session.photometry_responses = _read_label_responses(photometry_group)
-
-    qc_frames = [_read_dataframe(photometry_group[f'{region}/qc'])
-                 for region in regions if 'qc' in photometry_group[region]]
-    if qc_frames:
-        session.qc = pd.concat(qc_frames, ignore_index=True)
+    session.photometry_qc = _read_photometry_qc(photometry_group)
+    if 'neurophotometrics/qc' in photometry_group:
+        session.neurophotometrics_qc = _load_scalars(
+            photometry_group['neurophotometrics/qc'])
 
 
 # ----- Video / LightningPose sub-handlers (pure: parent_group + payload) -----
@@ -939,7 +996,10 @@ class PhotometrySession(PhotometrySessionLoader):
         self.preprocessing_diagnostics = {}
         self.states = None
         self.ols_fits = {}
-        self.qc = pd.DataFrame()
+        # QC products: metric -> value for the neurophotometrics source table,
+        # region -> band-suffixed metric -> value for the raw bands.
+        self.neurophotometrics_qc = {}
+        self.photometry_qc = {}
         self.pose = None
         self.pose_times = None
         self.motion_energy = None
@@ -1186,6 +1246,27 @@ class PhotometrySession(PhotometrySessionLoader):
                             else 'stale')
         return 'absent'
 
+    def stored_is_current(self, product: str) -> bool:
+        """Whether a load method may read `product` instead of rebuilding it.
+
+        The one place the stale policy lives: a stored product whose stamp
+        disagrees with the resolved spec is never silently rebuilt, because a
+        mismatch means `config.py` changed and that is the caller's decision,
+        not one session's. Naming the product in `self.rebuild` forces the
+        rebuild and skips the check.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
+        """
+        if product in self.rebuild:
+            return False
+        status = self.product_status(product)
+        if status == 'stale':
+            raise StaleProduct(product)
+        return status == 'current'
+
     # Metadata fields: (attr_name, is_list)
     # Scalars are stored as H5 attrs, lists as H5 datasets.
     _METADATA_FIELDS = [
@@ -1295,16 +1376,11 @@ class PhotometrySession(PhotometrySessionLoader):
             back to rebuilding: a stale store means `config.py` changed, which
             is a decision for the caller, not for one session.
         """
-        product = 'photometry/preprocessed'
         signal = None
-        if product not in self.rebuild:
-            status = self.product_status(product)
-            if status == 'stale':
-                raise StaleProduct(product)
-            if status == 'current':
-                with h5py.File(self.filepath, 'r') as h5:
-                    signal, self.preprocessing_diagnostics = (
-                        _read_photometry_preprocessed(h5['photometry']))
+        if self.stored_is_current('photometry/preprocessed'):
+            with h5py.File(self.filepath, 'r') as h5:
+                signal, self.preprocessing_diagnostics = (
+                    _read_photometry_preprocessed(h5['photometry']))
         if signal is None:
             self.load_raw_photometry()
             signal = self.preprocess()
@@ -1474,18 +1550,6 @@ class PhotometrySession(PhotometrySessionLoader):
         if missing:
             raise IncompleteEventTimes(missing)
 
-    def validate_few_unique_samples(self):
-        """Raises FewUniqueSamples listing channels below threshold."""
-        if self.qc.empty or 'n_unique_samples' not in self.qc.columns:
-            return
-        rows = self.qc[self.qc['n_unique_samples'] < N_UNIQUE_SAMPLES_THRESHOLD]
-        if not rows.empty:
-            channels = ', '.join(
-                f"{r['brain_region']}/{r['band']}={r['n_unique_samples']:.3f}"
-                for _, r in rows.iterrows()
-            )
-            raise FewUniqueSamples(f"Few unique samples: {channels}")
-
     def validate_trials_in_photometry_time(self, band=None):
         """Raises TrialsNotInPhotometryTime if trial times fall outside photometry window."""
         if band is None:
@@ -1500,14 +1564,18 @@ class PhotometrySession(PhotometrySessionLoader):
             )
 
     def validate_qc(self):
-        """Raises QCValidationError listing all raw QC issues found."""
-        if self.qc.empty:
-            return
-        issues = []
-        if 'n_band_inversions' in self.qc.columns and (self.qc['n_band_inversions'] > 0).any():
-            issues.append("band inversions detected")
-        if 'n_early_samples' in self.qc.columns and (self.qc['n_early_samples'] > 0).any():
-            issues.append("early samples detected")
+        """Raise QCValidationError on a non-zero neurophotometrics QC metric.
+
+        Reads the `photometry/neurophotometrics/qc` attrs held in
+        `self.neurophotometrics_qc`. Both metrics are fatal: a band inversion
+        means the channels are not the bands they are labelled, and early
+        samples mean the recording started before the LEDs settled. A session
+        that has not been scored has nothing to fail on.
+        """
+        issues = [message for metric, message in (
+            ('n_band_inversions', 'band inversions detected'),
+            ('n_early_samples', 'early samples detected'),
+        ) if self.neurophotometrics_qc.get(metric, 0) > 0]
         if issues:
             raise QCValidationError('; '.join(issues))
 
@@ -1555,15 +1623,10 @@ class PhotometrySession(PhotometrySessionLoader):
             The stored stamp disagrees with the resolved spec.
         """
         load_signals, attribute = _RESPONSE_MODALITIES[modality]
-        product = f'{modality}/responses'
         responses = None
-        if product not in self.rebuild:
-            status = self.product_status(product)
-            if status == 'stale':
-                raise StaleProduct(product)
-            if status == 'current':
-                with h5py.File(self.filepath, 'r') as h5:
-                    responses = _read_label_responses(h5[modality])
+        if self.stored_is_current(f'{modality}/responses'):
+            with h5py.File(self.filepath, 'r') as h5:
+                responses = _read_label_responses(h5[modality])
         was_cut = responses is None
         if was_cut:
             signals = getattr(self, load_signals)()
@@ -1670,8 +1733,9 @@ class PhotometrySession(PhotometrySessionLoader):
     def _available_save_groups(self):
         has_photometry = (
             PREPROCESSED_BAND in self.photometry
-            or bool(getattr(self, 'photometry_responses', None))
-            or (getattr(self, 'qc', None) is not None and len(self.qc) > 0)
+            or bool(self.photometry_responses)
+            or bool(self.photometry_qc)
+            or bool(self.neurophotometrics_qc)
         )
         has_video = (bool(self.movement_responses)
                      or self.pose_xcorr is not None
@@ -1703,36 +1767,123 @@ class PhotometrySession(PhotometrySessionLoader):
             for group_name in group_names:
                 _LOAD_HANDLERS[group_name](self, h5_file)
 
-    def _append_qc(self, brain_region: str, band: str, metrics: dict) -> None:
-        """Append or update a QC row in the DataFrame."""
-        mask = (self.qc['brain_region'] == brain_region) & (self.qc['band'] == band) if not self.qc.empty else pd.Series(dtype=bool)
-        if mask.any():
-            idx = mask.idxmax()
-            for k, v in metrics.items():
-                self.qc.loc[idx, k] = v
-        else:
-            row = {'brain_region': brain_region, 'band': band, 'eid': self.eid, **metrics}
-            self.qc = pd.concat([self.qc, pd.DataFrame([row])], ignore_index=True)
+    def load_neurophotometrics_qc(self) -> dict[str, float]:
+        """Return the neurophotometrics QC metrics, scoring them if absent.
 
-    def run_raw_qc(self, raw_metrics=None):
-        """Load raw photometry and compute session-level QC metrics.
+        Reads `photometry/neurophotometrics/qc` when it is stored and its stamp
+        still matches `config.PRODUCT_SPEC`; otherwise fetches the source table
+        from Alyx and scores it with :meth:`run_raw_qc`, which writes and stamps
+        the product. A product named in `self.rebuild` skips the read.
 
-        Updates self.qc with raw metric columns (n_band_inversions, n_early_samples).
-        Call validate_qc() after this to check for band inversions and early samples.
+        Returns
+        -------
+        dict
+            Metric name -> value, also assigned to `self.neurophotometrics_qc`.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
+        """
+        if self.stored_is_current('photometry/neurophotometrics/qc'):
+            with h5py.File(self.filepath, 'r') as h5:
+                self.neurophotometrics_qc = _load_scalars(
+                    h5['photometry/neurophotometrics/qc'])
+            return self.neurophotometrics_qc
+        return self.run_raw_qc()
+
+    def load_photometry_qc(self) -> dict[str, dict[str, float]]:
+        """Return each region's raw-band QC metrics, scoring them if absent.
+
+        Reads `photometry/{region}/raw/qc` when it is stored and its stamp still
+        matches `config.PRODUCT_SPEC`; otherwise fetches the raw bands from Alyx
+        and scores them with :meth:`run_sliding_qc`, which writes and stamps the
+        product. A product named in `self.rebuild` skips the read.
+
+        Returns
+        -------
+        dict
+            Region -> {band-suffixed metric name: value}, also assigned to
+            `self.photometry_qc`.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
+        """
+        if self.stored_is_current('photometry/raw/qc'):
+            with h5py.File(self.filepath, 'r') as h5:
+                self.photometry_qc = _read_photometry_qc(h5['photometry'])
+            return self.photometry_qc
+        self.load_raw_photometry()
+        return self.run_sliding_qc()
+
+    def run_raw_qc(self, raw_metrics: Sequence[str] | None = None) -> dict[str, float]:
+        """Score the neurophotometrics source table and store the result.
+
+        Parameters
+        ----------
+        raw_metrics : sequence of str, optional
+            Names of `iblphotometry.metrics` functions taking the whole source
+            table. Defaults to `config.QC_RAW_METRICS`.
+
+        Returns
+        -------
+        dict
+            Metric name -> value, also assigned to `self.neurophotometrics_qc`
+            and written to `photometry/neurophotometrics/qc` as group attrs.
+
+        The source table itself is never stored: `n_band_inversions` reads a
+        `color` column that only exists before extraction, so the QC is all
+        that survives the fetch.
         """
         if raw_metrics is None:
             raw_metrics = QC_RAW_METRICS
         raw_photometry = self._load_raw_photometry()
-        raw_metric_values = {m: getattr(metrics, m)(raw_photometry) for m in raw_metrics}
-        self.qc = pd.DataFrame([{'eid': self.eid, **raw_metric_values}])
+        self.neurophotometrics_qc = {
+            name: float(getattr(metrics, name)(raw_photometry))
+            for name in raw_metrics
+        }
+        self.save_h5(groups=['photometry'])
+        return self.neurophotometrics_qc
 
-    def run_sliding_qc(self, signal_band=None, sliding_metrics=None,
-                       metrics_kwargs=None, sliding_kwargs=None,
-                       brain_region=None, pipeline=None):
-        """Run sliding-window QC on photometry signals.
+    def run_sliding_qc(
+        self,
+        sliding_metrics: Sequence[str] | None = None,
+        metrics_kwargs: dict | None = None,
+        sliding_kwargs: dict | None = None,
+        agg: dict[str, str] | None = None,
+    ) -> dict[str, dict[str, float]]:
+        """Score the raw bands in sliding windows and store the result per region.
 
-        Updates self.qc with per-(band, brain_region) sliding metrics,
-        merging in any raw metrics already stored from run_raw_qc().
+        Issues two `qc_signals` calls over the same windows: the metrics named
+        in `config.QC_UNDETRENDED_METRICS` with `detrend=False`, the rest with
+        `detrend=True`. The split is load-bearing — detrending makes every
+        sample of a window a distinct float, which pins `n_unique_samples` at
+        1.0 no matter how dead the signal is.
+
+        Parameters
+        ----------
+        sliding_metrics : sequence of str, optional
+            Names of `iblphotometry.metrics` functions. Defaults to
+            `config.QC_SLIDING_METRICS`.
+        metrics_kwargs : dict, optional
+            Per-metric keyword arguments, keyed by metric name. Defaults to
+            `config.QC_METRICS_KWARGS`.
+        sliding_kwargs : dict, optional
+            `w_len` and `step_len` in seconds. Defaults to
+            `config.QC_SLIDING_KWARGS`; its `detrend` entry is overridden per
+            call by the split above.
+        agg : dict, optional
+            Metric name -> aggregator name in `_QC_AGGREGATORS`, reducing the
+            windows to one value. Defaults to `config.QC_SLIDING_AGG`.
+
+        Returns
+        -------
+        dict
+            Region -> {band-suffixed metric name: value}, also assigned to
+            `self.photometry_qc` and written to `photometry/{region}/raw/qc`
+            as group attrs.
         """
         if sliding_metrics is None:
             sliding_metrics = QC_SLIDING_METRICS
@@ -1740,31 +1891,26 @@ class PhotometrySession(PhotometrySessionLoader):
             metrics_kwargs = QC_METRICS_KWARGS
         if sliding_kwargs is None:
             sliding_kwargs = QC_SLIDING_KWARGS
+        if agg is None:
+            agg = QC_SLIDING_AGG
 
-        qc_tidy = qc_signals(
-            self.photometry,
-            metrics=[getattr(metrics, m) for m in sliding_metrics],
-            metrics_kwargs=metrics_kwargs,
-            signal_band=signal_band,
-            brain_region=brain_region,
-            pipeline=pipeline,
-            sliding_kwargs=sliding_kwargs,
-        )
+        def score(metric_names, detrend):
+            return qc_signals(
+                self.photometry,
+                metrics=[getattr(metrics, name) for name in metric_names],
+                metrics_kwargs=metrics_kwargs,
+                sliding_kwargs={**sliding_kwargs, 'detrend': detrend},
+            )
 
-        if 'window' in qc_tidy.columns:
-            qc_tidy = qc_tidy.groupby(['band', 'brain_region', 'metric'], as_index=False)['value'].mean()
-
-        df_qc = qc_tidy.pivot(index=['band', 'brain_region'], columns='metric', values='value').reset_index()
-        df_qc.columns.name = None
-        df_qc['eid'] = self.eid
-
-        # Incorporate raw metrics from run_raw_qc() if present
-        if not self.qc.empty:
-            raw_cols = [c for c in self.qc.columns if c not in ('eid', 'brain_region', 'band')]
-            for col in raw_cols:
-                df_qc[col] = self.qc[col].iloc[0]
-
-        self.qc = df_qc
+        qc_tidy = pd.concat([
+            score([m for m in sliding_metrics if m in QC_UNDETRENDED_METRICS],
+                  detrend=False),
+            score([m for m in sliding_metrics if m not in QC_UNDETRENDED_METRICS],
+                  detrend=True),
+        ])
+        self.photometry_qc = _aggregate_qc_windows(qc_tidy, agg)
+        self.save_h5(groups=['photometry'])
+        return self.photometry_qc
 
 
     # =========================================================================

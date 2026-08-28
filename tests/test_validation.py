@@ -17,7 +17,7 @@ class TestModuleImports:
             TrueDuplicateSession, MissingExtractedData, MissingRawData,
             InsufficientTrials, BlockStructureBug, IncompleteEventTimes,
             TrialsNotInPhotometryTime, BandInversion, EarlySamples,
-            FewUniqueSamples, QCValidationError,
+            QCValidationError,
         )
 
     def test_video_exceptions_importable(self):

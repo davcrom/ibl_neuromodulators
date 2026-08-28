@@ -402,6 +402,13 @@ QC_SLIDING_AGG = {
     'ar_score':                 'mean',
 }
 
+# Sliding metrics scored on un-detrended windows. Detrending subtracts a fitted
+# line from each window, which leaves every sample a distinct float and pins
+# n_unique_samples at 1.0 for any non-constant window. The remaining metrics
+# measure variability, which a bleaching trend inflates, so they keep the
+# detrending in QC_SLIDING_KWARGS.
+QC_UNDETRENDED_METRICS = ('n_unique_samples',)
+
 PREPROCESSING_PIPELINES = {
     'isosbestic_correction': [
         dict(

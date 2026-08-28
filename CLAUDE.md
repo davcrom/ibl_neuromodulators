@@ -158,22 +158,34 @@ Lazy loading — all data attributes start empty:
 ```python
 ps = PhotometrySession(session_row, one=one)
 # ps.trials = None, ps.photometry = {}, ps.photometry_responses = {},
-# ps.movement_responses = {}, ps.qc = None
+# ps.movement_responses = {}, ps.photometry_qc = {},
+# ps.neurophotometrics_qc = {}
 
 ps.load_trials()          # populates ps.trials
 ps.load_raw_photometry()  # ps.photometry['GCaMP'], ps.photometry['Isosbestic']
 ps.preprocess()           # adds ps.photometry['GCaMP_preprocessed'], writes it
 ps.load_photometry()      # the preprocessed signal, from H5 or built as above
 ps.load_responses('photometry')   # ps.photometry_responses, from H5 or cut
+ps.load_photometry_qc()           # ps.photometry_qc, from H5 or scored
+ps.load_neurophotometrics_qc()    # ps.neurophotometrics_qc, from H5 or scored
 ```
 
 Load methods are not pure readers. Each attempts its stored product, falls back
 to building it, and writes what it built, so a session with an empty H5 fills
 itself from Alyx. `load_raw_photometry` and `load_photometry` stay separate —
 one method returning either raw or preprocessed is how an analysis silently
-runs on the wrong signal. A stored stamp that disagrees with `config.py` raises
-`StaleProduct` instead of rebuilding; put the product key in `ps.rebuild` to
-force a rebuild.
+runs on the wrong signal. `stored_is_current(product)` is the single gate they
+all pass through: it honours `ps.rebuild` and raises `StaleProduct` on a stored
+stamp that disagrees with `config.py`, rather than rebuilding silently.
+
+QC is a product like any other. `run_raw_qc` scores the neurophotometrics source
+table into `photometry/neurophotometrics/qc`; `run_sliding_qc` scores the raw
+bands into `photometry/{region}/raw/qc`. Both store flat `{metric: value}`
+attrs, with the band suffixed into the metric name
+(`n_unique_samples_GCaMP`) because QC is split per region but not per band.
+`run_sliding_qc` issues two `qc_signals` calls over the same windows —
+`config.QC_UNDETRENDED_METRICS` without detrending, the rest with it — and
+reduces each metric's windows by `config.QC_SLIDING_AGG`.
 
 `load_responses(modality, events, window)` serves every modality, dispatching
 through `_RESPONSE_MODALITIES` to that modality's preprocessed-signal loader and

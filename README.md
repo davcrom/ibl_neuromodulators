@@ -179,13 +179,29 @@ ps.validate_block_structure()            # raises BlockStructureBug
 ### QC
 
 ```python
-ps.run_raw_qc()                    # n_band_inversions, n_early_samples → ps.qc
-ps.validate_qc()                   # raises BandInversion or EarlySamples
-ps.run_sliding_qc()                # sliding-window signal quality metrics → ps.qc
-ps.validate_few_unique_samples()   # raises FewUniqueSamples (non-fatal)
+ps.load_neurophotometrics_qc()  # → ps.neurophotometrics_qc, a flat
+                                #   {metric: value} for the source table
+ps.validate_qc()                # raises QCValidationError on a non-zero
+                                #   n_band_inversions or n_early_samples
+ps.load_photometry_qc()         # → ps.photometry_qc, sliding-window signal
+                                #   quality per region
 ```
 
-After QC, `ps.qc` is a DataFrame with one row per `(brain_region, band)`.
+QC is a product like any other: each load method reads the stored group when its
+stamp matches `config.py` and scores the signal when it does not, writing the
+result. `run_raw_qc` and `run_sliding_qc` are the scoring half, callable
+directly when a rescore is what you want.
+
+`ps.photometry_qc` maps a brain region to a flat `{metric: value}` dict. QC is
+split per region but not per band, so the band is suffixed into the metric name:
+`n_unique_samples_GCaMP`, `n_unique_samples_Isosbestic`.
+
+`run_sliding_qc` scores each metric over 120 s windows and reduces them with
+`config.QC_SLIDING_AGG` — the 10th percentile for `n_unique_samples`, so a
+recording is judged by its worst windows rather than its average, and the mean
+for the rest. The metrics in `config.QC_UNDETRENDED_METRICS` are scored in their
+own pass with detrending off; detrending leaves every sample of a window a
+distinct float, which would pin `n_unique_samples` at 1.0 on any signal.
 
 ### Preprocessing and response extraction
 

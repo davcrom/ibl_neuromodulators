@@ -109,9 +109,6 @@ class BandInversion(Exception):
 class EarlySamples(Exception):
     """Photometry signal has early samples."""
 
-class FewUniqueSamples(Exception):
-    """One or more photometry channels have too few unique samples."""
-
 class QCValidationError(Exception):
     """One or more raw QC checks failed (band inversions, early samples)."""
 

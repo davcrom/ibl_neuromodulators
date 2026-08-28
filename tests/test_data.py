@@ -1573,59 +1573,22 @@ class TestValidateTrialsInPhotometryTime:
         session.validate_trials_in_photometry_time()  # should not raise
 
 
-class TestValidateFewUniqueSamples:
-    def test_raises_below_threshold(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        from iblnm.validation import FewUniqueSamples
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.qc = pd.DataFrame({
-            'brain_region': ['VTA'], 'band': ['GCaMP'],
-            'n_unique_samples': [0.01],
-        })
-        with pytest.raises(FewUniqueSamples, match='VTA/GCaMP'):
-            session.validate_few_unique_samples()
-
-    def test_does_not_raise_above_threshold(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.qc = pd.DataFrame({
-            'brain_region': ['VTA'], 'band': ['GCaMP'],
-            'n_unique_samples': [0.5],
-        })
-        session.validate_few_unique_samples()  # should not raise
-
-    def test_does_not_raise_when_qc_empty(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.validate_few_unique_samples()  # should not raise
-
-    def test_does_not_raise_when_column_missing(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.qc = pd.DataFrame({'brain_region': ['VTA'], 'band': ['GCaMP']})
-        session.validate_few_unique_samples()  # should not raise
-
-
 class TestValidateQc:
     """Tests for PhotometrySession.validate_qc."""
 
     def test_does_not_raise_when_qc_clean(self, mock_session_series):
         from iblnm.data import PhotometrySession
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.qc = pd.DataFrame({
-            'brain_region': ['VTA'], 'band': ['GCaMP'],
-            'n_band_inversions': [0], 'n_early_samples': [0],
-        })
+        session.neurophotometrics_qc = {'n_band_inversions': 0.0,
+                                        'n_early_samples': 0.0}
         session.validate_qc()  # should not raise
 
     def test_raises_on_band_inversions(self, mock_session_series):
         from iblnm.data import PhotometrySession
         from iblnm.validation import QCValidationError
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.qc = pd.DataFrame({
-            'brain_region': ['VTA'], 'band': ['GCaMP'],
-            'n_band_inversions': [3], 'n_early_samples': [0],
-        })
+        session.neurophotometrics_qc = {'n_band_inversions': 3.0,
+                                        'n_early_samples': 0.0}
         with pytest.raises(QCValidationError, match='band inversions'):
             session.validate_qc()
 
@@ -1633,10 +1596,8 @@ class TestValidateQc:
         from iblnm.data import PhotometrySession
         from iblnm.validation import QCValidationError
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.qc = pd.DataFrame({
-            'brain_region': ['VTA'], 'band': ['GCaMP'],
-            'n_band_inversions': [0], 'n_early_samples': [5],
-        })
+        session.neurophotometrics_qc = {'n_band_inversions': 0.0,
+                                        'n_early_samples': 5.0}
         with pytest.raises(QCValidationError, match='early samples'):
             session.validate_qc()
 
@@ -1644,15 +1605,27 @@ class TestValidateQc:
         from iblnm.data import PhotometrySession
         from iblnm.validation import QCValidationError
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.qc = pd.DataFrame({
-            'brain_region': ['VTA'], 'band': ['GCaMP'],
-            'n_band_inversions': [3], 'n_early_samples': [5],
-        })
+        session.neurophotometrics_qc = {'n_band_inversions': 3.0,
+                                        'n_early_samples': 5.0}
         with pytest.raises(QCValidationError) as exc_info:
             session.validate_qc()
         msg = str(exc_info.value)
         assert 'band inversions' in msg
         assert 'early samples' in msg
+
+    def test_raises_on_attrs_read_back_from_h5(self, mock_photometry_session):
+        """The verdict comes from the stored attrs, not from a live QC run."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import QCValidationError
+        session = mock_photometry_session
+        session.neurophotometrics_qc = {'n_band_inversions': 2.0}
+        session.save_h5(groups=['photometry'])
+
+        reopened = PhotometrySession(session.to_dict(), one=MagicMock(),
+                                     load_data=False)
+        reopened.load_h5(session.filepath, groups=['photometry'])
+        with pytest.raises(QCValidationError, match='band inversions'):
+            reopened.validate_qc()
 
     def test_does_not_raise_when_qc_empty(self, mock_session_series):
         from iblnm.data import PhotometrySession
@@ -1757,15 +1730,15 @@ class TestPreprocess:
         assert 'corrected' in mock_photometry_session.photometry
         assert 'GCaMP_preprocessed' not in mock_photometry_session.photometry
 
-    def test_qc_initialized_as_empty_dataframe(self, mock_session_series):
-        """qc should be empty DataFrame on init."""
+    def test_qc_initialized_as_empty_mappings(self, mock_session_series):
+        """Both QC products start empty on init."""
         from iblnm.data import PhotometrySession
 
         mock_one = MagicMock()
         session = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
 
-        assert isinstance(session.qc, pd.DataFrame)
-        assert len(session.qc) == 0
+        assert session.neurophotometrics_qc == {}
+        assert session.photometry_qc == {}
 
     def test_preprocess_resamples_to_target_fs(self, mock_photometry_session):
         """Preprocessed signal should be resampled to TARGET_FS."""
@@ -2299,29 +2272,25 @@ class TestSaveLoadH5:
         np.testing.assert_allclose(session.trials['stimOn_times'].values, saved_stim)
 
     def test_save_load_qc_roundtrip(self, mock_session_series, tmp_path):
-        """QC metrics under photometry/<region>/qc/ survive H5 roundtrip."""
+        """Per-region QC attrs under photometry/<region>/raw/qc/ survive H5 roundtrip."""
         from iblnm.data import PhotometrySession
         mock_one = MagicMock()
         ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        ps.qc = pd.DataFrame({
-            'eid': [ps.eid, ps.eid],
-            'brain_region': ['VTA', 'SNc'],
-            'band': ['GCaMP', 'GCaMP'],
-            'n_band_inversions': [0, 2],
-            'bleaching_tau': [150.5, 200.3],
-        })
+        ps.photometry_qc = {
+            'VTA': {'n_unique_samples_GCaMP': 0.4,
+                    'n_unique_samples_Isosbestic': 0.6},
+            'SNc': {'n_unique_samples_GCaMP': 0.2,
+                    'n_unique_samples_Isosbestic': 0.3},
+        }
+        ps.neurophotometrics_qc = {'n_band_inversions': 0.0}
         fpath = tmp_path / f'{ps.eid}.h5'
         ps.save_h5(fpath, groups=['metadata', 'photometry'])
 
         ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        assert ps2.qc.empty
+        assert ps2.photometry_qc == {}
         ps2.load_h5(fpath, groups=['photometry'])
-        assert len(ps2.qc) == 2
-        assert set(ps2.qc['brain_region']) == {'VTA', 'SNc'}
-        qc_sorted = ps2.qc.sort_values('brain_region').reset_index(drop=True)
-        assert list(qc_sorted['brain_region']) == ['SNc', 'VTA']
-        assert list(qc_sorted['n_band_inversions']) == [2, 0]
-        np.testing.assert_allclose(qc_sorted['bleaching_tau'], [200.3, 150.5])
+        assert ps2.photometry_qc == ps.photometry_qc
+        assert ps2.neurophotometrics_qc == ps.neurophotometrics_qc
 
     def test_load_h5_roundtrip(self, mock_photometry_session, tmp_path):
         """load_h5 should restore preprocessed signal from saved file."""
@@ -2868,46 +2837,42 @@ class TestBasicPerformance:
 # QC Method Tests
 # =============================================================================
 
+def _run_raw_qc(session, n_band_inversions=0, n_early_samples=0):
+    """Run run_raw_qc with the source table and both metrics mocked out."""
+    from unittest.mock import patch
+    raw_phot = pd.DataFrame({'col1': [1.0, 2.0]}, index=[0.0, 1.0])
+    with patch.object(session, '_load_raw_photometry', return_value=raw_phot):
+        with patch('iblnm.data.metrics') as mock_metrics:
+            mock_metrics.n_band_inversions.return_value = n_band_inversions
+            mock_metrics.n_early_samples.return_value = n_early_samples
+            return session.run_raw_qc()
+
+
 class TestRunRawQc:
     """Tests for PhotometrySession.run_raw_qc."""
 
-    def test_sets_qc_with_raw_metric_columns(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        from unittest.mock import patch
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        raw_phot = pd.DataFrame({'col1': [1.0, 2.0]}, index=[0.0, 1.0])
-        with patch.object(session, '_load_raw_photometry', return_value=raw_phot):
-            with patch('iblnm.data.metrics') as mock_metrics:
-                mock_metrics.n_band_inversions.return_value = 0
-                mock_metrics.n_early_samples.return_value = 2
-                session.run_raw_qc()
-        assert 'n_band_inversions' in session.qc.columns
-        assert 'n_early_samples' in session.qc.columns
+    def test_stores_metric_values(self, mock_photometry_session):
+        session = mock_photometry_session
+        _run_raw_qc(session, n_band_inversions=3, n_early_samples=5)
+        assert session.neurophotometrics_qc == {'n_band_inversions': 3.0,
+                                                'n_early_samples': 5.0}
 
-    def test_sets_qc_values_from_metrics(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        from unittest.mock import patch
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        raw_phot = pd.DataFrame({'col1': [1.0, 2.0]}, index=[0.0, 1.0])
-        with patch.object(session, '_load_raw_photometry', return_value=raw_phot):
-            with patch('iblnm.data.metrics') as mock_metrics:
-                mock_metrics.n_band_inversions.return_value = 3
-                mock_metrics.n_early_samples.return_value = 5
-                session.run_raw_qc()
-        assert session.qc['n_band_inversions'].iloc[0] == 3
-        assert session.qc['n_early_samples'].iloc[0] == 5
+    def test_writes_group_although_source_table_is_never_stored(
+            self, mock_photometry_session):
+        """The neurophotometrics QC group persists without its source table."""
+        import h5py
+        session = mock_photometry_session
+        _run_raw_qc(session, n_band_inversions=1)
+        with h5py.File(session.filepath, 'r') as h5:
+            group = h5['photometry/neurophotometrics/qc']
+            assert group.attrs['n_band_inversions'] == 1.0
+            assert list(h5['photometry/neurophotometrics']) == ['qc']
 
-    def test_includes_eid(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        from unittest.mock import patch
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        with patch.object(session, '_load_raw_photometry', return_value=pd.DataFrame({'c': [1.0]})):
-            with patch('iblnm.data.metrics') as mock_metrics:
-                mock_metrics.n_band_inversions.return_value = 0
-                mock_metrics.n_early_samples.return_value = 0
-                session.run_raw_qc()
-        assert 'eid' in session.qc.columns
-        assert session.qc['eid'].iloc[0] == 'test-eid-123'
+    def test_stored_product_is_current(self, mock_photometry_session):
+        session = mock_photometry_session
+        _run_raw_qc(session)
+        assert session.product_status(
+            'photometry/neurophotometrics/qc') == 'current'
 
     def test_propagates_load_failure(self, mock_session_series):
         from iblnm.data import PhotometrySession
@@ -2918,44 +2883,84 @@ class TestRunRawQc:
                 session.run_raw_qc()
 
 
+def _tidy_qc(metric='n_unique_samples', band='GCaMP', region='VTA',
+             values=(0.8, 0.9)):
+    """One tidy `qc_signals` frame: a whole-signal row plus one row per window."""
+    return pd.DataFrame({
+        'band': [band] * (len(values) + 1),
+        'brain_region': [region] * (len(values) + 1),
+        'metric': [metric] * (len(values) + 1),
+        'value': [np.mean(values), *values],
+        'window': [np.nan, *range(len(values))],
+    })
+
+
 class TestRunSlidingQc:
     """Tests for PhotometrySession.run_sliding_qc."""
 
-    def _make_tidy_qc(self):
-        return pd.DataFrame({
-            'band': ['GCaMP', 'GCaMP'],
-            'brain_region': ['VTA', 'VTA'],
-            'metric': ['n_unique_samples', 'n_unique_samples'],
-            'value': [0.8, 0.9],
-            'window': [0, 1],
-        })
-
-    def test_sets_qc_per_region_band(self, mock_photometry_session):
+    def test_stores_band_suffixed_metrics_per_region(self, mock_photometry_session):
         from unittest.mock import patch
         session = mock_photometry_session
-        with patch('iblnm.data.qc_signals', return_value=self._make_tidy_qc()):
-            session.run_sliding_qc()
-        assert 'brain_region' in session.qc.columns
-        assert 'band' in session.qc.columns
-        assert 'n_unique_samples' in session.qc.columns
+        tidy = pd.concat([
+            _tidy_qc(band='GCaMP', values=(0.8, 0.9)),
+            _tidy_qc(band='Isosbestic', values=(0.2, 0.4)),
+        ])
+        with patch('iblnm.data.qc_signals', return_value=tidy):
+            session.run_sliding_qc(sliding_metrics=['n_unique_samples'])
+        assert set(session.photometry_qc) == {'VTA'}
+        assert set(session.photometry_qc['VTA']) == {
+            'n_unique_samples_GCaMP', 'n_unique_samples_Isosbestic'}
 
-    def test_averages_across_windows(self, mock_photometry_session):
+    def test_splits_undetrended_metrics_into_own_call(self, mock_photometry_session):
+        """n_unique_samples is scored without detrending, the rest with it."""
         from unittest.mock import patch
         session = mock_photometry_session
-        with patch('iblnm.data.qc_signals', return_value=self._make_tidy_qc()):
-            session.run_sliding_qc()
-        assert len(session.qc) == 1  # One row for VTA/GCaMP after averaging
-        assert session.qc['n_unique_samples'].iloc[0] == pytest.approx((0.8 + 0.9) / 2)
+        with patch('iblnm.data.qc_signals', return_value=_tidy_qc()) as mock_qc:
+            session.run_sliding_qc(
+                sliding_metrics=['n_unique_samples', 'ar_score'],
+                sliding_kwargs={'w_len': 120, 'step_len': 60, 'detrend': True},
+            )
+        assert mock_qc.call_count == 2
+        calls = {call.kwargs['sliding_kwargs']['detrend']: call.kwargs
+                 for call in mock_qc.call_args_list}
+        assert [m.__name__ for m in calls[False]['metrics']] == ['n_unique_samples']
+        assert [m.__name__ for m in calls[True]['metrics']] == ['ar_score']
+        for kwargs in calls.values():
+            assert kwargs['sliding_kwargs']['w_len'] == 120
+            assert kwargs['sliding_kwargs']['step_len'] == 60
 
-    def test_incorporates_raw_metrics_from_run_raw_qc(self, mock_photometry_session):
+    def test_stored_product_goes_stale_when_aggregation_changes(
+            self, mock_photometry_session, mock_session_series):
+        """Altering QC_SLIDING_AGG marks a stored region QC group stale."""
+        from unittest.mock import patch
+        from iblnm.data import PhotometrySession
+        session = mock_photometry_session
+        with patch('iblnm.data.qc_signals', return_value=_tidy_qc()):
+            session.run_sliding_qc(sliding_metrics=['n_unique_samples'])
+        assert session.product_status('photometry/raw/qc') == 'current'
+
+        with patch.dict('iblnm.config.QC_SLIDING_AGG',
+                        {'n_unique_samples': 'mean'}):
+            reopened = PhotometrySession(mock_session_series, one=MagicMock(),
+                                         load_data=False)
+            reopened.filepath = session.filepath
+            assert reopened.product_status('photometry/raw/qc') == 'stale'
+
+    def test_aggregates_each_metric_by_its_own_reducer(self, mock_photometry_session):
+        """n_unique_samples takes the windows' q10, ar_score their mean."""
         from unittest.mock import patch
         session = mock_photometry_session
-        # Simulate state after run_raw_qc()
-        session.qc = pd.DataFrame([{'eid': session.eid, 'n_band_inversions': 0, 'n_early_samples': 0}])
-        with patch('iblnm.data.qc_signals', return_value=self._make_tidy_qc()):
-            session.run_sliding_qc()
-        assert 'n_band_inversions' in session.qc.columns
-        assert 'n_early_samples' in session.qc.columns
+        windows = (0.1, 0.8, 0.9, 1.0)
+        # One frame per call, in the order run_sliding_qc issues them:
+        # un-detrended first, detrended second.
+        per_call = [_tidy_qc(metric='n_unique_samples', values=windows),
+                    _tidy_qc(metric='ar_score', values=windows)]
+        with patch('iblnm.data.qc_signals', side_effect=per_call):
+            session.run_sliding_qc(
+                sliding_metrics=['n_unique_samples', 'ar_score'])
+        stored = session.photometry_qc['VTA']
+        assert stored['n_unique_samples_GCaMP'] == pytest.approx(0.31)
+        assert stored['ar_score_GCaMP'] == pytest.approx(0.7)
 
     def test_propagates_qc_signals_failure(self, mock_photometry_session):
         from unittest.mock import patch
@@ -2964,13 +2969,80 @@ class TestRunSlidingQc:
             with pytest.raises(Exception, match="qc_signals failed"):
                 session.run_sliding_qc()
 
-    def test_includes_eid(self, mock_photometry_session):
+
+class TestLoadPhotometryQc:
+    """`load_photometry_qc` returns the stored product, scoring if absent."""
+
+    def test_scores_when_absent(self, mock_photometry_session):
         from unittest.mock import patch
         session = mock_photometry_session
-        with patch('iblnm.data.qc_signals', return_value=self._make_tidy_qc()):
-            session.run_sliding_qc()
-        assert 'eid' in session.qc.columns
-        assert session.qc['eid'].iloc[0] == session.eid
+        with patch('iblnm.data.qc_signals', return_value=_tidy_qc()):
+            with patch.object(type(session), 'load_raw_photometry') as fetch:
+                stored = session.load_photometry_qc()
+        fetch.assert_called_once()
+        assert set(stored) == {'VTA'}
+        assert 'n_unique_samples_GCaMP' in stored['VTA']
+        assert session.product_status('photometry/raw/qc') == 'current'
+
+    def test_reads_stored_product_without_rescoring(self, mock_photometry_session,
+                                                    mock_session_series):
+        from unittest.mock import patch
+        from iblnm.data import PhotometrySession
+        session = mock_photometry_session
+        with patch('iblnm.data.qc_signals', return_value=_tidy_qc()):
+            with patch.object(type(session), 'load_raw_photometry'):
+                built = session.load_photometry_qc()
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = session.filepath
+        with patch('iblnm.data.qc_signals') as score:
+            assert fresh.load_photometry_qc() == built
+        score.assert_not_called()
+
+    def test_raises_on_stale_stamp(self, mock_photometry_session,
+                                   mock_session_series):
+        from unittest.mock import patch
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import StaleProduct
+        session = mock_photometry_session
+        with patch('iblnm.data.qc_signals', return_value=_tidy_qc()):
+            with patch.object(type(session), 'load_raw_photometry'):
+                session.load_photometry_qc()
+
+        with patch.dict('iblnm.config.QC_SLIDING_AGG',
+                        {'n_unique_samples': 'mean'}):
+            fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                      load_data=False)
+            fresh.filepath = session.filepath
+            with pytest.raises(StaleProduct):
+                fresh.load_photometry_qc()
+
+
+class TestLoadNeurophotometricsQc:
+    """`load_neurophotometrics_qc` returns the stored product, scoring if absent."""
+
+    def test_scores_when_absent(self, mock_photometry_session):
+        from unittest.mock import patch
+        session = mock_photometry_session
+        with patch.object(session, 'run_raw_qc',
+                          return_value={'n_early_samples': 4.0}) as score:
+            assert session.load_neurophotometrics_qc() == {'n_early_samples': 4.0}
+        score.assert_called_once()
+
+    def test_reads_stored_product_without_rescoring(self, mock_photometry_session,
+                                                    mock_session_series):
+        from unittest.mock import patch
+        from iblnm.data import PhotometrySession
+        session = mock_photometry_session
+        built = _run_raw_qc(session, n_early_samples=4)
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = session.filepath
+        with patch.object(PhotometrySession, '_load_raw_photometry') as fetch:
+            assert fresh.load_neurophotometrics_qc() == built
+        fetch.assert_not_called()
 
 
 # =============================================================================
@@ -3639,13 +3711,13 @@ class TestGroupProcess:
     def test_process_preserves_nonfatal_errors(self, tmp_path):
         """Non-fatal errors logged via ps.log_error are persisted."""
         import h5py
-        from iblnm.validation import FewUniqueSamples
+        from iblnm.validation import IncompleteEventTimes
         group = self._make_group_with_h5(tmp_path)
 
         def fn_with_nonfatal(ps):
             try:
-                raise FewUniqueSamples("low samples")
-            except FewUniqueSamples as e:
+                raise IncompleteEventTimes(['firstMovement_times'])
+            except IncompleteEventTimes as e:
                 ps.log_error(e)
             return 'ok'
 
@@ -3655,7 +3727,7 @@ class TestGroupProcess:
         # Check non-fatal error was written to H5
         with h5py.File(tmp_path / 'eid-0.h5', 'r') as f:
             error_types = [v.decode() for v in f['errors']['error_type'][:]]
-            assert 'FewUniqueSamples' in error_types
+            assert 'IncompleteEventTimes' in error_types
 
 
 class TestPhotometrySessionGroup:
