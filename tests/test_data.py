@@ -1763,6 +1763,33 @@ class TestExtractResponses:
         assert list(region_responses.coords['event'].values) == ['feedback_times']
         assert region_responses.sizes['event'] == 1
 
+    def test_per_trial_window_end_named_by_a_trials_column(
+            self, mock_photometry_session):
+        """A window end given as a column name ends each trial at its own event.
+
+        This is the wheel's cut, stimOn to that trial's feedback: every trial
+        shares one time axis spanning to the longest, and is NaN-padded from
+        its own feedback onward.
+        """
+        session = mock_photometry_session
+        session.preprocess()
+        n = 50
+        session.trials = _make_trials(
+            n, feedback_times=np.linspace(99.5, 499.5, n) + np.linspace(0.5, 2.5, n))
+        responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed'],
+            events=['stimOn_times'], window=(0.0, 'feedback_times'))
+
+        cut = responses['VTA'].sel(event='stimOn_times')
+        tpts = cut.coords['time'].values
+        assert tpts[-1] == pytest.approx(2.5, abs=0.1)
+        durations = (session.trials['feedback_times']
+                     - session.trials['stimOn_times']).to_numpy()
+        for trial, duration in enumerate(durations):
+            values = cut.values[trial]
+            assert not np.any(np.isnan(values[tpts <= duration]))
+            assert np.all(np.isnan(values[tpts > duration]))
+
     def test_trial_coord_comes_from_trial_column(self, mock_photometry_session):
         """Trial identity is the 'trial' column, not the row position.
 

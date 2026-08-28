@@ -1433,7 +1433,7 @@ class PhotometrySession(PhotometrySessionLoader):
         self,
         signals: Mapping[str, pd.Series],
         events: Sequence[str] | None = None,
-        window: Sequence[float] | None = None,
+        window: Sequence[float | str] | None = None,
     ) -> dict[str, xr.DataArray]:
         """Cut peri-event response matrices out of arbitrary time series.
 
@@ -1451,27 +1451,36 @@ class PhotometrySession(PhotometrySessionLoader):
         events : sequence of str, optional
             ``self.trials`` columns holding event times. Defaults to
             ``RESPONSE_EVENTS``.
-        window : sequence of float, optional
-            ``(t0, t1)`` seconds relative to each event. Defaults to
+        window : sequence, optional
+            ``(t0, t1)``. ``t0`` is seconds relative to each event. ``t1`` is
+            either seconds relative to each event, or the name of a
+            ``self.trials`` column holding each trial's own window end — the
+            wheel's cut runs stimOn to that trial's feedback. Defaults to
             ``self.RESPONSE_WINDOW``.
 
         Returns
         -------
         dict[str, xr.DataArray]
-            One DataArray per label, dims (event, trial, time).
+            One DataArray per label, dims (event, trial, time). With a
+            per-trial window end every trial still shares one time axis,
+            spanning to the longest trial, and is NaN-padded beyond its own
+            endpoint.
         """
         if events is None:
             events = RESPONSE_EVENTS
         if window is None:
             window = self.RESPONSE_WINDOW
 
+        t0, t1 = window
+        if isinstance(t1, str):
+            t1 = self.trials[t1].to_numpy()
+
         responses = {}
         for label, signal in signals.items():
             per_event = []
             for event in events:
                 resp, sample_times = get_responses(
-                    signal, self.trials[event].values,
-                    t0=window[0], t1=window[1],
+                    signal, self.trials[event].values, t0=t0, t1=t1,
                 )
                 per_event.append(resp)
             responses[label] = xr.DataArray(
