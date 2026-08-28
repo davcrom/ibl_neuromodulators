@@ -561,17 +561,35 @@ def _load_peri_event_matrix(group: h5py.Group) -> xr.DataArray:
 _NON_LABEL_KEYS = {'crosscorr'}
 
 
-def _read_label_responses(modality_group: h5py.Group) -> dict[str, xr.DataArray]:
-    """Read every `{label}/responses` subgroup into a label -> DataArray dict.
+def _read_label_products(
+    modality_group: h5py.Group, product: str, read,
+) -> dict:
+    """Read every `{label}/{product}` subgroup into a label -> payload dict.
 
-    Serves any modality: the label is a brain region under `photometry/` and a
-    movement channel under `video/`. Subgroups holding a diagnostic rather than
-    a label (see `_NON_LABEL_KEYS`) are skipped.
+    Serves any modality: the label is a brain region under `photometry/`, the
+    single wheel channel under `wheel/`, and a movement channel under `video/`.
+    Subgroups holding a diagnostic rather than a label (see `_NON_LABEL_KEYS`)
+    are skipped, as are labels that do not carry this product.
+
+    Parameters
+    ----------
+    modality_group : h5py.Group
+        A top-level modality group, holding one subgroup per label.
+    product : str
+        Name of the per-label subgroup to read, e.g. 'responses'.
+    read : callable
+        Loading primitive applied to each label's subgroup.
     """
-    return {label: _load_peri_event_matrix(modality_group[f'{label}/responses'])
+    return {label: read(modality_group[f'{label}/{product}'])
             for label in modality_group
             if label not in _NON_LABEL_KEYS
-            and 'responses' in modality_group[label]}
+            and product in modality_group[label]}
+
+
+def _read_label_responses(modality_group: h5py.Group) -> dict[str, xr.DataArray]:
+    """Read every `{label}/responses` subgroup into a label -> DataArray dict."""
+    return _read_label_products(modality_group, 'responses',
+                                _load_peri_event_matrix)
 
 
 def _save_scalars(group: h5py.Group, mapping: dict[str, float], spec: dict) -> None:
@@ -785,6 +803,58 @@ def _load_wheel(session, h5_file):
 LP_QC_NOT_SET = 'NOT_SET'
 
 
+def _save_frame_data(
+    group: h5py.Group, data: np.ndarray | pd.DataFrame, spec: dict,
+) -> None:
+    """Write per-camera-frame data into `group`, stamped with `spec`.
+
+    Video's three raw datasets are fetched independently, so each is stored on
+    the camera's own frame axis with no time index of its own — that is what
+    keeps `video/pose` and `video/motion_energy` free of `video/times` as an
+    input. A 1-D array becomes the single dataset `values`; a DataFrame becomes
+    one dataset per column.
+
+    Only the group's datasets are replaced, not the group itself: the
+    `motion_energy` group holds this product's frames alongside the
+    `preprocessed`/`responses` subgroups of the movement channel of the same
+    name.
+
+    Parameters
+    ----------
+    group : h5py.Group
+        Destination group, required (not replaced) by the caller.
+    data : numpy.ndarray or pandas.DataFrame
+        One value per camera frame, or one column of them per keypoint field.
+    spec : dict
+        Resolved product spec, written as the group's stamp (`_write_stamp`).
+    """
+    for name in [key for key in group if isinstance(group[key], h5py.Dataset)]:
+        del group[name]
+    columns = (data.items() if isinstance(data, pd.DataFrame)
+               else [('values', data)])
+    for name, values in columns:
+        group.create_dataset(name, data=np.asarray(values),
+                             compression='gzip', compression_opts=4)
+    _write_stamp(group, spec)
+
+
+def _load_frame_data(group: h5py.Group) -> np.ndarray | pd.DataFrame | None:
+    """Read per-frame data written by `_save_frame_data`.
+
+    Returns an array when the group holds the single `values` dataset, a
+    DataFrame when it holds one dataset per column, and None when it holds no
+    datasets at all — the state of a label group carrying only `preprocessed`
+    and `responses`.
+    """
+    datasets = {name: group[name][:] for name in group
+                if isinstance(group[name], h5py.Dataset)}
+    if not datasets:
+        return None
+    if 'values' in datasets:
+        return datasets['values']
+    return pd.DataFrame(datasets)
+
+
 def _save_pose_xcorr(parent_group, xcorr):
     """Write crosscorr/ subgroup from a dict (functions, lags, peak_lags, drift)."""
     grp = _replace_group(parent_group, 'crosscorr')
@@ -816,12 +886,30 @@ def _read_video_qc(h5_file):
 
 
 def _save_video(session, h5_file):
-    # Read manual labels before _replace_group wipes them, so re-saving
-    # automatic data (extraction --overwrite) never clobbers a manual verdict.
+    """Write the video modality's raw, preprocessed and response products.
+
+    The three raw datasets are fetched independently and are written
+    independently: `video/times`, `video/pose` and `video/motion_energy` each
+    appear only when that source was loaded, so a session missing one keeps the
+    other two. `motion_energy` is both a raw product and a movement channel, so
+    its group carries the raw frames beside the channel's `preprocessed` and
+    `responses` subgroups.
+    """
+    # Read the stored manual labels first, so a session that never loaded them
+    # writes them back unchanged rather than resetting a manual verdict.
     preserved_qc = _read_video_qc(h5_file)
-    grp = _replace_group(h5_file, 'video')
+    grp = h5_file.require_group('video')
     grp.attrs['length_discrepancy'] = session.length_discrepancy
     grp.attrs['framerate_from_tpts'] = session.framerate_from_tpts
+    for product, payload in (('video/times', session.pose_times),
+                             ('video/pose', session.pose),
+                             ('video/motion_energy', session.motion_energy)):
+        if payload is not None:
+            _save_frame_data(grp.require_group(product.rpartition('/')[2]),
+                             payload, session.spec[product])
+    for label, signal in session.movement_signals.items():
+        _save_time_series(_replace_group(grp.require_group(label), 'preprocessed'),
+                          signal, session.spec['video/preprocessed'])
     for label, responses in session.movement_responses.items():
         _save_peri_event_matrix(
             _replace_group(grp.require_group(label), 'responses'),
@@ -846,6 +934,12 @@ def _load_video(session, h5_file):
         session.length_discrepancy = grp.attrs['length_discrepancy']
     if 'framerate_from_tpts' in grp.attrs:
         session.framerate_from_tpts = grp.attrs['framerate_from_tpts']
+    for attribute, name in (('pose_times', 'times'), ('pose', 'pose'),
+                            ('motion_energy', 'motion_energy')):
+        if name in grp:
+            setattr(session, attribute, _load_frame_data(grp[name]))
+    session.movement_signals = _read_label_products(grp, 'preprocessed',
+                                                    _load_time_series)
     session.movement_responses = _read_label_responses(grp)
     session.pose_xcorr = _load_pose_xcorr(grp)
     for label in LP_QC_LABELS:
@@ -861,19 +955,34 @@ def _load_video(session, h5_file):
                 value.decode() if isinstance(value, bytes) else value)
 
 
+# The video modality's three raw products, each its own ONE fetch:
+# product -> (session attribute, ONE dataset, exception when Alyx lacks it).
+# They are listed separately rather than folded into one 'video/raw' because
+# each fails on its own, and a session missing only LP still has usable times
+# and motion energy.
+_RAW_VIDEO_DATASETS = {
+    'video/times': ('pose_times', '_ibl_leftCamera.times.npy',
+                    MissingVideoTimestamps),
+    'video/pose': ('pose', '_ibl_leftCamera.lightningPose.pqt', MissingLP),
+    'video/motion_energy': ('motion_energy', 'leftCamera.ROIMotionEnergy.npy',
+                            MissingMotionEnergy),
+}
+
 # What `load_responses(modality)` needs per modality: the method returning that
 # modality's preprocessed signals as a label -> Series mapping, the session
 # attribute its response matrices are assigned to, and the extraction arguments
 # to fall back on when the caller names none. Photometry's fallback is empty
 # because `extract_responses` already defaults to the photometry window; the
-# wheel's cut is its own, and is read off the product spec so the matrix and its
-# stamp cannot disagree about which events were used.
+# wheel's and the video's cuts are their own, and are read off the product spec
+# so the matrix and its stamp cannot disagree about which events were used.
 _RESPONSE_MODALITIES = {
     'photometry': ('load_photometry', 'photometry_responses', {}),
     'wheel':      ('_wheel_signals', 'wheel_responses', {
         'events': [_WHEEL_T0_EVENT],
         'window': (0.0, PRODUCT_SPEC['wheel/responses']['t1_event']),
     }),
+    'video':      ('_movement_signals', 'movement_responses',
+                   dict(PRODUCT_SPEC['video/responses'])),
 }
 
 _SAVE_HANDLERS = {
@@ -1029,11 +1138,15 @@ class PhotometrySession(PhotometrySessionLoader):
         self.wheel_position = None
         self.wheel_velocity = None
         self.wheel_responses = {}
+        # Video products: the three independently-fetched raw datasets, the
+        # movement channels resampled onto the POSE_FS grid, and their cut
+        # responses.
         self.pose = None
         self.pose_times = None
         self.motion_energy = None
         self.length_discrepancy = np.nan
         self.framerate_from_tpts = np.nan
+        self.movement_signals = {}
         self.movement_responses = {}
         self.pose_xcorr = None
         self.video_qc = {}
@@ -1768,7 +1881,11 @@ class PhotometrySession(PhotometrySessionLoader):
             or bool(self.photometry_qc)
             or bool(self.neurophotometrics_qc)
         )
-        has_video = (bool(self.movement_responses)
+        has_video = (self.pose_times is not None
+                     or self.pose is not None
+                     or self.motion_energy is not None
+                     or bool(self.movement_signals)
+                     or bool(self.movement_responses)
                      or self.pose_xcorr is not None
                      or np.isfinite(self.length_discrepancy)
                      or np.isfinite(self.framerate_from_tpts))
@@ -2255,53 +2372,83 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         return {WHEEL_LABEL: self.load_wheel()}
 
-    def load_camera_times(self):
-        """Load left-camera frame timestamps, independently of LightningPose.
+    def _load_raw_video(self, product: str) -> np.ndarray | pd.DataFrame:
+        """Return one raw video dataset, fetching and storing it when absent.
 
-        Stores the per-frame times (session clock, seconds) in
-        ``self.pose_times``. Raises ``MissingVideoTimestamps`` when the dataset
-        is absent, so the basic-video pass can block the session before LP is
-        attempted. Loaded separately from ``load_pose`` because the camera
+        Reads the stored product when its stamp still matches
+        `config.PRODUCT_SPEC`; otherwise fetches it from Alyx and writes it,
+        which stamps it. A product named in `self.rebuild` skips the read.
+
+        Parameters
+        ----------
+        product : str
+            One of the `_RAW_VIDEO_DATASETS` keys. Names the H5 group, the
+            session attribute the result is assigned to, the ONE dataset to
+            fetch, and the exception raised when Alyx does not have it.
+
+        Returns
+        -------
+        numpy.ndarray or pandas.DataFrame
+            The dataset, also assigned to its session attribute.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
+        """
+        attribute, dataset, missing = _RAW_VIDEO_DATASETS[product]
+        data = None
+        if self.stored_is_current(product):
+            with h5py.File(self.filepath, 'r') as h5:
+                data = _load_frame_data(h5[product])
+        was_fetched = data is None
+        if was_fetched:
+            try:
+                data = self.one.load_dataset(self.eid, dataset, collection='alf')
+            except ALFObjectNotFound:
+                raise missing(dataset)
+            if not isinstance(data, pd.DataFrame):
+                data = np.asarray(data)
+        setattr(self, attribute, data)
+        if was_fetched:
+            self.save_h5(groups=['video'])
+        return data
+
+    def load_camera_times(self) -> np.ndarray:
+        """Return the left-camera frame times, independently of LightningPose.
+
+        The per-frame times (session clock, seconds) are also assigned to
+        ``self.pose_times``. Raises ``MissingVideoTimestamps`` when Alyx has no
+        such dataset, so the basic-video pass can block the session before LP is
+        attempted. Fetched separately from ``load_pose`` because the camera
         timestamps gate the whole session while LP gates only the traces.
         """
-        try:
-            self.pose_times = np.asarray(self.one.load_dataset(
-                self.eid, '_ibl_leftCamera.times.npy', collection='alf'))
-        except ALFObjectNotFound:
-            raise MissingVideoTimestamps("leftCamera.times")
+        return self._load_raw_video('video/times')
 
-    def load_pose(self):
-        """Load LightningPose keypoint tracking from the left camera.
+    def load_pose(self) -> pd.DataFrame:
+        """Return LightningPose keypoint tracking from the left camera.
 
-        Stores the pose DataFrame (columns ``{part}_x``, ``{part}_y``,
-        ``{part}_likelihood``) in ``self.pose``. Raises ``MissingLP`` when the
-        pose dataset is not available, so batch extraction can log and skip.
+        The pose DataFrame (columns ``{part}_x``, ``{part}_y``,
+        ``{part}_likelihood``) is also assigned to ``self.pose``. Raises
+        ``MissingLP`` when the pose dataset is not available, so batch
+        extraction can log it against `video/pose` and carry on.
 
-        Loads only the ``lightningPose`` dataset via ``load_dataset`` rather than
-        the whole ``leftCamera`` object, which would also fetch ``features`` and
-        ``ROIMotionEnergy`` that we never use. Camera timestamps are loaded
-        separately by ``load_camera_times``.
+        Fetches only the ``lightningPose`` dataset rather than the whole
+        ``leftCamera`` object, which would also pull ``features`` and
+        ``ROIMotionEnergy`` that we never use.
         """
-        try:
-            self.pose = self.one.load_dataset(
-                self.eid, '_ibl_leftCamera.lightningPose.pqt', collection='alf')
-        except ALFObjectNotFound:
-            raise MissingLP("leftCamera.lightningPose")
+        return self._load_raw_video('video/pose')
 
-    def load_motion_energy(self):
-        """Load per-frame left-camera ROI motion energy, independently of LP.
+    def load_motion_energy(self) -> np.ndarray:
+        """Return the per-frame left-camera ROI motion energy, independently of LP.
 
-        Stores the per-frame motion-energy scalar (on the ``leftCamera.times``
-        base) in ``self.motion_energy``. Raises ``MissingMotionEnergy`` when the
+        The per-frame scalar (on the ``leftCamera.times`` base) is also assigned
+        to ``self.motion_energy``. Raises ``MissingMotionEnergy`` when the
         dataset is absent, logged non-fatally by the pipeline. Unlike
         ``lightningPose`` and ``times``, the ROIMotionEnergy dataset carries no
-        ``_ibl_`` prefix, so its ``load_dataset`` object string differs.
+        ``_ibl_`` prefix, so its ONE dataset name differs.
         """
-        try:
-            self.motion_energy = np.asarray(self.one.load_dataset(
-                self.eid, 'leftCamera.ROIMotionEnergy.npy', collection='alf'))
-        except ALFObjectNotFound:
-            raise MissingMotionEnergy("leftCamera.ROIMotionEnergy")
+        return self._load_raw_video('video/motion_energy')
 
     def compute_video_measures(self):
         """Compute basic-video scalars from the loaded camera timestamps.
@@ -2330,14 +2477,65 @@ class PhotometrySession(PhotometrySessionLoader):
         self.video_qc = {col: qc.get(col, LP_QC_NOT_SET) for col in VIDEO_QC_COLS}
 
     def _movement_signals(self) -> dict[str, pd.Series]:
-        """Per-frame movement signals keyed by channel label.
+        """Return the preprocessed movement channels, resampling them if absent.
 
-        Returns a dict ``label -> pd.Series`` on a common 1/POSE_FS time base,
-        ready to hand to ``extract_responses``. LP keypoint channels
-        (``config.POSE_MEASURES``) are included only when ``self.pose`` is set;
-        the ``motion_energy`` channel only when ``self.motion_energy`` is set.
-        The two sources are independent, so a session may contribute either or
-        both. Returns an empty dict when neither source is present.
+        Reads `video/{label}/preprocessed` when it is stored and its stamp still
+        matches `config.PRODUCT_SPEC`; otherwise fetches the raw video datasets
+        and resamples them with :meth:`resample_movement_signals`, which writes
+        and stamps the product. A product named in `self.rebuild` skips the read.
+
+        Returns
+        -------
+        dict[str, pandas.Series]
+            Channel label -> signal on the shared 1/POSE_FS time base, ready to
+            hand to :meth:`extract_responses`. Also assigned to
+            ``self.movement_signals``.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
+        """
+        signals = None
+        if self.stored_is_current('video/preprocessed'):
+            with h5py.File(self.filepath, 'r') as h5:
+                signals = _read_label_products(h5['video'], 'preprocessed',
+                                               _load_time_series)
+        if signals is None:
+            self._load_raw_video_sources()
+            signals = self.resample_movement_signals()
+        self.movement_signals = signals
+        return signals
+
+    def _load_raw_video_sources(self) -> None:
+        """Load the three raw video datasets, tolerating a missing signal source.
+
+        Camera times are required — without them no channel can be placed on the
+        session clock — so a missing `video/times` propagates. Pose and motion
+        energy are independent and each is optional: a missing one is logged
+        against its own product and leaves the other's channels intact.
+        """
+        self.load_camera_times()
+        for product, error in (('video/pose', MissingLP),
+                               ('video/motion_energy', MissingMotionEnergy)):
+            try:
+                self._load_raw_video(product)
+            except error as e:
+                self.log_error(e, product=product)
+
+    def resample_movement_signals(self) -> dict[str, pd.Series]:
+        """Resample the loaded raw video onto the POSE_FS grid, and write it.
+
+        The two signal sources are independent, so a session contributes the LP
+        keypoint channels (``config.POSE_MEASURES``), the ``motion_energy``
+        channel, or both, depending on which of ``self.pose`` and
+        ``self.motion_energy`` is set.
+
+        Returns
+        -------
+        dict[str, pandas.Series]
+            Channel label -> signal on the shared 1/POSE_FS time base, also
+            assigned to ``self.movement_signals`` and written to H5.
         """
         signals = {}
         if self.pose is not None:
@@ -2352,6 +2550,8 @@ class PhotometrySession(PhotometrySessionLoader):
         if self.motion_energy is not None:
             signals['motion_energy'] = resample_signal(
                 pd.Series(self.motion_energy, index=self.pose_times), POSE_FS)
+        self.movement_signals = signals
+        self.save_h5(groups=['video'])
         return signals
 
     def extract_paw_wheel_xcorr(self):

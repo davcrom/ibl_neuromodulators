@@ -173,6 +173,10 @@ ps.load_raw_wheel()       # ps.wheel_position, the irregular encoder samples
 ps.differentiate_wheel()  # ps.wheel_velocity at WHEEL_FS, writes it
 ps.load_wheel()           # the velocity, from H5 or built as above
 ps.load_responses('wheel')        # ps.wheel_responses, from H5 or cut
+ps.load_camera_times()    # ps.pose_times, from H5 or Alyx
+ps.load_pose()            # ps.pose, from H5 or Alyx
+ps.load_motion_energy()   # ps.motion_energy, from H5 or Alyx
+ps.load_responses('video')        # ps.movement_responses, from H5 or cut
 ```
 
 Load methods are not pure readers. Each attempts its stored product, falls back
@@ -207,11 +211,27 @@ interpolates them onto the `WHEEL_FS` grid before differentiating, matching
 `brainbox.behavior.wheel.velocity_filtered` at its default corner frequency and
 order. Only the velocity is gridded; the position stays raw.
 
+The video modality carries three raw products rather than one, because its three
+datasets are fetched by separate ONE calls and fail separately:
+`video/times` (the per-frame clock), `video/pose` (LightningPose keypoints) and
+`video/motion_energy`. `_RAW_VIDEO_DATASETS` maps each to its session attribute,
+its ONE dataset and the exception raised when Alyx lacks it, and one private
+`_load_raw_video(product)` serves all three. All three are frame-indexed, with
+no time axis of their own, which is what keeps `video/pose` and
+`video/motion_energy` free of `video/times` as an input. `_movement_signals` is
+the `video/preprocessed` load method: it reads the stored `video/{label}/
+preprocessed` channels or resamples the raw onto the `POSE_FS` grid via
+`resample_movement_signals`, logging a missing pose or motion energy against its
+own product and leaving the other's channels intact. Missing camera times
+propagate — nothing can be placed on the session clock without them. The
+`motion_energy` group is both the raw product and a movement channel, so it
+holds its raw frames beside its `preprocessed` and `responses` subgroups.
+
 `extract_responses(signals, events=..., window=...)` is signal-source agnostic:
 it cuts peri-event matrices out of any `label -> pd.Series` mapping and returns
 `dict[label, xr.DataArray]` with dims `(event, trial, time)`, leaving the
 caller to assign it. Photometry passes `ps.photometry[PREPROCESSED_BAND]`
-(labels are brain regions) and assigns `ps.photometry_responses`; behavior passes
+(labels are brain regions) and assigns `ps.photometry_responses`; video passes
 `ps._movement_signals()` with `events=MOVEMENT_EVENTS` (labels are movement
 channels) and assigns `ps.movement_responses`. Each movement channel carries
 the full event axis; its own response event is selected at read time via
@@ -241,7 +261,7 @@ by top-level group name (`metadata`, `errors`, `photometry`, `trials`,
 `wheel`, `video`). Adding a new top-level group means writing a handler pair
 and registering it in both dicts. See README for the on-disk layout.
 
-Beneath the top-level handlers sit three save/load pairs keyed by the **data
+Beneath the top-level handlers sit four save/load pairs keyed by the **data
 structure** they carry rather than by modality. Each is pure: it takes one
 `h5py.Group` plus a payload and never touches the session object. The
 orchestrator creates the group (`_replace_group`), loops over regions or
@@ -253,10 +273,16 @@ group's stamp (`_write_stamp`, read back by `product_status`).
 | `_save_time_series` / `_load_time_series` | time-indexed `pd.Series` (one signal, dataset `signal`) or `pd.DataFrame` (one dataset per column) | preprocessed photometry, raw wheel position, preprocessed wheel velocity |
 | `_save_peri_event_matrix` / `_load_peri_event_matrix` | `xr.DataArray(event, trial, time)` | responses, whether the label is a brain region (`photometry/`), the wheel (`wheel/`) or a movement channel (`video/`) |
 | `_save_scalars` / `_load_scalars` | flat `dict[str, float]` stored as group attrs | QC metrics, preprocessing diagnostics |
+| `_save_frame_data` / `_load_frame_data` | per-camera-frame `np.ndarray` (dataset `values`) or `pd.DataFrame` (one dataset per column), with no time index | the three raw video datasets |
 
-`_read_label_responses(modality_group)` reads every `{label}/responses` subgroup
-of one modality in one call, for the loads that want the whole mapping rather
-than one label.
+`_save_frame_data` replaces only the group's datasets, not the group, because
+`video/motion_energy` holds this product beside the movement channel's
+`preprocessed` and `responses` subgroups.
+
+`_read_label_products(modality_group, product, read)` reads every
+`{label}/{product}` subgroup of one modality in one call, for the loads that
+want the whole mapping rather than one label; `_read_label_responses` is the
+`responses` case of it.
 
 `video/pose/qc` is the exception: it holds arrays plus a scalar, so it keeps
 its own pair (`_save_pose_xcorr` / `_load_pose_xcorr`).

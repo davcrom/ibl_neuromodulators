@@ -134,7 +134,7 @@ def process_pose(ps, reprocess=False):
         ps.log_error(e)
     if ps.pose is not None or ps.motion_energy is not None:
         ps.movement_responses = ps.extract_responses(
-            ps._movement_signals(), events=MOVEMENT_EVENTS)
+            ps.resample_movement_signals(), events=MOVEMENT_EVENTS)
     if ps.pose is not None:
         ps.extract_paw_wheel_xcorr()
     ps.save_h5(groups=['video'])

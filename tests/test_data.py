@@ -2465,7 +2465,7 @@ class TestFetchVideoQC:
 class TestPoseMethods:
     """PhotometrySession LP pose loading and extraction."""
 
-    def test_load_pose_loads_only_lightningpose(self, mock_session_series):
+    def test_load_pose_loads_only_lightningpose(self, mock_session_series, tmp_path):
         """load_pose pulls only lightningPose via load_dataset (never the whole
         leftCamera object) and no longer loads camera times."""
         from iblnm.data import PhotometrySession
@@ -2475,6 +2475,7 @@ class TestPoseMethods:
         one = MagicMock()
         one.load_dataset.return_value = pose_df
         ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
         ps.load_pose()
         one.load_object.assert_not_called()
         pd.testing.assert_frame_equal(ps.pose, pose_df)
@@ -2482,7 +2483,7 @@ class TestPoseMethods:
         loaded_names = [call.args[1] for call in one.load_dataset.call_args_list]
         assert all('lightningPose' in name for name in loaded_names)
 
-    def test_load_pose_missing_raises_missing_lp(self, mock_session_series):
+    def test_load_pose_missing_raises_missing_lp(self, mock_session_series, tmp_path):
         """load_pose raises MissingLP when the pose dataset is absent."""
         from one.alf.exceptions import ALFObjectNotFound
         from iblnm.data import PhotometrySession
@@ -2491,10 +2492,11 @@ class TestPoseMethods:
         one = MagicMock()
         one.load_dataset.side_effect = ALFObjectNotFound('leftCamera.lightningPose')
         ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
         with pytest.raises(MissingLP):
             ps.load_pose()
 
-    def test_load_camera_times_sets_pose_times(self, mock_session_series):
+    def test_load_camera_times_sets_pose_times(self, mock_session_series, tmp_path):
         """load_camera_times loads only leftCamera.times into pose_times."""
         from iblnm.data import PhotometrySession
         times = np.array([0.0, 0.1, 0.2])
@@ -2502,12 +2504,13 @@ class TestPoseMethods:
         one = MagicMock()
         one.load_dataset.return_value = times
         ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
         ps.load_camera_times()
         np.testing.assert_array_equal(ps.pose_times, times)
         loaded_names = [call.args[1] for call in one.load_dataset.call_args_list]
         assert all('times' in name for name in loaded_names)
 
-    def test_load_camera_times_missing_raises(self, mock_session_series):
+    def test_load_camera_times_missing_raises(self, mock_session_series, tmp_path):
         """load_camera_times raises MissingVideoTimestamps when times are absent."""
         from one.alf.exceptions import ALFObjectNotFound
         from iblnm.data import PhotometrySession
@@ -2516,10 +2519,11 @@ class TestPoseMethods:
         one = MagicMock()
         one.load_dataset.side_effect = ALFObjectNotFound('leftCamera.times')
         ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
         with pytest.raises(MissingVideoTimestamps):
             ps.load_camera_times()
 
-    def test_load_motion_energy_sets_array(self, mock_session_series):
+    def test_load_motion_energy_sets_array(self, mock_session_series, tmp_path):
         """load_motion_energy loads ROIMotionEnergy (no _ibl_ prefix) into
         self.motion_energy."""
         from iblnm.data import PhotometrySession
@@ -2528,13 +2532,14 @@ class TestPoseMethods:
         one = MagicMock()
         one.load_dataset.return_value = me
         ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
         ps.load_motion_energy()
         np.testing.assert_array_equal(ps.motion_energy, me)
         loaded_names = [call.args[1] for call in one.load_dataset.call_args_list]
         assert all('ROIMotionEnergy' in name and '_ibl_' not in name
                    for name in loaded_names)
 
-    def test_load_motion_energy_missing_raises(self, mock_session_series):
+    def test_load_motion_energy_missing_raises(self, mock_session_series, tmp_path):
         """load_motion_energy raises MissingMotionEnergy when the dataset is absent."""
         from one.alf.exceptions import ALFObjectNotFound
         from iblnm.data import PhotometrySession
@@ -2543,6 +2548,7 @@ class TestPoseMethods:
         one = MagicMock()
         one.load_dataset.side_effect = ALFObjectNotFound('leftCamera.ROIMotionEnergy')
         ps = PhotometrySession(mock_session_series, one=one, load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
         with pytest.raises(MissingMotionEnergy):
             ps.load_motion_energy()
 
@@ -2588,7 +2594,7 @@ class TestPoseMethods:
         ps.length_discrepancy = 0.05
         assert 'video' in ps._available_save_groups()
 
-    def _make_pose_session(self, mock_session_series, fs=30, dur=60.0,
+    def _make_pose_session(self, mock_session_series, tmp_path, fs=30, dur=60.0,
                            tongue_like=(0.2, 0.9), accelerate=False,
                            motion_energy=False):
         """PhotometrySession with injected synthetic pose + camera times + trials.
@@ -2596,10 +2602,14 @@ class TestPoseMethods:
         With ``accelerate``, keypoint positions grow quadratically so speed rises
         over time and the event a window is locked to changes its value. With
         ``motion_energy``, a per-frame ME ramp is injected on the camera time base.
+
+        `filepath` points into `tmp_path`: `resample_movement_signals` writes the
+        product it builds, which would otherwise land in the real store.
         """
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
                                load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
         t = np.arange(0, dur, 1 / fs)
         n = t.size
         ramp = np.arange(n, dtype=float)
@@ -2626,11 +2636,12 @@ class TestPoseMethods:
         })
         return ps
 
-    def test_movement_responses_shapes_and_labels(self, mock_session_series):
+    def test_movement_responses_shapes_and_labels(self, mock_session_series,
+                                                  tmp_path):
         """One (event, trial, time) grid per movement label, full event axis."""
         from iblnm.config import MOVEMENT_EVENTS, POSE_MEASURES
-        ps = self._make_pose_session(mock_session_series, fs=30)
-        responses = ps.extract_responses(ps._movement_signals(),
+        ps = self._make_pose_session(mock_session_series, tmp_path, fs=30)
+        responses = ps.extract_responses(ps.resample_movement_signals(),
                                          events=MOVEMENT_EVENTS)
         assert set(responses) == set(POSE_MEASURES)
         assert responses['paw'].sizes == {'event': 3, 'trial': 3, 'time': 60}
@@ -2640,15 +2651,17 @@ class TestPoseMethods:
     def _movement_responses(self, ps):
         """Movement responses for `ps` through the unified extraction engine."""
         from iblnm.config import MOVEMENT_EVENTS
-        return ps.extract_responses(ps._movement_signals(),
+        return ps.extract_responses(ps.resample_movement_signals(),
                                     events=MOVEMENT_EVENTS)
 
-    def test_movement_responses_own_event_and_stimon_cells(self, mock_session_series):
+    def test_movement_responses_own_event_and_stimon_cells(self, mock_session_series,
+                                                           tmp_path):
         """The stimOn baseline is a read-time cell of the same grid: the
         stimOn-locked nose channel has identical own-event and stimOn cells,
         while the firstMovement-locked paw channel does not."""
         from iblnm.config import LABEL2EVENT
-        ps = self._make_pose_session(mock_session_series, fs=30, accelerate=True)
+        ps = self._make_pose_session(mock_session_series, tmp_path, fs=30,
+                                     accelerate=True)
         responses = self._movement_responses(ps)
         np.testing.assert_allclose(
             responses['nose'].sel(event=LABEL2EVENT['nose']).values,
@@ -2658,46 +2671,56 @@ class TestPoseMethods:
             responses['paw'].sel(event='stimOn_times').values,
             equal_nan=True)
 
-    def test_movement_responses_tongue_likelihood_is_max(self, mock_session_series):
+    def test_movement_responses_tongue_likelihood_is_max(self, mock_session_series,
+                                                         tmp_path):
         """tongue_likelihood trace equals the per-frame max of the two tips."""
-        ps = self._make_pose_session(mock_session_series, tongue_like=(0.2, 0.9))
+        ps = self._make_pose_session(mock_session_series, tmp_path,
+                                     tongue_like=(0.2, 0.9))
         responses = self._movement_responses(ps)
         np.testing.assert_allclose(
             responses['tongue_likelihood'].sel(event='feedback_times').values, 0.9)
 
-    def test_movement_responses_common_timebase_across_fps(self, mock_session_series):
+    def test_movement_responses_common_timebase_across_fps(self, mock_session_series,
+                                                           tmp_path):
         """Different camera fps → identical trace time length (resampled to POSE_FS)."""
         r30 = self._movement_responses(
-            self._make_pose_session(mock_session_series, fs=30))
+            self._make_pose_session(mock_session_series, tmp_path / '30', fs=30))
         r99 = self._movement_responses(
-            self._make_pose_session(mock_session_series, fs=99))
+            self._make_pose_session(mock_session_series, tmp_path / '99', fs=99))
         assert r30['paw'].sizes['time'] == r99['paw'].sizes['time'] == 60
 
-    def test_movement_responses_include_motion_energy(self, mock_session_series):
+    def test_movement_responses_include_motion_energy(self, mock_session_series,
+                                                      tmp_path):
         """pose + ME present → the LP labels plus a motion_energy channel."""
         from iblnm.config import POSE_MEASURES
-        ps = self._make_pose_session(mock_session_series, motion_energy=True)
+        ps = self._make_pose_session(mock_session_series, tmp_path,
+                                     motion_energy=True)
         responses = self._movement_responses(ps)
         assert set(responses) == set(POSE_MEASURES) | {'motion_energy'}
 
-    def test_movement_responses_motion_energy_only(self, mock_session_series):
+    def test_movement_responses_motion_energy_only(self, mock_session_series,
+                                                   tmp_path):
         """ME present, pose=None → exactly ['motion_energy']."""
-        ps = self._make_pose_session(mock_session_series, motion_energy=True)
+        ps = self._make_pose_session(mock_session_series, tmp_path,
+                                     motion_energy=True)
         ps.pose = None
         assert list(self._movement_responses(ps)) == ['motion_energy']
 
-    def test_movement_responses_lp_only_when_no_motion_energy(self, mock_session_series):
+    def test_movement_responses_lp_only_when_no_motion_energy(self,
+                                                              mock_session_series,
+                                                              tmp_path):
         """pose present, motion_energy=None → only the LP labels."""
         from iblnm.config import POSE_MEASURES
-        ps = self._make_pose_session(mock_session_series)
+        ps = self._make_pose_session(mock_session_series, tmp_path)
         assert ps.motion_energy is None
         assert set(self._movement_responses(ps)) == set(POSE_MEASURES)
 
-    def test_movement_signals_empty_without_sources(self, mock_session_series):
+    def test_movement_signals_empty_without_sources(self, mock_session_series,
+                                                    tmp_path):
         """Neither pose nor motion energy → no signals, hence no responses."""
-        ps = self._make_pose_session(mock_session_series)
+        ps = self._make_pose_session(mock_session_series, tmp_path)
         ps.pose = None
-        assert ps._movement_signals() == {}
+        assert ps.resample_movement_signals() == {}
         assert self._movement_responses(ps) == {}
 
     @staticmethod

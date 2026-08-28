@@ -228,20 +228,24 @@ result on disk. A product whose stored stamp disagrees with `config.py` raises
 `StaleProduct` rather than rebuilding silently; name it in `ps.rebuild` to force
 the rebuild.
 
-Underneath, `extract_responses` is the cutting engine that `load_responses`
-calls. It takes any `label -> pd.Series` mapping, so the same engine cuts
-movement responses out of the video channels:
+The video modality follows the same shape, with three raw products instead of
+one because its three datasets are fetched — and fail — independently:
 
 ```python
-from iblnm.config import MOVEMENT_EVENTS
+ps.load_camera_times()   # video/times, the per-frame clock; required
+ps.load_pose()           # video/pose, the LightningPose keypoints
+ps.load_motion_energy()  # video/motion_energy, the per-frame ROI scalar
 
-ps.load_pose()
-ps.load_motion_energy()
-ps.movement_responses = ps.extract_responses(
-    ps._movement_signals(), events=MOVEMENT_EVENTS)
+ps.load_responses('video')
 # → dict keyed by movement channel ('paw', 'nose', 'tongue_speed',
 #   'tongue_likelihood', 'motion_energy'), same (event, trial, time) dims
 ```
+
+A missing pose or motion energy is logged against its own product and leaves
+the other channels intact; only missing camera times blocks the modality.
+Underneath, `extract_responses` is the cutting engine that `load_responses`
+calls, and it takes any `label -> pd.Series` mapping — for video that mapping
+is the `video/{label}/preprocessed` channels, resampled to `POSE_FS`.
 
 The window end may instead name a trials column, giving each trial its own
 endpoint — the cut the wheel needs, from stimulus onset to that trial's
@@ -591,14 +595,30 @@ movement channel.
     ├── attrs: length_discrepancy, framerate_from_tpts, qc_lp, qc_movement,
     │          qc_timing, the 8 VIDEO_QC_COLS labels
     │
+    ├── times/                       raw, one group per independently
+    │   ├── values   float64 (F,)    fetched dataset, each separately
+    │   └── attrs: spec_json, built_at    stamped
+    ├── pose/
+    │   ├── {keypoint}_x           float64 (F,)   LightningPose columns
+    │   ├── {keypoint}_y           float64 (F,)
+    │   ├── {keypoint}_likelihood  float64 (F,)
+    │   └── attrs: spec_json, built_at
+    │
     ├── {movement_channel}/          paw, nose, tongue_speed,
-    │   └── responses/               tongue_likelihood, motion_energy
+    │   ├── preprocessed/            tongue_likelihood, motion_energy.
+    │   │   ├── times     float64 (P,)   uniform grid at POSE_FS
+    │   │   ├── signal    float64 (P,)
+    │   │   └── attrs: spec_json (carries fs=30), built_at
+    │   └── responses/
     │       ├── times                float64 (W,)
     │       ├── trials               int64   (T,)
     │       ├── stimOn_times         float64 (T, W)
     │       ├── firstMovement_times  float64 (T, W)
     │       ├── feedback_times       float64 (T, W)
-    │       └── attrs: spec_json (carries window=[-1.0, 1.0]), built_at
+    │       └── attrs: spec_json (carries events, window), built_at
+    │                                The motion_energy channel's group also
+    │                                holds its raw `values` dataset, since the
+    │                                raw product and the channel share a name.
     │
     └── crosscorr/                   paw–wheel timing diagnostic
         ├── functions   float64 (3, L)   per-third cross-correlation
@@ -607,10 +627,11 @@ movement channel.
         └── attrs: drift
 ```
 
-`N` = samples at 30 Hz, `T` = trial count, `W` = response window samples
-(60 for [-1, 1] s at 30 Hz), `M` = logged error count, `L` = cross-correlation
-lag count, `E` = encoder sample count, `V` = wheel samples at 100 Hz, `Wf` =
-samples from stimulus onset to the longest trial's feedback at 100 Hz.
+`N` = samples at 30 Hz, `T` = trial count, `W` = response window samples,
+`M` = logged error count, `L` = cross-correlation lag count, `E` = encoder
+sample count, `V` = wheel samples at 100 Hz, `Wf` = samples from stimulus onset
+to the longest trial's feedback at 100 Hz, `F` = camera frame count, `P` =
+movement samples at POSE_FS.
 
 `save_h5(groups=...)` and `load_h5(groups=...)` accept the top-level group
 names (`'metadata'`, `'errors'`, `'photometry'`, `'trials'`, `'wheel'`,
