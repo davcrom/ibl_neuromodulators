@@ -32,7 +32,7 @@ from iblnm.config import (
     RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
-    TARGET_FS, WHEEL_FS, POSE_FS,
+    WHEEL_FS, POSE_FS,
     resolve_product_spec, store_raw,
     _PERSESSION_REGRESSORS,
 )
@@ -2183,9 +2183,11 @@ class PhotometrySession(PhotometrySessionLoader):
     ):
         """Run preprocessing pipeline, store the result, and write it to H5.
 
-        Pipeline steps (bleach correct → isosbestic correct → zscore) are defined
-        in config.PREPROCESSING_PIPELINES. Resampling to TARGET_FS is applied after
-        the pipeline as a separate step.
+        Pipeline steps (bleach correct → isosbestic correct → resample to
+        TARGET_FS → zscore) are defined in config.PREPROCESSING_PIPELINES. The
+        z-score is last so that the stored signal is the one it was applied to:
+        interpolating an already-z-scored signal leaves it short of unit
+        variance.
 
         The result is written to `photometry/{region}/preprocessed` and stamped
         with the `photometry/preprocessed` spec, so a later `load_photometry`
@@ -2232,7 +2234,7 @@ class PhotometrySession(PhotometrySessionLoader):
             else:
                 result = run_pipeline(pipeline, signal=signal)
 
-            preprocessed[brain_region] = resample_signal(result, target_fs=TARGET_FS)
+            preprocessed[brain_region] = result
             diagnostics[brain_region] = region_diagnostics
 
         self.photometry[output_band] = pd.DataFrame(preprocessed)

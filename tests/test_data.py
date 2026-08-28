@@ -1927,6 +1927,16 @@ class TestPreprocess:
         np.testing.assert_allclose(np.mean(signal), 0, atol=0.01)
         np.testing.assert_allclose(np.std(signal), 1, atol=0.01)
 
+    def test_preprocess_puts_the_signal_on_the_target_grid(self, mock_photometry_session):
+        """Resampling still happens; it moved into the pipeline, ahead of the
+        z-score, so that the z-score is what the stored signal was last through."""
+        from iblnm.config import TARGET_FS
+        session = mock_photometry_session
+        session.preprocess()
+
+        times = session.photometry['GCaMP_preprocessed'].index.values
+        np.testing.assert_allclose(np.diff(times), 1 / TARGET_FS)
+
     def test_preprocess_accepts_regression_method(self, mock_photometry_session):
         """preprocess() should accept regression_method kwarg without error."""
         mock_photometry_session.preprocess(regression_method='mse')

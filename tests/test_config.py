@@ -222,9 +222,11 @@ def test_resolved_pipeline_stamps_steps_by_function_name():
         'photometry/responses')['photometry/preprocessed.pipeline']
     assert [step['function'] for step in steps] == [
         'lowpass_bleachcorrect', 'lowpass_bleachcorrect',
-        'isosbestic_correct', 'zscore',
+        'isosbestic_correct', 'resample_signal', 'zscore',
     ]
-    assert steps[3]['parameters'] == {'mode': 'classic'}
+    # The z-score is last: interpolating an already-z-scored signal attenuates
+    # its high frequencies and leaves it short of unit variance.
+    assert steps[-1]['parameters'] == {'mode': 'classic'}
 
 
 def test_resolved_spec_reaches_ancestors_through_the_whole_graph():

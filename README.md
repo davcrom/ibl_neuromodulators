@@ -86,7 +86,7 @@ Processes each session through a tiered pipeline:
 2. Validate that trials fall within the photometry recording window (fatal)
 3. Raw QC: check for band inversions and early samples (fatal)
 4. Sliding QC: compute signal quality metrics (fatal)
-5. Preprocess: bleach correction → isosbestic regression → z-score → resample to 30 Hz
+5. Preprocess: bleach correction → isosbestic regression → resample to 30 Hz → z-score
 6. Extract peri-event responses for `stimOn_times`, `firstMovement_times`, `feedback_times`
 7. Save signal and responses to HDF5
 
@@ -209,7 +209,7 @@ distinct float, which would pin `n_unique_samples` at 1.0 on any signal.
 ```python
 from iblnm.config import RESPONSE_EVENTS
 
-ps.preprocess()  # bleach → isosbestic → zscore → resample to 30 Hz
+ps.preprocess()  # bleach → isosbestic → resample to 30 Hz → zscore
                  # → ps.photometry['GCaMP_preprocessed'], written and stamped
                  #   into photometry/{region}/preprocessed
 

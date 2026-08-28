@@ -441,6 +441,15 @@ PREPROCESSING_PIPELINES = {
             output='result',
         ),
         dict(
+            function=processing.resample_signal,
+            parameters=dict(fs=TARGET_FS, method='pchip'),
+            inputs=('result',),
+            output='result',
+        ),
+        # Last, so that what is stored is what the z-score was applied to.
+        # Interpolating an already-z-scored signal attenuates its high
+        # frequencies and leaves it short of unit variance.
+        dict(
             function=processing.zscore,
             parameters=dict(mode='classic'),
             inputs=('result',),
