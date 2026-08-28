@@ -23,13 +23,11 @@ from iblnm.lp_viewer import (
     histogram_by_type,
     keypoint_colors,
     likelihood_to_alpha,
-    persist_labels,
     save_label,
     select_population,
     start_time_to_numeric,
     trial_frame_window,
     trial_schematic_values,
-    update_pose_qc,
 )
 
 
@@ -472,99 +470,71 @@ def test_apply_label_rejects_unknown_field(label_table):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# persist_labels
+# save_label
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture
 def video_h5(tmp_path):
-    """Synthetic video H5: a paw responses subgroup (automatic data) + labels."""
-    fpath = tmp_path / 'session.h5'
-    paw = np.arange(12, dtype=np.float64).reshape(3, 4)
-    with h5py.File(fpath, 'w') as f:
-        grp = f.create_group('video')
-        for label in LP_QC_LABELS:
-            grp.attrs[label] = 'NOT_SET'
-        responses = grp.create_group('paw').create_group('responses')
-        responses.create_dataset('stimOn_times', data=paw)
-    return fpath, paw
+    """A session H5 carrying metadata and one paw responses group.
 
-
-def test_persist_labels_round_trips(video_h5):
-    fpath, _ = video_h5
-    persist_labels(fpath, {'qc_lp': 'CRITICAL', 'qc_movement': 'PASS',
-                           'qc_timing': 'WARNING'})
-    with h5py.File(fpath, 'r') as f:
-        attrs = f['video'].attrs
-        assert _decode(attrs['qc_lp']) == 'CRITICAL'
-        assert _decode(attrs['qc_movement']) == 'PASS'
-        assert _decode(attrs['qc_timing']) == 'WARNING'
-
-
-def test_persist_labels_leaves_responses_untouched(video_h5):
-    fpath, paw = video_h5
-    persist_labels(fpath, {'qc_lp': 'WARNING', 'qc_movement': 'FAIL',
-                           'qc_timing': 'PASS'})
-    with h5py.File(fpath, 'r') as f:
-        np.testing.assert_array_equal(
-            f['video']['paw']['responses']['stimOn_times'][:], paw)
+    Written through PhotometrySession so it has the `metadata` group
+    `save_label` reads to rebuild the session from the file.
+    """
+    from unittest.mock import MagicMock
+    from iblnm.data import PhotometrySession
+    paw = xr.DataArray(
+        np.arange(12, dtype=np.float64).reshape(1, 3, 4),
+        dims=['event', 'trial', 'time'],
+        coords={'event': ['stimOn_times'], 'trial': np.arange(3),
+                'time': np.linspace(-1, 1, 4)},
+    )
+    ps = PhotometrySession(
+        pd.Series({'eid': 'eid1', 'subject': 'test_mouse', 'number': 1,
+                   'start_time': '2024-01-01T10:00:00'}),
+        one=MagicMock(), load_data=False)
+    ps.filepath = tmp_path / 'eid1.h5'
+    ps.movement_responses = {'paw': paw}
+    ps.save_h5(groups=['metadata', 'video'])
+    return ps.filepath, paw
 
 
 def _decode(value):
     return value.decode() if isinstance(value, bytes) else value
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# update_pose_qc / save_label
-# ─────────────────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def pose_pqt(tmp_path):
-    """A 2-session pose roll-up parquet with both QC labels at NOT_SET."""
-    fpath = tmp_path / 'pose.pqt'
-    pd.DataFrame({
-        'eid': ['eid0', 'eid1'],
-        **{label: ['NOT_SET', 'NOT_SET'] for label in LP_QC_LABELS},
-    }).to_parquet(fpath)
-    return fpath
-
-
-def test_update_pose_qc_sets_only_target_eid(pose_pqt):
-    update_pose_qc(pose_pqt, 'eid1', {'qc_lp': 'FAIL', 'qc_movement': 'PASS',
-                                      'qc_timing': 'WARNING'})
-    df = pd.read_parquet(pose_pqt)
-    target = df.loc[df['eid'] == 'eid1'].iloc[0]
-    assert target['qc_lp'] == 'FAIL'
-    assert target['qc_movement'] == 'PASS'
-    assert target['qc_timing'] == 'WARNING'
-    other = df.loc[df['eid'] == 'eid0'].iloc[0]
-    assert other['qc_lp'] == 'NOT_SET'
-    assert other['qc_timing'] == 'NOT_SET'
-
-
-def test_save_label_writes_both_stores(video_h5, pose_pqt):
+def test_save_label_writes_the_verdict_through_the_session(video_h5):
+    """The verdict lands in video/manual_qc, where PhotometrySession reads it."""
+    from iblnm.data import PhotometrySession
     h5_path, _ = video_h5
-    labels = {'qc_lp': 'FAIL', 'qc_movement': 'PASS', 'qc_timing': 'WARNING'}
-    msg = save_label(h5_path, pose_pqt, 'eid1', labels)
-    with h5py.File(h5_path, 'r') as f:
-        assert _decode(f['video'].attrs['qc_lp']) == 'FAIL'
-        assert _decode(f['video'].attrs['qc_movement']) == 'PASS'
-        assert _decode(f['video'].attrs['qc_timing']) == 'WARNING'
-    row = pd.read_parquet(pose_pqt).set_index('eid').loc['eid1']
-    assert row['qc_lp'] == 'FAIL'
-    assert row['qc_movement'] == 'PASS'
-    assert row['qc_timing'] == 'WARNING'
+    msg = save_label(h5_path, 'eid1', 'qc_lp', 'FAIL')
+
+    session = PhotometrySession.from_h5(h5_path)
+    session.load_h5(groups=['video'])
+    assert session.video_manual_qc == {'qc_lp': 'FAIL'}
     assert h5_path.name in msg
 
 
-def test_save_label_reports_failure_without_raising(tmp_path, pose_pqt):
-    # 'a'-mode opens/creates the file but it has no 'video' group -> KeyError.
-    missing = tmp_path / 'absent.h5'
-    msg = save_label(missing, pose_pqt, 'eid1',
-                     {'qc_lp': 'FAIL', 'qc_movement': 'PASS',
-                      'qc_timing': 'WARNING'})
+def test_save_label_leaves_the_responses_untouched(video_h5):
+    h5_path, paw = video_h5
+    save_label(h5_path, 'eid1', 'qc_movement', 'WARNING')
+    with h5py.File(h5_path, 'r') as f:
+        np.testing.assert_array_equal(
+            f['video']['paw']['responses']['stimOn_times'][:], paw.values[0])
+
+
+def test_save_label_reports_failure_without_raising(tmp_path):
+    """A file that is not a session H5 surfaces in the status line instead of
+    taking the viewer down."""
+    msg = save_label(tmp_path / 'absent.h5', 'eid1', 'qc_lp', 'FAIL')
     assert 'eid1' in msg
-    unchanged = pd.read_parquet(pose_pqt).set_index('eid').loc['eid1']
-    assert unchanged['qc_lp'] == 'NOT_SET'
+
+
+def test_save_label_reports_an_out_of_vocab_verdict(video_h5):
+    h5_path, _ = video_h5
+    msg = save_label(h5_path, 'eid1', 'qc_lp', 'GOOD')
+    assert 'eid1' in msg
+    with h5py.File(h5_path, 'r') as f:
+        assert 'manual_qc' not in f['video']
 
 
 # ─────────────────────────────────────────────────────────────────────────────

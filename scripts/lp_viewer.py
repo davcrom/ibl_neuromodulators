@@ -52,7 +52,7 @@ if __name__ == '__main__':
     df_cohort = build_cohort(
         pd.read_parquet(POSE_FPATH), pd.read_parquet(SESSIONS_FPATH))
 
-    model = LPViewerModel(df_cohort, SESSIONS_H5_DIR, pose_path=POSE_FPATH)
+    model = LPViewerModel(df_cohort, SESSIONS_H5_DIR)
     one = _get_default_connection()
 
     app = QtWidgets.QApplication(sys.argv)

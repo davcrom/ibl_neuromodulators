@@ -25,6 +25,7 @@ from matplotlib.widgets import SpanSelector
 
 from iblnm.config import (
     DATASET_CATEGORIES,
+    IBL_QC_VALUES,
     LABEL2EVENT,
     LP_QC_LABELS,
     POSE_MEASURES,
@@ -38,9 +39,6 @@ from iblnm.data import (
     _load_pose_xcorr,
     _read_label_responses,
 )
-
-# Settable IBL QC verdicts (the default 'NOT_SET' is not a manual choice).
-IBL_QC_VALUES = ('CRITICAL', 'FAIL', 'WARNING', 'PASS')
 
 # One font size for every axis title, label, tick, and legend across all of the
 # viewer's matplotlib panels, applied globally so no panel can drift out of step.
@@ -315,54 +313,25 @@ def apply_label(
     return updated
 
 
-def persist_labels(h5_path: str | Path, labels: dict[str, str]) -> None:
-    """Write the manual QC labels into a session's `video` H5 group.
+def save_label(h5_path: str | Path, eid: str, field: str, value: str) -> str:
+    """Persist one manual QC verdict for `eid` and return a status line.
 
-    Sets each ``labels`` group attr (keyed by `LP_QC_LABELS`) in place, leaving
-    the automatically-extracted traces and cross-correlation subgroups untouched.
-    """
-    with h5py.File(h5_path, 'a') as f:
-        attrs = f['video'].attrs
-        for label, value in labels.items():
-            attrs[label] = value
+    The verdict goes through :meth:`PhotometrySession.set_manual_qc`, which
+    owns the `video/manual_qc` group and validates the verdict before writing.
+    The pose roll-up is not mirrored: it is regenerated from the H5 store, so
+    keeping a derived file in step is work the roll-up already does.
 
-
-def update_pose_qc(
-    pose_path: str | Path, eid: str, labels: dict[str, str]
-) -> None:
-    """Mirror the manual QC labels for `eid` into the pose roll-up parquet.
-
-    Read-modify-write of `pose_path`: updates only the `labels` cells (keyed by
-    `LP_QC_LABELS`) for `eid`, leaving every other row and column untouched, so
-    the derived roll-up stays in sync with the per-session H5 without re-running
-    `scripts/pose.py --collect`.
-    """
-    df = pd.read_parquet(pose_path)
-    mask = df['eid'] == eid
-    for label, value in labels.items():
-        df.loc[mask, label] = value
-    df.to_parquet(pose_path)
-
-
-def save_label(
-    h5_path: str | Path, pose_path: str | Path, eid: str,
-    labels: dict[str, str],
-) -> str:
-    """Persist the manual QC labels for `eid` and return a status line.
-
-    Writes the `labels` (keyed by `LP_QC_LABELS`) to the per-session `video` H5
-    attrs (the canonical store) and mirrors them into the pose roll-up parquet.
-    Catches write failures (missing file/`video` group, unwritable path) so a
-    bad session surfaces in the GUI status bar instead of crashing the viewer.
-    Returns a confirmation naming the H5 file on success, or an error description.
+    Failures are caught (missing or unreadable file, verdict outside the IBL
+    vocabulary) so a bad session surfaces in the GUI status bar instead of
+    crashing the viewer. Returns a confirmation naming the H5 file on success,
+    or a description of what went wrong.
     """
     try:
-        persist_labels(h5_path, labels)
-        update_pose_qc(pose_path, eid, labels)
-    except (OSError, KeyError) as error:
+        session = PhotometrySession.from_h5(h5_path)
+        session.set_manual_qc(field, value)
+    except (OSError, KeyError, ValueError) as error:
         return f'Save failed for {eid}: {error}'
-    summary = ', '.join(f'{label}={value}' for label, value in labels.items())
-    return f'Saved {summary} → {Path(h5_path).name} + pose.pqt'
+    return f'Saved {field}={value} → {Path(h5_path).name}'
 
 
 @dataclass
@@ -388,16 +357,10 @@ class LPViewerModel:
     trial-averaged panel data for a selected session.
     """
 
-    def __init__(
-        self,
-        df_cohort: pd.DataFrame,
-        h5_dir: str | Path,
-        pose_path: str | Path | None = None,
-    ):
+    def __init__(self, df_cohort: pd.DataFrame, h5_dir: str | Path):
         self.h5_dir = Path(h5_dir)
         self.df_cohort = df_cohort[df_cohort['eid'].map(
             self._has_movement_responses)].reset_index(drop=True)
-        self.pose_path = pose_path
 
     def _has_movement_responses(self, eid: str) -> bool:
         """True when ``{eid}.h5`` holds at least one ``video/{label}/responses``.
@@ -923,22 +886,19 @@ class LPViewer(QtWidgets.QMainWindow):
             combo.blockSignals(False)
 
     def _on_label(self, field: str, value: str) -> None:
-        """Apply a QC verdict and persist it immediately to H5 + pose.pqt.
+        """Apply a QC verdict and persist it immediately to the session H5.
 
         Saving on every set (rather than only on close) keeps a manual verdict
         from being lost if the viewer exits abnormally; the outcome is echoed
-        to the status bar.
+        to the status bar. The in-memory cohort table is updated too, so the
+        dropdown and the QC filters see the verdict without a reload.
         """
         if value == LP_QC_NOT_SET or not getattr(self, 'current_eid', None):
             return
         eid = self.current_eid
         self.model.df_cohort = apply_label(
             self.model.df_cohort, eid, field, value)
-        row = self.model.df_cohort.loc[
-            self.model.df_cohort['eid'] == eid].iloc[0]
-        status = save_label(self.model.h5_dir / f'{eid}.h5',
-                            self.model.pose_path, eid,
-                            {label: row[label] for label in LP_QC_LABELS})
+        status = save_label(self.model.h5_dir / f'{eid}.h5', eid, field, value)
         self.statusBar().showMessage(status)
 
     # -- frame viewer ---------------------------------------------------------
