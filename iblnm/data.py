@@ -447,24 +447,63 @@ def _load_errors(session, h5_file):
 
 
 def _save_trials(session, h5_file):
-    """Write the trials table verbatim to `trials/table`.
+    """Write the trials table verbatim to `trials/table`, performance beside it.
 
     Every column is stored, ONE's own and the ones `load_trials` derives. Trial
     identity travels in the `trial` column, not in the index: `_read_dataframe`
     rebuilds a fresh RangeIndex, so a session whose trials were filtered before
     extraction would otherwise silently realign against its responses.
+
+    `trials/performance` is written whenever the session holds it, independently
+    of the table, so reading a stored table and scoring it does not depend on
+    both being in memory at once. An empty table is not written: the loader
+    parent starts `trials` as an empty DataFrame rather than None, and stamping
+    that as a stored product would report a session that has no trials as
+    carrying a current one.
     """
-    if getattr(session, 'trials', None) is None:
-        return
-    group = _replace_group(h5_file.require_group('trials'), 'table')
-    _write_dataframe(group, session.trials)
-    _write_stamp(group, session.spec['trials/table'])
+    grp = h5_file.require_group('trials')
+    trials = getattr(session, 'trials', None)
+    if trials is not None and not trials.empty:
+        group = _replace_group(grp, 'table')
+        _write_dataframe(group, trials)
+        _write_stamp(group, session.spec['trials/table'])
+    if session.performance:
+        _save_performance(_replace_group(grp, 'performance'),
+                          session.performance, session.spec['trials/performance'])
 
 
 def _load_trials(session, h5_file):
-    if 'trials/table' not in h5_file:
-        return
-    session.trials = _read_dataframe(h5_file['trials/table'])
+    if 'trials/table' in h5_file:
+        session.trials = _read_dataframe(h5_file['trials/table'])
+    if 'trials/performance' in h5_file:
+        session.performance = _load_performance(h5_file['trials/performance'])
+
+
+def _save_performance(group: h5py.Group, performance: dict, spec: dict) -> None:
+    """Write the per-session behavioral scalars into `group`, stamped with `spec`.
+
+    Every value is a scalar attr except `contrasts`, the sorted list of contrast
+    levels the session presented, which becomes a dataset — the one entry that
+    `_save_scalars` alone could not carry.
+
+    Parameters
+    ----------
+    group : h5py.Group
+        Destination group, created (and any predecessor replaced) by the caller.
+    performance : dict
+        Metric name -> value, including the `contrasts` list.
+    spec : dict
+        Resolved product spec, written as the group's stamp (`_write_stamp`).
+    """
+    group.create_dataset('contrasts',
+                         data=np.asarray(performance['contrasts'], dtype=np.float64))
+    _save_scalars(group, {key: value for key, value in performance.items()
+                          if key != 'contrasts'}, spec)
+
+
+def _load_performance(group: h5py.Group) -> dict:
+    """Read the behavioral scalars written by `_save_performance`."""
+    return _load_scalars(group) | {'contrasts': group['contrasts'][:].tolist()}
 
 
 # ----- Photometry sub-handlers (pure: parent_group + payload only) -----
@@ -1209,6 +1248,10 @@ class PhotometrySession(PhotometrySessionLoader):
         self.preprocessing_diagnostics = {}
         self.states = None
         self.ols_fits = {}
+        # Behavioral scalars scored from the trials table: fraction correct and
+        # friends, the contrast levels presented, and the per-block psychometrics
+        # where the session has blocks.
+        self.performance = {}
         # QC products: metric -> value for the neurophotometrics source table,
         # region -> band-suffixed metric -> value for the raw bands.
         self.neurophotometrics_qc = {}
@@ -1991,9 +2034,12 @@ class PhotometrySession(PhotometrySessionLoader):
         has_wheel = (self.wheel_position is not None
                      or self.wheel_velocity is not None
                      or bool(self.wheel_responses))
+        trials = getattr(self, 'trials', None)
+        has_trials = (trials is not None and not trials.empty
+                      or bool(self.performance))
         return [name for name, available in (
             ('photometry', has_photometry),
-            ('trials',     getattr(self, 'trials', None) is not None),
+            ('trials',     has_trials),
             ('wheel',      has_wheel),
             ('video',      has_video),
         ) if available]
@@ -2345,6 +2391,41 @@ class PhotometrySession(PhotometrySessionLoader):
         if '20' in fits and '80' in fits:
             result['bias_shift'] = task.compute_bias_shift(fits['20'], fits['80'])
         return result
+
+    def load_performance(self) -> dict:
+        """Return the per-session behavioral scalars, scoring them if absent.
+
+        Reads `trials/performance` when it is stored and its stamp still matches
+        `config.PRODUCT_SPEC`; otherwise scores the trials table with
+        :meth:`basic_performance` and — for a session type that has blocks —
+        :meth:`block_performance`, and writes the result. A product named in
+        `self.rebuild` skips the read and is rescored.
+
+        Returns
+        -------
+        dict
+            Metric name -> value, plus `n_trials` and the sorted `contrasts`
+            list the session presented. Also assigned to `self.performance`.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
+        """
+        if self.stored_is_current('trials/performance'):
+            with h5py.File(self.filepath, 'r') as h5:
+                self.performance = _load_performance(h5['trials/performance'])
+            return self.performance
+        if self.trials is None or self.trials.empty:
+            self.load_trials()
+        self.performance = {
+            'n_trials': len(self.trials),
+            'contrasts': sorted(self.trials['contrast'].unique().tolist()),
+            **self.basic_performance(),
+            **self.block_performance(),
+        }
+        self.save_h5(groups=['trials'])
+        return self.performance
 
     def fraction_correct(self, exclude_nogo=True):
         return task.compute_fraction_correct(self.trials, exclude_nogo=exclude_nogo)
@@ -4080,9 +4161,47 @@ class PhotometrySessionGroup:
         eids = set(self.recordings['eid'])
         return df[df['eid'].isin(eids)].copy()
 
-    def load_performance(self, path):
-        """Load performance data from parquet, filtered to in-scope eids."""
-        self.performance = self._load_parquet(path)
+    def load_performance(self) -> pd.DataFrame:
+        """Read every catalogued session's `trials/performance` and join it on.
+
+        Each session's product is read from its H5 in `self.h5_dir`; a session
+        with no file, or no product in it, contributes nothing. Nothing here
+        fetches, so the sessions are built without a ONE connection — this walks
+        the whole catalog, and resolving a session path per row would dominate. `fraction_correct`
+        and `contrasts` are then joined onto `_catalog`, because that is where
+        `filter_sessions(min_performance=..., required_contrasts=...)` reads them
+        — both filters skip themselves when their column is absent, so a catalog
+        that never saw this call silently keeps sessions it should drop. Sessions
+        without the product get a NaN `fraction_correct` and an empty `contrasts`
+        list, which fails both filters rather than passing them.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per session that had the product, with an `eid` column and
+            one column per metric. Also assigned to `self.performance`.
+
+        Raises
+        ------
+        StaleProduct
+            A stored stamp disagrees with the resolved spec.
+        """
+        rows = []
+        for _, row in self._catalog.iterrows():
+            ps = PhotometrySession(row, one=None, load_data=False)
+            ps.filepath = Path(self.h5_dir) / f'{ps.eid}.h5'
+            if ps.product_status('trials/performance') == 'absent':
+                continue
+            rows.append({'eid': ps.eid} | ps.load_performance())
+        self.performance = pd.DataFrame(rows)
+
+        joined = ['eid', 'fraction_correct', 'contrasts']
+        catalog = self._catalog.drop(columns=joined[1:], errors='ignore').merge(
+            self.performance.reindex(columns=joined), on='eid', how='left')
+        catalog['contrasts'] = [contrasts if isinstance(contrasts, list) else []
+                                for contrasts in catalog['contrasts']]
+        self._catalog = catalog
+        return self.performance
 
     def load_response_magnitudes(self, path):
         """Load response magnitudes from parquet, filtered to current recordings."""
@@ -4939,8 +5058,8 @@ class PhotometrySessionGroup:
     def get_psychometric_features(self, performance_path=None, params=None):
         """Build psychometric parameter matrix aligned to response_features.
 
-        Reads from ``self.performance`` if already loaded, otherwise calls
-        ``load_performance(performance_path)``.
+        Reads from ``self.performance`` if already loaded, otherwise from the
+        performance parquet at ``performance_path``.
 
         Lateralizes bias and lapse terms to the contra/ipsi frame using each
         recording's hemisphere, matching the side coding in the neural GLM
@@ -4968,7 +5087,7 @@ class PhotometrySessionGroup:
         """
         if self.performance is None:
             from iblnm.config import PERFORMANCE_FPATH
-            self.load_performance(
+            self.performance = self._load_parquet(
                 performance_path if performance_path is not None
                 else PERFORMANCE_FPATH
             )

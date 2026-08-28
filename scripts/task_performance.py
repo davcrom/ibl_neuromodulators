@@ -57,7 +57,7 @@ if __name__ == '__main__':
               "Run scripts/task.py first.")
         raise SystemExit(1)
 
-    group.load_performance(PERFORMANCE_FPATH)
+    group.load_performance()
     if RESPONSES_FPATH.exists() and TRIAL_REGRESSORS_FPATH.exists():
         group.load_response_magnitudes(RESPONSES_FPATH)
         group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)

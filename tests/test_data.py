@@ -8,6 +8,7 @@ import pytest
 import xarray as xr
 from unittest.mock import MagicMock, patch
 
+from iblnm.config import REQUIRED_CONTRASTS
 from iblnm.data import WHEEL_LABEL
 from iblnm.util import contrast_transform
 
@@ -3646,6 +3647,58 @@ class TestBlockPerformance:
         assert 'bias_shift' not in result  # no 20/80 blocks present
 
 
+class TestTrialsPerformanceProduct:
+    """The `trials/performance` product: behavioral scalars built from trials."""
+
+    def _session(self, series, tmp_path, trials=None, session_type='training'):
+        from iblnm.data import PhotometrySession
+        series = series.copy()
+        series['session_type'] = session_type
+        ps = PhotometrySession(series, one=MagicMock(), load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
+        ps.trials = trials
+        return ps
+
+    def test_built_product_roundtrips_and_reports_current(
+            self, mock_session_series, tmp_path):
+        """Building from trials stores a stamped product a reload reproduces."""
+        ps = self._session(mock_session_series, tmp_path, _make_training_trials())
+        built = ps.load_performance()
+        assert ps.product_status('trials/performance') == 'current'
+
+        reopened = self._session(mock_session_series, tmp_path)
+        reloaded = reopened.load_performance()
+        assert reloaded == built
+
+    def test_stale_when_min_block_length_changes(self, mock_session_series,
+                                                 tmp_path):
+        """MIN_BLOCK_LENGTH gates which blocks are fit, so it stamps the product."""
+        import iblnm.config as config
+        ps = self._session(mock_session_series, tmp_path, _make_training_trials())
+        ps.load_performance()
+
+        with patch.dict(config.PRODUCT_SPEC['trials/performance'],
+                        {'min_block_length': 999}):
+            reopened = self._session(mock_session_series, tmp_path)
+            assert reopened.product_status('trials/performance') == 'stale'
+
+    def test_training_stores_no_block_keys(self, mock_session_series, tmp_path):
+        """A training session has one block, so no 20/80 psychometrics are fit."""
+        ps = self._session(mock_session_series, tmp_path, _make_training_trials())
+        stored = ps.load_performance()
+        assert {'n_trials', 'contrasts', 'fraction_correct', 'nogo_fraction',
+                'psych_50_bias'} <= set(stored)
+        assert not any(key.startswith(('psych_20', 'psych_80')) for key in stored)
+
+    def test_biased_stores_block_keys(self, mock_session_series, tmp_path):
+        """A biased session adds the per-block psychometrics and the bias shift."""
+        ps = self._session(mock_session_series, tmp_path, _make_biased_trials(),
+                           session_type='biased')
+        stored = ps.load_performance()
+        assert {'psych_20_bias', 'psych_80_bias', 'bias_shift'} <= set(stored)
+        assert stored['contrasts'] == [0.0, 0.0625, 0.125, 0.25, 0.5, 1.0]
+
+
 # =============================================================================
 # PhotometrySessionGroup Tests
 # =============================================================================
@@ -3837,6 +3890,80 @@ class TestFromCatalog:
             catalog, one=MagicMock(), h5_dir=tmp_path, scan_h5_errors=False)
         assert group._catalog['logged_errors'].apply(
             lambda x: x == ['MissingRawData']).all()
+
+
+def _percent_contrast_trials(contrasts, fraction_correct, n_per_contrast=20):
+    """Trials presenting `contrasts` (percent) at a known fraction correct.
+
+    Contrast levels are stored as percent, the units `REQUIRED_CONTRASTS` is
+    written in. Sides alternate; the first `fraction_correct` of the trials
+    choose the stimulus side and the rest choose against it.
+    """
+    contrast = np.repeat(np.asarray(contrasts, dtype=float), n_per_contrast)
+    n = len(contrast)
+    side = np.tile([-1.0, 1.0], n // 2)
+    choice = np.where(np.arange(n) < fraction_correct * n, side, -side)
+    return pd.DataFrame({
+        'contrast': contrast,
+        'signed_contrast': contrast * side,
+        'contrastLeft': np.where(side < 0, contrast / 100, np.nan),
+        'contrastRight': np.where(side > 0, contrast / 100, np.nan),
+        'choice': choice,
+        'feedbackType': np.where(choice == side, 1.0, -1.0),
+        'probabilityLeft': np.full(n, 0.5),
+    })
+
+
+class TestGroupLoadPerformance:
+    """PhotometrySessionGroup.load_performance joins the stored product on."""
+
+    def _store_performance(self, h5_dir, eid, trials):
+        """Write one session's `trials/performance` product into `h5_dir`."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(pd.Series({
+            'eid': eid, 'subject': f'mouse_{eid}', 'number': 1,
+            'start_time': '2024-01-01T10:00:00', 'session_type': 'training',
+        }), one=None, load_data=False)
+        ps.filepath = h5_dir / f'{eid}.h5'
+        ps.trials = trials
+        return ps.load_performance()
+
+    def _group(self, h5_dir):
+        """Group over one passing and one failing session, products stored."""
+        from iblnm.data import PhotometrySessionGroup
+        self._store_performance(h5_dir, 'eid-pass', _percent_contrast_trials(
+            sorted(REQUIRED_CONTRASTS), fraction_correct=0.9))
+        self._store_performance(h5_dir, 'eid-fail', _percent_contrast_trials(
+            [0.0, 100.0], fraction_correct=0.4))
+        catalog = pd.DataFrame([
+            {'eid': eid, 'subject': f'mouse_{eid}', 'session_type': 'training',
+             'start_time': '2024-01-01T10:00:00', 'number': 1,
+             'brain_region': ['VTA'], 'hemisphere': ['l'],
+             'target_NM': ['VTA-DA'], 'NM': 'DA'}
+            for eid in ('eid-pass', 'eid-fail')
+        ])
+        return PhotometrySessionGroup.from_catalog(
+            catalog, one=None, h5_dir=h5_dir, scan_h5_errors=False)
+
+    def test_joins_columns_the_filters_read(self, tmp_path):
+        """fraction_correct and contrasts land on the catalog, per session."""
+        group = self._group(tmp_path)
+        group.load_performance()
+        catalog = group._catalog.set_index('eid')
+        assert catalog.loc['eid-pass', 'fraction_correct'] == pytest.approx(0.9)
+        assert catalog.loc['eid-pass', 'contrasts'] == sorted(REQUIRED_CONTRASTS)
+        assert catalog.loc['eid-fail', 'contrasts'] == [0.0, 100.0]
+
+    def test_filters_drop_the_hand_computed_sessions(self, tmp_path, capsys):
+        """min_performance and required_contrasts both bite, and say so."""
+        group = self._group(tmp_path)
+        group.load_performance()
+        group.filter_sessions(session_types=False, targetnms=False,
+                              qc_blockers=set())
+        assert set(group.sessions['eid']) == {'eid-pass'}
+        printed = capsys.readouterr().out
+        assert '-   1 performance' in printed
+        assert '-   1 contrasts' in printed
 
 
 class TestDeduplicate:
@@ -4964,21 +5091,6 @@ class TestLoaderMethods:
         group.load_response_features(path)
         assert len(group.response_features) == 2
         assert 'eid-99' not in group.response_features.index.get_level_values('eid')
-
-    def test_load_performance(self, tmp_path):
-        group = self._make_group(n_eids=3, regions_per=1)
-        df = pd.DataFrame([
-            {'eid': 'eid-0', 'fraction_correct': 0.85},
-            {'eid': 'eid-1', 'fraction_correct': 0.72},
-            {'eid': 'eid-2', 'fraction_correct': 0.91},
-            {'eid': 'eid-99', 'fraction_correct': 0.60},  # not in group
-        ])
-        path = tmp_path / 'performance.pqt'
-        df.to_parquet(path, index=False)
-
-        group.load_performance(path)
-        assert len(group.performance) == 3
-        assert 'eid-99' not in group.performance['eid'].values
 
     def test_load_missing_file_is_noop(self, tmp_path):
         group = self._make_group()

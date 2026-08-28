@@ -144,6 +144,7 @@ session_row = df_sessions.iloc[0]
 
 ps = PhotometrySession(session_row, one=one)
 ps.load_trials()          # → ps.trials (adds trial, stim_side, contrast, signed_contrast)
+ps.load_performance()     # → ps.performance, behavioral scalars from the trials
 ps.load_photometry()      # → ps.photometry['GCaMP_preprocessed']
 ps.load_raw_photometry()  # → ps.photometry: {'GCaMP': ..., 'Isosbestic': ...}
 ```
@@ -344,6 +345,11 @@ group.decode_target()
 ### Filtering and subsetting
 
 ```python
+# fraction_correct and contrasts come from each session's trials/performance
+# product; without this call min_performance and required_contrasts have no
+# column to read and skip themselves, keeping sessions they should drop.
+group.load_performance()
+
 # Standard filters (all parameters optional, default to config values)
 group.filter_sessions(
     session_types=('biased', 'ephys'),
@@ -584,6 +590,12 @@ movement channel.
 │       ├── stim_side            str     (T,)   'left' or 'right'
 │       ├── trial                int64   (T,)   raw ONE index; trial identity
 │       └── attrs: spec_json, built_at
+│   └── performance/                # behavioral scalars scored from the table
+│       ├── contrasts          float64 (C,)   the sorted levels presented, percent
+│       └── attrs: n_trials, fraction_correct, fraction_correct_easy,
+│                  nogo_fraction, psych_50_* — and psych_20_*, psych_80_*,
+│                  bias_shift where the session has blocks; spec_json
+│                  (carries min_block_length), built_at
 │
 ├── wheel/
 │   └── velocity/                    the wheel's one label, named for the

@@ -163,6 +163,7 @@ ps = PhotometrySession(session_row, one=one)
 # ps.wheel_velocity = None, ps.wheel_responses = {}
 
 ps.load_trials()          # populates ps.trials
+ps.load_performance()     # ps.performance, from H5 or scored from the trials
 ps.load_raw_photometry()  # ps.photometry['GCaMP'], ps.photometry['Isosbestic']
 ps.preprocess()           # adds ps.photometry['GCaMP_preprocessed'], writes it
 ps.load_photometry()      # the preprocessed signal, from H5 or built as above
@@ -336,8 +337,22 @@ want the whole mapping rather than one label; `_read_label_responses` is the
 and QC groups sitting beside the labels — drop out on their own, so there is no
 skip list to keep in sync.
 
-`video/pose/qc` is the exception: it holds arrays plus a scalar, so it keeps
-its own pair (`_save_pose_xcorr` / `_load_pose_xcorr`), stamped like the rest.
+Two products mix structures and so keep their own pairs, stamped like the rest.
+`video/pose/qc` holds arrays plus a scalar (`_save_pose_xcorr` /
+`_load_pose_xcorr`). `trials/performance` holds scalars plus the session's
+`contrasts` list, which `_save_scalars` could not carry, so
+`_save_performance` writes that one entry as a dataset and hands the rest to
+`_save_scalars`.
+
+`trials/performance` is the behavioral scoring of `trials/table`:
+`load_performance` reads it or scores the table with `basic_performance` and —
+where the session type has blocks — `block_performance`, and it is the only
+parameter `MIN_BLOCK_LENGTH` reaches. `PhotometrySessionGroup.load_performance`
+reads every catalogued session's copy and joins `fraction_correct` and
+`contrasts` onto `_catalog`, which is what makes
+`filter_sessions(min_performance=..., required_contrasts=...)` bite: both
+filters skip themselves when their column is missing, so a group that never
+called it silently keeps sessions those filters would drop.
 
 ### 3b. PhotometrySessionGroup Lifecycle
 

@@ -202,7 +202,7 @@ def run_dispersion(group, events, args, fig_dir,
     params = args.params if args.params else DEFAULT_PARAMS
 
     if group.performance is None:
-        group.load_performance(PERFORMANCE_FPATH)
+        group.load_performance()
     behavioral_long = (
         group.recordings[['eid', 'subject']].drop_duplicates()
         .merge(group.performance[['eid'] + params], on='eid')
