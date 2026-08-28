@@ -1566,6 +1566,7 @@ class PhotometrySession(PhotometrySessionLoader):
                 raise MissingRawData("_neurophotometrics_fpData.raw.pqt")
             raise MissingExtractedData("photometry.signal.pqt")
         self._match_photometry_to_metadata()
+        self._clear_manual_qc('photometry')
 
     def _match_photometry_to_metadata(self):
         """Rename photometry columns to match brain_region metadata.
@@ -2424,6 +2425,7 @@ class PhotometrySession(PhotometrySessionLoader):
         setattr(self, attribute, data)
         if was_fetched:
             self.save_h5(groups=['video'])
+            self._clear_manual_qc('video')
         return data
 
     def load_camera_times(self) -> np.ndarray:
@@ -2561,6 +2563,36 @@ class PhotometrySession(PhotometrySessionLoader):
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
         with h5py.File(self.filepath, 'a') as h5:
             _save_manual_qc(h5.require_group(group), labels)
+
+    def _clear_manual_qc(self, modality: str) -> None:
+        """Drop one modality's manual QC verdicts, in memory and on disk.
+
+        Called where that modality's raw data is fetched: a verdict was passed
+        on the frames or samples that have just been replaced, so it no longer
+        describes anything stored. Reading a stored raw product back, or
+        rebuilding anything derived from it, does not come through here.
+
+        Parameters
+        ----------
+        modality : str
+            'video', clearing the session's one verdict group, or 'photometry',
+            clearing every region's — the raw photometry fetch brings back all
+            regions at once, so it invalidates all of them together.
+        """
+        if modality == 'video':
+            self.video_manual_qc = {}
+        else:
+            self.photometry_manual_qc = {}
+        if not self.filepath.exists():
+            return
+        with h5py.File(self.filepath, 'a') as h5:
+            if modality not in h5:
+                return
+            parents = ([h5['video']] if modality == 'video' else
+                       [h5[f'photometry/{region}'] for region in h5['photometry']])
+            for parent in parents:
+                if 'manual_qc' in parent:
+                    del parent['manual_qc']
 
     def _movement_signals(self) -> dict[str, pd.Series]:
         """Return the preprocessed movement channels, resampling them if absent.

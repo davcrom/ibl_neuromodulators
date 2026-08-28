@@ -162,6 +162,36 @@ class TestRawVideoProducts:
 
         assert ps.one.load_dataset.call_count == 2
 
+    def test_redownloading_raw_clears_the_manual_verdicts(
+            self, mock_session_series, tmp_path):
+        """A verdict describes the frames it was passed on, so refetching them
+        drops it rather than letting it stand for data nobody looked at."""
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.load_pose()
+        ps.set_manual_qc('qc_lp', 'FAIL')
+
+        ps.rebuild.add('video/pose')
+        ps.load_pose()
+
+        assert ps.video_manual_qc == {}
+        fresh = _make_session(mock_session_series, tmp_path)
+        fresh.load_h5(groups=['video'])
+        assert fresh.video_manual_qc == {}
+
+    def test_reading_the_stored_dataset_keeps_the_manual_verdicts(
+            self, mock_session_series, tmp_path):
+        """Only a fetch clears them: loading the stored frames back is not a
+        re-download and leaves the verdict on the data it was set for."""
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.load_pose()
+        ps.set_manual_qc('qc_lp', 'FAIL')
+
+        fresh = _make_session(mock_session_series, tmp_path)
+        fresh.load_pose()
+        fresh.load_h5(groups=['video'])
+
+        assert fresh.video_manual_qc == {'qc_lp': 'FAIL'}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # video/times/qc — the camera-clock measures

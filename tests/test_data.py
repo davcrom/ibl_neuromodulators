@@ -2452,6 +2452,23 @@ class TestManualQC:
             ps.set_manual_qc(field, value)
         assert not ps.filepath.exists()
 
+    def test_refetching_raw_photometry_clears_every_region(
+            self, mock_session_series, tmp_path):
+        """The raw fetch brings back all regions at once, so it invalidates the
+        verdicts passed on all of them."""
+        from iblnm.data import PhotometrySession
+        ps = self._session(mock_session_series, tmp_path)
+        ps.set_manual_qc('qc_lp', 'FAIL', region='VTA')
+
+        with patch.object(PhotometrySession.__bases__[0], 'load_photometry',
+                          side_effect=lambda *a, **k: None):
+            ps.load_raw_photometry()
+
+        assert ps.photometry_manual_qc == {}
+        fresh = self._session(mock_session_series, tmp_path)
+        fresh.load_h5(groups=['photometry'])
+        assert fresh.photometry_manual_qc == {}
+
 
 class TestFetchVideoQC:
     """PhotometrySession.fetch_video_qc selects the 8 VIDEO_QC_COLS, unstored."""
