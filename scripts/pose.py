@@ -43,8 +43,8 @@ from iblnm.config import (
 from iblnm.data import (
     LP_QC_NOT_SET,
     PhotometrySessionGroup,
-    _load_movement_responses,
     _load_pose_xcorr,
+    _read_label_responses,
     _read_video_qc,
 )
 from iblnm.io import _get_default_connection
@@ -266,7 +266,7 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
                 continue
             eids_with_video.add(eid)
             video = f['video']
-            movement_responses = _load_movement_responses(video)
+            movement_responses = _read_label_responses(video)
             xcorr = _load_pose_xcorr(video)
             qc = _read_video_qc(f)
             row = {

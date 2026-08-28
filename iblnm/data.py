@@ -577,6 +577,24 @@ def _load_peri_event_matrix(group: h5py.Group) -> xr.DataArray:
     )
 
 
+# Modality subgroup that holds a diagnostic rather than one label's responses,
+# so label iteration must skip it.
+_NON_LABEL_KEYS = {'crosscorr'}
+
+
+def _read_label_responses(modality_group: h5py.Group) -> dict[str, xr.DataArray]:
+    """Read every `{label}/responses` subgroup into a label -> DataArray dict.
+
+    Serves any modality: the label is a brain region under `photometry/` and a
+    movement channel under `video/`. Subgroups holding a diagnostic rather than
+    a label (see `_NON_LABEL_KEYS`) are skipped.
+    """
+    return {label: _load_peri_event_matrix(modality_group[f'{label}/responses'])
+            for label in modality_group
+            if label not in _NON_LABEL_KEYS
+            and 'responses' in modality_group[label]}
+
+
 def _save_scalars(group: h5py.Group, mapping: dict[str, float], spec: dict) -> None:
     """Write a flat scalar mapping into `group` as attrs, stamped with `spec`.
 
@@ -681,10 +699,7 @@ def _load_photometry(session, h5_file):
         session.photometry[PREPROCESSED_BAND] = preprocessed
         session.preprocessing_diagnostics = diagnostics
 
-    session.photometry_responses = {
-        region: _load_peri_event_matrix(photometry_group[f'{region}/responses'])
-        for region in regions if 'responses' in photometry_group[region]
-    }
+    session.photometry_responses = _read_label_responses(photometry_group)
 
     qc_frames = [_read_dataframe(photometry_group[f'{region}/qc'])
                  for region in regions if 'qc' in photometry_group[region]]
@@ -695,19 +710,6 @@ def _load_photometry(session, h5_file):
 # ----- Video / LightningPose sub-handlers (pure: parent_group + payload) -----
 
 LP_QC_NOT_SET = 'NOT_SET'
-# Video subgroup that holds a diagnostic rather than a movement channel's
-# responses, so label iteration must skip it.
-_VIDEO_NON_LABEL_KEYS = {'crosscorr'}
-
-
-def _load_movement_responses(video_group):
-    """Read every ``video/{label}/responses`` subgroup into a label -> DataArray
-    dict. Subgroups holding diagnostics rather than a movement channel (see
-    ``_VIDEO_NON_LABEL_KEYS``) are skipped."""
-    return {label: _load_peri_event_matrix(video_group[f'{label}/responses'])
-            for label in video_group
-            if label not in _VIDEO_NON_LABEL_KEYS
-            and 'responses' in video_group[label]}
 
 
 def _save_pose_xcorr(parent_group, xcorr):
@@ -771,7 +773,7 @@ def _load_video(session, h5_file):
         session.length_discrepancy = grp.attrs['length_discrepancy']
     if 'framerate_from_tpts' in grp.attrs:
         session.framerate_from_tpts = grp.attrs['framerate_from_tpts']
-    session.movement_responses = _load_movement_responses(grp)
+    session.movement_responses = _read_label_responses(grp)
     session.pose_xcorr = _load_pose_xcorr(grp)
     for label in LP_QC_LABELS:
         if label in grp.attrs:
@@ -785,6 +787,13 @@ def _load_video(session, h5_file):
             session.video_qc[col] = (
                 value.decode() if isinstance(value, bytes) else value)
 
+
+# What `load_responses(modality)` needs per modality: the method returning that
+# modality's preprocessed signals as a label -> Series mapping, and the session
+# attribute its response matrices are assigned to.
+_RESPONSE_MODALITIES = {
+    'photometry': ('load_photometry', 'photometry_responses'),
+}
 
 _SAVE_HANDLERS = {
     'metadata':   _save_metadata,
@@ -1510,6 +1519,62 @@ class PhotometrySession(PhotometrySessionLoader):
         # ~ timestamp_col = 'SystemTimestamp' if 'Timestamp' not in raw_photometry.columns else 'Timestamp'
         # ~ raw_photometry = raw_photometry.set_index(timestamp_col)
         return from_neurophotometrics_df_to_photometry_df(raw_photometry).set_index('times')
+
+    def load_responses(
+        self,
+        modality: str,
+        events: Sequence[str] | None = None,
+        window: Sequence[float | str] | None = None,
+    ) -> dict[str, xr.DataArray]:
+        """Return one modality's peri-event matrices, cutting them if absent.
+
+        Reads `{modality}/{label}/responses` when it is stored and its stamp
+        still matches `config.PRODUCT_SPEC`; otherwise loads that modality's
+        preprocessed signals plus the trials table, cuts the matrices with
+        :meth:`extract_responses`, and writes them. A product named in
+        `self.rebuild` skips the read and is re-cut.
+
+        Parameters
+        ----------
+        modality : str
+            Key of `_RESPONSE_MODALITIES`, e.g. 'photometry'. Names both the
+            product (`{modality}/responses`) and the session attribute the
+            result is assigned to.
+        events, window : optional
+            Passed through to :meth:`extract_responses`; see there. Ignored
+            when the stored product is read rather than cut.
+
+        Returns
+        -------
+        dict[str, xarray.DataArray]
+            One DataArray per label, dims (event, trial, time).
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
+        """
+        load_signals, attribute = _RESPONSE_MODALITIES[modality]
+        product = f'{modality}/responses'
+        responses = None
+        if product not in self.rebuild:
+            status = self.product_status(product)
+            if status == 'stale':
+                raise StaleProduct(product)
+            if status == 'current':
+                with h5py.File(self.filepath, 'r') as h5:
+                    responses = _read_label_responses(h5[modality])
+        was_cut = responses is None
+        if was_cut:
+            signals = getattr(self, load_signals)()
+            if self.trials is None:
+                self.load_trials()
+            responses = self.extract_responses(signals, events=events,
+                                               window=window)
+        setattr(self, attribute, responses)
+        if was_cut:
+            self.save_h5(groups=[modality])
+        return responses
 
     def extract_responses(
         self,

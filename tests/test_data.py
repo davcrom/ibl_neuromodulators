@@ -1810,6 +1810,71 @@ def _make_trials(n=50, **columns):
     })
 
 
+class TestLoadResponses:
+    """`load_responses(modality)` reads the stored matrices or cuts them."""
+
+    @pytest.fixture
+    def preprocessed_session(self, mock_photometry_session):
+        """Session with a preprocessed signal and trials already in hand."""
+        session = mock_photometry_session
+        session.preprocess()
+        session.trials = _make_trials()
+        return session
+
+    def test_builds_and_stores_when_absent(self, preprocessed_session):
+        """Nothing stored: the matrices are cut, assigned, and written."""
+        session = preprocessed_session
+        assert session.product_status('photometry/responses') == 'absent'
+
+        responses = session.load_responses('photometry')
+
+        assert isinstance(responses['VTA'], xr.DataArray)
+        assert session.photometry_responses is responses
+        assert session.product_status('photometry/responses') == 'current'
+
+    def test_roundtrips_a_dataarray_per_region(self, preprocessed_session,
+                                               mock_session_series):
+        """A fresh session reads back the same matrix, coords included."""
+        from iblnm.data import PhotometrySession
+        session = preprocessed_session
+        built = session.load_responses('photometry')
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = session.filepath
+        reloaded = fresh.load_responses('photometry')
+
+        assert set(reloaded) == set(built)
+        xr.testing.assert_allclose(reloaded['VTA'].sortby('event'),
+                                   built['VTA'].sortby('event'))
+
+    def test_raises_on_stale_stamp(self, preprocessed_session):
+        """A response matrix cut with parameters that changed is not used."""
+        import h5py
+        from iblnm.data import _write_stamp
+        from iblnm.validation import StaleProduct
+        session = preprocessed_session
+        session.load_responses('photometry')
+        with h5py.File(session.filepath, 'a') as h5:
+            _write_stamp(h5['photometry/VTA/responses'],
+                         session.spec['photometry/responses'] | {'window': [-2, 2]})
+
+        with pytest.raises(StaleProduct, match='photometry/responses'):
+            session.load_responses('photometry')
+
+    def test_rebuild_recuts_a_current_product(self, preprocessed_session):
+        """A product named in self.rebuild is re-cut, not read."""
+        session = preprocessed_session
+        session.load_responses('photometry', events=['stimOn_times'])
+        session.rebuild.add('photometry/responses')
+
+        responses = session.load_responses(
+            'photometry', events=['stimOn_times', 'feedback_times'])
+
+        assert list(responses['VTA'].coords['event'].values) == [
+            'stimOn_times', 'feedback_times']
+
+
 class TestExtractResponses:
     def test_returns_dict_without_assigning_attribute(self, mock_photometry_session):
         """The engine returns its dict; the caller owns the attribute."""

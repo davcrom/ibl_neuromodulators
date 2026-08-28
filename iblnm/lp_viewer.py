@@ -35,8 +35,8 @@ from iblnm.config import (
 from iblnm.data import (
     LP_QC_NOT_SET,
     PhotometrySession,
-    _load_movement_responses,
     _load_pose_xcorr,
+    _read_label_responses,
 )
 
 # Settable IBL QC verdicts (the default 'NOT_SET' is not a manual choice).
@@ -410,7 +410,7 @@ class LPViewerModel:
         if not fpath.exists():
             return False
         with h5py.File(fpath, 'r') as f:
-            return 'video' in f and bool(_load_movement_responses(f['video']))
+            return 'video' in f and bool(_read_label_responses(f['video']))
 
     def population_mask(
         self,
@@ -446,7 +446,7 @@ class LPViewerModel:
         `LABEL2EVENT`), the cross-correlation dict, and the session's
         `fraction_correct` (or None when unavailable)."""
         with h5py.File(self.h5_dir / f'{eid}.h5', 'r') as f:
-            movement_responses = _load_movement_responses(f['video'])
+            movement_responses = _read_label_responses(f['video'])
             xcorr = _load_pose_xcorr(f['video'])
         trial_means = {
             label: responses.sel(event=LABEL2EVENT[label]).mean('trial').values
