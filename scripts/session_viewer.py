@@ -105,7 +105,7 @@ def load_session_data(ps):
 
     if 'GCaMP' not in ps.photometry:
         try:
-            ps.load_photometry()
+            ps.load_raw_photometry()
         except (MissingRawData, MissingExtractedData) as e:
             print(f"Photometry data not available for {ps.eid}: {e}")
             sys.exit(1)

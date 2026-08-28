@@ -105,12 +105,18 @@ def mock_photometry_data():
 
 
 @pytest.fixture
-def mock_photometry_session(mock_session_series, mock_photometry_data):
-    """PhotometrySession with injected mock data."""
+def mock_photometry_session(mock_session_series, mock_photometry_data, tmp_path):
+    """PhotometrySession with injected mock data, writing into tmp_path.
+
+    `filepath` is redirected away from SESSIONS_H5_DIR because the load
+    methods write the products they build — a test calling `preprocess`
+    would otherwise land in the real store.
+    """
     from iblnm.data import PhotometrySession
 
     mock_one = MagicMock()
     session = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+    session.filepath = tmp_path / f'{session.eid}.h5'
 
     # Inject mock photometry
     session.photometry = mock_photometry_data
@@ -1191,11 +1197,27 @@ class TestLoadTrials:
                 session.load_trials()
 
 
-class TestLoadPhotometry:
-    """Tests for PhotometrySession.load_photometry."""
+class TestLoadRawPhotometry:
+    """Tests for PhotometrySession.load_raw_photometry — the Alyx fetch."""
+
+    def test_populates_raw_bands(self, mock_session_series, mock_photometry_data):
+        """The fetched bands land in self.photometry under their band names."""
+        from iblnm.data import PhotometrySession
+
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+
+        def _populate(*args, **kwargs):
+            session.photometry = mock_photometry_data
+
+        with patch.object(PhotometrySession.__bases__[0], 'load_photometry',
+                          side_effect=_populate):
+            session.load_raw_photometry()
+
+        assert set(session.photometry) == {'GCaMP', 'Isosbestic'}
 
     def test_propagates_exception(self, mock_session_series):
-        """load_photometry should let exceptions propagate."""
+        """load_raw_photometry should let exceptions propagate."""
         from iblnm.data import PhotometrySession
 
         mock_one = MagicMock()
@@ -1206,13 +1228,113 @@ class TestLoadPhotometry:
             side_effect=Exception("No photometry data")
         ):
             with pytest.raises(Exception, match="No photometry data"):
-                session.load_photometry()
+                session.load_raw_photometry()
 
     def test_no_flat_aliases(self, mock_photometry_session):
-        """load_photometry should not create self.channels or self.targets."""
+        """load_raw_photometry should not create self.channels or self.targets."""
         session = mock_photometry_session
         assert not hasattr(session, 'channels')
         assert not hasattr(session, 'targets')
+
+
+class TestLoadPhotometry:
+    """`load_photometry` returns the preprocessed product, building if absent.
+
+    `load_raw_photometry` is the session's only route to Alyx, so patching it
+    both supplies the raw bands and counts the trips a real run would make.
+    """
+
+    @pytest.fixture
+    def fetching_session(self, mock_session_series, mock_photometry_data, tmp_path):
+        """(session, fetch) where `fetch` is the patched Alyx call, un-started."""
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+        session.filepath = tmp_path / f'{session.eid}.h5'
+
+        def _populate():
+            session.photometry.update(mock_photometry_data)
+
+        return session, patch.object(PhotometrySession, 'load_raw_photometry',
+                                     side_effect=_populate)
+
+    def test_builds_and_stores_when_absent(self, fetching_session):
+        """With nothing stored, the raw signal is fetched once and written."""
+        session, fetch = fetching_session
+        with fetch as fetch_mock:
+            signal = session.load_photometry()
+
+        assert fetch_mock.call_count == 1
+        assert list(signal.columns) == ['VTA']
+        assert session.photometry['GCaMP_preprocessed'] is signal
+        assert session.product_status('photometry/preprocessed') == 'current'
+
+    def test_reads_stored_product_without_fetching(self, fetching_session,
+                                                   mock_session_series):
+        """A second session over the same file reads it and never fetches."""
+        from iblnm.data import PhotometrySession
+        session, fetch = fetching_session
+        with fetch:
+            built = session.load_photometry()
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = session.filepath
+        with patch.object(PhotometrySession, 'load_raw_photometry') as fetch_mock:
+            signal = fresh.load_photometry()
+
+        fetch_mock.assert_not_called()
+        np.testing.assert_allclose(signal['VTA'].values, built['VTA'].values)
+        assert fresh.preprocessing_diagnostics['VTA'] == pytest.approx(
+            session.preprocessing_diagnostics['VTA'])
+
+    def test_raises_on_stale_stamp_without_logging(self, fetching_session):
+        """A stamp that disagrees with config stops the load and is not logged.
+
+        StaleProduct reports a config-vs-store mismatch identical across every
+        session, so it belongs at the script's top level, not in errors/.
+        """
+        import h5py
+        from iblnm.data import _write_stamp
+        from iblnm.validation import StaleProduct
+        session, fetch = fetching_session
+        with fetch:
+            session.load_photometry()
+        with h5py.File(session.filepath, 'a') as h5:
+            _write_stamp(h5['photometry/VTA/preprocessed'],
+                         session.spec['photometry/preprocessed'] | {'fs': 15})
+
+        with pytest.raises(StaleProduct, match='photometry/preprocessed'):
+            session.load_photometry()
+        assert session.errors == []
+
+    def test_rebuild_skips_the_stored_product(self, fetching_session):
+        """A product named in self.rebuild is refetched even when current."""
+        session, fetch = fetching_session
+        with fetch as fetch_mock:
+            session.load_photometry()
+            assert session.product_status('photometry/preprocessed') == 'current'
+            session.rebuild.add('photometry/preprocessed')
+            session.load_photometry()
+
+        assert fetch_mock.call_count == 2
+
+    def test_never_returns_raw(self, fetching_session, mock_photometry_data):
+        """Holding the raw bands is not enough: the fetch failure propagates.
+
+        The raw signal is never a stand-in for the preprocessed one — an
+        analysis silently running on raw data is the failure this split exists
+        to prevent.
+        """
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import MissingExtractedData
+        session, _ = fetching_session
+        session.photometry.update(mock_photometry_data)
+
+        with patch.object(PhotometrySession, 'load_raw_photometry',
+                          side_effect=MissingExtractedData('photometry.signal.pqt')):
+            with pytest.raises(MissingExtractedData):
+                session.load_photometry()
 
 
 # =============================================================================
@@ -1555,22 +1677,42 @@ class TestPreprocess:
         assert isinstance(session.photometry['GCaMP_preprocessed'], pd.DataFrame)
         assert 'VTA' in session.photometry['GCaMP_preprocessed'].columns
 
-    def test_preprocess_computes_qc_metrics(self, mock_photometry_session):
-        """Preprocess should store QC as DataFrame with bleaching_tau and iso_correlation."""
+    def test_preprocess_computes_diagnostics(self, mock_photometry_session):
+        """Preprocess reports bleaching_tau and iso_correlation per region."""
         session = mock_photometry_session
 
         session.preprocess()
 
-        assert hasattr(session, 'qc')
-        assert isinstance(session.qc, pd.DataFrame)
-        assert 'brain_region' in session.qc.columns
-        assert 'band' in session.qc.columns
-        row = session.qc.query("brain_region == 'VTA' and band == 'GCaMP'")
-        assert len(row) == 1
-        tau = row['bleaching_tau'].iloc[0]
+        diagnostics = session.preprocessing_diagnostics['VTA']
+        tau = diagnostics['bleaching_tau']
         assert 100 < tau < 600  # Known fixture tau=300, allow wide margin for fit
-        iso_corr = row['iso_correlation'].iloc[0]
-        assert 0.8 < iso_corr <= 1.0
+        assert 0.8 < diagnostics['iso_correlation'] <= 1.0
+
+    def test_preprocess_stores_stamped_product(self, mock_photometry_session):
+        """Preprocess writes photometry/preprocessed and stamps it current."""
+        session = mock_photometry_session
+        assert session.product_status('photometry/preprocessed') == 'absent'
+
+        session.preprocess()
+
+        assert session.product_status('photometry/preprocessed') == 'current'
+
+    def test_preprocess_writes_diagnostics_as_attrs(self, mock_photometry_session):
+        """The diagnostics ride as attrs on the preprocessed group it wrote.
+
+        They describe the preprocessing run, not the raw signal, so they hang
+        off `preprocessed/` and leave `qc/` depending only on `raw/`.
+        """
+        import h5py
+        from iblnm.data import _load_scalars
+        session = mock_photometry_session
+
+        session.preprocess()
+
+        with h5py.File(session.filepath, 'r') as h5:
+            stored = _load_scalars(h5['photometry/VTA/preprocessed'])
+        assert set(stored) == {'bleaching_tau', 'iso_correlation'}
+        assert stored == pytest.approx(session.preprocessing_diagnostics['VTA'])
 
     def test_preprocess_raises_when_no_photometry(self, mock_session_series):
         """Should raise if photometry not loaded (no explicit guard — natural error)."""
@@ -1594,9 +1736,9 @@ class TestPreprocess:
         )
 
         assert 'GCaMP_preprocessed' in session.photometry
-        row = session.qc.query("brain_region == 'VTA' and band == 'GCaMP'")
-        assert 'iso_correlation' not in row.columns or pd.isna(row['iso_correlation'].iloc[0])
-        assert not pd.isna(row['bleaching_tau'].iloc[0])
+        diagnostics = session.preprocessing_diagnostics['VTA']
+        assert 'iso_correlation' not in diagnostics
+        assert not pd.isna(diagnostics['bleaching_tau'])
 
     def test_preprocess_raises_when_dual_band_no_reference(self, mock_photometry_session):
         """Should raise ValueError if dual-band pipeline but no reference."""
@@ -1646,17 +1788,6 @@ class TestPreprocess:
         """preprocess() should accept regression_method kwarg without error."""
         mock_photometry_session.preprocess(regression_method='mse')
         assert 'GCaMP_preprocessed' in mock_photometry_session.photometry
-
-    def test_qc_is_dataframe_after_preprocess(self, mock_photometry_session):
-        """self.qc should be a DataFrame after preprocess."""
-        session = mock_photometry_session
-        session.preprocess()
-
-        assert isinstance(session.qc, pd.DataFrame)
-        assert 'brain_region' in session.qc.columns
-        assert 'band' in session.qc.columns
-        assert 'bleaching_tau' in session.qc.columns
-        assert len(session.qc) == 1  # One row for VTA/GCaMP
 
 
 # =============================================================================

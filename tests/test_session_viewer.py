@@ -218,7 +218,7 @@ def test_load_session_data_complete_h5_skips_pipeline(monkeypatch, tmp_path):
     assert result is ps
     ps.load_h5.assert_called_once_with(h5_path)
     ps.load_trials.assert_not_called()
-    ps.load_photometry.assert_not_called()
+    ps.load_raw_photometry.assert_not_called()
     ps.preprocess.assert_not_called()
     ps.extract_responses.assert_not_called()
 
@@ -233,13 +233,13 @@ def test_load_session_data_partial_h5_runs_pipeline(monkeypatch, tmp_path):
     def _populate_raw():
         ps.photometry['GCaMP'] = MagicMock()
         ps.photometry['Isosbestic'] = MagicMock()
-    ps.load_photometry.side_effect = _populate_raw
+    ps.load_raw_photometry.side_effect = _populate_raw
 
     load_session_data(ps)
 
     ps.load_h5.assert_called_once_with(h5_path)
     ps.load_trials.assert_called_once()
-    ps.load_photometry.assert_called_once()
+    ps.load_raw_photometry.assert_called_once()
     ps.preprocess.assert_called_once()
     ps.extract_responses.assert_called_once()
 
@@ -277,9 +277,9 @@ def test_load_session_data_with_trials_calls_extract_responses(monkeypatch, tmp_
 
 
 def test_load_session_data_missing_photometry_exits(monkeypatch, tmp_path):
-    """MissingRawData from load_photometry → sys.exit."""
+    """MissingRawData from load_raw_photometry → sys.exit."""
     ps = _make_mock_ps()
-    ps.load_photometry.side_effect = MissingRawData("no photometry")
+    ps.load_raw_photometry.side_effect = MissingRawData("no photometry")
     monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
     with pytest.raises(SystemExit):
@@ -287,9 +287,9 @@ def test_load_session_data_missing_photometry_exits(monkeypatch, tmp_path):
 
 
 def test_load_session_data_missing_extracted_photometry_exits(monkeypatch, tmp_path):
-    """MissingExtractedData from load_photometry → sys.exit."""
+    """MissingExtractedData from load_raw_photometry → sys.exit."""
     ps = _make_mock_ps()
-    ps.load_photometry.side_effect = MissingExtractedData("not extracted")
+    ps.load_raw_photometry.side_effect = MissingExtractedData("not extracted")
     monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
     with pytest.raises(SystemExit):

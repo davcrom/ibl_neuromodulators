@@ -49,7 +49,7 @@ from iblnm.validation import (
     MissingMotionEnergy,
     InsufficientTrials, BlockStructureBug, MissingBlockInfo,
     IncompleteEventTimes, TrialsNotInPhotometryTime, FewUniqueSamples,
-    QCValidationError, AmbiguousRegionMapping,
+    QCValidationError, AmbiguousRegionMapping, StaleProduct,
 )
 
 # Long-form schema returned by per-recording drop-one OLS ΔR² (one row per
@@ -290,6 +290,10 @@ def _stamp_matches(attrs: h5py.AttributeManager, spec: dict) -> bool:
     return json.loads(attrs['spec_json']) == json.loads(json.dumps(spec))
 
 
+# The self.photometry key holding the preprocessed signal — the payload of the
+# 'photometry/preprocessed' product. The raw bands sit beside it under their own
+# names ('GCaMP', 'Isosbestic').
+PREPROCESSED_BAND = 'GCaMP_preprocessed'
 _METADATA_NONE_SENTINEL = '__none__'
 _ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback', 'product')
 # Never persisted to errors/ — see _save_errors.
@@ -600,6 +604,34 @@ def _load_scalars(group: h5py.Group) -> dict[str, float]:
             if key not in _STAMP_ATTRS}
 
 
+def _read_photometry_preprocessed(
+    photometry_group: h5py.Group,
+) -> tuple[pd.DataFrame | None, dict[str, dict[str, float]]]:
+    """Read every region's preprocessed signal and preprocessing diagnostics.
+
+    Parameters
+    ----------
+    photometry_group : h5py.Group
+        The file's `photometry/` group, holding one subgroup per region.
+
+    Returns
+    -------
+    pandas.DataFrame or None
+        Preprocessed signal, regions as columns on a shared time index. None
+        when no region has a stored `preprocessed/` group.
+    dict
+        Region -> its `bleaching_tau` / `iso_correlation` attrs.
+    """
+    groups = {region: photometry_group[f'{region}/preprocessed']
+              for region in photometry_group
+              if 'preprocessed' in photometry_group[region]}
+    if not groups:
+        return None, {}
+    return (pd.DataFrame({region: _load_time_series(group)
+                          for region, group in groups.items()}),
+            {region: _load_scalars(group) for region, group in groups.items()})
+
+
 def _save_photometry(session, h5_file, band):
     photometry_group = h5_file.require_group('photometry')
     preprocessed = session.photometry.get(band)
@@ -617,10 +649,13 @@ def _save_photometry(session, h5_file, band):
         region_group = photometry_group.require_group(region)
 
         if preprocessed is not None and region in preprocessed.columns:
-            _save_time_series(
-                _replace_group(region_group, 'preprocessed'),
-                preprocessed[region], session.spec['photometry/preprocessed'],
-            )
+            group = _replace_group(region_group, 'preprocessed')
+            _save_time_series(group, preprocessed[region],
+                              session.spec['photometry/preprocessed'])
+            # Diagnostics of the preprocessing run itself, beside the stamp.
+            for key, value in session.preprocessing_diagnostics.get(
+                    region, {}).items():
+                group.attrs[key] = float(value)
 
         if region in session.photometry_responses:
             _save_peri_event_matrix(
@@ -641,12 +676,10 @@ def _load_photometry(session, h5_file, band):
     photometry_group = h5_file['photometry']
     regions = sorted(photometry_group.keys())
 
-    preprocessed_by_region = {
-        region: _load_time_series(photometry_group[f'{region}/preprocessed'])
-        for region in regions if 'preprocessed' in photometry_group[region]
-    }
-    if preprocessed_by_region:
-        session.photometry[band] = pd.DataFrame(preprocessed_by_region)
+    preprocessed, diagnostics = _read_photometry_preprocessed(photometry_group)
+    if preprocessed is not None:
+        session.photometry[band] = preprocessed
+        session.preprocessing_diagnostics = diagnostics
 
     session.photometry_responses = {
         region: _load_peri_event_matrix(photometry_group[f'{region}/responses'])
@@ -892,6 +925,9 @@ class PhotometrySession(PhotometrySessionLoader):
         if not isinstance(self.photometry, dict):
             self.photometry = {}
         self.photometry_responses = {}
+        # region -> {'bleaching_tau': ..., 'iso_correlation': ...}, computed by
+        # preprocess and stored as attrs on the preprocessed group it writes.
+        self.preprocessing_diagnostics = {}
         self.states = None
         self.ols_fits = {}
         self.qc = pd.DataFrame()
@@ -1228,11 +1264,57 @@ class PhotometrySession(PhotometrySessionLoader):
         states.loc[matched, state_cols] = block[state_cols].to_numpy()
         self.states = states
 
-    def load_photometry(
+    def load_photometry(self) -> pd.DataFrame:
+        """Return the preprocessed photometry signal, building it if absent.
+
+        Reads `photometry/{region}/preprocessed` when it is stored and its
+        stamp still matches `config.PRODUCT_SPEC`; otherwise fetches the raw
+        bands from Alyx and preprocesses them, which writes and stamps the
+        product on the way out. A product named in `self.rebuild` skips the
+        read and is rebuilt.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Regions as columns, time (seconds) as the index. Also assigned to
+            ``self.photometry[PREPROCESSED_BAND]``.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec. Never falls
+            back to rebuilding: a stale store means `config.py` changed, which
+            is a decision for the caller, not for one session.
+        """
+        product = 'photometry/preprocessed'
+        signal = None
+        if product not in self.rebuild:
+            status = self.product_status(product)
+            if status == 'stale':
+                raise StaleProduct(product)
+            if status == 'current':
+                with h5py.File(self.filepath, 'r') as h5:
+                    signal, self.preprocessing_diagnostics = (
+                        _read_photometry_preprocessed(h5['photometry']))
+        if signal is None:
+            self.load_raw_photometry()
+            signal = self.preprocess()
+        self.photometry[PREPROCESSED_BAND] = signal
+        return signal
+
+    def load_raw_photometry(
         self,
         pre: int = -5,
         post: int = 5,
         ):
+        """Fetch the raw signal and reference bands from Alyx.
+
+        Populates ``self.photometry`` with one DataFrame per band
+        (``'GCaMP'``, ``'Isosbestic'``), brain regions as columns. Separate
+        from :meth:`load_photometry`, which returns the preprocessed signal:
+        one method returning either would let an analysis run on raw data
+        without saying so.
+        """
         try:
             super().load_photometry(
                 restrict_to_session=True,
@@ -1633,14 +1715,25 @@ class PhotometrySession(PhotometrySessionLoader):
         signal_band='GCaMP',
         reference_band='Isosbestic',
         targets=None,
-        output_band='GCaMP_preprocessed',
+        output_band=PREPROCESSED_BAND,
         regression_method: str = 'mse',
     ):
-        """Run preprocessing pipeline and store result as new band.
+        """Run preprocessing pipeline, store the result, and write it to H5.
 
         Pipeline steps (bleach correct → isosbestic correct → zscore) are defined
         in config.PREPROCESSING_PIPELINES. Resampling to TARGET_FS is applied after
         the pipeline as a separate step.
+
+        The result is written to `photometry/{region}/preprocessed` and stamped
+        with the `photometry/preprocessed` spec, so a later `load_photometry`
+        reads it back instead of re-fetching from Alyx. `bleaching_tau` and
+        `iso_correlation` are computed on the partially processed signals and
+        land in `self.preprocessing_diagnostics`, written as attrs of the same
+        group: they describe this preprocessing run rather than the raw signal.
+
+        A caller passing a non-default `output_band` is opting out of the
+        product — the result is kept in `self.photometry` and nothing is
+        written, since only `PREPROCESSED_BAND` is what the product names.
         """
         from iblphotometry.pipelines import run_pipeline
         from iblnm.analysis import compute_bleaching_tau, compute_iso_correlation
@@ -1657,10 +1750,11 @@ class PhotometrySession(PhotometrySessionLoader):
             raise ValueError("Pipeline requires reference_band")
 
         preprocessed = {}
+        diagnostics = {}
 
         for brain_region in targets:
             signal = self.photometry[signal_band][brain_region]
-            qc_metrics = {'bleaching_tau': compute_bleaching_tau(signal)}
+            region_diagnostics = {'bleaching_tau': compute_bleaching_tau(signal)}
 
             if needs_reference:
                 reference = self.photometry[reference_band][brain_region]
@@ -1669,17 +1763,19 @@ class PhotometrySession(PhotometrySessionLoader):
                 # iso_correlation computed on bleach-corrected signals before isosbestic step
                 signal_bc = res.get('signal_bleach_corrected', signal)
                 reference_bc = res.get('reference_bleach_corrected', reference)
-                qc_metrics['iso_correlation'] = compute_iso_correlation(
+                region_diagnostics['iso_correlation'] = compute_iso_correlation(
                     signal_bc, reference_bc, regression_method=regression_method
                 )
             else:
                 result = run_pipeline(pipeline, signal=signal)
 
-            result = resample_signal(result, target_fs=TARGET_FS)
-            preprocessed[brain_region] = result
-            self._append_qc(brain_region, signal_band, qc_metrics)
+            preprocessed[brain_region] = resample_signal(result, target_fs=TARGET_FS)
+            diagnostics[brain_region] = region_diagnostics
 
         self.photometry[output_band] = pd.DataFrame(preprocessed)
+        self.preprocessing_diagnostics = diagnostics
+        if output_band == PREPROCESSED_BAND:
+            self.save_h5(groups=['photometry'])
         return self.photometry[output_band]
 
 

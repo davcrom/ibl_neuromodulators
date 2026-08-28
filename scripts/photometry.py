@@ -49,7 +49,7 @@ def process_session(ps, reprocess=False):
 
     # Block 1: Load data (fatal)
     ps.load_trials()
-    ps.load_photometry()
+    ps.load_raw_photometry()
 
     # Trials in photometry time (fatal)
     ps.validate_trials_in_photometry_time()

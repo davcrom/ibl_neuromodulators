@@ -145,7 +145,7 @@ if __name__ == '__main__':
 
     # --- Load and preprocess this session's data
     ps.load_trials()
-    ps.load_photometry()
+    ps.load_raw_photometry()
     ps.preprocess(targets=[args.brain_region])
     target = ps.photometry['GCaMP_preprocessed'][args.brain_region]
     ps.load_wheel()
