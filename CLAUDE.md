@@ -180,6 +180,7 @@ ps.load_video_times_qc()          # ps.video_times_qc, from H5 or scored
 ps.load_pose_qc()                 # ps.pose_xcorr, from H5 or correlated
 ps.load_responses('video')        # ps.movement_responses, from H5 or cut
 ps.fetch_video_qc()               # ps.video_qc, always from Alyx, never stored
+ps.set_manual_qc(field, value)    # a hand-set verdict, written on its own
 ```
 
 Load methods are not pure readers. Each attempts its stored product, falls back
@@ -206,6 +207,19 @@ correlates paw speed against wheel speed into `video/pose/qc`. The latter is the
 one cross-modal product — it needs the wheel as well as the pose, so its stamp
 carries `wheel/preprocessed`'s parameters and a session with good pose but no
 wheel fails it with the wheel's own missing-data error.
+
+Manual QC is not a product either, but it is stored. `photometry/{region}/
+manual_qc` and `video/manual_qc` hold `config.LP_QC_LABELS`-keyed verdicts from
+`config.IBL_QC_VALUES`, set by hand in the viewers — per recording for
+photometry, per session for video, because there is one fiber per region and one
+camera. They carry no stamp: nothing in `config.py` feeds a verdict, so none can
+go stale. `set_manual_qc(field, value, region=None)` validates both arguments
+and writes that one verdict directly, rather than through `save_h5`, so what is
+persisted does not depend on what the session is holding. Rebuilding a derived
+product leaves the group alone; `_clear_manual_qc(modality)` drops it where the
+raw data is refetched, because the verdict was passed on samples that have just
+been replaced. That rule is what the old read-back hack in `_save_video`
+approximated.
 
 The eight `config.VIDEO_QC_COLS` leftCamera labels are **not** a product.
 `io.get_video_qc(eid, one)` fetches them from Alyx on every use and nothing
@@ -279,7 +293,7 @@ by top-level group name (`metadata`, `errors`, `photometry`, `trials`,
 `wheel`, `video`). Adding a new top-level group means writing a handler pair
 and registering it in both dicts. See README for the on-disk layout.
 
-Beneath the top-level handlers sit four save/load pairs keyed by the **data
+Beneath the top-level handlers sit five save/load pairs keyed by the **data
 structure** they carry rather than by modality. Each is pure: it takes one
 `h5py.Group` plus a payload and never touches the session object. The
 orchestrator creates the group (`_replace_group`), loops over regions or
@@ -292,10 +306,13 @@ group's stamp (`_write_stamp`, read back by `product_status`).
 | `_save_peri_event_matrix` / `_load_peri_event_matrix` | `xr.DataArray(event, trial, time)` | responses, whether the label is a brain region (`photometry/`), the wheel (`wheel/`) or a movement channel (`video/`) |
 | `_save_scalars` / `_load_scalars` | flat `dict[str, float]` stored as group attrs | QC metrics, preprocessing diagnostics |
 | `_save_frame_data` / `_load_frame_data` | per-camera-frame `np.ndarray` (dataset `values`) or `pd.DataFrame` (one dataset per column), with no time index | the three raw video datasets |
+| `_save_manual_qc` / `_load_manual_qc` | flat `dict[str, str]` of verdicts stored as group attrs, unstamped | `photometry/{region}/manual_qc`, `video/manual_qc` |
 
 `_save_frame_data` replaces only the group's datasets, not the group, because
 `video/motion_energy` holds this product beside the movement channel's
-`preprocessed` and `responses` subgroups.
+`preprocessed` and `responses` subgroups. `_save_manual_qc` likewise sets attrs
+in place rather than replacing its group, so writing one verdict leaves a
+session's other verdicts standing.
 
 `_read_label_products(modality_group, product, read)` reads every
 `{label}/{product}` subgroup of one modality in one call, for the loads that

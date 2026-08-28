@@ -8,7 +8,7 @@ from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
 
 from iblnm.config import (
-    LABEL2EVENT, LP_QC_LABELS, MOVEMENT_EVENTS, resolve_product_spec)
+    LABEL2EVENT, MOVEMENT_EVENTS, resolve_product_spec)
 from iblnm.data import _save_peri_event_matrix, _save_pose_xcorr
 from iblnm.lp_viewer import (
     HISTOGRAM_MEASURES,

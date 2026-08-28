@@ -549,6 +549,10 @@ movement channel.
 │       │   ├── feedback_times       float64 (T, W)
 │       │   └── attrs: spec_json (carries window=[-1.0, 1.0]), built_at
 │       │
+│       ├── manual_qc/               # verdicts set by hand, one per recording;
+│       │   └── attrs: qc_lp, qc_movement, qc_timing
+│       │                            # no stamp — no parameter feeds them
+│       │
 │       └── qc/
 │           └── one dataset per QC metric column (band, brain_region,
 │               n_unique_samples, ar_score, ...)
@@ -592,7 +596,8 @@ movement channel.
 │           └── attrs: spec_json (carries t0_event, t1_event), built_at
 │
 └── video/
-    ├── attrs: qc_lp, qc_movement, qc_timing
+    ├── manual_qc/                   verdicts set by hand, one set per session
+    │   └── attrs: qc_lp, qc_movement, qc_timing
     │
     ├── times/                       raw, one group per independently
     │   ├── values   float64 (F,)    fetched dataset, each separately
@@ -627,6 +632,17 @@ movement channel.
                                      holds its raw `values` dataset, since the
                                      raw product and the channel share a name.
 ```
+
+The `manual_qc/` groups hold verdicts set by hand in the viewers, from the IBL
+vocabulary `CRITICAL`/`FAIL`/`WARNING`/`PASS` (`config.IBL_QC_VALUES`), keyed by
+`config.LP_QC_LABELS`. Photometry is scored per recording and video per session,
+because there is one fiber per region but one camera. They carry no stamp: no
+parameter in this repo feeds a verdict, so nothing can make one stale. Writing
+them goes through `PhotometrySession.set_manual_qc(field, value, region=None)`,
+which validates both arguments and writes that one verdict straight to the file.
+Rebuilding a derived product leaves them alone; re-downloading a modality's raw
+data drops them, since the verdict was passed on frames or samples that have
+just been replaced.
 
 The eight leftCamera extended-QC labels from Alyx are deliberately absent: they
 change when IBL re-runs its QC and no parameter in this repo feeds them, so no
