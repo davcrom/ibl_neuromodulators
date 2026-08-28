@@ -286,6 +286,27 @@ class TestGetResponses:
         responses, tpts = get_responses(signal, events, t0=-1.0, t1=t1_per_trial)
         assert not np.any(np.isnan(responses[0]))
 
+    def test_variable_t1_shares_one_time_vector(self):
+        """Each trial's NaN tail starts at its own endpoint on a shared tpts."""
+        t = np.arange(0, 20, 1 / 30)
+        signal = pd.Series(np.ones(len(t)), index=t)
+        events = np.array([5.0, 10.0])
+        t1_per_trial = np.array([5.5, 10.9])
+        responses, tpts = get_responses(signal, events, t0=0.0, t1=t1_per_trial)
+        assert responses.shape == (2, len(tpts))
+        assert tpts[-1] == pytest.approx(0.9, abs=1 / 30)
+        for trial, end in enumerate([0.5, 0.9]):
+            assert not np.any(np.isnan(responses[trial, tpts <= end]))
+            assert np.all(np.isnan(responses[trial, tpts > end]))
+
+    def test_relative_t1_array_raises(self):
+        """An array of offsets relative to the event is a caller error."""
+        t = np.arange(0, 20, 1 / 30)
+        signal = pd.Series(np.ones(len(t)), index=t)
+        events = np.array([5.0, 10.0])
+        with pytest.raises(ValueError, match='absolute'):
+            get_responses(signal, events, t0=-1.0, t1=np.array([0.5, 0.3]))
+
 
 class TestNormalizeResponses:
     def test_baseline_subtraction(self):

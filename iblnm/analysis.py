@@ -22,26 +22,42 @@ from iblnm.config import (
 from iblnm.util import get_contrast_coding
 
 
-def get_responses(photometry, events, t0=-1.0, t1=1.0):
-    """Extract peri-event responses from a photometry signal.
+def get_responses(
+    photometry: pd.Series,
+    events: np.ndarray,
+    t0: float = -1.0,
+    t1: float | np.ndarray = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract peri-event responses from a time series.
+
+    Every trial sits on one uniform time vector spanning to the longest
+    trial; a trial whose window ends earlier is NaN-padded on the right.
 
     Parameters
     ----------
     photometry : pd.Series
-        Signal with time index.
+        Signal with time index (seconds).
     events : 1D array
-        Alignment event times.
+        Alignment event times (seconds, same clock as the signal index).
     t0 : float
         Window start relative to event (seconds).
     t1 : float or 1D array
-        Window end. If float, fixed for all trials.
-        If array, per-trial endpoint as absolute times.
-        NaN values in array → no masking (full window).
+        Window end. If float, an offset relative to the event, fixed for all
+        trials. If array, each trial's endpoint as an absolute time.
+        NaN values in the array → no masking (full window).
 
     Returns
     -------
     responses : 2D array, shape (n_trials, n_samples)
     tpts : 1D array, shape (n_samples,)
+        Sample times relative to the event.
+
+    Raises
+    ------
+    ValueError
+        If an array ``t1`` puts any trial's endpoint before ``t0``, which is
+        what passing relative offsets where absolute times are expected looks
+        like. Without the guard that yields a zero-width matrix and no error.
     """
     times = photometry.index.to_numpy()
     values = photometry.values
@@ -54,6 +70,13 @@ def get_responses(photometry, events, t0=-1.0, t1=1.0):
         if np.all(np.isnan(t1_relative)):
             t1_max = abs(t0)
         else:
+            t1_min = np.nanmin(t1_relative)
+            if t1_min < t0:
+                raise ValueError(
+                    "An array t1 holds absolute times, not offsets relative to "
+                    f"the event: t1 - events reaches {t1_min}, before the "
+                    f"window start t0={t0}."
+                )
             t1_max = np.nanmax(t1_relative)
     else:
         t1_max = t1
