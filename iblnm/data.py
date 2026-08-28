@@ -1479,7 +1479,7 @@ class PhotometrySession(PhotometrySessionLoader):
                 dims=['event', 'trial', 'time'],
                 coords={
                     'event': list(events),
-                    'trial': self.trials.index.to_numpy(),
+                    'trial': self.trials['trial'].to_numpy(),
                     'time': sample_times,
                 },
             )

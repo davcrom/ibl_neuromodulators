@@ -54,7 +54,8 @@ def test_build_mouse_states_frame_attaches_window_mean_baseline(monkeypatch):
             self.brain_region = ['LC']
 
         def load_h5(self, groups=None):
-            self.trials = pd.DataFrame({'stimOn_times': stim_times,
+            self.trials = pd.DataFrame({'trial': [0, 1, 2],
+                                        'stimOn_times': stim_times,
                                         'feedback_times': [6.0, 11.0, 16.0],
                                         'choice': [1, -1, 1]})
             self.photometry = _step_photometry(levels, stim_times)
@@ -89,7 +90,8 @@ def test_build_mouse_states_frame_baseline_stays_aligned_to_its_trial(monkeypatc
             self.brain_region = ['LC']
 
         def load_h5(self, groups=None):
-            self.trials = pd.DataFrame({'stimOn_times': stim_times,
+            self.trials = pd.DataFrame({'trial': [0, 1, 2],
+                                        'stimOn_times': stim_times,
                                         'feedback_times': [6.0, 11.0, 16.0],
                                         'choice': [1, -1, 1]})
             self.photometry = _step_photometry(levels, stim_times)
@@ -201,7 +203,8 @@ def _evoked_frame(monkeypatch, photometry, stim_times, feedback_times):
             self.brain_region = ['LC']
 
         def load_h5(self, groups=None):
-            self.trials = pd.DataFrame({'stimOn_times': stim_times,
+            self.trials = pd.DataFrame({'trial': range(n_trials),
+                                        'stimOn_times': stim_times,
                                         'feedback_times': feedback_times,
                                         'choice': [1] * n_trials})
             self.photometry = photometry
@@ -293,10 +296,12 @@ def test_build_mouse_states_frame_drops_unfit_and_other_subjects(monkeypatch):
                              'subject': ['M', 'M', 'OTHER']})
     group = SimpleNamespace(sessions=sessions)
 
-    trials = {'e1': pd.DataFrame({'choice': [1, -1, 1],
+    trials = {'e1': pd.DataFrame({'trial': [0, 1, 2],
+                                  'choice': [1, -1, 1],
                                   'stimOn_times': [5.0, 10.0, 15.0],
                                   'feedback_times': [6.0, 11.0, 16.0]}),
-              'e2': pd.DataFrame({'choice': [1, 1],
+              'e2': pd.DataFrame({'trial': [0, 1],
+                                  'choice': [1, 1],
                                   'stimOn_times': [5.0, 10.0],
                                   'feedback_times': [6.0, 11.0]})}
     states = {'e1': pd.DataFrame({'map_state': [1.0, 2.0, 1.0],
@@ -358,7 +363,8 @@ def test_build_mouse_states_frame_skips_sessions_without_trials(monkeypatch):
     group = SimpleNamespace(sessions=sessions)
 
     trials = {'e1': pd.DataFrame(),
-              'e2': pd.DataFrame({'choice': [1, -1],
+              'e2': pd.DataFrame({'trial': [0, 1],
+                                  'choice': [1, -1],
                                   'stimOn_times': [5.0, 10.0],
                                   'feedback_times': [6.0, 11.0]})}
     states = {'e2': pd.DataFrame({'map_state': [1.0, 2.0]})}

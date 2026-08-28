@@ -1663,18 +1663,29 @@ class TestPreprocess:
 # Extract Responses and Trial Data Tests
 # =============================================================================
 
+def _make_trials(n=50, **columns):
+    """Trials table spanning the synthetic photometry signal.
+
+    Carries the `trial` identity column that `load_trials` adds, since
+    `extract_responses` reads trial identity from it. Extra columns are
+    appended as given.
+    """
+    return pd.DataFrame({
+        'trial': np.arange(n),
+        'stimOn_times': np.linspace(99.5, 499.5, n),
+        'firstMovement_times': np.linspace(100.3, 500.3, n),
+        'feedback_times': np.linspace(101, 501, n),
+        **columns,
+    })
+
+
 class TestExtractResponses:
     def test_returns_dict_without_assigning_attribute(self, mock_photometry_session):
         """The engine returns its dict; the caller owns the attribute."""
         import xarray as xr
         session = mock_photometry_session
         session.preprocess()
-        n = 50
-        session.trials = pd.DataFrame({
-            'stimOn_times': np.linspace(99.5, 499.5, n),
-            'firstMovement_times': np.linspace(100.3, 500.3, n),
-            'feedback_times': np.linspace(101, 501, n),
-        })
+        session.trials = _make_trials()
         responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed']
         )
@@ -1686,11 +1697,7 @@ class TestExtractResponses:
         """Any mapping of label -> time-indexed Series is a valid signal source."""
         session = mock_photometry_session
         session.preprocess()
-        n = 50
-        session.trials = pd.DataFrame({
-            'stimOn_times': np.linspace(99.5, 499.5, n),
-            'feedback_times': np.linspace(101, 501, n),
-        })
+        session.trials = _make_trials()
         signal = session.photometry['GCaMP_preprocessed']['VTA']
         responses = session.extract_responses({'paw_speed': signal})
         assert list(responses) == ['paw_speed']
@@ -1700,12 +1707,7 @@ class TestExtractResponses:
         import xarray as xr
         session = mock_photometry_session
         session.preprocess()
-        n = 50
-        session.trials = pd.DataFrame({
-            'stimOn_times': np.linspace(99.5, 499.5, n),
-            'firstMovement_times': np.linspace(100.3, 500.3, n),
-            'feedback_times': np.linspace(101, 501, n),
-        })
+        session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed']
         )
@@ -1717,11 +1719,7 @@ class TestExtractResponses:
         session = mock_photometry_session
         session.preprocess()
         n = 50
-        session.trials = pd.DataFrame({
-            'stimOn_times': np.linspace(99.5, 499.5, n),
-            'firstMovement_times': np.linspace(100.3, 500.3, n),
-            'feedback_times': np.linspace(101, 501, n),
-        })
+        session.trials = _make_trials(n)
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'])
         assert 'VTA' in session.photometry_responses
@@ -1736,11 +1734,7 @@ class TestExtractResponses:
         session = mock_photometry_session
         session.preprocess()
         n = 50
-        session.trials = pd.DataFrame({
-            'stimOn_times': np.linspace(99.5, 499.5, n),
-            'firstMovement_times': np.linspace(100.3, 500.3, n),
-            'feedback_times': np.linspace(101, 501, n),
-        })
+        session.trials = _make_trials(n)
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'])
         sel = session.photometry_responses['VTA'].sel(event='stimOn_times')
@@ -1752,10 +1746,7 @@ class TestExtractResponses:
         from iblnm.config import RESPONSE_WINDOW
         session = mock_photometry_session
         session.preprocess()
-        n = 50
-        session.trials = pd.DataFrame({
-            'feedback_times': np.linspace(101, 501, n),
-        })
+        session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'], events=['feedback_times'])
         tpts = session.photometry_responses['VTA'].coords['time'].values
@@ -1765,15 +1756,30 @@ class TestExtractResponses:
     def test_custom_events(self, mock_photometry_session):
         session = mock_photometry_session
         session.preprocess()
-        n = 50
-        session.trials = pd.DataFrame({
-            'feedback_times': np.linspace(101, 501, n),
-        })
+        session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'], events=['feedback_times'])
         region_responses = session.photometry_responses['VTA']
         assert list(region_responses.coords['event'].values) == ['feedback_times']
         assert region_responses.sizes['event'] == 1
+
+    def test_trial_coord_comes_from_trial_column(self, mock_photometry_session):
+        """Trial identity is the 'trial' column, not the row position.
+
+        A trials table filtered before extraction keeps its original trial
+        numbers, so responses stay aligned to the trials they came from.
+        """
+        session = mock_photometry_session
+        session.preprocess()
+        trial_numbers = np.array([3, 7, 8, 15, 40])
+        session.trials = pd.DataFrame({
+            'trial': trial_numbers,
+            'feedback_times': np.linspace(101, 501, len(trial_numbers)),
+        })
+        responses = session.extract_responses(
+            session.photometry['GCaMP_preprocessed'], events=['feedback_times'])
+        np.testing.assert_array_equal(
+            responses['VTA'].coords['trial'].values, trial_numbers)
 
 
 
@@ -1942,12 +1948,7 @@ class TestSaveLoadH5:
         """
         session = mock_photometry_session
         session.preprocess()
-        n = 50
-        session.trials = pd.DataFrame({
-            'stimOn_times': np.linspace(99.5, 499.5, n),
-            'firstMovement_times': np.linspace(100.3, 500.3, n),
-            'feedback_times': np.linspace(101, 501, n),
-        })
+        session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'])
         session.filepath = tmp_path / f'{session.eid}.h5'
@@ -1961,20 +1962,18 @@ class TestSaveLoadH5:
         session = mock_photometry_session
         session.preprocess()
         n = 50
-        session.trials = pd.DataFrame({
-            'stimOn_times': np.linspace(99.5, 499.5, n),
-            'firstMovement_times': np.linspace(100.3, 500.3, n),
-            'feedback_times': np.linspace(101, 501, n),
-            'goCue_times': np.linspace(100, 500, n),
-            'response_times': np.linspace(100.5, 500.5, n),
-            'intervals_0': np.linspace(99, 499, n),
-            'intervals_1': np.linspace(102, 502, n),
-            'choice': np.random.choice([-1, 1], n),
-            'feedbackType': np.random.choice([-1, 1], n),
-            'probabilityLeft': np.random.choice([0.2, 0.5, 0.8], n),
-            'signed_contrast': np.random.choice([-100, -25, 0, 25, 100], n).astype(float),
-            'contrast': np.random.choice([0, 25, 100], n).astype(float),
-        })
+        session.trials = _make_trials(
+            n,
+            goCue_times=np.linspace(100, 500, n),
+            response_times=np.linspace(100.5, 500.5, n),
+            intervals_0=np.linspace(99, 499, n),
+            intervals_1=np.linspace(102, 502, n),
+            choice=np.random.choice([-1, 1], n),
+            feedbackType=np.random.choice([-1, 1], n),
+            probabilityLeft=np.random.choice([0.2, 0.5, 0.8], n),
+            signed_contrast=np.random.choice([-100, -25, 0, 25, 100], n).astype(float),
+            contrast=np.random.choice([0, 25, 100], n).astype(float),
+        )
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'], events=['stimOn_times', 'feedback_times'])
 
@@ -2004,11 +2003,7 @@ class TestSaveLoadH5:
         import xarray as xr
         session = mock_photometry_session
         session.preprocess()
-        n = 50
-        session.trials = pd.DataFrame({
-            'stimOn_times': np.linspace(99.5, 499.5, n),
-            'feedback_times': np.linspace(101, 501, n),
-        })
+        session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'], events=['stimOn_times', 'feedback_times'])
         original = {r: da.copy() for r, da in session.photometry_responses.items()}
@@ -2401,6 +2396,7 @@ class TestPoseMethods:
         })
         ps.pose_times = t
         ps.trials = pd.DataFrame({
+            'trial': [0, 1, 2],
             'stimOn_times': [9.0, 19.0, 29.0],
             'firstMovement_times': [10.0, 20.0, 30.0],
             'feedback_times': [12.0, 22.0, 32.0],
