@@ -2256,6 +2256,7 @@ class TestFormulaColumns:
 class TestBuildTrialRegressors:
     def _trials(self):
         return pd.DataFrame({
+            'trial': [0, 1, 2],
             'signed_contrast': [-0.25, 0.0, 0.0625],
             'contrast': [0.25, 0.0, 0.0625],
             'stim_side': ['left', 'right', 'right'],
@@ -2287,6 +2288,14 @@ class TestBuildTrialRegressors:
         np.testing.assert_allclose(
             df['response_time'].values,
             trials['feedback_times'] - trials['stimOn_times'])
+
+    def test_trial_column_carries_stored_identity(self):
+        """A trials frame whose `trial` skips values keeps those values."""
+        from iblnm.analysis import build_trial_regressors
+        trials = self._trials()
+        trials['trial'] = [0, 3, 7]
+        df = build_trial_regressors(trials, wheel_velocity=None)
+        assert df['trial'].tolist() == [0, 3, 7]
 
     def test_peak_velocity_nan_when_no_wheel(self):
         from iblnm.analysis import build_trial_regressors

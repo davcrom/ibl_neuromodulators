@@ -294,14 +294,6 @@ TARGET_FS = 30    # Hz, target sampling rate for photometry signals
 WHEEL_FS = 100    # Hz, interpolation rate for wheel velocity
 POSE_FS = 30      # Hz, common resample rate for pose movement traces (majority camera rate)
 
-# Trial columns to store in HDF5 (beyond computed signed_contrast, contrast)
-TRIAL_COLUMNS = [
-    'stimOn_times', 'response_times',
-    'firstMovement_times', 'feedback_times',
-    'choice', 'feedbackType', 'probabilityLeft',
-    'stim_side',
-]
-
 # Events for response extraction (NOT goCue — too close to stimOn, variable latency)
 RESPONSE_EVENTS = ['stimOn_times', 'feedback_times']
 

@@ -397,7 +397,8 @@ def _make_state_trials(state, p_choose_right, rt_base, rt_slope, seed):
     (IBL ``choice == -1``), so a value far from 0.5 plants a strong choice bias.
     Reaction time is ``rt_base + rt_slope * |contrast|`` plus small noise, planting
     a known chronometric slope. Covers both stimulus sides at each of the five
-    canonical contrasts.
+    canonical contrasts. ``contrastLeft``/``contrastRight`` are carried as
+    fractions with NaN off the stimulus side, matching the stored ONE table.
     """
     rng = np.random.default_rng(seed)
     rows = []
@@ -411,6 +412,8 @@ def _make_state_trials(state, p_choose_right, rt_base, rt_slope, seed):
             rows += [dict(map_state=state, choice=choice[i],
                           feedbackType=1 if choice[i] == correct_side else -1,
                           probabilityLeft=0.5, stim_side=side, contrast=contrast,
+                          contrastLeft=contrast / 100 if side == 'left' else np.nan,
+                          contrastRight=contrast / 100 if side == 'right' else np.nan,
                           signed_contrast=signed, rt=rt[i]) for i in range(n)]
     return pd.DataFrame(rows)
 

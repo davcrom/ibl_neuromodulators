@@ -1808,6 +1808,104 @@ class TestWriteReadDataframe:
         assert out['stim_side'].tolist() == ['left', 'right', 'left']
 
 
+def _full_one_trials_frame(n=6, index=None):
+    """Trials frame carrying every ONE table column plus the derived four.
+
+    The 13 ONE columns are the verbatim `_ibl_trials.table.pqt` schema; the
+    derived columns (`contrast`, `signed_contrast`, `stim_side`, `trial`) are
+    what `load_trials` adds. `index` sets the `trial` values, defaulting to a
+    contiguous range.
+    """
+    trial = np.arange(n) if index is None else np.asarray(index)
+    return pd.DataFrame({
+        'intervals_0':         np.linspace(99.0, 499.0, n),
+        'intervals_1':         np.linspace(102.0, 502.0, n),
+        'goCue_times':         np.linspace(99.6, 499.6, n),
+        'response_times':      np.linspace(100.4, 500.4, n),
+        'choice':              np.tile([-1.0, 1.0], n // 2),
+        'stimOn_times':        np.linspace(99.5, 499.5, n),
+        'contrastLeft':        np.tile([0.25, np.nan], n // 2),
+        'contrastRight':       np.tile([np.nan, 1.0], n // 2),
+        'feedback_times':      np.linspace(101.0, 501.0, n),
+        'feedbackType':        np.tile([1.0, -1.0], n // 2),
+        'rewardVolume':        np.tile([0.0, 1.5], n // 2),
+        'probabilityLeft':     np.full(n, 0.5),
+        'firstMovement_times': np.linspace(100.3, 500.3, n),
+        'contrast':            np.tile([25.0, 100.0], n // 2),
+        'signed_contrast':     np.tile([-25.0, 100.0], n // 2),
+        'stim_side':           np.tile(['left', 'right'], n // 2),
+        'trial':               trial,
+    })
+
+
+class TestTrialsTableProduct:
+    """The `trials/table` product: verbatim ONE table plus trial identity."""
+
+    def _session(self, mock_session_series, tmp_path):
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
+        return ps
+
+    def test_full_table_roundtrips_with_noncontiguous_trial(
+            self, mock_session_series, tmp_path):
+        """Every ONE column plus the derived four survive, trial values intact."""
+        ps = self._session(mock_session_series, tmp_path)
+        ps.trials = _full_one_trials_frame(n=6, index=[0, 3, 7, 12, 13, 20])
+        original = ps.trials.copy()
+        ps.save_h5(groups=['trials'])
+
+        reloaded = self._session(mock_session_series, tmp_path)
+        reloaded.load_h5(groups=['trials'])
+
+        assert set(reloaded.trials.columns) == set(original.columns)
+        pd.testing.assert_frame_equal(
+            reloaded.trials[original.columns], original, check_dtype=False)
+
+    def test_saved_table_reports_current(self, mock_session_series, tmp_path):
+        """save_h5 stamps trials/table, so product_status sees it as current."""
+        ps = self._session(mock_session_series, tmp_path)
+        assert ps.product_status('trials/table') == 'absent'
+        ps.trials = _full_one_trials_frame()
+        ps.save_h5(groups=['trials'])
+        assert ps.product_status('trials/table') == 'current'
+
+    def test_load_trials_records_one_index_as_trial(self, mock_session_series,
+                                                    tmp_path):
+        """The raw ONE index becomes the `trial` column, before contrasts."""
+        from iblnm.data import PhotometrySession
+        ps = self._session(mock_session_series, tmp_path)
+        one_index = [0, 3, 7, 12]
+        raw = pd.DataFrame({
+            'contrastLeft':  [0.25, np.nan, np.nan, 0.0625],
+            'contrastRight': [np.nan, 1.0, 0.0, np.nan],
+        }, index=one_index)
+
+        def _set_trials():
+            ps.trials = raw
+
+        with patch.object(PhotometrySession.__bases__[0], 'load_trials',
+                          side_effect=_set_trials):
+            ps.load_trials()
+
+        np.testing.assert_array_equal(ps.trials['trial'].values, one_index)
+        assert {'contrast', 'signed_contrast', 'stim_side'} <= set(ps.trials.columns)
+
+    def test_signed_zero_survives_roundtrip(self, mock_session_series, tmp_path):
+        """Zero-contrast stimulus side rides on the sign bit of signed_contrast."""
+        ps = self._session(mock_session_series, tmp_path)
+        ps.trials = _full_one_trials_frame(n=4)
+        ps.trials['signed_contrast'] = np.array([-0.0, 0.0, -0.0, 25.0])
+        expected = np.signbit(ps.trials['signed_contrast'].values)
+        ps.save_h5(groups=['trials'])
+
+        reloaded = self._session(mock_session_series, tmp_path)
+        reloaded.load_h5(groups=['trials'])
+        np.testing.assert_array_equal(
+            np.signbit(reloaded.trials['signed_contrast'].values), expected)
+
+
 class TestSaveLoadH5:
     def test_save_preprocessed_float64(self, mock_photometry_session, tmp_path):
         """save_h5 should write preprocessed signal as float64 with timestamps."""
@@ -1887,7 +1985,7 @@ class TestSaveLoadH5:
         import h5py
         with h5py.File(fpath, 'r') as f:
             assert 'photometry/VTA/preprocessed/signal' in f
-            assert 'trials/choice' in f
+            assert 'trials/table/choice' in f
             assert 'photometry/VTA/responses/stimOn_times' in f
             assert 'photometry/VTA/responses/feedback_times' in f
             # fs is never read back (the time axis is rebuilt from `times`)
@@ -1897,7 +1995,7 @@ class TestSaveLoadH5:
             resp_xr = session.photometry_responses['VTA'].sel(event='stimOn_times').values
             np.testing.assert_allclose(resp_h5, resp_xr, rtol=1e-5)
             np.testing.assert_array_equal(
-                f['trials/choice'][:],
+                f['trials/table/choice'][:],
                 session.trials['choice'].values
             )
 
@@ -3591,7 +3689,8 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
     feedback = stim_on + 0.01 if fast_response else np.linspace(11, 11 + n_trials, n_trials)
 
     with h5py.File(path, 'w') as f:
-        grp = f.create_group('trials')
+        grp = f.create_group('trials/table')
+        grp.create_dataset('trial', data=np.arange(n_trials))
         grp.create_dataset('stimOn_times', data=stim_on)
         grp.create_dataset('firstMovement_times',
                            data=stim_on + 0.2)
@@ -5025,6 +5124,7 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
     reaction = rng.uniform(0.1, 0.5, n_trials)
     movement = rng.uniform(0.2, 1.0, n_trials)
     ps.trials = pd.DataFrame({
+        'trial': np.arange(n_trials),
         'stimOn_times': stim_on,
         'firstMovement_times': stim_on + reaction,
         'feedback_times': stim_on + reaction + movement,
@@ -6138,7 +6238,8 @@ def _write_trial_regressor_h5(path, with_wheel=True):
     first_move = np.array([10.5, 20.7, 31.2])
     feedback = np.array([11.0, 21.5, 32.0])
     with h5py.File(path, 'w') as f:
-        grp = f.create_group('trials')
+        grp = f.create_group('trials/table')
+        grp.create_dataset('trial', data=np.arange(3))
         grp.create_dataset('stimOn_times', data=stim_on)
         grp.create_dataset('firstMovement_times', data=first_move)
         grp.create_dataset('feedback_times', data=feedback)

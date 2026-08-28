@@ -33,12 +33,12 @@ def process_task(ps, reprocess=False):
     """Compute task performance metrics for a single session."""
     import h5py
 
-    # Skip if already processed (trials group exists in H5)
+    # Skip if already processed (trials table exists in H5)
     if not reprocess:
         h5_path = SESSIONS_H5_DIR / f'{ps.eid}.h5'
         if h5_path.exists():
             with h5py.File(h5_path, 'r') as f:
-                if 'trials' in f:
+                if 'trials/table' in f:
                     return 'skipped'
 
     ps.load_trials()

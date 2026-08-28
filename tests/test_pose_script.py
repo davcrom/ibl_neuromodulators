@@ -93,7 +93,7 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
 
     if trials is not None:
         with h5py.File(h5_dir / f'{eid}.h5', 'a') as f:
-            grp = f.create_group('trials')
+            grp = f.create_group('trials/table')
             for key, values in trials.items():
                 grp.create_dataset(key, data=np.asarray(values))
 

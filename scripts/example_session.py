@@ -200,8 +200,8 @@ def load_trial_events(eid, h5_dir=SESSIONS_H5_DIR):
     h5_path = Path(h5_dir) / f'{eid}.h5'
     with h5py.File(h5_path, 'r') as f:
         data = {}
-        for col in f['trials']:
-            vals = f[f'trials/{col}'][:]
+        for col in f['trials/table']:
+            vals = f[f'trials/table/{col}'][:]
             if vals.dtype.kind == 'S':
                 vals = vals.astype(str)
             data[col] = vals

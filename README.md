@@ -143,7 +143,7 @@ df_sessions = pd.read_parquet(SESSIONS_FPATH)
 session_row = df_sessions.iloc[0]
 
 ps = PhotometrySession(session_row, one=one)
-ps.load_trials()      # → ps.trials (DataFrame with signed_contrast, contrast added)
+ps.load_trials()      # → ps.trials (adds trial, stim_side, contrast, signed_contrast)
 ps.load_photometry()  # → ps.photometry dict: {'GCaMP': ..., 'Isosbestic': ...}
 ```
 
@@ -506,16 +506,26 @@ movement channel.
 │               n_unique_samples, ar_score, bleaching_tau, ...)
 │
 ├── trials/
-│   ├── stimOn_times          float64 (T,)
-│   ├── firstMovement_times   float64 (T,)
-│   ├── feedback_times        float64 (T,)
-│   ├── response_times        float64 (T,)
-│   ├── choice                float64 (T,)   -1 left, 0 no-go, 1 right
-│   ├── feedbackType          float64 (T,)   1 reward, -1 punishment
-│   ├── probabilityLeft       float64 (T,)   0.2, 0.5, or 0.8
-│   ├── signed_contrast       float64 (T,)   negative = left stimulus
-│   ├── contrast              float64 (T,)   unsigned
-│   └── stim_side             str     (T,)   'left' or 'right'
+│   └── table/                      # the ONE trials table verbatim, plus the
+│       │                           # four columns load_trials derives
+│       ├── intervals_0          float64 (T,)
+│       ├── intervals_1          float64 (T,)
+│       ├── goCue_times          float64 (T,)
+│       ├── stimOn_times         float64 (T,)
+│       ├── firstMovement_times  float64 (T,)
+│       ├── response_times       float64 (T,)
+│       ├── feedback_times       float64 (T,)
+│       ├── choice               float64 (T,)   -1 left, 0 no-go, 1 right
+│       ├── feedbackType         float64 (T,)   1 reward, -1 punishment
+│       ├── contrastLeft         float64 (T,)   fraction, NaN if right stimulus
+│       ├── contrastRight        float64 (T,)   fraction, NaN if left stimulus
+│       ├── rewardVolume         float64 (T,)   µL
+│       ├── probabilityLeft      float64 (T,)   0.2, 0.5, or 0.8
+│       ├── signed_contrast      float64 (T,)   percent, negative = left
+│       ├── contrast             float64 (T,)   percent, unsigned
+│       ├── stim_side            str     (T,)   'left' or 'right'
+│       ├── trial                int64   (T,)   raw ONE index; trial identity
+│       └── attrs: spec_json, built_at
 │
 ├── wheel/
 │   └── responses/

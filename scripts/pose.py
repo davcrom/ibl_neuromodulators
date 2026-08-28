@@ -303,14 +303,15 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH) -> pd.DataFrame:
 
 
 def _read_mean_rt(f: h5py.File) -> float:
-    """Mean reaction time from the H5 ``trials`` group, NaN when unavailable.
+    """Mean reaction time from the H5 ``trials/table`` group, NaN when unavailable.
 
     Reaction time is ``feedback_times - stimOn_times`` per trial, averaged with
-    ``nanmean``. Returns NaN if the ``trials`` group or either dataset is absent.
+    ``nanmean``. Returns NaN if the ``trials/table`` group or either dataset is
+    absent.
     """
-    if 'trials' not in f:
+    if 'trials/table' not in f:
         return np.nan
-    trials = f['trials']
+    trials = f['trials/table']
     if 'stimOn_times' not in trials or 'feedback_times' not in trials:
         return np.nan
     return np.nanmean(trials['feedback_times'][:] - trials['stimOn_times'][:])

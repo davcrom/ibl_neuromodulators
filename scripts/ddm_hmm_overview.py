@@ -45,9 +45,7 @@ from iblnm.analysis import (
 )
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.task import (
-    fit_psychometric, reconstruct_contrast_sides,
-)
+from iblnm.task import fit_psychometric
 from iblnm.vis import (
     plot_state_measures, plot_state_param_scatter, plot_state_pca,
     plot_state_posterior_dwell, plot_state_psychometric_chronometric,
@@ -189,18 +187,16 @@ def build_state_param_table(mouse_frame: pd.DataFrame) -> pd.DataFrame:
 
     Groups the mouse's trials by MAP state and fits, per state, a psychometric
     function (via :func:`fit_psychometric`, pooling across ``probabilityLeft``
-    blocks). ``contrastLeft``/``contrastRight`` are reconstructed from
-    ``stim_side`` and ``contrast`` (:func:`reconstruct_contrast_sides`) as
-    ``fit_psychometric`` requires. Feeds figure 2 (curve overlays) and figure 4
-    (PCA features).
+    blocks). Feeds figure 2 (curve overlays) and figure 4 (PCA features).
 
     Parameters
     ----------
     mouse_frame : pandas.DataFrame
         One mouse's concatenated trials + states (from
         :func:`build_mouse_states_frame`). Must carry ``map_state``, ``choice``,
-        ``stim_side`` and ``contrast``. Trials dropped from the fit
-        (``map_state`` NaN) are ignored by the ``groupby``.
+        and the ``contrastLeft``/``contrastRight`` columns ``fit_psychometric``
+        reads, which the stored ``trials/table`` holds verbatim. Trials dropped
+        from the fit (``map_state`` NaN) are ignored by the ``groupby``.
 
     Returns
     -------
@@ -211,7 +207,6 @@ def build_state_param_table(mouse_frame: pd.DataFrame) -> pd.DataFrame:
     """
     rows = []
     for state, trials in mouse_frame.groupby('map_state'):
-        trials = trials.join(reconstruct_contrast_sides(trials))
         psych = fit_psychometric(trials)
         rows.append({
             'state': int(state),

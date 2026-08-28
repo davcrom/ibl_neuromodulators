@@ -32,7 +32,7 @@ from iblnm.config import (
     RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
-    TARGET_FS, TRIAL_COLUMNS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
+    TARGET_FS, VIDEO_QC_COLS, WHEEL_FS, POSE_FS,
     resolve_product_spec,
     _PERSESSION_REGRESSORS,
 )
@@ -431,17 +431,24 @@ def _load_errors(session, h5_file, band):
 
 
 def _save_trials(session, h5_file, band):
+    """Write the trials table verbatim to `trials/table`.
+
+    Every column is stored, ONE's own and the ones `load_trials` derives. Trial
+    identity travels in the `trial` column, not in the index: `_read_dataframe`
+    rebuilds a fresh RangeIndex, so a session whose trials were filtered before
+    extraction would otherwise silently realign against its responses.
+    """
     if getattr(session, 'trials', None) is None:
         return
-    columns = [c for c in TRIAL_COLUMNS + ['contrast', 'signed_contrast']
-               if c in session.trials.columns]
-    _write_dataframe(_replace_group(h5_file, 'trials'), session.trials[columns])
+    group = _replace_group(h5_file.require_group('trials'), 'table')
+    _write_dataframe(group, session.trials)
+    _write_stamp(group, session.spec['trials/table'])
 
 
 def _load_trials(session, h5_file, band):
-    if 'trials' not in h5_file:
+    if 'trials/table' not in h5_file:
         return
-    session.trials = _read_dataframe(h5_file['trials'])
+    session.trials = _read_dataframe(h5_file['trials/table'])
 
 
 def _save_wheel(session, h5_file, band):
@@ -1159,6 +1166,9 @@ class PhotometrySession(PhotometrySessionLoader):
             raise MissingExtractedData(
                 f"_ibl_trials.table.pqt ({type(e).__name__}: {e})"
             ) from e
+        # The ONE index is trial identity; persist it as a column, since the H5
+        # round-trip rebuilds a fresh RangeIndex and would lose it otherwise.
+        self.trials['trial'] = self.trials.index.to_numpy()
         contrasts = compute_trial_contrasts(self.trials)
         self.trials['stim_side'] = contrasts['stim_side']
         self.trials['signed_contrast'] = contrasts['signed_contrast']
@@ -4500,7 +4510,7 @@ class PhotometrySessionGroup:
                         desc="Collecting trial regressors"):
             h5_path = Path(self.h5_dir) / f'{eid}.h5'
             with h5py.File(h5_path, 'r') as f:
-                trials = _read_dataframe(f['trials'])
+                trials = _read_dataframe(f['trials/table'])
                 wheel_vel = (f['wheel/responses/velocity'][:]
                              if 'wheel/responses/velocity' in f else None)
 

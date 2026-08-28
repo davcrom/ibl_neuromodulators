@@ -1616,10 +1616,13 @@ def build_trial_regressors(
     Parameters
     ----------
     trials : pd.DataFrame
-        One session's trials table. Must carry ``signed_contrast, contrast,
-        stim_side, choice, feedbackType, probabilityLeft``; the event-time
-        columns (``stimOn_times, firstMovement_times, feedback_times``) are
-        optional and yield NaN timing columns when absent.
+        One session's trials table. Must carry ``trial, signed_contrast,
+        contrast, stim_side, choice, feedbackType, probabilityLeft``; the
+        event-time columns (``stimOn_times, firstMovement_times,
+        feedback_times``) are optional and yield NaN timing columns when
+        absent. ``trial`` is the stored ONE trial index, which need not be
+        contiguous — it is copied through, not regenerated, so the frame stays
+        joinable against per-trial responses.
     wheel_velocity : np.ndarray or None
         ``(n_trials, n_samples)`` wheel velocity, or ``None`` when the wheel
         group is missing. ``None`` yields all-NaN ``peak_velocity``.
@@ -1634,10 +1637,10 @@ def build_trial_regressors(
         ``feedback_times - firstMovement_times``, ``response_time`` is
         ``feedback_times - stimOn_times`` (seconds).
     """
-    copy_cols = ['signed_contrast', 'contrast', 'stim_side', 'choice',
+    copy_cols = ['trial', 'signed_contrast', 'contrast', 'stim_side', 'choice',
                  'feedbackType', 'probabilityLeft']
     n_trials = len(trials)
-    df = pd.DataFrame({'trial': range(n_trials)})
+    df = pd.DataFrame(index=range(n_trials))
     for col in copy_cols:
         df[col] = trials[col].values
     df['reaction_time'] = _event_diff(

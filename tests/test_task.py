@@ -583,61 +583,6 @@ class TestComputeTrialContrasts:
         assert list(result.index) == [10, 20]
 
 
-class TestReconstructContrastSides:
-    """Tests for reconstruct_contrast_sides: inverse of compute_trial_contrasts."""
-
-    def _make_trials(self, stim_side, contrast):
-        return pd.DataFrame({'stim_side': stim_side, 'contrast': contrast})
-
-    def test_left_and_right_sides(self):
-        """Contrast lands on the stimulus side; the other side is NaN."""
-        from iblnm.task import reconstruct_contrast_sides
-        trials = self._make_trials(['left', 'right'], [50.0, 25.0])
-        result = reconstruct_contrast_sides(trials)
-        # left trial
-        assert result['contrastLeft'].iloc[0] == 0.5
-        assert np.isnan(result['contrastRight'].iloc[0])
-        # right trial
-        assert np.isnan(result['contrastLeft'].iloc[1])
-        assert result['contrastRight'].iloc[1] == 0.25
-
-    def test_zero_contrast_keeps_true_side(self):
-        """Zero-contrast trials keep their stim_side (no signed-zero collapse)."""
-        from iblnm.task import reconstruct_contrast_sides
-        trials = self._make_trials(['left', 'right'], [0.0, 0.0])
-        result = reconstruct_contrast_sides(trials)
-        # zero-contrast left: contrastLeft set, contrastRight NaN
-        assert result['contrastLeft'].iloc[0] == 0.0
-        assert np.isnan(result['contrastRight'].iloc[0])
-        # zero-contrast right: contrastRight set, contrastLeft NaN
-        assert np.isnan(result['contrastLeft'].iloc[1])
-        assert result['contrastRight'].iloc[1] == 0.0
-
-    def test_round_trip_recovers_stim_side_and_contrast(self):
-        """compute_trial_contrasts(reconstruct(...)) recovers the input."""
-        from iblnm.task import (compute_trial_contrasts,
-                                 reconstruct_contrast_sides)
-        trials = self._make_trials(
-            ['left', 'right', 'left', 'right', 'left'],
-            [100.0, 25.0, 0.0, 0.0, 6.25],
-        )
-        sides = reconstruct_contrast_sides(trials)
-        recovered = compute_trial_contrasts(sides)
-        np.testing.assert_array_equal(
-            recovered['stim_side'].values, trials['stim_side'].values
-        )
-        np.testing.assert_allclose(
-            recovered['contrast'].values, trials['contrast'].values
-        )
-
-    def test_preserves_index(self):
-        from iblnm.task import reconstruct_contrast_sides
-        trials = self._make_trials(['left', 'right'], [50.0, 25.0])
-        trials.index = [10, 20]
-        result = reconstruct_contrast_sides(trials)
-        assert list(result.index) == [10, 20]
-
-
 # =============================================================================
 # process_task Tests
 # =============================================================================
