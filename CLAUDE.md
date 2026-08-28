@@ -160,17 +160,30 @@ ps = PhotometrySession(session_row, one=one)
 # ps.trials = None, ps.photometry = {}, ps.photometry_responses = {},
 # ps.movement_responses = {}, ps.qc = None
 
-ps.load_trials()       # populates ps.trials
-ps.load_photometry()   # populates ps.photometry['GCaMP'], ps.photometry['Isosbestic']
-ps.preprocess()        # adds ps.photometry['GCaMP_preprocessed']
-ps.photometry_responses = ps.extract_responses(ps.photometry['GCaMP_preprocessed'])
+ps.load_trials()          # populates ps.trials
+ps.load_raw_photometry()  # ps.photometry['GCaMP'], ps.photometry['Isosbestic']
+ps.preprocess()           # adds ps.photometry['GCaMP_preprocessed'], writes it
+ps.load_photometry()      # the preprocessed signal, from H5 or built as above
+ps.load_responses('photometry')   # ps.photometry_responses, from H5 or cut
 ```
+
+Load methods are not pure readers. Each attempts its stored product, falls back
+to building it, and writes what it built, so a session with an empty H5 fills
+itself from Alyx. `load_raw_photometry` and `load_photometry` stay separate —
+one method returning either raw or preprocessed is how an analysis silently
+runs on the wrong signal. A stored stamp that disagrees with `config.py` raises
+`StaleProduct` instead of rebuilding; put the product key in `ps.rebuild` to
+force a rebuild.
+
+`load_responses(modality, events, window)` serves every modality, dispatching
+through `_RESPONSE_MODALITIES` to that modality's preprocessed-signal loader and
+result attribute.
 
 `extract_responses(signals, events=..., window=...)` is signal-source agnostic:
 it cuts peri-event matrices out of any `label -> pd.Series` mapping and returns
 `dict[label, xr.DataArray]` with dims `(event, trial, time)`, leaving the
-caller to assign it. Photometry passes `ps.photometry[band]` (labels are brain
-regions) and assigns `ps.photometry_responses`; behavior passes
+caller to assign it. Photometry passes `ps.photometry[PREPROCESSED_BAND]`
+(labels are brain regions) and assigns `ps.photometry_responses`; behavior passes
 `ps._movement_signals()` with `events=MOVEMENT_EVENTS` (labels are movement
 channels) and assigns `ps.movement_responses`. Each movement channel carries
 the full event axis; its own response event is selected at read time via
@@ -209,7 +222,11 @@ group's stamp (`_write_stamp`, read back by `product_status`).
 |---|---|---|
 | `_save_time_series` / `_load_time_series` | time-indexed `pd.Series` (one signal, dataset `signal`) or `pd.DataFrame` (one dataset per column) | preprocessed photometry, wheel |
 | `_save_peri_event_matrix` / `_load_peri_event_matrix` | `xr.DataArray(event, trial, time)` | responses, whether the label is a brain region (`photometry/`) or a movement channel (`video/`) |
-| `_save_scalars` / `_load_scalars` | flat `dict[str, float]` stored as group attrs | QC metrics |
+| `_save_scalars` / `_load_scalars` | flat `dict[str, float]` stored as group attrs | QC metrics, preprocessing diagnostics |
+
+`_read_label_responses(modality_group)` reads every `{label}/responses` subgroup
+of one modality in one call, for the loads that want the whole mapping rather
+than one label.
 
 `video/pose/qc` is the exception: it holds arrays plus a scalar, so it keeps
 its own pair (`_save_pose_xcorr` / `_load_pose_xcorr`).

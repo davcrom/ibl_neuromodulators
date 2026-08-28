@@ -143,9 +143,14 @@ df_sessions = pd.read_parquet(SESSIONS_FPATH)
 session_row = df_sessions.iloc[0]
 
 ps = PhotometrySession(session_row, one=one)
-ps.load_trials()      # → ps.trials (adds trial, stim_side, contrast, signed_contrast)
-ps.load_photometry()  # → ps.photometry dict: {'GCaMP': ..., 'Isosbestic': ...}
+ps.load_trials()          # → ps.trials (adds trial, stim_side, contrast, signed_contrast)
+ps.load_photometry()      # → ps.photometry['GCaMP_preprocessed']
+ps.load_raw_photometry()  # → ps.photometry: {'GCaMP': ..., 'Isosbestic': ...}
 ```
+
+`load_photometry` returns the *preprocessed* signal and `load_raw_photometry`
+the raw bands. They are separate methods on purpose: one method returning
+either would let an analysis run on raw data without saying so.
 
 ### Loading from HDF5
 
@@ -188,18 +193,27 @@ After QC, `ps.qc` is a DataFrame with one row per `(brain_region, band)`.
 from iblnm.config import RESPONSE_EVENTS
 
 ps.preprocess()  # bleach → isosbestic → zscore → resample to 30 Hz
-                 # → ps.photometry['GCaMP_preprocessed']
+                 # → ps.photometry['GCaMP_preprocessed'], written and stamped
+                 #   into photometry/{region}/preprocessed
 
-ps.photometry_responses = ps.extract_responses(
-    ps.photometry['GCaMP_preprocessed'], events=RESPONSE_EVENTS)
-# → dict[str, xr.DataArray] keyed by brain region,
-#   each DataArray has dims (event, trial, time)
+ps.load_responses('photometry', events=RESPONSE_EVENTS)
+# → ps.photometry_responses: dict[str, xr.DataArray] keyed by brain region,
+#   each DataArray has dims (event, trial, time). Read from H5 when stored,
+#   cut and written when not.
 
 ps.save_h5()  # saves all available data groups
 ```
 
-`extract_responses` takes any `label -> pd.Series` mapping, so the same engine
-cuts movement responses out of the video channels:
+The load methods are not pure readers. Each attempts its stored product, falls
+back to building it, and writes what it built — so `load_photometry` on a
+session with nothing cached fetches from Alyx, preprocesses, and leaves the
+result on disk. A product whose stored stamp disagrees with `config.py` raises
+`StaleProduct` rather than rebuilding silently; name it in `ps.rebuild` to force
+the rebuild.
+
+Underneath, `extract_responses` is the cutting engine that `load_responses`
+calls. It takes any `label -> pd.Series` mapping, so the same engine cuts
+movement responses out of the video channels:
 
 ```python
 from iblnm.config import MOVEMENT_EVENTS
@@ -503,7 +517,9 @@ movement channel.
 │       ├── preprocessed/
 │       │   ├── times     float64 (N,)    sample times at 30 Hz
 │       │   ├── signal    float64 (N,)    z-scored, isosbestic-corrected GCaMP
-│       │   └── attrs: spec_json (carries fs=30), built_at
+│       │   └── attrs: spec_json (carries fs=30), built_at,
+│       │              bleaching_tau, iso_correlation — diagnostics of this
+│       │              preprocessing run, so qc/ depends only on raw/
 │       │
 │       ├── responses/
 │       │   ├── times                float64 (W,)     time relative to event
@@ -515,7 +531,7 @@ movement channel.
 │       │
 │       └── qc/
 │           └── one dataset per QC metric column (band, brain_region,
-│               n_unique_samples, ar_score, bleaching_tau, ...)
+│               n_unique_samples, ar_score, ...)
 │
 ├── trials/
 │   └── table/                      # the ONE trials table verbatim, plus the
