@@ -514,6 +514,13 @@ LABEL2EVENT = ({label: event for label, (event, _, _) in POSE_MEASURES.items()}
 # 'photometry/raw/qc' names a kind of product whose H5 path is
 # 'photometry/{region}/raw/qc'.
 
+# Whether the raw products fetched from Alyx ('photometry/raw', 'wheel/raw' and
+# video's three datasets) are kept in the session H5. Off by default: the store
+# is already 14 GB of derived data and the ONE cache is where raw bytes belong.
+# With it off no raw group is written, so product_status reports those products
+# absent and the load methods fetch; turning it on makes the files self-contained.
+store_raw = False
+
 # The parameters that produced each product directly. Inputs' parameters are not
 # copied in here; resolve_product_spec pulls them through PRODUCT_INPUTS.
 PRODUCT_SPEC = {

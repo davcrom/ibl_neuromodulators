@@ -67,8 +67,10 @@ class TestRawWheelProduct:
         np.testing.assert_allclose(position.to_numpy(), raw['position'])
         assert ps.wheel_position is position
 
-    def test_roundtrips_through_the_raw_group(self, mock_session_series, tmp_path):
-        """Saved position and timestamps come back unchanged."""
+    def test_roundtrips_through_the_raw_group(self, mock_session_series, tmp_path,
+                                              monkeypatch):
+        """With `store_raw` on, position and timestamps come back unchanged."""
+        monkeypatch.setattr('iblnm.data.store_raw', True)
         raw = _raw_wheel()
         ps = _make_session(mock_session_series, tmp_path, raw)
         ps.load_raw_wheel()

@@ -558,6 +558,167 @@ class TestLoadingPrimitives:
         assert ps.product_status('photometry/raw/qc') == 'current'
 
 
+class TestStoreRawGating:
+    """`config.store_raw` decides whether the raw/ groups are written at all."""
+
+    @pytest.fixture
+    def raw_session(self, mock_session_series, mock_photometry_data, tmp_path):
+        """Session holding raw photometry bands and one region's raw QC."""
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+        session.filepath = tmp_path / f'{session.eid}.h5'
+        session.photometry = dict(mock_photometry_data)
+        session.photometry_qc = {'VTA': {'n_unique_samples_GCaMP': 0.5}}
+        return session
+
+    def test_photometry_raw_absent_but_qc_stored_when_off(self, raw_session):
+        """Raw bands are dropped; the QC scored from them is kept regardless."""
+        raw_session.save_h5(groups=['photometry'])
+
+        assert raw_session.product_status('photometry/raw') == 'absent'
+        assert raw_session.product_status('photometry/raw/qc') == 'current'
+
+    def test_photometry_raw_roundtrips_when_on(self, raw_session, monkeypatch,
+                                               mock_session_series,
+                                               mock_photometry_data):
+        """Flipping the constant stores each band, stamped, and reads it back."""
+        from iblnm.data import PhotometrySession
+        monkeypatch.setattr('iblnm.data.store_raw', True)
+        raw_session.save_h5(groups=['photometry'])
+
+        assert raw_session.product_status('photometry/raw') == 'current'
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.load_h5(raw_session.filepath)
+        for band, frame in mock_photometry_data.items():
+            pd.testing.assert_frame_equal(fresh.photometry[band], frame)
+
+    def test_wheel_raw_gated(self, raw_session, monkeypatch,
+                             mock_session_series):
+        """The encoder position is written only with the constant flipped on."""
+        from iblnm.data import PhotometrySession
+        raw_session.wheel_position = pd.Series([0.0, 0.1, 0.3],
+                                               index=[0.0, 0.5, 1.7])
+        raw_session.save_h5(groups=['wheel'])
+        assert raw_session.product_status('wheel/raw') == 'absent'
+
+        monkeypatch.setattr('iblnm.data.store_raw', True)
+        raw_session.save_h5(groups=['wheel'])
+        assert raw_session.product_status('wheel/raw') == 'current'
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.load_h5(raw_session.filepath)
+        pd.testing.assert_series_equal(fresh.wheel_position,
+                                       raw_session.wheel_position)
+
+    def test_load_raw_wheel_reads_stored_position_without_fetching(
+            self, raw_session, monkeypatch, mock_session_series):
+        """Stored encoder samples make the raw wheel readable without Alyx."""
+        from iblnm.data import PhotometrySession
+        monkeypatch.setattr('iblnm.data.store_raw', True)
+        raw_session.wheel_position = pd.Series([0.0, 0.1, 0.3],
+                                               index=[0.0, 0.5, 1.7])
+        raw_session.save_h5(groups=['wheel'])
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = raw_session.filepath
+        position = fresh.load_raw_wheel()
+
+        fresh.one.load_object.assert_not_called()
+        pd.testing.assert_series_equal(position, raw_session.wheel_position)
+
+    def test_load_raw_wheel_fetches_when_position_not_stored(
+            self, raw_session, mock_session_series):
+        """With the encoder samples dropped, the same read goes back to Alyx."""
+        from iblnm.data import PhotometrySession
+        raw_session.wheel_position = pd.Series([0.0, 0.1, 0.3],
+                                               index=[0.0, 0.5, 1.7])
+        raw_session.save_h5(groups=['wheel'])
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = raw_session.filepath
+        fresh.one.load_object.return_value = {'position': [0.0, 0.2],
+                                              'timestamps': [0.0, 0.4]}
+        position = fresh.load_raw_wheel()
+
+        assert fresh.one.load_object.call_count == 1
+        pd.testing.assert_series_equal(
+            position, pd.Series([0.0, 0.2], index=[0.0, 0.4]))
+
+    def test_video_raw_datasets_gated(self, raw_session, monkeypatch,
+                                      mock_session_series):
+        """Each of the three independently-fetched video datasets is gated."""
+        from iblnm.data import PhotometrySession
+        products = ('video/times', 'video/pose', 'video/motion_energy')
+        pose = pd.DataFrame({'paw_l_x': [1.0, 2.0, 3.0],
+                             'paw_l_likelihood': [0.9, 0.8, 0.99]})
+        raw_session.pose_times = np.array([0.0, 0.05, 0.10])
+        raw_session.pose = pose
+        raw_session.motion_energy = np.array([0.5, 1.5, 2.5])
+        raw_session.save_h5(groups=['video'])
+        assert [raw_session.product_status(p) for p in products] == \
+            ['absent'] * 3
+
+        monkeypatch.setattr('iblnm.data.store_raw', True)
+        raw_session.save_h5(groups=['video'])
+        assert [raw_session.product_status(p) for p in products] == \
+            ['current'] * 3
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.load_h5(raw_session.filepath)
+        np.testing.assert_array_equal(fresh.pose_times, raw_session.pose_times)
+        pd.testing.assert_frame_equal(fresh.pose[pose.columns], pose)
+        np.testing.assert_array_equal(fresh.motion_energy,
+                                      raw_session.motion_energy)
+
+    @pytest.fixture
+    def counted_fetch(self, monkeypatch, mock_photometry_data):
+        """Patch the Alyx photometry fetch; returns the list of trips made."""
+        from iblphotometry.fpio import PhotometrySessionLoader
+        fetches = []
+
+        def fake_fetch(session, **kwargs):
+            fetches.append(kwargs)
+            session.photometry.update(mock_photometry_data)
+
+        monkeypatch.setattr(PhotometrySessionLoader, 'load_photometry',
+                            fake_fetch)
+        return fetches
+
+    def test_load_photometry_reads_stored_raw_without_fetching(
+            self, raw_session, monkeypatch, mock_session_series, counted_fetch):
+        """Stored raw is enough to rebuild the preprocessed signal offline."""
+        from iblnm.data import PhotometrySession
+        monkeypatch.setattr('iblnm.data.store_raw', True)
+        raw_session.save_h5(groups=['photometry'])
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = raw_session.filepath
+        signal = fresh.load_photometry()
+
+        assert counted_fetch == []
+        assert list(signal.columns) == ['VTA']
+
+    def test_load_photometry_fetches_when_raw_not_stored(
+            self, raw_session, mock_session_series, counted_fetch):
+        """With the raw dropped, the same rebuild goes back to Alyx."""
+        from iblnm.data import PhotometrySession
+        raw_session.save_h5(groups=['photometry'])
+
+        fresh = PhotometrySession(mock_session_series, one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = raw_session.filepath
+        fresh.load_photometry()
+
+        assert len(counted_fetch) == 1
+
+
 class TestToDict:
     """Tests for PhotometrySession.to_dict and to_series."""
 

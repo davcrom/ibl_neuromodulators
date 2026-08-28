@@ -33,7 +33,7 @@ from iblnm.config import (
     RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     TARGET_FS, WHEEL_FS, POSE_FS,
-    resolve_product_spec,
+    resolve_product_spec, store_raw,
     _PERSESSION_REGRESSORS,
 )
 from iblnm.analysis import (
@@ -708,6 +708,66 @@ def _read_photometry_preprocessed(
             {region: _load_scalars(group) for region, group in groups.items()})
 
 
+def _raw_bands(photometry: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """The raw bands held in `self.photometry`, without the preprocessed signal.
+
+    The preprocessed product sits in the same dict under `PREPROCESSED_BAND`;
+    everything else came from Alyx as a raw band.
+    """
+    return {band: frame for band, frame in photometry.items()
+            if band != PREPROCESSED_BAND}
+
+
+def _save_raw_bands(
+    group: h5py.Group, bands: dict[str, pd.Series], spec: dict,
+) -> None:
+    """Write one region's raw bands into `group`, stamped with `spec`.
+
+    Each band becomes its own time-series subgroup: acquisition interleaves the
+    excitation wavelengths, so the bands of one region carry different sample
+    times and cannot share a single index. The stamp goes on the parent group,
+    beside — not over — the `qc/` subgroup, which is scored from the raw but
+    stored whether or not the raw itself is kept.
+
+    Parameters
+    ----------
+    group : h5py.Group
+        The region's `raw` group, required (not replaced) by the caller.
+    bands : dict
+        Band name ('GCaMP', 'Isosbestic') -> that band's signal for this region,
+        indexed by time in seconds.
+    spec : dict
+        Resolved `photometry/raw` spec, written as the group's stamp.
+    """
+    for band, signal in bands.items():
+        _save_time_series(_replace_group(group, band), signal, spec)
+    _write_stamp(group, spec)
+
+
+def _load_raw_bands(group: h5py.Group) -> dict[str, pd.Series]:
+    """Read one region's raw bands written by `_save_raw_bands`.
+
+    Only the time-series subgroups are read, so the `qc/` group sitting beside
+    the bands drops out on its own rather than by name.
+    """
+    return {band: _load_time_series(group[band]) for band in group
+            if 'times' in group[band]}
+
+
+def _read_photometry_raw(photometry_group: h5py.Group) -> dict[str, pd.DataFrame]:
+    """Read every region's raw bands into band -> DataFrame with regions as columns.
+
+    That is the shape `load_raw_photometry` gets from Alyx, so a session reading
+    its stored raw is indistinguishable from one that just fetched it.
+    """
+    by_region = _read_label_products(photometry_group, 'raw', _load_raw_bands)
+    bands = {band for signals in by_region.values() for band in signals}
+    return {band: pd.DataFrame({region: signals[band]
+                                for region, signals in by_region.items()
+                                if band in signals})
+            for band in bands}
+
+
 def _read_photometry_qc(
     photometry_group: h5py.Group,
 ) -> dict[str, dict[str, float]]:
@@ -733,13 +793,22 @@ def _save_photometry(session, h5_file):
             session.spec['photometry/neurophotometrics/qc'],
         )
 
+    raw_bands = _raw_bands(session.photometry) if store_raw else {}
+
     regions = (set(session.photometry_responses) | set(session.photometry_qc)
                | set(session.photometry_manual_qc))
     if preprocessed is not None:
         regions.update(preprocessed.columns)
+    regions.update(*(frame.columns for frame in raw_bands.values()))
 
     for region in sorted(regions):
         region_group = photometry_group.require_group(region)
+
+        band_signals = {band: frame[region] for band, frame in raw_bands.items()
+                        if region in frame.columns}
+        if band_signals:
+            _save_raw_bands(region_group.require_group('raw'), band_signals,
+                            session.spec['photometry/raw'])
 
         if preprocessed is not None and region in preprocessed.columns:
             group = _replace_group(region_group, 'preprocessed')
@@ -775,6 +844,7 @@ def _load_photometry(session, h5_file):
         return
     photometry_group = h5_file['photometry']
 
+    session.photometry.update(_read_photometry_raw(photometry_group))
     preprocessed, diagnostics = _read_photometry_preprocessed(photometry_group)
     if preprocessed is not None:
         session.photometry[PREPROCESSED_BAND] = preprocessed
@@ -798,7 +868,7 @@ def _save_wheel(session, h5_file):
     """
     wheel_group = h5_file.require_group('wheel')
     label_group = wheel_group.require_group(WHEEL_LABEL)
-    if session.wheel_position is not None:
+    if store_raw and session.wheel_position is not None:
         _save_time_series(_replace_group(label_group, 'raw'),
                           session.wheel_position, session.spec['wheel/raw'])
     if session.wheel_velocity is not None:
@@ -925,7 +995,7 @@ def _save_video(session, h5_file):
     for product, payload in (('video/times', session.pose_times),
                              ('video/pose', session.pose),
                              ('video/motion_energy', session.motion_energy)):
-        if payload is not None:
+        if store_raw and payload is not None:
             _save_frame_data(grp.require_group(product.rpartition('/')[2]),
                              payload, session.spec[product])
     if session.video_times_qc:
@@ -1380,6 +1450,10 @@ class PhotometrySession(PhotometrySessionLoader):
             'current' if the product is stored with a stamp matching the spec
             resolved at construction, 'stale' if the stamp disagrees, 'absent'
             if the file, the modality group, or the product group is missing.
+            An unstamped group is 'absent' too: a group carrying no data of its
+            own is only the container of the product beneath it, which is the
+            state `photometry/{region}/raw` is left in when `store_raw` is off
+            but its `qc/` was written.
 
         Reads H5 attrs only: no datasets are loaded and no ONE connection is
         needed, so a script can survey many sessions before deciding what to
@@ -1394,9 +1468,10 @@ class PhotometrySession(PhotometrySessionLoader):
                 return 'absent'
             for path in [name] + [f'{label}/{name}' for label in modality_grp]:
                 grp = modality_grp.get(path)
-                if grp is not None:
-                    return ('current' if _stamp_matches(grp.attrs, self.spec[product])
-                            else 'stale')
+                if grp is None or 'spec_json' not in grp.attrs:
+                    continue
+                return ('current' if _stamp_matches(grp.attrs, self.spec[product])
+                        else 'stale')
         return 'absent'
 
     def stored_is_current(self, product: str) -> bool:
@@ -1545,14 +1620,25 @@ class PhotometrySession(PhotometrySessionLoader):
         pre: int = -5,
         post: int = 5,
         ):
-        """Fetch the raw signal and reference bands from Alyx.
+        """Return the raw signal and reference bands, fetching them if absent.
 
         Populates ``self.photometry`` with one DataFrame per band
         (``'GCaMP'``, ``'Isosbestic'``), brain regions as columns. Separate
         from :meth:`load_photometry`, which returns the preprocessed signal:
         one method returning either would let an analysis run on raw data
         without saying so.
+
+        Reads `photometry/{region}/raw` when it is stored and its stamp still
+        matches `config.PRODUCT_SPEC` — which only happens with
+        `config.store_raw` on, since nothing writes that group otherwise — and
+        goes to Alyx in every other case. Only the fetch clears the manual QC
+        verdicts: reading the stored bands back replaces no samples.
         """
+        if self.stored_is_current('photometry/raw'):
+            with h5py.File(self.filepath, 'r') as h5:
+                self.photometry.update(_read_photometry_raw(h5['photometry']))
+            return
+
         try:
             super().load_photometry(
                 restrict_to_session=True,
@@ -2284,7 +2370,12 @@ class PhotometrySession(PhotometrySessionLoader):
     # =========================================================================
 
     def load_raw_wheel(self) -> pd.Series:
-        """Fetch the raw encoder position from Alyx.
+        """Return the raw encoder position, fetching it if absent.
+
+        Reads `wheel/{WHEEL_LABEL}/raw` when it is stored and its stamp still
+        matches `config.PRODUCT_SPEC` — which only happens with
+        `config.store_raw` on, since nothing writes that group otherwise — and
+        goes to Alyx in every other case.
 
         Returns
         -------
@@ -2296,6 +2387,12 @@ class PhotometrySession(PhotometrySessionLoader):
             :meth:`differentiate_wheel`. Also assigned to
             ``self.wheel_position``.
         """
+        if self.stored_is_current('wheel/raw'):
+            with h5py.File(self.filepath, 'r') as h5:
+                self.wheel_position = _load_time_series(
+                    h5[f'wheel/{WHEEL_LABEL}/raw'])
+            return self.wheel_position
+
         try:
             wheel = self.one.load_object(
                 self.eid, 'wheel',

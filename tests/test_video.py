@@ -107,6 +107,15 @@ def _make_session(mock_session_series, tmp_path, one=None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestRawVideoProducts:
+    """What the three datasets do once `config.store_raw` keeps them.
+
+    The gate itself — that nothing is written with it off — is
+    `tests/test_data.py::TestStoreRawGating`.
+    """
+
+    @pytest.fixture(autouse=True)
+    def keep_raw(self, monkeypatch):
+        monkeypatch.setattr('iblnm.data.store_raw', True)
 
     def test_each_dataset_stores_and_stamps_on_its_own(self, mock_session_series,
                                                        tmp_path):
@@ -225,14 +234,17 @@ class TestVideoTimesQcProduct:
         assert fresh.load_video_times_qc() == built
         fresh.one.load_dataset.assert_not_called()
 
-    def test_alyx_qc_labels_are_never_written(self, mock_session_series, tmp_path):
+    def test_alyx_qc_labels_are_never_written(self, mock_session_series, tmp_path,
+                                              monkeypatch):
         """The eight VIDEO_QC_COLS are fetched live, so no save path stores them.
 
         No stamp could tell a stored copy had gone stale: the labels change when
-        IBL re-runs its QC and no parameter in this repo feeds them.
+        IBL re-runs its QC and no parameter in this repo feeds them. `store_raw`
+        is on so that `video/pose` exists to be checked alongside the rest.
         """
         import h5py
         from iblnm.config import VIDEO_QC_COLS
+        monkeypatch.setattr('iblnm.data.store_raw', True)
         ps = _make_session(mock_session_series, tmp_path)
         ps.session_length = 5.0
         ps.video_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
@@ -275,7 +287,8 @@ def _xcorr_one(wheel=None):
 class TestPoseQcProduct:
 
     def test_roundtrips_the_xcorr_fields_and_reports_current(
-            self, mock_session_series, tmp_path):
+            self, mock_session_series, tmp_path, monkeypatch):
+        monkeypatch.setattr('iblnm.data.store_raw', True)
         ps = _make_session(mock_session_series, tmp_path, _xcorr_one())
         xcorr = ps.load_pose_qc()
 
