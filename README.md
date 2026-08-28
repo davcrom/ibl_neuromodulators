@@ -534,6 +534,16 @@ movement channel.
 │
 ├── photometry/
 │   └── {brain_region}/
+│       ├── raw/                     # the bands as fetched from Alyx, kept only
+│       │   ├── {band}/              # when config.store_raw is on
+│       │   │   ├── times     float64 (R,)   that band's own sample times, since
+│       │   │   ├── signal    float64 (R,)   acquisition interleaves the bands
+│       │   │   └── attrs: spec_json, built_at
+│       │   ├── attrs: spec_json, built_at
+│       │   └── qc/                  # scored from the raw and stored either way
+│       │       └── attrs: one per QC metric, the band suffixed into its name
+│       │                  (n_unique_samples_GCaMP, ...), spec_json, built_at
+│       │
 │       ├── preprocessed/
 │       │   ├── times     float64 (N,)    sample times at 30 Hz
 │       │   ├── signal    float64 (N,)    z-scored, isosbestic-corrected GCaMP
@@ -549,13 +559,9 @@ movement channel.
 │       │   ├── feedback_times       float64 (T, W)
 │       │   └── attrs: spec_json (carries window=[-1.0, 1.0]), built_at
 │       │
-│       ├── manual_qc/               # verdicts set by hand, one per recording;
-│       │   └── attrs: qc_lp, qc_movement, qc_timing
-│       │                            # no stamp — no parameter feeds them
-│       │
-│       └── qc/
-│           └── one dataset per QC metric column (band, brain_region,
-│               n_unique_samples, ar_score, ...)
+│       └── manual_qc/               # verdicts set by hand, one per recording;
+│           └── attrs: qc_lp, qc_movement, qc_timing
+│                                    # no stamp — no parameter feeds them
 │
 ├── trials/
 │   └── table/                      # the ONE trials table verbatim, plus the
@@ -581,7 +587,8 @@ movement channel.
 │
 ├── wheel/
 │   └── velocity/                    the wheel's one label, named for the
-│       ├── raw/                     preprocessed signal, not the raw position
+│       ├── raw/                     preprocessed signal, not the raw position;
+│       │                            kept only when config.store_raw is on
 │       │   ├── times     float64 (E,)   irregular encoder timestamps
 │       │   ├── signal    float64 (E,)   wheel position, radians
 │       │   └── attrs: spec_json, built_at
@@ -601,7 +608,8 @@ movement channel.
     │
     ├── times/                       raw, one group per independently
     │   ├── values   float64 (F,)    fetched dataset, each separately
-    │   ├── attrs: spec_json, built_at    stamped
+    │   ├── attrs: spec_json, built_at    stamped and each kept only
+    │                                     when config.store_raw is on
     │   └── qc/
     │       └── attrs: length_discrepancy, framerate_from_tpts,
     │                  spec_json, built_at
@@ -632,6 +640,17 @@ movement channel.
                                      holds its raw `values` dataset, since the
                                      raw product and the channel share a name.
 ```
+
+`config.store_raw` decides whether the raw products fetched from Alyx —
+`photometry/{region}/raw`, `wheel/velocity/raw`, and video's `times/`, `pose/`
+and `motion_energy/` — are kept here at all. It ships off, because
+`data/sessions` is already 14 GB of derived data and the ONE cache is where raw
+bytes belong. With it off the group is simply not written, so `product_status`
+reports the product `absent` and the load method fetches from Alyx; turning it
+on makes the files self-contained and the same load methods read their stored
+copy instead. The QC scored from the raw is stored either way — it is computed
+data in its own right — which is why `photometry/{region}/raw/qc` and
+`video/pose/qc` can sit under a group that holds no raw.
 
 The `manual_qc/` groups hold verdicts set by hand in the viewers, from the IBL
 vocabulary `CRITICAL`/`FAIL`/`WARNING`/`PASS` (`config.IBL_QC_VALUES`), keyed by

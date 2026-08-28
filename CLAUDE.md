@@ -191,6 +191,21 @@ runs on the wrong signal. `stored_is_current(product)` is the single gate they
 all pass through: it honours `ps.rebuild` and raises `StaleProduct` on a stored
 stamp that disagrees with `config.py`, rather than rebuilding silently.
 
+`config.store_raw` decides whether the raw products fetched from Alyx
+(`photometry/raw`, `wheel/raw` and video's three datasets) are kept in the H5 at
+all. It ships off, because `data/sessions` is already 14 GB of derived data and
+the ONE cache is where raw bytes belong. With it off the raw group is simply not
+written — no data, so no group and no stamp, so `product_status` reports the
+product `absent` and the load method goes to Alyx. There is deliberately no
+provenance-only group holding a stamp with no data: that would be a third state
+between `current` and `absent`, and the load path has no branch for it. Turning
+the constant on makes the files self-contained, and each raw load method
+(`load_raw_photometry`, `load_raw_wheel`, `_load_raw_video`) then reads its
+stored copy instead of fetching. QC is unaffected either way: `raw/qc` is
+computed data in its own right and is written whether or not the raw it scored
+was kept, which is why `photometry/{region}/raw/qc` can exist under an
+`absent` `photometry/raw`.
+
 QC is a product like any other. `run_raw_qc` scores the neurophotometrics source
 table into `photometry/neurophotometrics/qc`; `run_sliding_qc` scores the raw
 bands into `photometry/{region}/raw/qc`. Both store flat `{metric: value}`
