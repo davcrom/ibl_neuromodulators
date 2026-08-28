@@ -20,7 +20,7 @@ from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, DDM_HMM_DIR, EIDS_TO_DROP,
-    EVENT_COMPLETENESS_THRESHOLD,
+    EVENT_COMPLETENESS_THRESHOLD, IBL_QC_VALUES,
     LOGGED_ERRORS_FPATH, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
     POSE_MEASURES, PRODUCT_SPEC,
@@ -239,6 +239,11 @@ def _write_dataframe(h5_group, dataframe):
         if values.dtype == object:
             values = values.astype('S')
         h5_group.create_dataset(col, data=values)
+
+
+def _decode(value):
+    """Return an H5 string attr as str, leaving anything else alone."""
+    return value.decode() if isinstance(value, bytes) else value
 
 
 def _read_dataframe(h5_group):
@@ -613,6 +618,28 @@ def _load_scalars(group: h5py.Group) -> dict[str, float]:
             if key not in _STAMP_ATTRS}
 
 
+def _save_manual_qc(group: h5py.Group, labels: dict[str, str]) -> None:
+    """Write manual QC verdicts into `group` as attrs.
+
+    One pair serves `photometry/{region}/manual_qc` and `video/manual_qc`: the
+    payload is the same small `LP_QC_LABELS`-keyed dict of IBL verdict strings
+    either way, and only the parent group differs. Unlike every derived product
+    it carries no spec stamp — a verdict set by hand comes from no parameter in
+    `config.py`, so there is nothing it could go stale against.
+
+    Attrs are set in place rather than the group being replaced, so writing one
+    field leaves the session's other verdicts standing.
+    """
+    for field, value in labels.items():
+        group.attrs[field] = value
+
+
+def _load_manual_qc(group: h5py.Group) -> dict[str, str]:
+    """Read the verdicts written by `_save_manual_qc`, decoding bytes to str."""
+    return {field: _decode(group.attrs[field]) for field in LP_QC_LABELS
+            if field in group.attrs}
+
+
 # How a metric's sliding windows are reduced to the one value that is stored.
 # Named by string in config.QC_SLIDING_AGG so the choice is part of the QC
 # product's spec stamp; a callable could not be serialized into it.
@@ -706,7 +733,8 @@ def _save_photometry(session, h5_file):
             session.spec['photometry/neurophotometrics/qc'],
         )
 
-    regions = set(session.photometry_responses) | set(session.photometry_qc)
+    regions = (set(session.photometry_responses) | set(session.photometry_qc)
+               | set(session.photometry_manual_qc))
     if preprocessed is not None:
         regions.update(preprocessed.columns)
 
@@ -737,6 +765,10 @@ def _save_photometry(session, h5_file):
                 session.spec['photometry/raw/qc'],
             )
 
+        if region in session.photometry_manual_qc:
+            _save_manual_qc(region_group.require_group('manual_qc'),
+                            session.photometry_manual_qc[region])
+
 
 def _load_photometry(session, h5_file):
     if 'photometry' not in h5_file:
@@ -750,6 +782,8 @@ def _load_photometry(session, h5_file):
 
     session.photometry_responses = _read_label_responses(photometry_group)
     session.photometry_qc = _read_photometry_qc(photometry_group)
+    session.photometry_manual_qc = _read_label_products(
+        photometry_group, 'manual_qc', _load_manual_qc)
     if 'neurophotometrics/qc' in photometry_group:
         session.neurophotometrics_qc = _load_scalars(
             photometry_group['neurophotometrics/qc'])
@@ -873,14 +907,6 @@ def _load_pose_xcorr(group: h5py.Group) -> dict:
     }
 
 
-def _read_video_qc(h5_file):
-    """Return existing manual QC label attrs from the video group, if present."""
-    if 'video' not in h5_file:
-        return {}
-    attrs = h5_file['video'].attrs
-    return {label: attrs[label] for label in LP_QC_LABELS if label in attrs}
-
-
 def _save_video(session, h5_file):
     """Write the video modality's raw, preprocessed and response products.
 
@@ -890,10 +916,11 @@ def _save_video(session, h5_file):
     other two. `motion_energy` is both a raw product and a movement channel, so
     its group carries the raw frames beside the channel's `preprocessed` and
     `responses` subgroups.
+
+    `video/manual_qc` sits beside them all and is written only from verdicts
+    held on the session, so rebuilding any derived product leaves a stored
+    verdict alone.
     """
-    # Read the stored manual labels first, so a session that never loaded them
-    # writes them back unchanged rather than resetting a manual verdict.
-    preserved_qc = _read_video_qc(h5_file)
     grp = h5_file.require_group('video')
     for product, payload in (('video/times', session.pose_times),
                              ('video/pose', session.pose),
@@ -915,11 +942,8 @@ def _save_video(session, h5_file):
     if session.pose_xcorr is not None:
         _save_pose_xcorr(_replace_group(grp.require_group('pose'), 'qc'),
                          session.pose_xcorr, session.spec['video/pose/qc'])
-    for label in LP_QC_LABELS:
-        value = getattr(session, label)
-        if value in (None, LP_QC_NOT_SET):
-            value = preserved_qc.get(label, LP_QC_NOT_SET)
-        grp.attrs[label] = value
+    if session.video_manual_qc:
+        _save_manual_qc(grp.require_group('manual_qc'), session.video_manual_qc)
 
 
 def _load_video(session, h5_file):
@@ -937,11 +961,8 @@ def _load_video(session, h5_file):
     session.movement_responses = _read_label_responses(grp)
     if 'pose/qc' in grp:
         session.pose_xcorr = _load_pose_xcorr(grp['pose/qc'])
-    for label in LP_QC_LABELS:
-        if label in grp.attrs:
-            value = grp.attrs[label]
-            setattr(session, label,
-                    value.decode() if isinstance(value, bytes) else value)
+    if 'manual_qc' in grp:
+        session.video_manual_qc = _load_manual_qc(grp['manual_qc'])
 
 
 # The video modality's three raw products, each its own ONE fetch:
@@ -1138,9 +1159,11 @@ class PhotometrySession(PhotometrySessionLoader):
         self.movement_responses = {}
         self.pose_xcorr = None
         self.video_qc = {}
-        self.qc_lp = LP_QC_NOT_SET
-        self.qc_movement = LP_QC_NOT_SET
-        self.qc_timing = LP_QC_NOT_SET
+        # Manual QC verdicts, set by hand in the viewers and computed from
+        # nothing: LP_QC_LABELS -> verdict for the camera, which is per session,
+        # and region -> the same mapping for photometry, which is per recording.
+        self.photometry_manual_qc = {}
+        self.video_manual_qc = {}
         if load_data:
             self.load_trials()
             self.load_photometry()
@@ -1868,6 +1891,7 @@ class PhotometrySession(PhotometrySessionLoader):
             or bool(self.photometry_responses)
             or bool(self.photometry_qc)
             or bool(self.neurophotometrics_qc)
+            or bool(self.photometry_manual_qc)
         )
         has_video = (self.pose_times is not None
                      or self.pose is not None
@@ -1875,7 +1899,8 @@ class PhotometrySession(PhotometrySessionLoader):
                      or bool(self.movement_signals)
                      or bool(self.movement_responses)
                      or self.pose_xcorr is not None
-                     or bool(self.video_times_qc))
+                     or bool(self.video_times_qc)
+                     or bool(self.video_manual_qc))
         has_wheel = (self.wheel_position is not None
                      or self.wheel_velocity is not None
                      or bool(self.wheel_responses))
@@ -2494,6 +2519,48 @@ class PhotometrySession(PhotometrySessionLoader):
         from iblnm.io import get_video_qc
         self.video_qc = get_video_qc(self.eid, one=self.one)
         return self.video_qc
+
+    def set_manual_qc(self, field: str, value: str,
+                      region: str | None = None) -> None:
+        """Set one manual QC verdict on this session and write it to the H5.
+
+        The verdict is written on its own rather than through
+        :meth:`save_h5`, so what a viewer persists does not depend on which
+        products the session happens to be holding in memory.
+
+        Parameters
+        ----------
+        field : str
+            One of `config.LP_QC_LABELS`.
+        value : str
+            One of `config.IBL_QC_VALUES`. Both arguments are checked before
+            the file is opened, so a bad verdict leaves the store untouched.
+        region : str, optional
+            Names the recording to label, writing `photometry/{region}/
+            manual_qc`. Left None the verdict is the camera's, written to
+            `video/manual_qc` — video is scored per session because there is
+            one camera, photometry per region because there is one fiber each.
+
+        Raises
+        ------
+        ValueError
+            `field` is not an `LP_QC_LABELS` entry, or `value` is not an
+            `IBL_QC_VALUES` verdict.
+        """
+        if field not in LP_QC_LABELS:
+            raise ValueError(
+                f"Unknown QC field: {field!r} (expected {LP_QC_LABELS})")
+        if value not in IBL_QC_VALUES:
+            raise ValueError(
+                f"Invalid QC value: {value!r} (expected {IBL_QC_VALUES})")
+        labels = (self.video_manual_qc if region is None
+                  else self.photometry_manual_qc.setdefault(region, {}))
+        labels[field] = value
+        group = ('video/manual_qc' if region is None
+                 else f'photometry/{region}/manual_qc')
+        self.filepath.parent.mkdir(parents=True, exist_ok=True)
+        with h5py.File(self.filepath, 'a') as h5:
+            _save_manual_qc(h5.require_group(group), labels)
 
     def _movement_signals(self) -> dict[str, pd.Series]:
         """Return the preprocessed movement channels, resampling them if absent.

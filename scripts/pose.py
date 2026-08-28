@@ -44,9 +44,9 @@ from iblnm.config import (
 from iblnm.data import (
     LP_QC_NOT_SET,
     PhotometrySessionGroup,
+    _load_manual_qc,
     _load_pose_xcorr,
     _read_label_responses,
-    _read_video_qc,
 )
 from iblnm.io import _get_default_connection, get_video_qc
 from iblnm.util import collect_errors
@@ -285,7 +285,8 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH,
             xcorr = (_load_pose_xcorr(video['pose/qc'])
                      if 'pose/qc' in video else None)
             times_qc = dict(video['times/qc'].attrs) if 'times/qc' in video else {}
-            qc = _read_video_qc(f)
+            manual_qc = (_load_manual_qc(video['manual_qc'])
+                         if 'manual_qc' in video else {})
             row = {
                 'eid': eid,
                 'session_type': _read_session_type(f),
@@ -299,7 +300,7 @@ def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH,
                         for col in VIDEO_QC_COLS if col in session_qc})
             _add_trace_deltas(row, movement_responses)
             _add_xcorr_scalars(row, xcorr)
-        row.update({label: _decode(qc.get(label, LP_QC_NOT_SET))
+        row.update({label: manual_qc.get(label, LP_QC_NOT_SET)
                     for label in LP_QC_LABELS})
         rows.append(row)
 

@@ -51,7 +51,7 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
     series = series.copy()
     series['eid'] = eid
     ps = PhotometrySession(series, one=MagicMock(), load_data=False)
-    ps.qc_lp = qc_lp
+    ps.video_manual_qc = {'qc_lp': qc_lp}
     ps.video_times_qc = {'length_discrepancy': length_discrepancy,
                          'framerate_from_tpts': framerate_from_tpts}
 
@@ -368,7 +368,7 @@ class TestCollectPose:
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
                             series=mock_session_series)
         with h5py.File(tmp_path / 'eid-t.h5', 'a') as f:
-            f['video'].attrs['qc_timing'] = 'WARNING'
+            f['video/manual_qc'].attrs['qc_timing'] = 'WARNING'
 
         df = pose.collect_pose(tmp_path, performance_fpath=perf_fpath).set_index('eid')
 

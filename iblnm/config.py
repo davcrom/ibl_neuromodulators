@@ -483,6 +483,7 @@ MOVEMENT_RESPONSE_WINDOW = (0.1, 0.35)  # post-event scalar window (reuse BASELI
 CROSSCORR_LAG_WINDOW = 5.0          # paw/wheel cross-correlation lag half-width (s)
 CROSSCORR_FS = WHEEL_FS             # common resample rate for paw/wheel cross-correlation (Hz)
 LP_QC_LABELS = ('qc_lp', 'qc_movement', 'qc_timing')  # manual QC fields; IBL vocab, default 'NOT_SET'
+IBL_QC_VALUES = ('CRITICAL', 'FAIL', 'WARNING', 'PASS')  # settable verdicts ('NOT_SET' is the default, not a choice)
 
 # Bodypart trace label -> (event column, keypoints, reduction)
 POSE_MEASURES = {

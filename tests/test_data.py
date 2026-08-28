@@ -2316,8 +2316,7 @@ class TestSaveLoadH5:
         reloaded = session.photometry['GCaMP_preprocessed']['VTA'].values
         np.testing.assert_allclose(reloaded, original, rtol=1e-10)
 
-    def _make_video_session(self, mock_session_series, qc_lp='NOT_SET',
-                            qc_movement='NOT_SET'):
+    def _make_video_session(self, mock_session_series, manual_qc=None):
         """PhotometrySession carrying synthetic movement responses + xcorr."""
         import xarray as xr
         from iblnm.config import MOVEMENT_EVENTS
@@ -2346,15 +2345,15 @@ class TestSaveLoadH5:
             'peak_lags': np.array([0.1, 0.2, 0.4]),
             'drift': 0.3,
         }
-        ps.qc_lp = qc_lp
-        ps.qc_movement = qc_movement
+        ps.video_manual_qc = dict(manual_qc or {})
         return ps
 
     def test_save_load_video_roundtrip(self, mock_session_series, tmp_path):
         """video group round-trips movement responses, xcorr, and QC labels."""
         from iblnm.data import PhotometrySession
-        ps = self._make_video_session(mock_session_series, qc_lp='FAIL',
-                                      qc_movement='WARNING')
+        ps = self._make_video_session(
+            mock_session_series,
+            manual_qc={'qc_lp': 'FAIL', 'qc_movement': 'WARNING'})
         fpath = tmp_path / f'{ps.eid}.h5'
         ps.save_h5(fpath, groups=['video'])
 
@@ -2375,8 +2374,7 @@ class TestSaveLoadH5:
         np.testing.assert_allclose(ps2.pose_xcorr['peak_lags'],
                                    ps.pose_xcorr['peak_lags'])
         assert ps2.pose_xcorr['drift'] == ps.pose_xcorr['drift']
-        assert ps2.qc_lp == 'FAIL'
-        assert ps2.qc_movement == 'WARNING'
+        assert ps2.video_manual_qc == {'qc_lp': 'FAIL', 'qc_movement': 'WARNING'}
 
     def test_save_video_writes_per_label_responses_groups(
             self, mock_session_series, tmp_path):
@@ -2395,24 +2393,64 @@ class TestSaveLoadH5:
                 assert set(ps.movement_responses[label].coords['event'].values) \
                     <= set(video[label]['responses'].keys())
 
-    def test_save_video_preserves_manual_qc(self, mock_session_series, tmp_path):
-        """Re-saving automatic data with no QC on the object keeps prior labels."""
+    def test_rebuilding_responses_leaves_manual_qc(self, mock_session_series,
+                                                   tmp_path):
+        """Re-cutting the responses of a session holding no verdicts leaves the
+        stored ones standing — manual_qc is its own group, not part of any
+        derived product."""
         from iblnm.data import PhotometrySession
-        ps = self._make_video_session(mock_session_series, qc_lp='FAIL',
-                                      qc_movement='CRITICAL')
+        ps = self._make_video_session(
+            mock_session_series,
+            manual_qc={'qc_lp': 'FAIL', 'qc_movement': 'CRITICAL'})
         fpath = tmp_path / f'{ps.eid}.h5'
         ps.save_h5(fpath, groups=['video'])
 
-        # Fresh session with only automatic data, QC fields left at default.
+        # Fresh session with only automatic data, holding no verdicts at all.
         ps_auto = self._make_video_session(mock_session_series)
-        assert ps_auto.qc_lp == 'NOT_SET'
+        assert ps_auto.video_manual_qc == {}
         ps_auto.save_h5(fpath, groups=['video'])
 
         ps2 = PhotometrySession(mock_session_series, one=MagicMock(),
                                 load_data=False)
         ps2.load_h5(fpath, groups=['video'])
-        assert ps2.qc_lp == 'FAIL'
-        assert ps2.qc_movement == 'CRITICAL'
+        assert ps2.video_manual_qc == {'qc_lp': 'FAIL',
+                                       'qc_movement': 'CRITICAL'}
+
+
+class TestManualQC:
+    """Manual QC labels, per photometry region and per session for video."""
+
+    def _session(self, mock_session_series, tmp_path):
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
+        return ps
+
+    def test_set_manual_qc_round_trips_for_region_and_video(
+            self, mock_session_series, tmp_path):
+        """A label set through the session is what a fresh session reads back,
+        under video/manual_qc for the session and photometry/{region}/manual_qc
+        for one recording."""
+        ps = self._session(mock_session_series, tmp_path)
+        ps.set_manual_qc('qc_lp', 'FAIL')
+        ps.set_manual_qc('qc_movement', 'PASS', region='VTA')
+
+        ps2 = self._session(mock_session_series, tmp_path)
+        ps2.load_h5(groups=['photometry', 'video'])
+        assert ps2.video_manual_qc == {'qc_lp': 'FAIL'}
+        assert ps2.photometry_manual_qc == {'VTA': {'qc_movement': 'PASS'}}
+
+    @pytest.mark.parametrize('field, value', [('qc_lp', 'GOOD'),
+                                              ('qc_other', 'PASS')])
+    def test_set_manual_qc_rejects_bad_input_before_writing(
+            self, mock_session_series, tmp_path, field, value):
+        """An out-of-vocabulary verdict or field raises and writes nothing, so a
+        typo in a viewer cannot leave a half-written file behind."""
+        ps = self._session(mock_session_series, tmp_path)
+        with pytest.raises(ValueError):
+            ps.set_manual_qc(field, value)
+        assert not ps.filepath.exists()
 
 
 class TestFetchVideoQC:
