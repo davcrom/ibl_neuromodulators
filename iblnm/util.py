@@ -839,6 +839,46 @@ def derive_target_nm(df, brain_region_col='brain_region'):
     return df
 
 
+def build_catalog(sessions: pd.DataFrame) -> pd.DataFrame:
+    """Apply the cross-session fixups and the per-subject ranking to a catalog.
+
+    These cannot live in a per-session load path: filling one session's empty
+    brain region from its subject's other sessions, and ranking a session
+    within its subject's days, both need every session at once.
+
+    Parameters
+    ----------
+    sessions : pd.DataFrame
+        One row per session, as read back from the store's `metadata` groups.
+        `brain_region`, `hemisphere` and `target_NM` are parallel list columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy carrying the fixed region names, the derived `target_NM`/`NM`,
+        `day_n` (days since the subject's first session) and `session_n` (that
+        session's rank among the subject's days), conformed to
+        `config.SESSION_SCHEMA`.
+    """
+    from iblnm.config import SESSION_SCHEMA
+
+    # TEMPFIX: these compensate for incomplete Alyx metadata and go once the
+    # upstream data is corrected.
+    catalog = fill_empty_lists_from_group(sessions, 'brain_region')
+    catalog = fill_empty_lists_from_group(catalog, 'hemisphere')
+    catalog = fill_brain_region_from_fibers(catalog)
+    catalog = fix_brain_regions(catalog)
+    catalog = derive_target_nm(catalog)
+
+    catalog = catalog.assign(
+        date=pd.to_datetime(catalog['start_time'], format='ISO8601').dt.date)
+    catalog['day_n'] = catalog.groupby('subject')['date'].transform(
+        lambda dates: [(date - dates.min()).days for date in dates]
+    )
+    catalog['session_n'] = catalog.groupby('subject')['date'].rank(method='dense')
+    return enforce_schema(catalog.drop(columns='date'), SESSION_SCHEMA)
+
+
 def count_population_by_target_event(df: pd.DataFrame) -> pd.DataFrame:
     """Count distinct recordings and mice per ``(target_NM, event)``.
 

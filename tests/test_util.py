@@ -1200,3 +1200,30 @@ class TestFillQCLabels:
         df = pd.DataFrame({'eid': ['a', 'b'], 'subject': ['m1', None]})
         result = fill_qc_labels(df)
         assert result['subject'].isna().sum() == 1
+
+
+class TestBuildCatalog:
+    """The cross-session fixups run over the whole catalog at once."""
+
+    def test_fixups_ranking_and_schema(self):
+        """Empty lists fill from the subject, names are fixed, days are ranked."""
+        from iblnm.util import build_catalog
+        sessions = pd.DataFrame({
+            'eid': ['a', 'b'],
+            'subject': ['M1', 'M1'],
+            'start_time': ['2024-01-01T10:00:00', '2024-01-03T10:00:00'],
+            'brain_region': [['SNC'], []],
+            'hemisphere': [['l'], []],
+        })
+
+        catalog = build_catalog(sessions)
+
+        assert list(catalog['brain_region']) == [['SNc'], ['SNc']]
+        assert list(catalog['hemisphere']) == [['l'], ['l']]
+        assert list(catalog['target_NM']) == [['SNc-DA'], ['SNc-DA']]
+        assert list(catalog['day_n']) == [0, 2]
+        assert list(catalog['session_n']) == [1, 2]
+        # enforce_schema fills every catalogued column, so the frame is usable
+        # by PhotometrySessionGroup without further patching.
+        assert 'session_type' in catalog.columns
+        assert 'date' not in catalog.columns
