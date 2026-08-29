@@ -3426,6 +3426,9 @@ def _session_for_processing(h5_path, row, one, rebuild):
     h5_path : Path
         The session's file in the group's store. Read when it exists, so `fn`
         sees what was already built; otherwise the session starts from `row`.
+        Adopted as `ps.filepath` either way, so a session whose file does not
+        exist yet still writes what `fn` builds into the group's store rather
+        than into the default one.
     row : pd.Series or dict
         The catalog row, as a dict when it has crossed a pickle boundary.
     one : one.api.One
@@ -3439,6 +3442,7 @@ def _session_for_processing(h5_path, row, one, rebuild):
         ps = PhotometrySession.from_h5(h5_path, one=one)
     else:
         ps = PhotometrySession(pd.Series(row), one=one, load_data=False)
+        ps.filepath = h5_path
     ps.rebuild = set(rebuild)
     return ps
 

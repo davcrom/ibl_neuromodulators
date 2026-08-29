@@ -4865,6 +4865,22 @@ class TestGroupProcess:
         results = group.process(lambda ps: ps.eid)
         assert set(results) == {'eid-0', 'eid-1'}
 
+    def test_first_build_session_points_at_the_groups_store(self, tmp_path):
+        """A session with no H5 yet writes into the group's directory.
+
+        Nothing is written to `tmp_path` beforehand, so both sessions are
+        built from their catalog rows rather than read back.
+        """
+        from iblnm.data import PhotometrySessionGroup
+
+        group = PhotometrySessionGroup(
+            _make_recordings_df(n_eids=2, regions_per=1),
+            one=MagicMock(), h5_dir=tmp_path)
+
+        paths = group.process(lambda ps: ps.filepath)
+
+        assert paths == [tmp_path / 'eid-0.h5', tmp_path / 'eid-1.h5']
+
     def test_process_catches_fatal_errors(self, tmp_path):
         """Fatal errors are caught and logged; processing continues."""
         group = self._make_group_with_h5(tmp_path)
