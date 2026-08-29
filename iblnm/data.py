@@ -3418,34 +3418,65 @@ class PhotometrySession(PhotometrySessionLoader):
         return pd.Series(deltas, name='delta_r2').sort_values(ascending=False)
 
 
-def _process_worker(eid, row_dict, h5_dir, fn, kwargs):
+def _session_for_processing(h5_path, row, one, rebuild):
+    """Build the session `process` hands to `fn`, carrying the rebuild set.
+
+    Parameters
+    ----------
+    h5_path : Path
+        The session's file in the group's store. Read when it exists, so `fn`
+        sees what was already built; otherwise the session starts from `row`.
+    row : pd.Series or dict
+        The catalog row, as a dict when it has crossed a pickle boundary.
+    one : one.api.One
+        The connection the session queries Alyx through.
+    rebuild : set of str
+        `config.PRODUCT_SPEC` keys to rebuild rather than read back. Copied
+        onto the session, which is how a group's rebuild set reaches a worker
+        process that constructs its own session object.
+    """
+    if h5_path.exists():
+        ps = PhotometrySession.from_h5(h5_path, one=one)
+    else:
+        ps = PhotometrySession(pd.Series(row), one=one, load_data=False)
+    ps.rebuild = set(rebuild)
+    return ps
+
+
+def _process_one(ps, h5_path, fn, kwargs):
+    """Run `fn` on one session and flush its errors; return `fn`'s result.
+
+    A `BlockingIOError` propagates instead of being logged, and the flush is
+    skipped: it means another process holds the file, which `process` retries
+    at the end of the pass. Recording it would mark the session permanently
+    failed under the absent-data + present-error rule, for what is a transient
+    collision. Any other exception is logged against the session and the
+    result is None.
+    """
+    try:
+        result = fn(ps, **kwargs)
+    except BlockingIOError:
+        raise
+    except Exception as e:
+        ps.log_error(e)
+        result = None
+    if h5_path.exists() or ps.errors:
+        ps.save_h5(h5_path, groups=['errors'])
+    return result
+
+
+def _process_worker(eid, row_dict, h5_dir, fn, kwargs, rebuild):
     """Worker function for parallel process(). Runs in a subprocess.
 
-    Creates its own ONE connection, builds a PhotometrySession, calls
-    fn(ps, **kwargs), and flushes errors to H5.
+    Creates its own ONE connection, builds a PhotometrySession carrying
+    `rebuild`, calls fn(ps, **kwargs), and flushes errors to H5.
     """
-    from pathlib import Path
     from iblnm.io import _get_default_connection
 
     one = _get_default_connection()
     h5_path = Path(h5_dir) / f'{eid}.h5'
-
-    if h5_path.exists():
-        ps = PhotometrySession.from_h5(h5_path, one=one)
-    else:
-        row = pd.Series(row_dict)
-        ps = PhotometrySession(row, one=one, load_data=False)
-
-    try:
-        result = fn(ps, **kwargs)
-    except Exception as e:
-        ps.log_error(e)
-        result = None
-    finally:
-        if h5_path.exists() or ps.errors:
-            ps.save_h5(h5_path, groups=['errors'])
-
-    return result
+    ps = _session_for_processing(h5_path, row_dict, one, rebuild)
+    return _process_one(ps, h5_path, fn, kwargs)
 
 
 def _resolve_ps_variable(ps, entry):
@@ -3875,11 +3906,14 @@ class PhotometrySessionGroup:
 
         The session reads and writes the group's ``h5_dir``, not the default
         store, so a group pointed at another directory keeps its sessions there.
+        It also carries a copy of the group's ``rebuild`` set, so naming a
+        product on the group forces the rebuild on every session it builds.
         """
         eid = rec['eid']
         if eid not in self._sessions:
             ps = PhotometrySession(rec, one=self.one, load_data=False)
             ps.filepath = Path(self.h5_dir) / f'{eid}.h5'
+            ps.rebuild = set(self.rebuild)
             self._sessions[eid] = ps
         return self._sessions[eid]
 
@@ -4100,9 +4134,15 @@ class PhotometrySessionGroup:
         """Apply a function to each unique session in the group.
 
         For each session, instantiates a PhotometrySession (from H5 if
-        available, otherwise from the recording row), calls fn(ps, **kwargs),
-        catches any exception as a fatal error, and always flushes accumulated
-        errors to the session's H5 file.
+        available, otherwise from the recording row) carrying `self.rebuild`,
+        calls fn(ps, **kwargs), catches any exception as a fatal error, and
+        always flushes accumulated errors to the session's H5 file.
+
+        Sessions that hit an HDF5 file lock are collected and re-run once at
+        the end of the pass, rather than retried in place: the lock is held
+        only for the length of one read or write, so by the time the pass ends
+        the process that held it is almost certainly done. No sleeps, no
+        per-open backoff.
 
         Parameters
         ----------
@@ -4120,58 +4160,66 @@ class PhotometrySessionGroup:
         Returns
         -------
         list
-            Results from fn, one per unique session. None for failed sessions.
+            Results from fn, one per unique session, in `self.sessions` order.
+            None for failed sessions, including one still locked on the retry.
         """
+        sessions = self.sessions
+        results, blocked = self._process_pass(sessions, fn, workers, **kwargs)
+        if blocked:
+            retried, _ = self._process_pass(
+                sessions[sessions['eid'].isin(blocked)], fn, workers, **kwargs)
+            results.update(retried)
+        return [results[eid] for eid in sessions['eid']]
 
+    def _process_pass(self, sessions, fn, workers, **kwargs):
+        """Run one pass of `process` over `sessions`, sequentially or pooled.
+
+        Returns ``(results, blocked)``: an eid-keyed dict of results, and the
+        set of eids whose run raised `BlockingIOError` and so is worth
+        repeating.
+        """
+        if workers > 1:
+            return self._process_parallel(sessions, fn, workers, **kwargs)
+        return self._process_sequential(sessions, fn, **kwargs)
+
+    def _process_sequential(self, sessions, fn, **kwargs):
+        """Single-process implementation of one `process` pass."""
         from tqdm import tqdm
 
-        if workers > 1:
-            return self._process_parallel(fn, workers, **kwargs)
-
-        results = []
-        for _, row in tqdm(self.sessions.iterrows(), total=len(self.sessions),
+        results, blocked = {}, set()
+        for _, row in tqdm(sessions.iterrows(), total=len(sessions),
                            desc="Processing"):
             eid = row['eid']
             h5_path = Path(self.h5_dir) / f'{eid}.h5'
-            if h5_path.exists():
-                ps = PhotometrySession.from_h5(h5_path, one=self.one)
-            else:
-                ps = PhotometrySession(row, one=self.one, load_data=False)
-
+            ps = _session_for_processing(h5_path, row, self.one, self.rebuild)
             try:
-                result = fn(ps, **kwargs)
-                results.append(result)
-            except Exception as e:
-                ps.log_error(e)
-                results.append(None)
-            finally:
-                # Always flush errors to H5
-                if h5_path.exists() or ps.errors:
-                    ps.save_h5(h5_path, groups=['errors'])
-        return results
+                results[eid] = _process_one(ps, h5_path, fn, kwargs)
+            except BlockingIOError:
+                results[eid] = None
+                blocked.add(eid)
+        return results, blocked
 
-    def _process_parallel(self, fn, workers, **kwargs):
-        """Parallel implementation of process().
+    def _process_parallel(self, sessions, fn, workers, **kwargs):
+        """Parallel implementation of one `process` pass.
 
         Each worker creates its own ONE connection and PhotometrySession.
         fn must be a picklable top-level function (not a lambda or closure).
+        Only the row dict and the rebuild set cross the pickle boundary; bulk
+        data is read and written by each worker from its own H5 file.
         """
         from concurrent.futures import ProcessPoolExecutor, as_completed
         from tqdm import tqdm
 
         # Serialize rows as dicts for pickling
-        tasks = {row['eid']: row.to_dict()
-                 for _, row in self.sessions.iterrows()}
+        tasks = {row['eid']: row.to_dict() for _, row in sessions.iterrows()}
 
-        results = [None] * len(tasks)
-        eid_list = list(tasks.keys())
-        eid_to_idx = {eid: i for i, eid in enumerate(eid_list)}
-
+        results = dict.fromkeys(tasks)
+        blocked = set()
         with ProcessPoolExecutor(max_workers=workers) as pool:
             futures = {
                 pool.submit(
                     _process_worker, eid, row_dict,
-                    str(self.h5_dir), fn, kwargs,
+                    str(self.h5_dir), fn, kwargs, self.rebuild,
                 ): eid
                 for eid, row_dict in tasks.items()
             }
@@ -4179,11 +4227,13 @@ class PhotometrySessionGroup:
                                desc="Processing"):
                 eid = futures[future]
                 try:
-                    results[eid_to_idx[eid]] = future.result()
+                    results[eid] = future.result()
+                except BlockingIOError:
+                    blocked.add(eid)
                 except Exception as e:
                     print(f"\n  FATAL: {eid}: {type(e).__name__}: {e}")
 
-        return results
+        return results, blocked
 
     def _permutation_test_unit(self, target, donors, prep_fn, stat_fn,
                                fixed_var, swapped_var, n_iter, rng):

@@ -3886,6 +3886,37 @@ class TestFromCatalog:
             lambda x: x == ['MissingRawData']).all()
 
 
+class TestGroupRebuildPropagation:
+    """The group's rebuild set reaches every session it constructs."""
+
+    def test_get_session_carries_the_groups_rebuild_set(self):
+        """A session built by the group rebuilds what the group rebuilds."""
+        from iblnm.data import PhotometrySessionGroup
+
+        group = PhotometrySessionGroup(_make_recordings_df(n_eids=1, regions_per=1),
+                                       one=MagicMock())
+        group.rebuild = {'photometry/preprocessed'}
+        ps = group._get_session(group.recordings.iloc[0])
+
+        assert ps.rebuild == {'photometry/preprocessed'}
+
+    def test_worker_session_carries_the_pickled_rebuild_set(self, tmp_path):
+        """The set crosses the pool boundary as an explicit worker argument.
+
+        Calls the worker directly rather than through a pool: what is under
+        test is the payload contract, not the pool.
+        """
+        from iblnm.data import _process_worker
+
+        row = _make_recordings_df(n_eids=1, regions_per=1).iloc[0].to_dict()
+        with patch('iblnm.io._get_default_connection', return_value=MagicMock()):
+            rebuild = _process_worker(
+                'eid-0', row, tmp_path, lambda ps: ps.rebuild, {},
+                {'photometry/preprocessed'})
+
+        assert rebuild == {'photometry/preprocessed'}
+
+
 class TestScanProductStatus:
     """Tests for PhotometrySessionGroup.scan_product_status."""
 
@@ -4886,6 +4917,48 @@ class TestGroupProcess:
         with h5py.File(tmp_path / 'eid-0.h5', 'r') as f:
             error_types = [v.decode() for v in f['errors']['error_type'][:]]
             assert 'IncompleteEventTimes' in error_types
+
+    def _logged_error_types(self, tmp_path):
+        """Every error type recorded across both sessions' `errors/` trees."""
+        import h5py
+        from iblnm.data import read_error_tree
+
+        types = []
+        for eid in ['eid-0', 'eid-1']:
+            with h5py.File(tmp_path / f'{eid}.h5', 'r') as f:
+                types += [entry['error_type'] for entry in read_error_tree(f)]
+        return types
+
+    def test_lock_collision_is_retried_at_the_end_of_the_pass(self, tmp_path):
+        """A session that hit the file lock once succeeds on the retry pass."""
+        group = self._make_group_with_h5(tmp_path)
+        seen = set()
+
+        def blocks_once(ps):
+            if ps.eid not in seen:
+                seen.add(ps.eid)
+                raise BlockingIOError("file is locked")
+            return ps.eid
+
+        results = group.process(blocks_once)
+
+        assert set(results) == {'eid-0', 'eid-1'}
+        assert self._logged_error_types(tmp_path) == []
+
+    def test_persistent_lock_collision_fails_without_being_recorded(self, tmp_path):
+        """Retried once, not forever — and a lock is never written to errors/."""
+        group = self._make_group_with_h5(tmp_path)
+        calls = []
+
+        def always_blocks(ps):
+            calls.append(ps.eid)
+            raise BlockingIOError("file is locked")
+
+        results = group.process(always_blocks)
+
+        assert results == [None, None]
+        assert sorted(calls) == ['eid-0', 'eid-0', 'eid-1', 'eid-1']
+        assert self._logged_error_types(tmp_path) == []
 
 
 class TestPhotometrySessionGroup:
