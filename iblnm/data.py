@@ -3370,6 +3370,9 @@ class PhotometrySessionGroup:
         self.one = one
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
         self._sessions = {}  # eid → PhotometrySession cache
+        # PRODUCT_SPEC keys to rebuild rather than read back, mirroring
+        # PhotometrySession.rebuild for every session the group builds.
+        self.rebuild = set()
         self.response_traces = None
         self.response_traces_tpts = None
         self.mean_traces = None
@@ -3625,15 +3628,49 @@ class PhotometrySessionGroup:
         return len(self.recordings)
 
     def _get_session(self, rec):
-        """Get or create a PhotometrySession for a recording row."""
+        """Get or create a PhotometrySession for a recording row.
+
+        The session reads and writes the group's ``h5_dir``, not the default
+        store, so a group pointed at another directory keeps its sessions there.
+        """
         eid = rec['eid']
         if eid not in self._sessions:
-            self._sessions[eid] = PhotometrySession(rec, one=self.one, load_data=False)
+            ps = PhotometrySession(rec, one=self.one, load_data=False)
+            ps.filepath = Path(self.h5_dir) / f'{eid}.h5'
+            self._sessions[eid] = ps
         return self._sessions[eid]
 
     def __iter__(self):
         for _, rec in self.recordings.iterrows():
             yield rec, self._get_session(rec)
+
+    def scan_product_status(self, *products: str) -> pd.DataFrame:
+        """Survey which stored products are usable, without loading any data.
+
+        Parameters
+        ----------
+        *products : str
+            `config.PRODUCT_SPEC` keys to check. Any already named in
+            ``self.rebuild`` is skipped and gets no column: it is being rebuilt
+            either way, so its stored state is irrelevant.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per unique session (not per recording), with ``eid`` and
+            one column per surveyed product holding 'current', 'stale' or
+            'absent' as `PhotometrySession.product_status` reports it.
+
+        Reads H5 attrs only, so this is the pre-warm survey a script runs before
+        iterating: report what is missing, build it, then loop over a complete
+        store.
+        """
+        products = [p for p in products if p not in self.rebuild]
+        return pd.DataFrame([
+            {'eid': row['eid'],
+             **{p: self._get_session(row).product_status(p) for p in products}}
+            for _, row in self.sessions.iterrows()
+        ])
 
     def __getitem__(self, idx):
         rec = self.recordings.iloc[idx]

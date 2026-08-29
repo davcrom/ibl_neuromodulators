@@ -3892,6 +3892,85 @@ class TestFromCatalog:
             lambda x: x == ['MissingRawData']).all()
 
 
+class TestScanProductStatus:
+    """Tests for PhotometrySessionGroup.scan_product_status."""
+
+    @pytest.fixture
+    def scan_group(self, tmp_path):
+        """Group over three sessions in known per-product states.
+
+        Files are stamped by hand in ``tmp_path``: ``eid-0`` (two regions)
+        carries a current trials table and no photometry, ``eid-1`` a current
+        trials table and a preprocessed signal stamped at the wrong sampling
+        rate, and ``eid-2`` has no file at all.
+        """
+        import h5py
+        from iblnm.data import PhotometrySession, PhotometrySessionGroup, _write_stamp
+
+        catalog = pd.DataFrame([
+            {'eid': 'eid-0', 'subject': 'mouse_A', 'session_type': 'biased',
+             'start_time': '2024-01-01T10:00:00', 'number': 1,
+             'brain_region': ['VTA', 'SNc'], 'hemisphere': ['l', 'r'],
+             'target_NM': ['VTA-DA', 'SNc-DA'], 'NM': 'DA'},
+            {'eid': 'eid-1', 'subject': 'mouse_B', 'session_type': 'biased',
+             'start_time': '2024-01-02T10:00:00', 'number': 1,
+             'brain_region': ['DR'], 'hemisphere': ['l'],
+             'target_NM': ['DR-5HT'], 'NM': '5HT'},
+            {'eid': 'eid-2', 'subject': 'mouse_C', 'session_type': 'biased',
+             'start_time': '2024-01-03T10:00:00', 'number': 1,
+             'brain_region': ['LC'], 'hemisphere': ['r'],
+             'target_NM': ['LC-NE'], 'NM': 'NE'},
+        ])
+        spec = PhotometrySession(catalog.iloc[0]).spec
+        stamps = {
+            'eid-0': {'trials/table': spec['trials/table']},
+            'eid-1': {'trials/table': spec['trials/table'],
+                      'photometry/VTA/preprocessed':
+                          spec['photometry/preprocessed'] | {'fs': 15}},
+        }
+        for eid, groups in stamps.items():
+            with h5py.File(tmp_path / f'{eid}.h5', 'w') as h5:
+                for path, stamp in groups.items():
+                    _write_stamp(h5.require_group(path), stamp)
+
+        group = PhotometrySessionGroup(catalog, one=MagicMock(), h5_dir=tmp_path)
+        return group
+
+    def test_one_row_per_session_with_a_column_per_product(self, scan_group):
+        """Three sessions, two products, one row each — never one per recording."""
+        status = scan_group.scan_product_status(
+            'trials/table', 'photometry/preprocessed')
+
+        assert list(status.columns) == [
+            'eid', 'trials/table', 'photometry/preprocessed']
+        assert list(status['eid']) == ['eid-0', 'eid-1', 'eid-2']
+        assert list(status['trials/table']) == ['current', 'current', 'absent']
+        assert list(status['photometry/preprocessed']) == [
+            'absent', 'stale', 'absent']
+
+    def test_rebuilt_product_gets_no_column(self, scan_group):
+        """A product being rebuilt is skipped — its stored state is moot."""
+        scan_group.rebuild = {'photometry/preprocessed'}
+        status = scan_group.scan_product_status(
+            'trials/table', 'photometry/preprocessed')
+
+        assert list(status.columns) == ['eid', 'trials/table']
+
+    def test_group_rebuild_defaults_empty(self, scan_group):
+        """Nothing is rebuilt unless a caller says so."""
+        assert scan_group.rebuild == set()
+
+    def test_scan_loads_no_data(self, scan_group):
+        """Surveying reads stamps only: every session stays empty afterwards."""
+        scan_group.scan_product_status('trials/table', 'photometry/preprocessed')
+
+        assert set(scan_group._sessions) == {'eid-0', 'eid-1', 'eid-2'}
+        for ps in scan_group._sessions.values():
+            assert ps.photometry == {}
+            # The loader parent starts `trials` as an empty frame, not None.
+            assert ps.trials.empty
+
+
 def _percent_contrast_trials(contrasts, fraction_correct, n_per_contrast=20):
     """Trials presenting `contrasts` (percent) at a known fraction correct.
 
