@@ -82,10 +82,12 @@ def rollup_performance(group, path: Path = PERFORMANCE_FPATH) -> pd.DataFrame:
     `load_performance` likewise reads every catalogued session, since the
     performance and contrast filters it feeds are computed from what it
     returns; the rollup reports the cohort those filters admit, so its result
-    is cut back to `group.sessions` here.
+    is cut back to `group.sessions` here. A store where no session holds the
+    product yields a frame with no columns to cut on, and an empty file.
     """
     performance = group.load_performance()
-    performance = performance[performance['eid'].isin(group.sessions['eid'])]
+    if not performance.empty:
+        performance = performance[performance['eid'].isin(group.sessions['eid'])]
     performance.to_parquet(path, index=False)
     return performance
 

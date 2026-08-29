@@ -219,6 +219,15 @@ class TestRollupPerformance:
         assert written.loc['eid-1', 'fraction_correct'] == 0.82
         assert list(written.loc['eid-2', 'contrasts']) == [0.0, 0.5, 1.0]
 
+    def test_store_without_the_product_writes_an_empty_file(self, tmp_path):
+        """A rollup reports what the store holds, including nothing."""
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A')
+        path = tmp_path / 'performance.pqt'
+
+        rollup.rollup_performance(_group(tmp_path, {'eid-1': 'biased'}), path)
+
+        assert pd.read_parquet(path).empty
+
     def test_filtered_out_session_is_absent(self, tmp_path):
         """`load_performance` reads the catalog; the rollup reports the cohort."""
         _write_performance(tmp_path, 'eid-in', {'fraction_correct': 0.8,
