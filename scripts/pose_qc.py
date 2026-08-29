@@ -107,7 +107,11 @@ DATE_CMAP = 'viridis'
 
 
 def add_session_metadata(df: pd.DataFrame) -> pd.DataFrame:
-    """Left-join ``session_type`` and ``start_time`` from the session catalog.
+    """Left-join ``start_time`` from the session catalog.
+
+    ``session_type`` is not joined: the pose rollup already carries it, and
+    merging a second copy would suffix both out of the name the dot coloring
+    reads.
 
     Parameters
     ----------
@@ -117,10 +121,10 @@ def add_session_metadata(df: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        Copy of ``df`` with ``session_type`` (str) and ``start_time`` (ISO
-        datetime str) joined from ``SESSIONS_FPATH`` on ``eid``.
+        Copy of ``df`` with ``start_time`` (ISO datetime str) joined from
+        ``SESSIONS_FPATH`` on ``eid``.
     """
-    catalog = pd.read_parquet(SESSIONS_FPATH)[['eid', 'session_type', 'start_time']]
+    catalog = pd.read_parquet(SESSIONS_FPATH)[['eid', 'start_time']]
     return df.merge(catalog, on='eid', how='left')
 
 

@@ -56,6 +56,22 @@ def test_point_colors_date_orders_by_acquisition():
     assert tuple(colors[0]) == mappable.cmap(0.0)
 
 
+def test_add_session_metadata_keeps_one_session_type_column(tmp_path,
+                                                            monkeypatch):
+    """The regenerated pose.pqt carries session_type, so the join must not."""
+    catalog = tmp_path / 'sessions.pqt'
+    pd.DataFrame({'eid': ['eid-1'], 'session_type': ['biased'],
+                  'start_time': ['2024-01-01T10:00:00']}).to_parquet(catalog)
+    monkeypatch.setattr(pose_qc, 'SESSIONS_FPATH', catalog)
+    pose = pd.DataFrame({'eid': ['eid-1'], 'session_type': ['biased'],
+                         'drift': [0.1]})
+
+    result = pose_qc.add_session_metadata(pose)
+
+    assert list(result['session_type']) == ['biased']
+    assert list(result['start_time']) == ['2024-01-01T10:00:00']
+
+
 def test_add_derived_metrics_builds_timing_columns():
     df = pd.DataFrame({
         'mean_rt': [np.e, np.e ** 2],
