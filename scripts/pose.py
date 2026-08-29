@@ -20,41 +20,21 @@ import argparse
 from pathlib import Path
 
 import h5py
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from iblnm.analysis import movement_delta
 from iblnm.config import (
-    BASELINE_WINDOW,
-    LABEL2EVENT,
-    LP_QC_LABELS,
     MOVEMENT_EVENTS,
-    MOVEMENT_RESPONSE_WINDOW,
-    PERFORMANCE_FPATH,
     POSE_FPATH,
-    POSE_MEASURES,
-    QCVAL2NUM,
     SESSION_TYPES,
     SESSIONS_FPATH,
     SESSIONS_H5_DIR,
-    VIDEO_QC_COLS,
-    VIDEO_QC_QUALITY_COLS,
 )
-from iblnm.data import (
-    LP_QC_NOT_SET,
-    PhotometrySessionGroup,
-    _load_manual_qc,
-    _load_pose_xcorr,
-    _read_label_responses,
-)
+from iblnm.data import VIDEO_QC_ERRORS, PhotometrySessionGroup
 from iblnm.io import _get_default_connection, get_video_qc
-from iblnm.util import collect_errors
 from iblnm.validation import (
     MissingExtractedData, MissingLP, MissingMotionEnergy, MissingRawData,
     MissingVideoTimestamps,
-    VideoLengthError, VideoTimestampsQCError,
-    VideoDroppedFramesQCError, VideoPinStateQCError,
     validate_video_length, validate_video_timestamps_qc,
     validate_video_dropped_frames_qc, validate_video_pin_state_qc,
 )
@@ -67,17 +47,6 @@ VIDEO_QC_VALIDATORS = (
     validate_video_dropped_frames_qc,
     validate_video_pin_state_qc,
 )
-VIDEO_QC_ERRORS = (
-    VideoLengthError, VideoTimestampsQCError,
-    VideoDroppedFramesQCError, VideoPinStateQCError,
-)
-# Error types that disqualify a session in the rollup: video_qc_score forced
-# to -1 (missing timestamps plus the four leftCamera QC failures).
-VIDEO_QC_DISQUALIFYING_ERRORS = frozenset(
-    e.__name__ for e in (MissingVideoTimestamps, *VIDEO_QC_ERRORS))
-# Trace-derived scalar columns guaranteed in the rollup, NaN when their source
-# is absent: the LP keypoint measures plus the motion-energy channel.
-POSE_TRACE_COLUMNS = [*POSE_MEASURES, 'motion_energy']
 
 
 def run_video_validations(ps):
@@ -148,193 +117,6 @@ def process_pose(ps, reprocess=False):
     return 'processed'
 
 
-def _decode(value):
-    """Decode an HDF5 bytes value to ``str``; pass non-bytes through unchanged."""
-    return value.decode() if isinstance(value, bytes) else value
-
-
-def _read_session_type(f: h5py.File) -> str | None:
-    """Session type from the H5 ``metadata`` group; None when the group is absent."""
-    if 'metadata' not in f:
-        return None
-    return _decode(f['metadata'].attrs.get('session_type'))
-
-
-def _collect_error_types(h5_dir) -> dict[str, set[str]]:
-    """Map each eid to the set of error types in its H5 ``errors`` group."""
-    df_errors = collect_errors(h5_dir)
-    if df_errors.empty:
-        return {}
-    return df_errors.groupby('eid')['error_type'].agg(set).to_dict()
-
-
-def _has_lp_channel(movement_responses: dict) -> bool:
-    """True when an LP keypoint channel was extracted (not just motion energy)."""
-    return any(label != 'motion_energy' for label in movement_responses)
-
-
-def _score_video_qc(video_qc: dict, error_types: set[str]) -> float:
-    """Video QC score in [0, 1], or ``-1`` when a disqualifying error is logged.
-
-    The five ``VIDEO_QC_QUALITY_COLS`` labels in ``video_qc`` — the extended-QC
-    outcomes fetched live from Alyx, never stored in the H5 — are mapped through
-    ``config.QCVAL2NUM`` and averaged with ``nanmean``. Any error type in
-    ``VIDEO_QC_DISQUALIFYING_ERRORS`` forces the score to ``-1``.
-
-    ``NOT_SET`` labels are dropped rather than scored: the check produced no
-    outcome, so it carries no evidence either way. Its ``QCVAL2NUM`` value
-    exists to place it on the QC colormap, not to weigh in an average. A session
-    with no scorable label left scores NaN.
-    """
-    if error_types & VIDEO_QC_DISQUALIFYING_ERRORS:
-        return -1.0
-    quality = [QCVAL2NUM.get(video_qc[col], np.nan)
-               for col in VIDEO_QC_QUALITY_COLS
-               if col in video_qc and video_qc[col] != LP_QC_NOT_SET]
-    return float(np.nanmean(quality)) if quality else np.nan
-
-
-def _add_trace_deltas(row: dict, movement_responses: dict) -> None:
-    """Add one post-minus-pre movement delta per channel; no-op when absent.
-
-    Both terms are read-time slices of the channel's response grid: the mean
-    over ``MOVEMENT_RESPONSE_WINDOW`` of its own event cell (``LABEL2EVENT``)
-    minus the mean over ``BASELINE_WINDOW`` of its stimOn-locked cell. The
-    ``motion_energy`` channel flows through this loop like any other label.
-    """
-    for label, responses in movement_responses.items():
-        row[label] = movement_delta(
-            responses.sel(event=LABEL2EVENT[label]).values,
-            responses.sel(event='stimOn_times').values,
-            responses.coords['time'].values,
-            MOVEMENT_RESPONSE_WINDOW, BASELINE_WINDOW,
-        )
-
-
-def _add_xcorr_scalars(row: dict, xcorr) -> None:
-    """Add drift and per-third peak lag/value; all NaN when no cross-correlation."""
-    if xcorr is None:
-        for col in ('drift', 'peak_lag_early', 'peak_lag_mid', 'peak_lag_late',
-                    'peak_val_early', 'peak_val_mid', 'peak_val_late'):
-            row[col] = np.nan
-        return
-    row['drift'] = xcorr['drift']
-    row['peak_lag_early'], row['peak_lag_mid'], row['peak_lag_late'] = \
-        xcorr['peak_lags']
-    # Peak value of each third's cross-correlation function (alignment strength)
-    row['peak_val_early'], row['peak_val_mid'], row['peak_val_late'] = \
-        np.nanmax(xcorr['functions'], axis=1)
-
-
-def collect_pose(h5_dir, performance_fpath=PERFORMANCE_FPATH,
-                 video_qc=None) -> pd.DataFrame:
-    """Roll up the per-session ``video`` H5 groups into the unified pose table.
-
-    Emits one row per session with a ``video`` group (LP-absent sessions
-    included, their trace-derived columns NaN), plus a bare row for each session
-    whose ``errors`` group holds ``MissingVideoTimestamps`` but has no ``video``
-    group. For each ``video`` group: recompute the per-bodypart movement deltas
-    (post-minus-pre, see ``_add_trace_deltas``), read the cross-correlation
-    scalars, the manual QC labels (``LP_QC_LABELS``), the eight
-    ``VIDEO_QC_COLS`` and the basic-video measures (``length_discrepancy``,
-    ``framerate_from_tpts``) from ``video/times/qc``, and derive ``lp_exists``
-    and ``video_qc_score`` (``_score_video_qc``). Recomputing the deltas here
-    keeps both windows adjustable without re-extracting traces.
-    ``fraction_correct`` is left-joined from ``performance.pqt`` by ``eid``;
-    rows are not sorted.
-
-    Parameters
-    ----------
-    h5_dir : Path or str
-        Directory containing ``{eid}.h5`` files.
-    performance_fpath : Path or str
-        Per-eid performance table (``performance.pqt``) holding
-        ``fraction_correct``.
-    video_qc : dict, optional
-        eid -> the eight ``VIDEO_QC_COLS`` labels fetched from Alyx. Passed in
-        rather than read from the H5: the labels change when IBL re-runs its
-        QC, so nothing in this repo could tell a stored copy had gone stale.
-        Sessions absent from it contribute no QC columns and score NaN.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per session: ``eid``, ``session_type`` (read from the
-        ``metadata`` group for both video-group and bare error-stub rows, None
-        only when that group is absent), ``lp_exists``, one column per bodypart
-        scalar, ``drift``, ``peak_lag_early/mid/late``,
-        ``peak_val_early/mid/late``, the ``LP_QC_LABELS`` manual QC labels,
-        ``mean_rt``, the
-        8 ``VIDEO_QC_COLS``, ``length_discrepancy``, ``framerate_from_tpts``,
-        ``video_qc_score``, and ``fraction_correct``.
-    """
-    errors_by_eid = _collect_error_types(h5_dir)
-    video_qc = video_qc or {}
-    rows = []
-    eids_with_video = set()
-    for fpath in sorted(Path(h5_dir).glob('*.h5')):
-        eid = fpath.stem
-        error_types = errors_by_eid.get(eid, set())
-        session_qc = video_qc.get(eid, {})
-        with h5py.File(fpath, 'r') as f:
-            if 'video' not in f:
-                continue
-            eids_with_video.add(eid)
-            video = f['video']
-            movement_responses = _read_label_responses(video)
-            xcorr = (_load_pose_xcorr(video['pose/qc'])
-                     if 'pose/qc' in video else None)
-            times_qc = dict(video['times/qc'].attrs) if 'times/qc' in video else {}
-            manual_qc = (_load_manual_qc(video['manual_qc'])
-                         if 'manual_qc' in video else {})
-            row = {
-                'eid': eid,
-                'session_type': _read_session_type(f),
-                'lp_exists': _has_lp_channel(movement_responses),
-                'mean_rt': _read_mean_rt(f),
-                'length_discrepancy': times_qc.get('length_discrepancy', np.nan),
-                'framerate_from_tpts': times_qc.get('framerate_from_tpts', np.nan),
-                'video_qc_score': _score_video_qc(session_qc, error_types),
-            }
-            row.update({col: session_qc[col]
-                        for col in VIDEO_QC_COLS if col in session_qc})
-            _add_trace_deltas(row, movement_responses)
-            _add_xcorr_scalars(row, xcorr)
-        row.update({label: manual_qc.get(label, LP_QC_NOT_SET)
-                    for label in LP_QC_LABELS})
-        rows.append(row)
-
-    for eid, error_types in errors_by_eid.items():
-        if eid in eids_with_video or 'MissingVideoTimestamps' not in error_types:
-            continue
-        with h5py.File(Path(h5_dir) / f'{eid}.h5', 'r') as f:
-            session_type = _read_session_type(f)
-        rows.append({'eid': eid, 'session_type': session_type,
-                     'lp_exists': False, 'video_qc_score': -1.0})
-
-    df_pose = pd.DataFrame(rows)
-    for col in POSE_TRACE_COLUMNS:
-        if col not in df_pose.columns:
-            df_pose[col] = np.nan
-    df_perf = pd.read_parquet(performance_fpath)[['eid', 'fraction_correct']]
-    return df_pose.merge(df_perf, on='eid', how='left')
-
-
-def _read_mean_rt(f: h5py.File) -> float:
-    """Mean reaction time from the H5 ``trials/table`` group, NaN when unavailable.
-
-    Reaction time is ``feedback_times - stimOn_times`` per trial, averaged with
-    ``nanmean``. Returns NaN if the ``trials/table`` group or either dataset is
-    absent.
-    """
-    if 'trials/table' not in f:
-        return np.nan
-    trials = f['trials/table']
-    if 'stimOn_times' not in trials or 'feedback_times' not in trials:
-        return np.nan
-    return np.nanmean(trials['feedback_times'][:] - trials['stimOn_times'][:])
-
-
 def read_eids(path) -> list[str]:
     """Read one eid per line from a text/CSV file, ignoring blank lines."""
     return [line.strip() for line in Path(path).read_text().splitlines()
@@ -362,26 +144,25 @@ if __name__ == '__main__':
                              '(default: all types)')
     args = parser.parse_args()
 
+    one = _get_default_connection()
+
+    print(f"Loading sessions from {SESSIONS_FPATH}")
+    catalog = pd.read_parquet(SESSIONS_FPATH)
+    eids = read_eids(args.eids_file) if args.eids_file else args.eids
+    if eids:
+        catalog = catalog[catalog['eid'].isin(eids)]
+        if catalog.empty:
+            raise SystemExit(f"None of the {len(eids)} requested eids are in "
+                             f"{SESSIONS_FPATH}")
+    group = PhotometrySessionGroup.from_catalog(catalog, one=one)
+    group.filter_sessions(
+        session_types=args.session_type or False, qc_blockers=set(),
+        targetnms=False, min_performance=False,
+        required_contrasts=False,
+    )
+    print(f"  {len(group.sessions)} sessions after filtering")
+
     if not args.collect:
-
-        one = _get_default_connection()
-
-        print(f"Loading sessions from {SESSIONS_FPATH}")
-        catalog = pd.read_parquet(SESSIONS_FPATH)
-        eids = read_eids(args.eids_file) if args.eids_file else args.eids
-        if eids:
-            catalog = catalog[catalog['eid'].isin(eids)]
-            if catalog.empty:
-                raise SystemExit(f"None of the {len(eids)} requested eids are in "
-                                 f"{SESSIONS_FPATH}")
-        group = PhotometrySessionGroup.from_catalog(catalog, one=one)
-        group.filter_sessions(
-            session_types=args.session_type or False, qc_blockers=set(),
-            targetnms=False, min_performance=False,
-            required_contrasts=False,
-        )
-        print(f"  {len(group.sessions)} sessions after filtering")
-
         results = group.process(process_pose, workers=args.workers,
                                 reprocess=args.reprocess)
 
@@ -393,10 +174,9 @@ if __name__ == '__main__':
 
     # Roll up the video H5 groups into the pose table. The Alyx QC labels are
     # not in those files, so they are fetched here — one REST call per session.
-    stored_eids = [fpath.stem for fpath in sorted(SESSIONS_H5_DIR.glob('*.h5'))]
     video_qc = {eid: get_video_qc(eid, one=one)
-                for eid in tqdm(stored_eids, desc='Fetching video QC')}
-    df_pose = collect_pose(SESSIONS_H5_DIR, video_qc=video_qc)
+                for eid in tqdm(group.sessions['eid'], desc='Fetching video QC')}
+    df_pose = group.collect_pose(video_qc=video_qc)
     df_pose.to_parquet(POSE_FPATH)
     print(f"\nWrote {len(df_pose)} session rows to {POSE_FPATH}")
 

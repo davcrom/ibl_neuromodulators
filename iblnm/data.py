@@ -21,9 +21,10 @@ from one.alf.exceptions import ALFObjectNotFound
 from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, DDM_HMM_DIR, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD, IBL_QC_VALUES,
-    LP_QC_LABELS,
+    LABEL2EVENT, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
-    POSE_MEASURES, PRODUCT_SPEC,
+    MOVEMENT_RESPONSE_WINDOW,
+    POSE_MEASURES, PRODUCT_SPEC, QCVAL2NUM,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_AGG, QC_SLIDING_KWARGS, QC_SLIDING_METRICS,
     QC_UNDETRENDED_METRICS, REQUIRED_CONTRASTS,
@@ -32,12 +33,12 @@ from iblnm.config import (
     RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
-    WHEEL_FS, POSE_FS,
+    VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS, WHEEL_FS, POSE_FS,
     resolve_product_spec, store_raw,
     _PERSESSION_REGRESSORS,
 )
 from iblnm.analysis import (
-    get_responses, compute_response_magnitude, movement_trace,
+    get_responses, compute_response_magnitude, movement_delta, movement_trace,
     per_third_crosscorr, resample_pose, resample_signal,
     fit_measurement_error_varcomp, summarize_posterior,
 )
@@ -54,6 +55,8 @@ from iblnm.validation import (
     InsufficientTrials, BlockStructureBug, MissingBlockInfo,
     IncompleteEventTimes, TrialsNotInPhotometryTime,
     QCValidationError, AmbiguousRegionMapping, StaleProduct,
+    VideoLengthError, VideoTimestampsQCError,
+    VideoDroppedFramesQCError, VideoPinStateQCError,
 )
 
 # Long-form schema returned by per-recording drop-one OLS ΔR² (one row per
@@ -1114,6 +1117,135 @@ def _load_video(session, h5_file):
         session.pose_xcorr = _load_pose_xcorr(grp['pose/qc'])
     if 'manual_qc' in grp:
         session.video_manual_qc = _load_manual_qc(grp['manual_qc'])
+
+
+# The four leftCamera QC checks run over a session's video, and the error types
+# that disqualify it in the rollup: any of those four, plus a camera clock that
+# was never there. `scripts/pose.py` runs the validators; the rollup only names
+# what they raise.
+VIDEO_QC_ERRORS = (
+    VideoLengthError, VideoTimestampsQCError,
+    VideoDroppedFramesQCError, VideoPinStateQCError,
+)
+VIDEO_QC_DISQUALIFYING_ERRORS = frozenset(
+    e.__name__ for e in (MissingVideoTimestamps, *VIDEO_QC_ERRORS))
+
+# Trace-derived scalar columns guaranteed in the pose rollup, NaN when their
+# source is absent: the LP keypoint measures plus the motion-energy channel.
+POSE_TRACE_COLUMNS = [*POSE_MEASURES, 'motion_energy']
+
+
+def _has_lp_channel(movement_responses: dict) -> bool:
+    """True when an LP keypoint channel was extracted (not just motion energy)."""
+    return any(label != 'motion_energy' for label in movement_responses)
+
+
+def _score_video_qc(video_qc: dict, error_types: set[str]) -> float:
+    """Video QC score in [0, 1], or ``-1`` when a disqualifying error is logged.
+
+    The five ``VIDEO_QC_QUALITY_COLS`` labels in ``video_qc`` — the extended-QC
+    outcomes fetched live from Alyx, never stored in the H5 — are mapped through
+    ``config.QCVAL2NUM`` and averaged with ``nanmean``. Any error type in
+    ``VIDEO_QC_DISQUALIFYING_ERRORS`` forces the score to ``-1``.
+
+    ``NOT_SET`` labels are dropped rather than scored: the check produced no
+    outcome, so it carries no evidence either way. Its ``QCVAL2NUM`` value
+    exists to place it on the QC colormap, not to weigh in an average. A session
+    with no scorable label left scores NaN.
+    """
+    if error_types & VIDEO_QC_DISQUALIFYING_ERRORS:
+        return -1.0
+    quality = [QCVAL2NUM.get(video_qc[col], np.nan)
+               for col in VIDEO_QC_QUALITY_COLS
+               if col in video_qc and video_qc[col] != LP_QC_NOT_SET]
+    return float(np.nanmean(quality)) if quality else np.nan
+
+
+def _add_trace_deltas(row: dict, movement_responses: dict) -> None:
+    """Add one post-minus-pre movement delta per channel; no-op when absent.
+
+    Both terms are read-time slices of the channel's response grid: the mean
+    over ``MOVEMENT_RESPONSE_WINDOW`` of its own event cell (``LABEL2EVENT``)
+    minus the mean over ``BASELINE_WINDOW`` of its stimOn-locked cell. The
+    ``motion_energy`` channel flows through this loop like any other label.
+    """
+    for label, responses in movement_responses.items():
+        row[label] = movement_delta(
+            responses.sel(event=LABEL2EVENT[label]).values,
+            responses.sel(event='stimOn_times').values,
+            responses.coords['time'].values,
+            MOVEMENT_RESPONSE_WINDOW, BASELINE_WINDOW,
+        )
+
+
+def _add_xcorr_scalars(row: dict, xcorr) -> None:
+    """Add drift and per-third peak lag/value; all NaN when no cross-correlation."""
+    if xcorr is None:
+        for col in ('drift', 'peak_lag_early', 'peak_lag_mid', 'peak_lag_late',
+                    'peak_val_early', 'peak_val_mid', 'peak_val_late'):
+            row[col] = np.nan
+        return
+    row['drift'] = xcorr['drift']
+    row['peak_lag_early'], row['peak_lag_mid'], row['peak_lag_late'] = \
+        xcorr['peak_lags']
+    # Peak value of each third's cross-correlation function (alignment strength)
+    row['peak_val_early'], row['peak_val_mid'], row['peak_val_late'] = \
+        np.nanmax(xcorr['functions'], axis=1)
+
+
+def _read_mean_rt(h5_file) -> float:
+    """Mean reaction time from the H5 ``trials/table`` group, NaN when unavailable.
+
+    Reaction time is ``feedback_times - stimOn_times`` per trial, averaged with
+    ``nanmean``. Returns NaN if the ``trials/table`` group or either dataset is
+    absent.
+    """
+    if 'trials/table' not in h5_file:
+        return np.nan
+    trials = h5_file['trials/table']
+    if 'stimOn_times' not in trials or 'feedback_times' not in trials:
+        return np.nan
+    return np.nanmean(trials['feedback_times'][:] - trials['stimOn_times'][:])
+
+
+def _pose_row(video: h5py.Group, video_qc: dict, error_types: set[str]) -> dict:
+    """Roll one session's ``video`` group up into a flat row of scalars.
+
+    Parameters
+    ----------
+    video : h5py.Group
+        The session's ``video`` group. A session whose LP pose is absent still
+        has one, with its camera-clock measures and whatever channels were
+        extracted.
+    video_qc : dict
+        That session's eight ``VIDEO_QC_COLS`` labels, fetched from Alyx. Empty
+        for a session absent from the fetch, which then scores NaN.
+    error_types : set of str
+        Error types logged for the session, read for the disqualifying ones.
+
+    Returns
+    -------
+    dict
+        ``lp_exists``, the movement deltas, the cross-correlation scalars, the
+        manual QC verdicts, the camera-clock measures and ``video_qc_score``.
+    """
+    movement_responses = _read_label_responses(video)
+    xcorr = _load_pose_xcorr(video['pose/qc']) if 'pose/qc' in video else None
+    times_qc = dict(video['times/qc'].attrs) if 'times/qc' in video else {}
+    manual_qc = (_load_manual_qc(video['manual_qc'])
+                 if 'manual_qc' in video else {})
+    row = {
+        'lp_exists': _has_lp_channel(movement_responses),
+        'length_discrepancy': times_qc.get('length_discrepancy', np.nan),
+        'framerate_from_tpts': times_qc.get('framerate_from_tpts', np.nan),
+        'video_qc_score': _score_video_qc(video_qc, error_types),
+    }
+    row.update({col: video_qc[col] for col in VIDEO_QC_COLS if col in video_qc})
+    _add_trace_deltas(row, movement_responses)
+    _add_xcorr_scalars(row, xcorr)
+    row.update({label: manual_qc.get(label, LP_QC_NOT_SET)
+                for label in LP_QC_LABELS})
+    return row
 
 
 # The video modality's three raw products, each its own ONE fetch:
@@ -3800,6 +3932,65 @@ class PhotometrySessionGroup:
                         | stored.get(region, {}) for region in regions)
         return (pd.DataFrame(rows) if rows
                 else pd.DataFrame(columns=['eid', 'brain_region']))
+
+    def collect_pose(self, video_qc: dict | None = None) -> pd.DataFrame:
+        """Roll the filtered sessions' ``video`` groups up into the pose table.
+
+        One row per session holding a ``video`` group — sessions without LP
+        included, their trace-derived columns NaN — plus a bare row for each
+        session whose errors record ``MissingVideoTimestamps`` and which
+        therefore has no group at all. The movement deltas are recomputed on
+        every run rather than read back as stored scalars, so
+        `MOVEMENT_RESPONSE_WINDOW` and `BASELINE_WINDOW` stay adjustable
+        without re-extracting traces.
+
+        Parameters
+        ----------
+        video_qc : dict, optional
+            eid -> the eight `VIDEO_QC_COLS` labels fetched from Alyx. Passed
+            in rather than read from the H5: the labels change when IBL re-runs
+            its QC, so nothing here could tell a stored copy had gone stale.
+            Sessions absent from it contribute no QC columns and score NaN.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Columns: ``eid``, ``session_type``, ``lp_exists``, one movement
+            delta per channel, ``drift``, ``peak_lag_early/mid/late``,
+            ``peak_val_early/mid/late``, the `LP_QC_LABELS` manual verdicts,
+            ``mean_rt``, the eight `VIDEO_QC_COLS`, ``length_discrepancy``,
+            ``framerate_from_tpts``, ``video_qc_score`` and
+            ``fraction_correct``. Rows are in catalog order, not sorted.
+        """
+        video_qc = video_qc or {}
+        errors_by_eid = (self.collect_errors().groupby('eid')['error_type']
+                         .agg(set).to_dict())
+        if self.performance is None:
+            self.load_performance()
+        performance = self.performance.reindex(columns=['eid', 'fraction_correct'])
+
+        rows = []
+        for _, session in self.sessions.iterrows():
+            eid = session['eid']
+            error_types = errors_by_eid.get(eid, set())
+            row = {'eid': eid, 'session_type': session['session_type']}
+            with self._open_h5(eid) as h5:
+                if h5 is None or 'video' not in h5:
+                    # No group to read: the session is reported only when the
+                    # camera clock is what it was missing.
+                    if 'MissingVideoTimestamps' in error_types:
+                        rows.append(row | {'lp_exists': False,
+                                           'video_qc_score': -1.0})
+                    continue
+                row['mean_rt'] = _read_mean_rt(h5)
+                row |= _pose_row(h5['video'], video_qc.get(eid, {}), error_types)
+            rows.append(row)
+
+        df_pose = pd.DataFrame(rows)
+        for col in POSE_TRACE_COLUMNS:
+            if col not in df_pose.columns:
+                df_pose[col] = np.nan
+        return df_pose.merge(performance, on='eid', how='left')
 
     def collect_session_errors(self) -> pd.DataFrame:
         """Read every catalogued session's error types and join them on.

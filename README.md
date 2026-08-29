@@ -409,8 +409,8 @@ attributable to a single product, which land in the `errors/` root.
 
 Downstream scripts read each session's errors from its H5 `/errors` group —
 `from_catalog(..., h5_dir=...)` scans them into a `logged_errors` column (via
-`collect_session_errors(eids, h5_dir)`) — and filter sessions based on which
-error types are present, rather than re-validating.
+`group.collect_session_errors()`) — and filter sessions based on which error
+types are present, rather than re-validating.
 
 ---
 

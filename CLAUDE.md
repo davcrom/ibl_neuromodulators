@@ -23,7 +23,8 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Custom exceptions | `validation.py` |
 | Validate functions | `validation.py → validate_subject, validate_strain, ...` |
 | Alyx/ONE queries | `io.py → get_subject_info, get_brain_region, get_datasets, ...` |
-| Session utilities | `util.py → enforce_schema, collect_session_errors, get_session_type, ...` |
+| Session utilities | `util.py → enforce_schema, get_session_type, ...` |
+| Store rollups | `data.py → PhotometrySessionGroup.collect_errors, collect_qc, collect_pose` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |
 | Psychometric fitting | `task.py → fit_psychometric, fit_psychometric_by_block, compute_fraction_correct` |
@@ -146,10 +147,22 @@ group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
 group.filter_sessions(qc_blockers=ANALYSIS_QC_BLOCKERS)
 ```
 
-The standalone helper `collect_session_errors(eids, h5_dir)` returns the
-`['eid', 'logged_errors']` table directly when a script needs it (e.g. to
-augment with synthetic blockers before constructing the group). Each script
-decides which error types are fatal for its purpose.
+That scan is `group.collect_session_errors()`, callable on its own when a
+script wants the `['eid', 'logged_errors']` table before the filters run — to
+append a synthetic blocker of its own, say. Build the group with
+`scan_h5_errors=False` and call it explicitly in that case, so the table is
+scanned once rather than twice. Each script decides which error types are fatal
+for its purpose.
+
+Every rollup reads through the group and its filters, never by globbing the
+store: `collect_errors` (the full log for the filtered sessions), `collect_qc`
+(one row per catalogued recording, from `photometry/{region}/raw/qc`) and
+`collect_pose` (the video table). `collect_qc` and `collect_session_errors`
+walk `_catalog` rather than the filtered view, because what they return feeds
+`filter_sessions` and the mask does not exist yet — the same reason
+`load_performance` does. `PhotometrySessionGroup.from_h5_dir(h5_dir, one)`
+goes the other way, rebuilding a catalog from the `metadata` groups of files
+already written.
 
 ### 3. PhotometrySession Lifecycle
 
