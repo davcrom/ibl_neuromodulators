@@ -469,6 +469,7 @@ Tests use `pytest` with synthetic fixtures. No Alyx calls.
 | `test_vis.py` | Plotting functions |
 | `test_dataset_overview.py` | Dataset flag construction |
 | `test_wheel.py` | Wheel raw, preprocessed and response products |
+| `test_download.py` | Catalog fixups, per-session product building, download CLI |
 
 Key fixtures in test files:
 - `mock_session_series()` — synthetic session metadata row

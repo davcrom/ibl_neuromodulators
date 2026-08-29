@@ -29,13 +29,25 @@ from iblnm.config import (
     PRODUCT_INPUTS, PRODUCT_SPEC, SESSION_SCHEMA, SESSION_TYPES,
     SESSIONS_FPATH, SESSIONS_H5_DIR,
 )
-from iblnm.data import PhotometrySession, PhotometrySessionGroup
+from iblnm.data import VIDEO_QC_ERRORS, PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.util import (
     derive_target_nm, enforce_schema, fill_brain_region_from_fibers,
     fill_empty_lists_from_group, fix_brain_regions,
 )
-from iblnm.validation import StaleProduct
+from iblnm.validation import (
+    StaleProduct, validate_video_dropped_frames_qc, validate_video_length,
+    validate_video_pin_state_qc, validate_video_timestamps_qc,
+)
+
+# The leftCamera QC checks run over every session's video. Their verdicts are
+# logged, never blocking: a session with failing video QC still gets its traces.
+VIDEO_QC_VALIDATORS = (
+    validate_video_length,
+    validate_video_timestamps_qc,
+    validate_video_dropped_frames_qc,
+    validate_video_pin_state_qc,
+)
 
 
 def with_dependents(products) -> set[str]:
@@ -74,6 +86,25 @@ def _build_trials(ps) -> None:
     ps.save_h5(groups=['trials'])
 
 
+def _build_video_times_qc(ps) -> None:
+    """Score the camera clock, then run the four leftCamera QC checks over it.
+
+    The checks produce no product of their own: they read the clock measures
+    just built and the eight Alyx labels fetched live, and log a failure
+    against `video/times/qc` so the pose rollup can disqualify the session
+    (`data.VIDEO_QC_DISQUALIFYING_ERRORS`). They never block — every verdict
+    still gets its traces extracted.
+    """
+    ps.load_video_times_qc()
+    ps.fetch_video_qc()
+    qc_row = {**ps.video_times_qc, **ps.video_qc}
+    for validate in VIDEO_QC_VALIDATORS:
+        try:
+            validate(qc_row)
+        except VIDEO_QC_ERRORS as error:
+            ps.log_error(error, product='video/times/qc')
+
+
 # What this script builds, in dependency order, each mapped to the call that
 # reads the stored product back or builds it. The raw products are deliberately
 # absent: with `config.store_raw` off nothing keeps them, so naming them here
@@ -90,7 +121,7 @@ PRODUCT_BUILDERS = {
     'photometry/responses':            lambda ps: ps.load_responses('photometry'),
     'wheel/preprocessed':              lambda ps: ps.load_wheel(),
     'wheel/responses':                 lambda ps: ps.load_responses('wheel'),
-    'video/times/qc':                  lambda ps: ps.load_video_times_qc(),
+    'video/times/qc':                  _build_video_times_qc,
     'video/pose/qc':                   lambda ps: ps.load_pose_qc(),
     'video/responses':                 lambda ps: ps.load_responses('video'),
 }

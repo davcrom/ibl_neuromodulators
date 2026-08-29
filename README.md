@@ -47,64 +47,52 @@ ruff check .               # lint
 
 ## Pipeline
 
-Scripts run in order. Each session's errors are written into its H5 `/errors`
-group; stages print an error summary rather than writing a separate log file.
+One script fetches and builds everything. Each session's errors are written
+into its H5 `/errors` group, one group per product; the script prints an error
+summary rather than writing a separate log file.
 
 ```
-query_database.py → photometry.py → task.py → wheel.py → dataset_overview.py
-       ↓                  ↓             ↓          ↓              ↓
-  sessions.pqt      {eid}.h5 +    performance  {eid}.h5      figures +
-                  qc_photometry      .pqt     (wheel group)  errors.pqt
+download.py → data/sessions/{eid}.h5  (every product, stamped)
+     ↓
+metadata/sessions.pqt  (the catalog)
 ```
-
-Run the full pipeline or resume from a specific stage:
 
 ```bash
-python scripts/run_pipeline.py                    # all stages
-python scripts/run_pipeline.py --from photometry  # resume from photometry
-python scripts/run_pipeline.py --only task        # single stage
-python scripts/run_pipeline.py --skip-errors      # continue past failures
+python scripts/download.py                          # build everything missing
+python scripts/download.py --workers 4              # in parallel
+python scripts/download.py --session-type biased    # one session type
+python scripts/download.py --skip video/pose        # leave LightningPose alone
+python scripts/download.py --rebuild photometry/preprocessed
+python scripts/download.py --retry-failed           # re-attempt failed builds
 ```
 
-### Stage 1: `query_database.py` — Session metadata
+**Phase one — catalog.** Queries the `ibl_fibrephotometry` project on Alyx,
+writes each new session's metadata (subject info, brain regions, hemisphere,
+dataset availability) into its H5 file, then runs the fixups that need every
+session at once: filling empty brain regions from the subject's other sessions
+and from `metadata/fibers.csv`, normalizing region names, deriving `target_NM`,
+and ranking each session within its subject (`day_n`, `session_n`).
 
-Queries the `ibl_fibrephotometry` project on Alyx, enriches each session with subject info (strain, line, neuromodulator), brain regions, hemisphere, and dataset availability. Validates all metadata fields.
+**Phase two — products.** Builds every product each session is missing, in
+dependency order: the trials table and its performance scalars, the
+photometry QC / preprocessed signal / responses, the wheel velocity and its
+per-trial matrix, and the video clock QC, pose QC and movement responses. Each
+product is written with a stamp of the `config.py` parameters that produced it
+(`PRODUCT_SPEC`), and a session already holding a current product is left
+alone.
 
-```bash
-python scripts/query_database.py                 # incremental update
-python scripts/query_database.py --redownload    # re-download everything
-python scripts/query_database.py --extended-qc   # also fetch Alyx extended QC
-```
+Detection is automatic, rebuilding is manual. A stored stamp that disagrees
+with `config.py` stops the run and names the products rather than silently
+re-deriving the store; `--rebuild` is how you accept the change, and it reports
+how many sessions each named product affects before any work starts. `--skip`
+and `--rebuild` both reach through to a product's dependents, so skipping
+`video/pose` also skips the pose QC and the movement responses built from it.
 
-**Output**: `metadata/sessions.pqt` (errors written to each session's H5 `/errors` group)
+A product whose data is absent and whose error group records a failed attempt
+is skipped on every later run — that record is what stops a re-download every
+time — until `--retry-failed` says otherwise.
 
-### Stage 2: `photometry.py` — QC, preprocessing, response extraction
-
-Processes each session through a tiered pipeline:
-
-1. Load trials and photometry from ONE
-2. Validate that trials fall within the photometry recording window (fatal)
-3. Raw QC: check for band inversions and early samples (fatal)
-4. Sliding QC: compute signal quality metrics (fatal)
-5. Preprocess: bleach correction → isosbestic regression → resample to 30 Hz → z-score
-6. Extract peri-event responses for `stimOn_times`, `firstMovement_times`, `feedback_times`
-7. Save signal and responses to HDF5
-
-**Output**: `data/sessions/{eid}.h5` (signals, responses, and `/errors`), `data/qc_photometry.pqt`
-
-### Stage 3: `task.py` — Task performance
-
-Computes per-session metrics: fraction correct, no-go fraction, psychometric function parameters (bias, threshold, lapses) for the 50/50 block, and per-block psychometrics and bias shift for biased/ephys sessions.
-
-**Output**: `data/performance.pqt`
-
-### Stage 4: `wheel.py` — Per-trial wheel velocity
-
-Downloads the raw encoder position, differentiates it into velocity at `WHEEL_FS`, and cuts the per-trial matrix (stimOn → that trial's feedback), NaN-padded to the longest trial. Appends a `wheel/` group to existing HDF5 files.
-
-**Output**: appended `data/sessions/{eid}.h5` (`wheel/velocity/{raw,preprocessed,responses}` and `/errors`)
-
-### Stage 5: `dataset_overview.py` — Session coverage figures
+### `dataset_overview.py` — Session coverage figures
 
 Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and the errors scanned from the H5 `/errors` groups. Produces session-by-session overview matrices at each processing stage, plus barplots of complete recordings per brain target and per mouse. Writes the unified `metadata/errors.pqt`.
 
