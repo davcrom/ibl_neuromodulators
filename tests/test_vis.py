@@ -2274,7 +2274,7 @@ def _make_group(subjects_targets, session_n_per_subject=2):
     df = pd.DataFrame(rows)
     group = PhotometrySessionGroup(df, one=MagicMock())
     group.filter_sessions(
-        session_types=False, qc_blockers=set(),
+        session_types=False, qc_blockers=set(), photometry_qc=False,
         targetnms=False, min_performance=False, required_contrasts=False,
     )
     return group
@@ -2313,7 +2313,7 @@ class TestSessionOverviewMatrixSubjectOrder:
         }])
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
-            session_types=False, qc_blockers=set(),
+            session_types=False, qc_blockers=set(), photometry_qc=False,
             targetnms=False, min_performance=False, required_contrasts=False,
         )
         ax = session_overview_matrix(group)
@@ -2338,7 +2338,8 @@ class TestSessionOverviewMatrixSubjectOrder:
         ])
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(session_types=False, qc_blockers={'MissingRawData'},
-                              targetnms=False, min_performance=False, required_contrasts=False)
+                              targetnms=False, min_performance=False,
+                              required_contrasts=False, photometry_qc=False)
 
         # _catalog has 2 subjects; sessions has 1
         assert len(group._catalog) == 2
@@ -2380,7 +2381,7 @@ def _make_mock_group_with_performance():
     group = PhotometrySessionGroup(df, one=MagicMock())
     group.filter_sessions(
         session_types=False, qc_blockers=set(), targetnms=False,
-        min_performance=False, required_contrasts=False,
+        min_performance=False, required_contrasts=False, photometry_qc=False,
     )
 
     rng = np.random.default_rng(0)
@@ -2433,7 +2434,7 @@ def _make_mock_group_with_performance_multi():
     group = PhotometrySessionGroup(df, one=MagicMock())
     group.filter_sessions(
         session_types=False, qc_blockers=set(), targetnms=False,
-        min_performance=False, required_contrasts=False,
+        min_performance=False, required_contrasts=False, photometry_qc=False,
     )
     group.performance = pd.DataFrame(perf_rows)
     return group

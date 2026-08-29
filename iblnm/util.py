@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime
 
 from iblnm.config import (
-    N_UNIQUE_SAMPLES_THRESHOLD, VALID_TARGETNMS, DATASET_CATEGORIES,
+    VALID_TARGETNMS, DATASET_CATEGORIES,
     EXCLUDE_SESSION_TYPES, PROTOCOL_RED_FLAGS, SESSION_TYPES,
     SUBJECTS_TO_EXCLUDE,
     QC_VALUE_ORDER,
@@ -537,50 +537,6 @@ def sample_recordings(df, metric, percentile_range):
     samples = df[(df[metric] >= t0) & (df[metric] <= t1)]
     sample = samples.sample().squeeze()
     return sample
-
-
-def aggregate_qc_per_session(df_qc: pd.DataFrame, require_all: bool = True) -> pd.DataFrame:
-    """
-    Aggregate QC metrics per session and compute passes_basic_qc flag.
-
-    Parameters
-    ----------
-    df_qc : pd.DataFrame
-        QC results with columns: eid, n_unique_samples, n_band_inversions
-    require_all : bool
-        If True, all signals must pass for session to pass.
-        If False, any signal passing is sufficient.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: eid, passes_basic_qc
-    """
-    if len(df_qc) == 0:
-        return pd.DataFrame(columns=['eid', 'passes_basic_qc'])
-
-    if require_all:
-        # All signals must pass: min unique > threshold, max inversions == 0
-        agg = df_qc.groupby('eid').agg({
-            'n_unique_samples': 'min',
-            'n_band_inversions': 'max',
-        }).reset_index()
-        agg['passes_basic_qc'] = (
-            (agg['n_unique_samples'] > N_UNIQUE_SAMPLES_THRESHOLD) &
-            (agg['n_band_inversions'] == 0)
-        )
-    else:
-        # Any signal passing is sufficient: max unique > threshold, min inversions == 0
-        agg = df_qc.groupby('eid').agg({
-            'n_unique_samples': 'max',
-            'n_band_inversions': 'min',
-        }).reset_index()
-        agg['passes_basic_qc'] = (
-            (agg['n_unique_samples'] > N_UNIQUE_SAMPLES_THRESHOLD) &
-            (agg['n_band_inversions'] == 0)
-        )
-
-    return agg[['eid', 'passes_basic_qc']]
 
 
 def traj2coord(x, y, z, depth, theta, phi, **kwargs):

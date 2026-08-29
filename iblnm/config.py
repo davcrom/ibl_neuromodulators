@@ -460,6 +460,21 @@ PREPROCESSING_PIPELINES = {
 # Fraction of unique samples per window below which a channel is flagged as suspect
 N_UNIQUE_SAMPLES_THRESHOLD = 0.1
 
+# Recording-level photometry QC thresholds read by
+# `PhotometrySessionGroup.filter_sessions(photometry_qc=...)`. Keys are columns
+# of the `collect_qc` table — a metric of QC_SLIDING_METRICS with the band
+# suffixed on, as `photometry/{region}/raw/qc` stores it — and values are the
+# (comparison, cutoff) each must satisfy. A recording survives only if every
+# entry passes, so both bands must clear their cutoff. At 30 Hz over a 120 s
+# window (3600 samples), 0.005 is 18 distinct values. Provisional: it sits in
+# the largest observed ratio gap (0.0012 to 0.0077, x6.3) on a 50-recording
+# pool stratified over the old, detrended metric, so the gap is not evidence of
+# population structure. Re-check once q10 exists for all 3776 recordings.
+PHOTOMETRY_QC_THRESHOLDS = {
+    'n_unique_samples_GCaMP':      ('>=', 0.005),
+    'n_unique_samples_Isosbestic': ('>=', 0.005),
+}
+
 
 # Analysis parameters
 # Event-based analyses

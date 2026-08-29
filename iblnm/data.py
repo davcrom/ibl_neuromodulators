@@ -1,4 +1,5 @@
 import json
+import operator
 import warnings
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -24,6 +25,7 @@ from iblnm.config import (
     LABEL2EVENT, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
     MOVEMENT_RESPONSE_WINDOW,
+    PHOTOMETRY_QC_THRESHOLDS,
     POSE_MEASURES, PRODUCT_SPEC, QCVAL2NUM,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_AGG, QC_SLIDING_KWARGS, QC_SLIDING_METRICS,
@@ -3491,6 +3493,12 @@ def _apply_statistic(statistic, arrays):
     return statistic(*[a[:min_len] for a in arrays])
 
 
+# Comparison each PHOTOMETRY_QC_THRESHOLDS entry names, kept as strings in
+# config.py so the thresholds stay a plain serializable mapping.
+_QC_COMPARISONS = {'>=': operator.ge, '>': operator.gt,
+                   '<=': operator.le, '<': operator.lt}
+
+
 def _explode_recordings(sessions: pd.DataFrame) -> pd.DataFrame:
     """Explode session rows to one row per recording, numbering the fibers.
 
@@ -3535,6 +3543,7 @@ class PhotometrySessionGroup:
         self._filter_mask = pd.Series(True, index=self._catalog.index)
         self._dedup_mask = pd.Series(True, index=self._catalog.index)
         self._recordings_targetnms = False
+        self._recordings_photometry_qc = False
         self.one = one
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
         self._sessions = {}  # eid → PhotometrySession cache
@@ -3650,18 +3659,52 @@ class PhotometrySessionGroup:
         """Recording-level view: sessions exploded to one row per region.
 
         Reflects the current filter and dedup masks. Filters to
-        _recordings_targetnms (set by filter_sessions) when not False.
+        _recordings_targetnms and to _recordings_photometry_qc, the
+        (eid, brain_region) pairs clearing the QC thresholds, both set by
+        filter_sessions and both skipped when False.
         """
         df = _explode_recordings(self.sessions)
         if self._recordings_targetnms is not False:
             df = df[df['target_NM'].isin(self._recordings_targetnms)]
+        if self._recordings_photometry_qc is not False:
+            keys = pd.Series(list(zip(df['eid'], df['brain_region'])),
+                             index=df.index, dtype=object)
+            df = df[keys.isin(self._recordings_photometry_qc)]
         return df.reset_index(drop=True)
+
+    def _passing_recordings(self, thresholds: dict) -> set:
+        """(eid, brain_region) pairs whose stored raw QC clears `thresholds`.
+
+        Reads every catalogued session's H5 through `collect_qc`, so this costs
+        one pass over the store.
+
+        Parameters
+        ----------
+        thresholds : dict
+            `collect_qc` column -> (comparison, cutoff), as
+            `config.PHOTOMETRY_QC_THRESHOLDS`. Every entry must pass for the
+            recording to survive. A recording with no stored value for a
+            metric — its QC group absent, or its build failed — scores NaN and
+            fails, as does one whose metric was never stored by any session.
+
+        Returns
+        -------
+        set of tuple
+            The (eid, brain_region) pairs that passed.
+        """
+        qc = self.collect_qc().reindex(
+            columns=['eid', 'brain_region', *thresholds])
+        passing = pd.Series(True, index=qc.index)
+        for column, (comparison, cutoff) in thresholds.items():
+            passing &= _QC_COMPARISONS[comparison](qc[column], cutoff)
+        return set(map(tuple, qc.loc[passing, ['eid', 'brain_region']].to_numpy()))
 
     def filter_sessions(self, session_types=SESSION_TYPES_TO_ANALYZE,
                         exclude_subjects=SUBJECTS_TO_EXCLUDE,
                         exclude_eids=EIDS_TO_DROP,
                         qc_blockers=ANALYSIS_QC_BLOCKERS,
                         targetnms=TARGETNMS_TO_ANALYZE,
+                        photometry_qc=PHOTOMETRY_QC_THRESHOLDS,
                         min_performance=MIN_PERFORMANCE,
                         required_contrasts=REQUIRED_CONTRASTS,
                         lab=False, start_time_min=False):
@@ -3689,6 +3732,13 @@ class PhotometrySessionGroup:
         targetnms : list of str or False
             Target-NM values to retain in sessions and recordings.
             Defaults to config.TARGETNMS_TO_ANALYZE.
+        photometry_qc : dict or False
+            Raw-photometry QC thresholds, `collect_qc` column ->
+            (comparison, cutoff). Defaults to
+            config.PHOTOMETRY_QC_THRESHOLDS. Applies to ``recordings`` and not
+            to ``sessions``, as the target-NM filter does: a recording failing
+            any threshold is dropped and the rest of its session stays in
+            scope. Reads every catalogued session's H5 via ``collect_qc``.
         min_performance : float, dict, or False
             Minimum fraction_correct. Defaults to config.MIN_PERFORMANCE.
             Requires 'fraction_correct' in the catalog.
@@ -3761,6 +3811,12 @@ class PhotometrySessionGroup:
 
         self._filter_mask = mask
         self._recordings_targetnms = targetnms
+        # Set False first so `recordings` counts what is in scope for the QC
+        # filter, before that filter is the one applied.
+        self._recordings_photometry_qc = False
+        n_recordings = len(self.recordings)
+        if photometry_qc is not False:
+            self._recordings_photometry_qc = self._passing_recordings(photometry_qc)
 
         n = len(df)
         lines = [f"filter_sessions: {n} -> {int(mask.sum())}"]
@@ -3774,6 +3830,11 @@ class PhotometrySessionGroup:
             removed = n - int(m.sum())
             if removed:
                 lines.append(f"  -{removed:4d} {label}")
+        # The QC filter drops recordings rather than sessions, so its count is
+        # over recordings and carries no entry in the session mask.
+        qc_removed = n_recordings - len(self.recordings)
+        if qc_removed:
+            lines.append(f"  -{qc_removed:4d} photometry_qc (recordings)")
         print('\n'.join(lines))
         return None
 

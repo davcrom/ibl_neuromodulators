@@ -3787,7 +3787,7 @@ class TestFromCatalog:
         from iblnm.data import PhotometrySessionGroup
         group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock(), h5_dir=None)
         group.filter_sessions(session_types=False, targetnms=False,
-                              qc_blockers=set(),
+                              qc_blockers=set(), photometry_qc=False,
                               min_performance=False, required_contrasts=False)
         # eid-1 has 2 regions, eid-2 has 1
         assert len(group.recordings) == 3
@@ -4162,39 +4162,42 @@ class TestGroupCollectSessionErrors:
         assert set(group.sessions['eid']) == {'eid-2'}
 
 
+def store_photometry_qc(h5_dir, eid, qc_by_region):
+    """Write one session's `photometry/{region}/raw/qc` groups."""
+    from iblnm.data import PhotometrySession
+    ps = PhotometrySession(pd.Series({
+        'eid': eid, 'subject': f'mouse_{eid}', 'number': 1,
+        'start_time': '2024-01-01T10:00:00', 'session_type': 'biased',
+    }), one=None, load_data=False)
+    ps.filepath = h5_dir / f'{eid}.h5'
+    ps.photometry_qc = qc_by_region
+    ps.save_h5(groups=['photometry'])
+
+
+def qc_group(h5_dir, regions_by_eid):
+    """Group over a catalog of `eid -> [brain_region, ...]`, reading `h5_dir`."""
+    from iblnm.data import PhotometrySessionGroup
+    catalog = pd.DataFrame([
+        {'eid': eid, 'subject': f'mouse_{eid}', 'session_type': 'biased',
+         'start_time': '2024-01-01T10:00:00', 'number': 1,
+         'brain_region': regions, 'hemisphere': ['l'] * len(regions),
+         'target_NM': [f'{r}-DA' for r in regions], 'NM': 'DA'}
+        for eid, regions in regions_by_eid.items()
+    ])
+    return PhotometrySessionGroup.from_catalog(
+        catalog, one=None, h5_dir=h5_dir, scan_h5_errors=False)
+
+
 class TestGroupCollectQc:
     """collect_qc reports every catalogued recording's stored raw-QC metrics."""
 
-    def _store_qc(self, h5_dir, eid, qc_by_region):
-        """Write one session's `photometry/{region}/raw/qc` groups."""
-        from iblnm.data import PhotometrySession
-        ps = PhotometrySession(pd.Series({
-            'eid': eid, 'subject': f'mouse_{eid}', 'number': 1,
-            'start_time': '2024-01-01T10:00:00', 'session_type': 'biased',
-        }), one=None, load_data=False)
-        ps.filepath = h5_dir / f'{eid}.h5'
-        ps.photometry_qc = qc_by_region
-        ps.save_h5(groups=['photometry'])
-
-    def _group(self, h5_dir, regions_by_eid):
-        from iblnm.data import PhotometrySessionGroup
-        catalog = pd.DataFrame([
-            {'eid': eid, 'subject': f'mouse_{eid}', 'session_type': 'biased',
-             'start_time': '2024-01-01T10:00:00', 'number': 1,
-             'brain_region': regions, 'hemisphere': ['l'] * len(regions),
-             'target_NM': [f'{r}-DA' for r in regions], 'NM': 'DA'}
-            for eid, regions in regions_by_eid.items()
-        ])
-        return PhotometrySessionGroup.from_catalog(
-            catalog, one=None, h5_dir=h5_dir, scan_h5_errors=False)
-
     def test_one_row_per_recording_with_band_suffixed_metrics(self, tmp_path):
-        self._store_qc(tmp_path, 'eid-1', {
+        store_photometry_qc(tmp_path, 'eid-1', {
             'VTA': {'n_unique_samples_GCaMP': 0.5,
                     'n_unique_samples_Isosbestic': 0.4},
             'SNc': {'n_unique_samples_GCaMP': 0.002,
                     'n_unique_samples_Isosbestic': 0.3}})
-        group = self._group(tmp_path, {'eid-1': ['VTA', 'SNc']})
+        group = qc_group(tmp_path, {'eid-1': ['VTA', 'SNc']})
 
         df = group.collect_qc().set_index('brain_region')
 
@@ -4205,9 +4208,9 @@ class TestGroupCollectQc:
 
     def test_recording_without_stored_qc_is_nan(self, tmp_path):
         """No value to compare, so the threshold in ticket 18 fails it."""
-        self._store_qc(tmp_path, 'eid-1',
-                       {'VTA': {'n_unique_samples_GCaMP': 0.5}})
-        group = self._group(tmp_path, {'eid-1': ['VTA', 'SNc'], 'eid-2': ['DR']})
+        store_photometry_qc(tmp_path, 'eid-1',
+                            {'VTA': {'n_unique_samples_GCaMP': 0.5}})
+        group = qc_group(tmp_path, {'eid-1': ['VTA', 'SNc'], 'eid-2': ['DR']})
 
         df = group.collect_qc().set_index(['eid', 'brain_region'])
 
@@ -4216,11 +4219,11 @@ class TestGroupCollectQc:
 
     def test_reads_the_catalog_not_the_filtered_view(self, tmp_path):
         """It feeds filter_sessions, so it runs before the mask exists."""
-        self._store_qc(tmp_path, 'eid-1',
-                       {'VTA': {'n_unique_samples_GCaMP': 0.5}})
-        self._store_qc(tmp_path, 'eid-2',
-                       {'DR': {'n_unique_samples_GCaMP': 0.1}})
-        group = self._group(tmp_path, {'eid-1': ['VTA'], 'eid-2': ['DR']})
+        store_photometry_qc(tmp_path, 'eid-1',
+                            {'VTA': {'n_unique_samples_GCaMP': 0.5}})
+        store_photometry_qc(tmp_path, 'eid-2',
+                            {'DR': {'n_unique_samples_GCaMP': 0.1}})
+        group = qc_group(tmp_path, {'eid-1': ['VTA'], 'eid-2': ['DR']})
         group.filter_sessions(session_types=False, targetnms=['VTA-DA'],
                               qc_blockers=set(), min_performance=False,
                               required_contrasts=False)
@@ -4228,8 +4231,84 @@ class TestGroupCollectQc:
         assert set(group.collect_qc()['eid']) == {'eid-1', 'eid-2'}
 
     def test_empty_catalog(self, tmp_path):
-        group = self._group(tmp_path, {})
+        group = qc_group(tmp_path, {})
         assert list(group.collect_qc().columns) == ['eid', 'brain_region']
+
+
+THRESHOLDS = {'n_unique_samples_GCaMP': ('>=', 0.005),
+              'n_unique_samples_Isosbestic': ('>=', 0.005)}
+
+
+class TestFilterPhotometryQc:
+    """filter_sessions(photometry_qc=...) drops recordings, not sessions."""
+
+    @staticmethod
+    def _filter(group, photometry_qc=THRESHOLDS):
+        group.filter_sessions(session_types=False, targetnms=False,
+                              qc_blockers=set(), min_performance=False,
+                              required_contrasts=False,
+                              photometry_qc=photometry_qc)
+
+    def test_failing_region_dropped_session_kept(self, tmp_path):
+        """A session keeps the regions that pass and loses the ones that fail."""
+        store_photometry_qc(tmp_path, 'eid-1', {
+            'VTA': {'n_unique_samples_GCaMP': 0.5,
+                    'n_unique_samples_Isosbestic': 0.4},
+            'SNc': {'n_unique_samples_GCaMP': 0.002,
+                    'n_unique_samples_Isosbestic': 0.3}})
+        group = qc_group(tmp_path, {'eid-1': ['VTA', 'SNc']})
+
+        self._filter(group)
+
+        assert list(group.recordings['brain_region']) == ['VTA']
+        assert list(group.sessions['eid']) == ['eid-1']
+
+    def test_one_failing_band_fails_the_recording(self, tmp_path):
+        store_photometry_qc(tmp_path, 'eid-1', {
+            'VTA': {'n_unique_samples_GCaMP': 0.5,
+                    'n_unique_samples_Isosbestic': 0.001}})
+        group = qc_group(tmp_path, {'eid-1': ['VTA']})
+
+        self._filter(group)
+
+        assert len(group.recordings) == 0
+
+    def test_recording_without_stored_qc_is_dropped(self, tmp_path):
+        """No value to compare against, so the threshold fails it."""
+        store_photometry_qc(tmp_path, 'eid-1', {
+            'VTA': {'n_unique_samples_GCaMP': 0.5,
+                    'n_unique_samples_Isosbestic': 0.4}})
+        group = qc_group(tmp_path, {'eid-1': ['VTA', 'SNc'], 'eid-2': ['DR']})
+
+        self._filter(group)
+
+        assert list(zip(group.recordings['eid'],
+                        group.recordings['brain_region'])) == [('eid-1', 'VTA')]
+
+    def test_skipped_when_False(self, tmp_path):
+        store_photometry_qc(tmp_path, 'eid-1', {
+            'VTA': {'n_unique_samples_GCaMP': 0.5,
+                    'n_unique_samples_Isosbestic': 0.4},
+            'SNc': {'n_unique_samples_GCaMP': 0.002,
+                    'n_unique_samples_Isosbestic': 0.3}})
+        group = qc_group(tmp_path, {'eid-1': ['VTA', 'SNc']})
+
+        self._filter(group, photometry_qc=False)
+
+        assert list(group.recordings['brain_region']) == ['VTA', 'SNc']
+
+    def test_printout_counts_dropped_recordings(self, tmp_path, capsys):
+        store_photometry_qc(tmp_path, 'eid-1', {
+            'VTA': {'n_unique_samples_GCaMP': 0.5,
+                    'n_unique_samples_Isosbestic': 0.4},
+            'SNc': {'n_unique_samples_GCaMP': 0.002,
+                    'n_unique_samples_Isosbestic': 0.3}})
+        group = qc_group(tmp_path, {'eid-1': ['VTA', 'SNc']})
+
+        self._filter(group)
+
+        printed = capsys.readouterr().out
+        assert '-   1 photometry_qc (recordings)' in printed
 
 
 # Level written into every (label, event, window) cell the pose rollup must not
@@ -5595,6 +5674,7 @@ class TestLoaderMethods:
         group.filter_sessions(
             session_types=False, qc_blockers=set(), targetnms=False,
             min_performance=False, required_contrasts=False,
+            photometry_qc=False,
         )
         return group
 
@@ -5815,6 +5895,7 @@ class TestLoaderMethods:
         group.filter_sessions(
             session_types=('biased',), qc_blockers=set(), targetnms=False,
             min_performance=False, required_contrasts=False,
+            photometry_qc=False,
         )
 
         resp = pd.DataFrame([

@@ -300,7 +300,7 @@ fit = ps.fit_psychometric()           # {bias, threshold, lapse_left, lapse_righ
 ### Design principles
 
 - **Constructor takes session-level DataFrames.** List columns (`brain_region`, `hemisphere`, `target_NM`) are kept intact. Explosion to one-row-per-recording happens via `explode_recordings()`.
-- **`filter_sessions` filters at the session level** by session type, excluded subjects, QC error types, and target-NM values. Sessions where none of their target_NM entries match are dropped.
+- **`filter_sessions` filters at the session level** by session type, excluded subjects, QC error types, and target-NM values. Sessions where none of their target_NM entries match are dropped. The target-NM and `photometry_qc` filters additionally cut individual recordings, leaving the rest of their session in scope.
 - **`explode_recordings` produces recording-level rows** from the filtered sessions, trimming to only valid target_NM entries and adding `fiber_idx`.
 - **`from_catalog` handles the full pipeline**: load parquet, validate parallel lists, filter sessions, explode recordings.
 - **Lazy analysis attributes.** `events`, `response_features`, `similarity_matrix`, and `decoder` start as `None` and are populated by explicit method calls.
@@ -356,6 +356,11 @@ group.filter_sessions(
     exclude_subjects=['excluded_mouse'],
     qc_blockers={'MissingRawData', 'QCValidationError'},
     targetnms=['VTA-DA', 'DR-5HT'],
+    # Recording-level: each recording's stored raw QC must clear every
+    # threshold, so a session keeps its passing regions and loses the rest.
+    # A recording with no stored QC has nothing to compare and fails.
+    photometry_qc={'n_unique_samples_GCaMP': ('>=', 0.005),
+                   'n_unique_samples_Isosbestic': ('>=', 0.005)},
 )
 
 # Boolean mask

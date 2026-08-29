@@ -1,71 +1,8 @@
 """Tests for dataset overview helper functions."""
 import pandas as pd
 
-from iblnm.util import aggregate_qc_per_session, concat_logs, LOG_COLUMNS
+from iblnm.util import concat_logs, LOG_COLUMNS
 from iblnm.validation import make_log_entry
-
-
-class TestAggregateQcPerSession:
-    """Tests for aggregate_qc_per_session function."""
-
-    def test_all_signals_must_pass_by_default(self):
-        """With require_all=True (default), all signals must pass for session to pass."""
-        df_qc = pd.DataFrame({
-            'eid': ['a', 'a', 'b', 'b'],
-            'brain_region': ['VTA', 'SNc', 'VTA', 'SNc'],
-            'n_unique_samples': [0.5, 0.2, 0.05, 0.3],  # b has one < 0.1
-            'n_band_inversions': [0, 0, 0, 0],
-        })
-        result = aggregate_qc_per_session(df_qc)
-
-        assert len(result) == 2
-        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0]
-        assert not result.loc[result['eid'] == 'b', 'passes_basic_qc'].iloc[0]
-
-    def test_any_signal_can_pass(self):
-        """With require_all=False, any signal passing is sufficient."""
-        df_qc = pd.DataFrame({
-            'eid': ['a', 'a', 'b', 'b'],
-            'brain_region': ['VTA', 'SNc', 'VTA', 'SNc'],
-            'n_unique_samples': [0.5, 0.05, 0.05, 0.05],  # a has one above threshold
-            'n_band_inversions': [0, 0, 0, 0],
-        })
-        result = aggregate_qc_per_session(df_qc, require_all=False)
-
-        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0]
-        assert not result.loc[result['eid'] == 'b', 'passes_basic_qc'].iloc[0]
-
-    def test_band_inversions_fail_session(self):
-        """Any band inversion fails the session (require_all=True)."""
-        df_qc = pd.DataFrame({
-            'eid': ['a', 'a'],
-            'brain_region': ['VTA', 'SNc'],
-            'n_unique_samples': [0.5, 0.5],
-            'n_band_inversions': [0, 1],  # one has inversion
-        })
-        result = aggregate_qc_per_session(df_qc, require_all=True)
-
-        assert not result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0]
-
-    def test_band_inversions_any_mode(self):
-        """With require_all=False, session passes if any signal has no inversions."""
-        df_qc = pd.DataFrame({
-            'eid': ['a', 'a'],
-            'brain_region': ['VTA', 'SNc'],
-            'n_unique_samples': [0.5, 0.5],
-            'n_band_inversions': [0, 1],  # one has no inversion
-        })
-        result = aggregate_qc_per_session(df_qc, require_all=False)
-
-        assert result.loc[result['eid'] == 'a', 'passes_basic_qc'].iloc[0]
-
-    def test_empty_dataframe(self):
-        """Empty input returns empty output."""
-        df_qc = pd.DataFrame(columns=['eid', 'brain_region', 'n_unique_samples', 'n_band_inversions'])
-        result = aggregate_qc_per_session(df_qc)
-
-        assert len(result) == 0
-        assert 'passes_basic_qc' in result.columns
 
 
 class TestConcatLogsIntegration:

@@ -14,7 +14,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | File paths, output directories | `config.py` top section |
 | Session DataFrame schema | `config.py → SESSION_SCHEMA` |
 | NM/strain/target lookups | `config.py → STRAIN2NM, LINE2NM, TARGET2NM` |
-| QC thresholds and metrics | `config.py → QC_RAW_METRICS, QC_SLIDING_METRICS, N_UNIQUE_SAMPLES_THRESHOLD` |
+| QC thresholds and metrics | `config.py → QC_RAW_METRICS, QC_SLIDING_METRICS, N_UNIQUE_SAMPLES_THRESHOLD, PHOTOMETRY_QC_THRESHOLDS` |
 | Preprocessing pipeline steps | `config.py → PREPROCESSING_PIPELINES` |
 | Analysis windows | `config.py → RESPONSE_WINDOW, BASELINE_WINDOW, RESPONSE_WINDOWS` |
 | Colors and plot params | `config.py → NM_COLORS, TARGETNM_COLORS, SESSIONTYPE2COLOR` |
@@ -379,12 +379,23 @@ group.deduplicate()
   and the dedup mask. List columns: `brain_region`, `hemisphere`, `target_NM`.
 - `group.recordings` — property: one row per region, scalar columns, plus
   `fiber_idx`. Derived by exploding `sessions` on the parallel list columns.
-  Filtered to `_recordings_targetnms` (set by `filter_sessions`). Always
-  reflects the current filter and dedup state.
+  Filtered to `_recordings_targetnms` and `_recordings_photometry_qc` (both set
+  by `filter_sessions`). Always reflects the current filter and dedup state.
 
 `from_catalog` applies `enforce_schema` and `validate_parallel_lists` before
 constructing the object. `filter_sessions(targetnms=TARGETNMS_TO_ANALYZE)` is
 the explicit default — pass `targetnms=False` to skip the target filter.
+
+Two filters cut recordings rather than sessions, so they leave no entry in
+`_filter_mask` and their removal counts print over recordings: the target-NM
+filter and `filter_sessions(photometry_qc=PHOTOMETRY_QC_THRESHOLDS)`. The
+latter compares each recording's stored raw QC — `collect_qc` columns, a metric
+with the band suffixed on — against the `(comparison, cutoff)` pairs in
+`config.PHOTOMETRY_QC_THRESHOLDS`, and keeps only recordings clearing every
+one, so a session holds on to the regions that pass and loses the rest. A
+recording whose `photometry/{region}/raw/qc` group is absent has no value to
+compare and fails. Pass `photometry_qc=False` to skip it — which any group over
+sessions whose QC has not been built must do, or it keeps nothing.
 
 ### 4. Parallel List Columns
 
