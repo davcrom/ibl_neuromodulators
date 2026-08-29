@@ -28,7 +28,7 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.util import collect_qc, collect_errors
+from iblnm.util import collect_qc
 
 
 def process_session(ps, reprocess=False):
@@ -131,7 +131,7 @@ if __name__ == '__main__':
         print("No QC data to save.")
 
     # Print error summary from H5 files
-    df_errors = collect_errors(SESSIONS_H5_DIR)
+    df_errors = group.collect_errors()
     if len(df_errors) > 0:
         print(f"\nError summary ({len(df_errors)} entries):")
         print(df_errors['error_type'].value_counts().to_string())

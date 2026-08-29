@@ -32,9 +32,7 @@ from iblnm.config import (
     MIN_TRAINING_PERFORMANCE, REQUIRED_CONTRASTS,
 )
 from iblnm.data import PhotometrySessionGroup
-from iblnm.util import (
-    concat_logs, deduplicate_log, collect_errors, collect_session_errors,
-)
+from iblnm.util import concat_logs, deduplicate_log
 from iblnm.vis import (
     session_overview_matrix, target_overview_barplot, mouse_overview_barplot, set_plotsize,
 )
@@ -152,7 +150,11 @@ if not SESSIONS_FPATH.exists():
     sys.exit(1)
 
 df = pd.read_parquet(SESSIONS_FPATH)
-df = df.merge(collect_session_errors(df['eid'], SESSIONS_H5_DIR), on='eid', how='left')
+# Scan the H5 /errors groups once, here, so the video blockers below can be
+# appended to the result before any group filters on it.
+_scan = PhotometrySessionGroup.from_catalog(
+    df, one=None, h5_dir=SESSIONS_H5_DIR, scan_h5_errors=False)
+df = df.merge(_scan.collect_session_errors(), on='eid', how='left')
 if PERFORMANCE_FPATH.exists():
     perf = pd.read_parquet(PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
     df = df.merge(perf, on='eid', how='left')
@@ -179,7 +181,9 @@ if POSE_FPATH.exists():
     )
     df = df.drop(columns=['_passes_video_qc', '_video_qc_blocker'])
 
-group = PhotometrySessionGroup.from_catalog(df, one=None)
+# scan_h5_errors=False: the logged_errors column is already scanned above and
+# carries the synthetic video blockers, which a rescan would drop.
+group = PhotometrySessionGroup.from_catalog(df, one=None, scan_h5_errors=False)
 dedup_errors = group.deduplicate()
 
 # ---- Base filter kwargs ----
@@ -365,7 +369,7 @@ print(f"Projected mice reaching target: {n_mice_projected}")
 # Save unified error log
 # =============================================================================
 
-upstream_logs = [collect_errors(SESSIONS_H5_DIR), dedup_errors]
+upstream_logs = [_scan.collect_errors(), dedup_errors]
 df_errors = deduplicate_log(concat_logs(upstream_logs))
 ERRORS_FPATH.parent.mkdir(parents=True, exist_ok=True)
 df_errors.to_parquet(ERRORS_FPATH)

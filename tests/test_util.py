@@ -13,10 +13,7 @@ from iblnm.util import (
     enforce_schema,
     get_session_type,
     get_targetNM,
-    collect_session_errors,
-    load_or_collect_session_errors,
     collect_catalog,
-    collect_errors,
     fill_brain_region_from_fibers,
     count_population_by_target_event,
     LOG_COLUMNS,
@@ -571,66 +568,6 @@ class TestGetTargetNM:
         })
         result = get_targetNM(session)
         assert result['target_NM'] == []
-
-
-class TestCollectSessionErrors:
-    def test_logged_errors_per_eid_from_h5(self, tmp_path):
-        from iblnm.validation import MissingRawData, InvalidStrain
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
-                          errors=[MissingRawData('x'), InvalidStrain('y')])
-        _write_session_h5(tmp_path, 'eid-2', 'mouse_B')
-        result = collect_session_errors(['eid-1', 'eid-2'], tmp_path)
-        row = result[result['eid'] == 'eid-1'].iloc[0]
-        assert set(row['logged_errors']) == {'MissingRawData', 'InvalidStrain'}
-        assert result[result['eid'] == 'eid-2'].iloc[0]['logged_errors'] == []
-
-    def test_row_per_input_eid_including_missing(self, tmp_path):
-        from iblnm.validation import MissingRawData
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', errors=[MissingRawData('x')])
-        result = collect_session_errors(['eid-1', 'eid-absent'], tmp_path)
-        assert list(result['eid']) == ['eid-1', 'eid-absent']
-        assert result[result['eid'] == 'eid-absent'].iloc[0]['logged_errors'] == []
-
-    def test_duplicate_errors_deduplicated(self, tmp_path):
-        from iblnm.validation import MissingRawData
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
-                          errors=[MissingRawData('x'), MissingRawData('x')])
-        result = collect_session_errors(['eid-1'], tmp_path)
-        assert result.iloc[0]['logged_errors'] == ['MissingRawData']
-
-
-class TestLoadOrCollectSessionErrors:
-    def test_first_call_scans_and_writes_cache(self, tmp_path):
-        from iblnm.validation import MissingRawData
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', errors=[MissingRawData('x')])
-        cache_path = tmp_path / 'logged_errors.pqt'
-        result = load_or_collect_session_errors(
-            ['eid-1'], h5_dir=tmp_path, cache_path=cache_path)
-        assert result.iloc[0]['logged_errors'] == ['MissingRawData']
-        assert cache_path.exists()
-
-    def test_second_call_reads_cache_without_rescanning(self, tmp_path):
-        from iblnm.validation import MissingRawData
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', errors=[MissingRawData('x')])
-        cache_path = tmp_path / 'logged_errors.pqt'
-        load_or_collect_session_errors(
-            ['eid-1'], h5_dir=tmp_path, cache_path=cache_path)
-        # Point h5_dir at an empty dir: a rescan would now return no errors,
-        # so a correct cache hit must still report the original error.
-        result = load_or_collect_session_errors(
-            ['eid-1'], h5_dir=tmp_path / 'empty', cache_path=cache_path)
-        assert result.iloc[0]['logged_errors'] == ['MissingRawData']
-
-    def test_eid_absent_from_cache_gets_empty_list(self, tmp_path):
-        from iblnm.validation import MissingRawData
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', errors=[MissingRawData('x')])
-        cache_path = tmp_path / 'logged_errors.pqt'
-        load_or_collect_session_errors(
-            ['eid-1'], h5_dir=tmp_path, cache_path=cache_path)
-        result = load_or_collect_session_errors(
-            ['eid-1', 'eid-new'], h5_dir=tmp_path, cache_path=cache_path)
-        assert list(result['eid']) == ['eid-1', 'eid-new']
-        assert result[result['eid'] == 'eid-new'].iloc[0]['logged_errors'] == []
 
 
 class TestDeduplicateLog:
@@ -1249,64 +1186,6 @@ class TestCollectCatalog:
         df = collect_catalog(tmp_path)
         for col in SESSION_SCHEMA:
             assert col in df.columns
-
-
-class TestCollectErrors:
-    """Tests for collect_errors."""
-
-    def test_collects_errors_from_h5_files(self, tmp_path):
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
-                          errors=[ValueError("bad value")])
-        _write_session_h5(tmp_path, 'eid-2', 'mouse_B',
-                          errors=[TypeError("bad type"), KeyError("missing")])
-
-        df = collect_errors(tmp_path)
-        assert len(df) == 3
-        assert set(df['eid']) == {'eid-1', 'eid-2'}
-        assert set(df['error_type']) == {'ValueError', 'TypeError', 'KeyError'}
-
-    def test_no_errors(self, tmp_path):
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A')
-        df = collect_errors(tmp_path)
-        assert len(df) == 0
-
-    def test_has_log_columns(self, tmp_path):
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
-                          errors=[ValueError("test")])
-        df = collect_errors(tmp_path)
-        assert list(df.columns) == LOG_COLUMNS
-
-    def test_collects_errors_from_product_groups(self, tmp_path):
-        """Errors nested under errors/{product} are collected with their product."""
-        from unittest.mock import MagicMock
-        from iblnm.data import PhotometrySession
-
-        series = pd.Series({
-            'eid': 'eid-1', 'subject': 'mouse_A',
-            'start_time': '2024-01-01T10:00:00', 'number': 1,
-            'session_type': 'biased',
-            'brain_region': [], 'hemisphere': [], 'target_NM': [],
-        })
-        ps = PhotometrySession(series, one=MagicMock(), load_data=False)
-        try:
-            raise ValueError("bad value")
-        except ValueError as e:
-            ps.log_error(e, product='photometry/raw')
-        ps.save_h5(tmp_path / 'eid-1.h5', groups=['metadata', 'errors'])
-
-        df = collect_errors(tmp_path)
-        assert len(df) == 1
-        assert df.iloc[0]['product'] == 'photometry/raw'
-        assert df.iloc[0]['error_type'] == 'ValueError'
-
-    def test_skips_h5_without_errors_group(self, tmp_path):
-        import h5py
-        with h5py.File(tmp_path / 'old.h5', 'w') as f:
-            f.attrs['eid'] = 'old-eid'
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
-                          errors=[ValueError("test")])
-        df = collect_errors(tmp_path)
-        assert len(df) == 1
 
 
 class TestCountPopulationByTargetEvent:

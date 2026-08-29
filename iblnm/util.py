@@ -6,7 +6,7 @@ from datetime import datetime
 from iblnm.config import (
     N_UNIQUE_SAMPLES_THRESHOLD, VALID_TARGETNMS, DATASET_CATEGORIES,
     EXCLUDE_SESSION_TYPES, PROTOCOL_RED_FLAGS, SESSION_TYPES,
-    SUBJECTS_TO_EXCLUDE, SESSIONS_H5_DIR, LOGGED_ERRORS_FPATH,
+    SUBJECTS_TO_EXCLUDE,
     QC_VALUE_ORDER,
 )
 from iblnm.validation import (
@@ -69,78 +69,6 @@ def deduplicate_log(df):
     return df.drop_duplicates(subset=['eid', 'error_type', 'error_message']).reset_index(drop=True)
 
 
-def collect_session_errors(eids, h5_dir=SESSIONS_H5_DIR) -> pd.DataFrame:
-    """Read each session's logged error types from its H5 ``/errors`` group.
-
-    Scans the H5 files in ``h5_dir`` (via ``collect_errors``) and groups the
-    logged errors by eid. Duplicate (eid, error_type, error_message) rows are
-    removed before grouping.
-
-    Parameters
-    ----------
-    eids : iterable of str
-        Session eids to report on. The result has one row per eid, in this
-        order; eids without an H5 file (or with no errors) get an empty list.
-    h5_dir : Path or str, optional
-        Directory containing {eid}.h5 files. Defaults to ``SESSIONS_H5_DIR``.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns ['eid', 'logged_errors']; 'logged_errors' is the list of
-        error_type strings logged for that session (empty list if none).
-    """
-    errors = collect_errors(h5_dir)
-    if len(errors) > 0:
-        errors_by_eid = deduplicate_log(errors).groupby('eid')['error_type'].apply(list)
-    else:
-        errors_by_eid = pd.Series(dtype=object)
-    return pd.DataFrame({
-        'eid': list(eids),
-        'logged_errors': [errors_by_eid.get(eid, []) for eid in eids],
-    })
-
-
-def load_or_collect_session_errors(eids, h5_dir=SESSIONS_H5_DIR,
-                                   cache_path=LOGGED_ERRORS_FPATH) -> pd.DataFrame:
-    """Return per-session logged errors, caching the H5 scan to a parquet.
-
-    Write-once cache around :func:`collect_session_errors`. When ``cache_path``
-    is absent the H5 ``/errors`` groups are scanned and the result written to
-    it; when present the parquet is read back and the slow scan is skipped.
-    Delete ``cache_path`` to regenerate after reprocessing H5 files -- the
-    cache is never invalidated automatically, so the H5 groups remain the
-    source of truth.
-
-    Parameters
-    ----------
-    eids : iterable of str
-        Session eids to report on. The result has one row per eid, in this
-        order; eids absent from the cache get an empty list.
-    h5_dir : Path or str, optional
-        Directory of {eid}.h5 files, scanned only when the cache is absent.
-    cache_path : Path or str, optional
-        Parquet cache location. Defaults to ``LOGGED_ERRORS_FPATH``.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns ['eid', 'logged_errors']; one row per input eid, in order.
-    """
-    cache_path = Path(cache_path)
-    if cache_path.exists():
-        cached = pd.read_parquet(cache_path)
-        result = pd.DataFrame({'eid': list(eids)}).merge(
-            cached, on='eid', how='left')
-        result['logged_errors'] = result['logged_errors'].apply(
-            lambda e: list(e) if isinstance(e, (list, np.ndarray)) else [])
-        return result
-    errors = collect_session_errors(eids, h5_dir)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    errors.to_parquet(cache_path)
-    return errors
-
-
 def collect_catalog(h5_dir):
     """Build a session catalog DataFrame from H5 metadata groups.
 
@@ -190,37 +118,6 @@ def collect_catalog(h5_dir):
     if not rows:
         return enforce_schema(pd.DataFrame(), SESSION_SCHEMA)
     return enforce_schema(pd.DataFrame(rows), SESSION_SCHEMA)
-
-
-def collect_errors(h5_dir):
-    """Aggregate error logs from all H5 files in a directory.
-
-    Reads the /errors tree from each .h5 file, including the per-product
-    subgroups. Files without an /errors group, or with an empty one, contribute
-    no rows.
-
-    Parameters
-    ----------
-    h5_dir : Path or str
-        Directory containing {eid}.h5 files.
-
-    Returns
-    -------
-    pd.DataFrame
-        Error log with LOG_COLUMNS schema.
-    """
-    import h5py
-    from iblnm.data import read_error_tree
-
-    h5_dir = Path(h5_dir)
-    rows = []
-    for fpath in sorted(h5_dir.glob('*.h5')):
-        with h5py.File(fpath, 'r') as f:
-            rows.extend(read_error_tree(f))
-
-    if not rows:
-        return pd.DataFrame(columns=LOG_COLUMNS)
-    return pd.DataFrame(rows, columns=LOG_COLUMNS)
 
 
 def collect_qc(h5_dir):

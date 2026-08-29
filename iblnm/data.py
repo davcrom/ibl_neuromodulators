@@ -21,7 +21,7 @@ from one.alf.exceptions import ALFObjectNotFound
 from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, DDM_HMM_DIR, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD, IBL_QC_VALUES,
-    LOGGED_ERRORS_FPATH, LP_QC_LABELS,
+    LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
     POSE_MEASURES, PRODUCT_SPEC,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
@@ -44,6 +44,10 @@ from iblnm.analysis import (
 from iblnm import analysis
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
+from iblnm.util import (
+    LOG_COLUMNS, deduplicate_log, enforce_schema, resolve_duplicate_group,
+    validate_parallel_lists,
+)
 from iblnm.validation import (
     MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
     MissingMotionEnergy,
@@ -3400,13 +3404,13 @@ class PhotometrySessionGroup:
 
     @classmethod
     def from_catalog(cls, catalog, one, h5_dir=SESSIONS_H5_DIR,
-                     scan_h5_errors=True, cache_path=LOGGED_ERRORS_FPATH):
+                     scan_h5_errors=True):
         """Build a group from a session catalog DataFrame.
 
         Validates parallel list columns and populates ``logged_errors`` from
         each session's H5 ``/errors`` group when ``h5_dir`` is given and
-        ``scan_h5_errors`` is True (scans all files, so it can take a moment).
-        Call ``filter_sessions`` separately.
+        ``scan_h5_errors`` is True (scans every catalogued file, so it can take
+        a moment). Call ``filter_sessions`` separately.
 
         Parameters
         ----------
@@ -3422,36 +3426,25 @@ class PhotometrySessionGroup:
             ``logged_errors`` for error-based filtering.
         scan_h5_errors : bool, optional
             When True (default), populate ``logged_errors`` via
-            ``load_or_collect_session_errors`` (reads ``cache_path`` if it
-            exists, else scans the H5 ``/errors`` groups and writes the cache).
-            Set False to reuse a ``logged_errors`` column already present on
-            ``catalog`` and skip both -- useful when rebuilding a group from
-            another group's ``sessions`` (an empty column is created only if
-            none exists).
-        cache_path : Path, optional
-            Parquet cache for the error scan, passed through to
-            ``load_or_collect_session_errors``. Defaults to
-            ``LOGGED_ERRORS_FPATH``; delete it to force a rescan.
+            ``collect_session_errors``. Set False to reuse a ``logged_errors``
+            column already present on ``catalog`` and skip the scan -- useful
+            when rebuilding a group from another group's ``sessions`` (an empty
+            column is created only if none exists).
         """
         from iblnm.config import SESSION_SCHEMA
-        from iblnm.util import (
-            enforce_schema, validate_parallel_lists, load_or_collect_session_errors,
-        )
 
         df = enforce_schema(catalog.copy(), SESSION_SCHEMA)
 
         parallel_cols = ['brain_region', 'hemisphere', 'target_NM']
         df = validate_parallel_lists(df, parallel_cols)
 
-        if h5_dir is not None and scan_h5_errors:
-            df = df.drop(columns='logged_errors', errors='ignore')
-            df = df.merge(
-                load_or_collect_session_errors(df['eid'], h5_dir, cache_path),
-                on='eid', how='left')
-        elif 'logged_errors' not in df.columns:
+        if 'logged_errors' not in df.columns:
             df['logged_errors'] = [[] for _ in range(len(df))]
 
-        return cls(df, one=one, h5_dir=h5_dir)
+        group = cls(df, one=one, h5_dir=h5_dir)
+        if h5_dir is not None and scan_h5_errors:
+            group.collect_session_errors()
+        return group
 
     @property
     def sessions(self):
@@ -3604,8 +3597,6 @@ class PhotometrySessionGroup:
         -------
         self
         """
-        from iblnm.util import resolve_duplicate_group
-
         if 'logged_errors' not in self._catalog.columns:
             self._catalog['logged_errors'] = [[] for _ in range(len(self._catalog))]
 
@@ -3671,6 +3662,72 @@ class PhotometrySessionGroup:
              **{p: self._get_session(row).product_status(p) for p in products}}
             for _, row in self.sessions.iterrows()
         ])
+
+    def _error_log(self, eids) -> pd.DataFrame:
+        """Read the `errors/` tree of each named session's H5 into one table.
+
+        Parameters
+        ----------
+        eids : iterable of str
+            Sessions to read, in the order the caller wants them. An eid with
+            no file in `self.h5_dir` contributes no rows.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Error log with the `util.LOG_COLUMNS` schema.
+        """
+        rows = []
+        for eid in eids:
+            fpath = Path(self.h5_dir) / f'{eid}.h5'
+            if not fpath.exists():
+                continue
+            with h5py.File(fpath, 'r') as h5:
+                rows.extend(read_error_tree(h5))
+        return pd.DataFrame(rows, columns=LOG_COLUMNS)
+
+    def collect_errors(self) -> pd.DataFrame:
+        """Aggregate the filtered sessions' logged errors into one table.
+
+        Only sessions surviving the filter and dedup masks are read, so a
+        rollup written from this reports on the cohort the group defines rather
+        than on whatever files happen to sit in `self.h5_dir`.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per logged error, with the `util.LOG_COLUMNS` schema.
+        """
+        return self._error_log(self.sessions['eid'])
+
+    def collect_session_errors(self) -> pd.DataFrame:
+        """Read every catalogued session's error types and join them on.
+
+        Unlike `collect_errors` this walks `self._catalog` rather than the
+        filtered view: the `logged_errors` column it writes is what
+        `filter_sessions(qc_blockers=...)` reads, so the mask it feeds does not
+        exist yet. Duplicate (eid, error_type, error_message) entries are
+        dropped before grouping, so an error logged by two build attempts
+        counts once.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Columns ['eid', 'logged_errors'], one row per catalogued session in
+            catalog order; a session with no H5 file, or none logged, gets an
+            empty list. Also joined onto `self._catalog`.
+        """
+        errors = deduplicate_log(self._error_log(self._catalog['eid']))
+        by_eid = (errors.groupby('eid')['error_type'].apply(list) if len(errors)
+                  else pd.Series(dtype=object))
+        logged = pd.DataFrame({
+            'eid': list(self._catalog['eid']),
+            'logged_errors': [by_eid.get(eid, []) for eid in self._catalog['eid']],
+        })
+        self._catalog = self._catalog.drop(
+            columns='logged_errors', errors='ignore').merge(
+                logged, on='eid', how='left')
+        return logged
 
     def __getitem__(self, idx):
         rec = self.recordings.iloc[idx]

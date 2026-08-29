@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from iblnm.config import REQUIRED_CONTRASTS
 from iblnm.data import WHEEL_LABEL
-from iblnm.util import contrast_transform
+from iblnm.util import LOG_COLUMNS, contrast_transform
 
 # Session-lifetime scratch directory for the helpers that must write a real H5
 # (a load method reads its own stored product back, so an in-memory attribute
@@ -3840,16 +3840,15 @@ class TestFromCatalog:
              'hemisphere': ['l'], 'target_NM': ['DR-5HT'], 'NM': '5HT'},
         ])
         group = PhotometrySessionGroup.from_catalog(
-            catalog, one=MagicMock(), h5_dir=tmp_path,
-            cache_path=tmp_path / 'logged_errors.pqt')
+            catalog, one=MagicMock(), h5_dir=tmp_path)
         group.filter_sessions(session_types=False, targetnms=False,
                               qc_blockers={'MissingRawData'},
                               min_performance=False, required_contrasts=False)
         assert set(group.sessions['eid']) == {'eid-2'}
 
-    def test_from_catalog_caches_logged_errors(self, tmp_path):
-        """from_catalog writes the error scan to cache_path and reuses it, so a
-        later call reads the cache instead of rescanning the H5 /errors groups."""
+    def test_scan_reads_the_h5_afresh(self, tmp_path):
+        """Nothing is cached: a group built against an empty directory sees no
+        errors, however many times the scan has run before."""
         from iblnm.data import PhotometrySessionGroup
         from iblnm.validation import MissingRawData
         from tests.test_util import _write_session_h5
@@ -3861,18 +3860,13 @@ class TestFromCatalog:
              'brain_region': ['VTA'], 'hemisphere': ['l'],
              'target_NM': ['VTA-DA'], 'NM': 'DA'},
         ])
-        cache_path = tmp_path / 'logged_errors.pqt'
-        PhotometrySessionGroup.from_catalog(
-            catalog, one=MagicMock(), h5_dir=tmp_path, cache_path=cache_path)
-        assert cache_path.exists()
-        # Point h5_dir at an empty dir: a rescan would find no errors, so a
-        # correct cache hit must still report the original error.
-        group = PhotometrySessionGroup.from_catalog(
-            catalog, one=MagicMock(), h5_dir=tmp_path / 'empty',
-            cache_path=cache_path)
-        assert group._catalog.loc[
-            group._catalog['eid'] == 'eid-1', 'logged_errors'].iloc[0] == \
-            ['MissingRawData']
+        scanned = PhotometrySessionGroup.from_catalog(
+            catalog, one=MagicMock(), h5_dir=tmp_path)
+        assert scanned._catalog['logged_errors'].iloc[0] == ['MissingRawData']
+
+        rescanned = PhotometrySessionGroup.from_catalog(
+            catalog, one=MagicMock(), h5_dir=tmp_path / 'empty')
+        assert rescanned._catalog['logged_errors'].iloc[0] == []
 
     def test_no_h5_dir_leaves_logged_errors_empty(self):
         """Without h5_dir, from_catalog skips the scan and logged_errors are all empty."""
@@ -3969,6 +3963,148 @@ class TestScanProductStatus:
             assert ps.photometry == {}
             # The loader parent starts `trials` as an empty frame, not None.
             assert ps.trials.empty
+
+
+def _collector_catalog(session_types):
+    """Catalog of single-region sessions, one row per (eid -> session_type)."""
+    return pd.DataFrame([
+        {'eid': eid, 'subject': f'mouse_{eid}', 'session_type': session_type,
+         'start_time': '2024-01-01T10:00:00', 'number': 1,
+         'brain_region': ['VTA'], 'hemisphere': ['l'],
+         'target_NM': ['VTA-DA'], 'NM': 'DA'}
+        for eid, session_type in session_types.items()
+    ])
+
+
+class TestGroupCollectErrors:
+    """PhotometrySessionGroup.collect_errors reads the filtered sessions only."""
+
+    def _group(self, tmp_path, session_types, scan_h5_errors=False):
+        from iblnm.data import PhotometrySessionGroup
+        return PhotometrySessionGroup.from_catalog(
+            _collector_catalog(session_types), one=None, h5_dir=tmp_path,
+            scan_h5_errors=scan_h5_errors)
+
+    def test_collects_errors_from_every_session(self, tmp_path):
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[ValueError("bad value")])
+        _write_session_h5(tmp_path, 'eid-2', 'mouse_B',
+                          errors=[TypeError("bad type"), KeyError("missing")])
+        group = self._group(tmp_path, {'eid-1': 'biased', 'eid-2': 'biased'})
+
+        df = group.collect_errors()
+
+        assert len(df) == 3
+        assert set(df['eid']) == {'eid-1', 'eid-2'}
+        assert set(df['error_type']) == {'ValueError', 'TypeError', 'KeyError'}
+        assert list(df.columns) == LOG_COLUMNS
+
+    def test_filtered_out_session_contributes_nothing(self, tmp_path):
+        """The behavior change: the directory walk ignored the group's filters."""
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-in', 'mouse_A', 'biased',
+                          errors=[ValueError("kept")])
+        _write_session_h5(tmp_path, 'eid-out', 'mouse_B', 'training',
+                          errors=[TypeError("dropped")])
+        group = self._group(tmp_path, {'eid-in': 'biased', 'eid-out': 'training'})
+        group.filter_sessions(session_types=('biased',), targetnms=False,
+                              qc_blockers=set(), min_performance=False,
+                              required_contrasts=False)
+
+        df = group.collect_errors()
+
+        assert set(df['eid']) == {'eid-in'}
+
+    def test_session_without_errors_or_file(self, tmp_path):
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-clean', 'mouse_A')
+        group = self._group(tmp_path, {'eid-clean': 'biased', 'eid-absent': 'biased'})
+
+        assert len(group.collect_errors()) == 0
+
+    def test_errors_from_product_groups_keep_their_product(self, tmp_path):
+        from iblnm.data import PhotometrySession
+        series = _collector_catalog({'eid-1': 'biased'}).iloc[0]
+        ps = PhotometrySession(series, one=MagicMock(), load_data=False)
+        try:
+            raise ValueError("bad value")
+        except ValueError as e:
+            ps.log_error(e, product='photometry/raw')
+        ps.save_h5(tmp_path / 'eid-1.h5', groups=['metadata', 'errors'])
+        group = self._group(tmp_path, {'eid-1': 'biased'})
+
+        df = group.collect_errors()
+
+        assert len(df) == 1
+        assert df.iloc[0]['product'] == 'photometry/raw'
+        assert df.iloc[0]['error_type'] == 'ValueError'
+
+
+class TestGroupCollectSessionErrors:
+    """collect_session_errors feeds filter_sessions, so it reads the catalog."""
+
+    def _group(self, tmp_path, session_types):
+        from iblnm.data import PhotometrySessionGroup
+        return PhotometrySessionGroup.from_catalog(
+            _collector_catalog(session_types), one=None, h5_dir=tmp_path,
+            scan_h5_errors=False)
+
+    def test_error_types_per_eid(self, tmp_path):
+        from iblnm.validation import MissingRawData, InvalidStrain
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[MissingRawData('x'), InvalidStrain('y')])
+        _write_session_h5(tmp_path, 'eid-2', 'mouse_B')
+        group = self._group(tmp_path, {'eid-1': 'biased', 'eid-2': 'biased'})
+
+        result = group.collect_session_errors().set_index('eid')
+
+        assert set(result.loc['eid-1', 'logged_errors']) == {
+            'MissingRawData', 'InvalidStrain'}
+        assert result.loc['eid-2', 'logged_errors'] == []
+
+    def test_row_per_catalogued_eid_including_filtered_and_missing(self, tmp_path):
+        """Every catalog row gets a row: the mask this feeds does not exist yet."""
+        from iblnm.validation import MissingRawData
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', 'training',
+                          errors=[MissingRawData('x')])
+        group = self._group(tmp_path, {'eid-1': 'training', 'eid-absent': 'biased'})
+        group.filter_sessions(session_types=('biased',), targetnms=False,
+                              qc_blockers=set(), min_performance=False,
+                              required_contrasts=False)
+
+        result = group.collect_session_errors()
+
+        assert list(result['eid']) == ['eid-1', 'eid-absent']
+        assert result.set_index('eid').loc['eid-absent', 'logged_errors'] == []
+
+    def test_duplicate_errors_deduplicated(self, tmp_path):
+        from iblnm.validation import MissingRawData
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[MissingRawData('x'), MissingRawData('x')])
+        group = self._group(tmp_path, {'eid-1': 'biased'})
+
+        result = group.collect_session_errors()
+
+        assert result.iloc[0]['logged_errors'] == ['MissingRawData']
+
+    def test_joins_the_column_filter_sessions_reads(self, tmp_path):
+        from iblnm.validation import MissingRawData
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[MissingRawData('x')])
+        _write_session_h5(tmp_path, 'eid-2', 'mouse_B')
+        group = self._group(tmp_path, {'eid-1': 'biased', 'eid-2': 'biased'})
+
+        group.collect_session_errors()
+        group.filter_sessions(session_types=False, targetnms=False,
+                              qc_blockers={'MissingRawData'},
+                              min_performance=False, required_contrasts=False)
+
+        assert set(group.sessions['eid']) == {'eid-2'}
 
 
 def _percent_contrast_trials(contrasts, fraction_correct, n_per_contrast=20):

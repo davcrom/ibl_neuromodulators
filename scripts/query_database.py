@@ -19,10 +19,10 @@ from one.api import ONE
 from iblnm.config import (
     SESSION_SCHEMA, SESSIONS_FPATH, SESSIONS_QC_FPATH, SESSIONS_H5_DIR,
 )
-from iblnm.data import PhotometrySession
+from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import get_extended_qc
 from iblnm.util import (
-    collect_catalog, collect_errors,
+    collect_catalog,
     enforce_schema, fill_empty_lists_from_group, fill_brain_region_from_fibers,
     fix_brain_regions, derive_target_nm, df2pqt, fill_qc_labels,
 )
@@ -153,7 +153,9 @@ if __name__ == '__main__':
     # Summarize errors logged to the H5 files (errors live in each session's
     # H5 /errors group; no separate log file is written). Extended-QC errors
     # are absorbed by error_log to keep the run going but are not persisted.
-    df_errors = collect_errors(SESSIONS_H5_DIR)
+    df_errors = PhotometrySessionGroup.from_catalog(
+        df_sessions, one=None, h5_dir=SESSIONS_H5_DIR,
+        scan_h5_errors=False).collect_errors()
     if len(df_errors) > 0:
         print(f"Logged {len(df_errors)} error entries across sessions")
         print(f"Error types:\n{df_errors['error_type'].value_counts().to_string()}")

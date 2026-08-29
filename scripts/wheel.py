@@ -14,10 +14,9 @@ import argparse
 
 import pandas as pd
 
-from iblnm.config import SESSIONS_FPATH, SESSIONS_H5_DIR, SESSION_TYPES
+from iblnm.config import SESSIONS_FPATH, SESSION_TYPES
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.util import collect_errors
 
 
 def process_wheel(ps, reprocess=False):
@@ -66,7 +65,7 @@ if __name__ == '__main__':
     print(f"\nResults: {n_processed} processed, {n_skipped} skipped, {n_failed} failed")
 
     # Collect errors from H5 files
-    df_errors = collect_errors(SESSIONS_H5_DIR)
+    df_errors = group.collect_errors()
     if len(df_errors) > 0:
         print(f"\nError summary ({len(df_errors)} entries):")
         print(df_errors['error_type'].value_counts().to_string())
