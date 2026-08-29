@@ -64,6 +64,7 @@ DDM_HMM_FIGURES_DIR = PROJECT_ROOT / 'figures' / 'ddm-hmm'
 EVENTS_LOG_FPATH = PROJECT_ROOT / 'metadata/events_log.pqt'
 ERRORS_FPATH = PROJECT_ROOT / 'metadata/errors.pqt'
 POSE_FPATH = PROJECT_ROOT / 'metadata/pose.pqt'
+LP_SESSIONS_FPATH = PROJECT_ROOT / 'metadata/LightningPoseSessions.csv'
 POSE_LOG_FPATH = PROJECT_ROOT / 'metadata/pose_log.pqt'
 
 # Video QC parameters

@@ -1123,8 +1123,14 @@ class TestFillBrainRegionFromFibers:
 
 
 def _write_session_h5(h5_dir, eid, subject, session_type='biased',
-                      brain_region=None, errors=None):
-    """Helper: write a minimal H5 with metadata and optional errors."""
+                      brain_region=None, errors=None, hemisphere=None,
+                      target_NM=None):
+    """Helper: write a minimal H5 with metadata and optional errors.
+
+    ``brain_region``, ``hemisphere`` and ``target_NM`` are the parallel list
+    columns and must match in length, or the session is dropped when a catalog
+    is rebuilt from the store.
+    """
     from unittest.mock import MagicMock
     from iblnm.data import PhotometrySession
 
@@ -1135,8 +1141,8 @@ def _write_session_h5(h5_dir, eid, subject, session_type='biased',
         'number': 1,
         'session_type': session_type,
         'brain_region': brain_region or [],
-        'hemisphere': [],
-        'target_NM': [],
+        'hemisphere': hemisphere or [],
+        'target_NM': target_NM or [],
     })
     mock_one = MagicMock()
     ps = PhotometrySession(series, one=mock_one, load_data=False)
