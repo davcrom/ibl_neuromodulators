@@ -92,6 +92,33 @@ A product whose data is absent and whose error group records a failed attempt
 is skipped on every later run — that record is what stops a re-download every
 time — until `--retry-failed` says otherwise.
 
+## Rollups
+
+The store is the source for every analysis; the rollup files are flat views of
+it, written for inspection and for the two viewers and read by no analysis.
+`rollup.py` regenerates all six from `data/sessions/*.h5`, so they never need
+keeping in sync with anything.
+
+```bash
+python scripts/rollup.py               # all six files
+python scripts/rollup.py --skip-pose   # the four that need no Alyx call
+```
+
+| File | Content |
+|---|---|
+| `metadata/sessions.pqt` | the session catalog, rebuilt from the stored `metadata` groups |
+| `data/qc_photometry.pqt` | one row per (session, brain region), metrics band-suffixed |
+| `data/performance.pqt` | one row per session, from `trials/performance` |
+| `metadata/errors.pqt` | every logged error, with the product it was logged against |
+| `metadata/pose.pqt` | one row per session, from the `video` groups |
+| `metadata/LightningPoseSessions.csv` | the pose table as a label sheet, best candidates first |
+
+Every rollup reads through `PhotometrySessionGroup`, so what lands in a file is
+what the group's filters admit. The pose pair is last and slowest: the eight
+leftCamera QC labels live only on Alyx — nothing here could tell that a stored
+copy had gone stale — so they cost one REST call per session, and `--skip-pose`
+is the quick run that leaves them alone.
+
 ### `dataset_overview.py` — Session coverage figures
 
 Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and the errors scanned from the H5 `/errors` groups. Produces session-by-session overview matrices at each processing stage, plus barplots of complete recordings per brain target and per mouse. Writes the unified `metadata/errors.pqt`.
@@ -471,20 +498,22 @@ Per-trial task and movement predictors. Join to `responses.pqt` on `eid`, `trial
 
 Response feature vectors indexed by `(eid, target_NM)`. Each column is a condition label encoding event x contrast x laterality x feedback (e.g. `stimOn_c1_contra_correct`). Values are mean response magnitudes in the early window.
 
-### `data/qc_photometry.pqt` — one row per (session, brain region, band)
+### `data/qc_photometry.pqt` — one row per (session, brain region)
+
+QC is stored per region but not per band, so the band it scored is suffixed
+into each metric name: `n_unique_samples_GCaMP`, `n_unique_samples_Isosbestic`.
 
 | Column | Type | Description |
 |---|---|---|
 | `eid` | str | Session UUID |
 | `brain_region` | str | Single recording target |
-| `band` | str | GCaMP or Isosbestic |
-| `n_unique_samples` | float | Fraction of unique values (< 0.05 flagged) |
-| `n_band_inversions` | int | Samples where GCaMP < Isosbestic (> 0 fatal) |
-| `n_early_samples` | int | Samples before recording start (> 0 fatal) |
-| `ar_score` | float | AR(1) autocorrelation coefficient |
-| `median_absolute_deviance` | float | MAD of signal |
-| `percentile_asymmetry` | float | (p75-p50) / (p50-p25) skewness proxy |
-| `percentile_distance` | float | (p75-p25) / median spread proxy |
+| `n_unique_samples_{band}` | float | Fraction of unique values |
+| `n_band_inversions_{band}` | int | Samples where GCaMP < Isosbestic (> 0 fatal) |
+| `n_early_samples_{band}` | int | Samples before recording start (> 0 fatal) |
+| `ar_score_{band}` | float | AR(1) autocorrelation coefficient |
+| `median_absolute_deviance_{band}` | float | MAD of signal |
+| `percentile_asymmetry_{band}` | float | (p75-p50) / (p50-p25) skewness proxy |
+| `percentile_distance_{band}` | float | (p75-p25) / median spread proxy |
 | `bleaching_tau` | float | Photobleaching time constant in seconds (GCaMP only) |
 | `iso_correlation` | float | R² between GCaMP and Isosbestic (GCaMP only) |
 

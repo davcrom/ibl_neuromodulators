@@ -458,9 +458,6 @@ PREPROCESSING_PIPELINES = {
     ]
 }
 
-# Fraction of unique samples per window below which a channel is flagged as suspect
-N_UNIQUE_SAMPLES_THRESHOLD = 0.1
-
 # Recording-level photometry QC thresholds read by
 # `PhotometrySessionGroup.filter_sessions(photometry_qc=...)`. Keys are columns
 # of the `collect_qc` table — a metric of QC_SLIDING_METRICS with the band

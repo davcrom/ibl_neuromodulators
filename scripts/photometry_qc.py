@@ -26,7 +26,7 @@ from sklearn.preprocessing import QuantileTransformer
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, FIGURE_DPI,
-    N_UNIQUE_SAMPLES_THRESHOLD, QC_SLIDING_METRICS, QC_PREPROCESSING,
+    PHOTOMETRY_QC_THRESHOLDS, QC_SLIDING_METRICS, QC_PREPROCESSING,
     SESSIONTYPE2COLOR, VALID_TARGETNMS, TARGETNM_COLORS,
 )
 from iblnm.data import PhotometrySessionGroup
@@ -38,9 +38,14 @@ plt.ion()
 figures_dir = PROJECT_ROOT / 'figures/qc_overview'
 figures_dir.mkdir(parents=True, exist_ok=True)
 
-# Define metrics
+# Define metrics. The unique-sample cutoff is the one the recording filter
+# applies (config.PHOTOMETRY_QC_THRESHOLDS), read off its GCaMP entry because
+# this script plots that band.
 BASIC_QC_METRICS = ['n_unique_samples', 'n_band_inversions']
-BASIC_QC_CUTOFFS = {'n_unique_samples': N_UNIQUE_SAMPLES_THRESHOLD, 'n_band_inversions': 0}
+BASIC_QC_CUTOFFS = {
+    'n_unique_samples': PHOTOMETRY_QC_THRESHOLDS['n_unique_samples_GCaMP'][1],
+    'n_band_inversions': 0,
+}
 
 # Non-basic metrics for violinplots and PCA
 OTHER_METRICS = [m for m in QC_SLIDING_METRICS if m not in BASIC_QC_METRICS]
@@ -328,7 +333,9 @@ fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 months = monthly_stats['month'].astype(str)
 x = range(len(months))
 
-axes[0].plot(x, monthly_stats['fail_rate_unique'], 'o-', label=f'n_unique_samples ≤ {N_UNIQUE_SAMPLES_THRESHOLD}', color='blue')
+axes[0].plot(x, monthly_stats['fail_rate_unique'], 'o-',
+             label=f"n_unique_samples ≤ {BASIC_QC_CUTOFFS['n_unique_samples']}",
+             color='blue')
 axes[0].plot(x, monthly_stats['fail_rate_inversions'], 's-', label='n_band_inversions > 0', color='orange')
 axes[0].plot(x, monthly_stats['fail_rate_basic'], '^-', label='Either (basic QC fail)', color='red')
 axes[0].set_ylabel('Failure rate (%)')

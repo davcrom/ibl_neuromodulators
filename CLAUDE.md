@@ -14,7 +14,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | File paths, output directories | `config.py` top section |
 | Session DataFrame schema | `config.py → SESSION_SCHEMA` |
 | NM/strain/target lookups | `config.py → STRAIN2NM, LINE2NM, TARGET2NM` |
-| QC thresholds and metrics | `config.py → QC_RAW_METRICS, QC_SLIDING_METRICS, N_UNIQUE_SAMPLES_THRESHOLD, PHOTOMETRY_QC_THRESHOLDS` |
+| QC thresholds and metrics | `config.py → QC_RAW_METRICS, QC_SLIDING_METRICS, PHOTOMETRY_QC_THRESHOLDS` |
 | Preprocessing pipeline steps | `config.py → PREPROCESSING_PIPELINES` |
 | Analysis windows | `config.py → RESPONSE_WINDOW, BASELINE_WINDOW, RESPONSE_WINDOWS` |
 | Colors and plot params | `config.py → NM_COLORS, TARGETNM_COLORS, SESSIONTYPE2COLOR` |
@@ -25,6 +25,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Alyx/ONE queries | `io.py → get_subject_info, get_brain_region, get_datasets, ...` |
 | Session utilities | `util.py → enforce_schema, get_session_type, ...` |
 | Store rollups | `data.py → PhotometrySessionGroup.collect_errors, collect_qc, collect_pose` |
+| Rollup files (parquets, pose CSV) | `scripts/rollup.py` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |
 | Psychometric fitting | `task.py → fit_psychometric, fit_psychometric_by_block, compute_fraction_correct` |
