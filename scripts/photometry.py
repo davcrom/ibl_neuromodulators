@@ -28,7 +28,6 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.util import collect_qc
 
 
 def process_session(ps, reprocess=False):
@@ -122,7 +121,7 @@ if __name__ == '__main__':
 
     # Collect QC from H5 files
     print("Collecting QC metrics from H5 files...")
-    df_qc = collect_qc(SESSIONS_H5_DIR)
+    df_qc = group.collect_qc()
     if len(df_qc) > 0:
         QCPHOTOMETRY_FPATH.parent.mkdir(parents=True, exist_ok=True)
         df_qc.to_parquet(QCPHOTOMETRY_FPATH, index=False)

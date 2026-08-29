@@ -313,6 +313,10 @@ _WHEEL_T0_EVENT = PRODUCT_SPEC['wheel/responses']['t0_event']
 _METADATA_NONE_SENTINEL = '__none__'
 _ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback', 'product')
 # Never persisted to errors/ — see _save_errors.
+# Session columns holding one entry per recording, exploded together so a
+# region never parts company with its hemisphere and target NM.
+PARALLEL_COLS = ['brain_region', 'hemisphere', 'target_NM']
+
 _UNRECORDED_ERROR_TYPES = frozenset({'BlockingIOError', 'StaleProduct'})
 _RESPONSES_RESERVED_KEYS = {'times', 'trials'}
 
@@ -3355,6 +3359,18 @@ def _apply_statistic(statistic, arrays):
     return statistic(*[a[:min_len] for a in arrays])
 
 
+def _explode_recordings(sessions: pd.DataFrame) -> pd.DataFrame:
+    """Explode session rows to one row per recording, numbering the fibers.
+
+    The `PARALLEL_COLS` list columns are exploded together, so each row keeps
+    its region with the hemisphere and target NM recorded alongside it.
+    `fiber_idx` numbers a session's recordings in the order they are listed.
+    """
+    df = sessions.explode(PARALLEL_COLS).copy()
+    df['fiber_idx'] = df.groupby('eid').cumcount()
+    return df.reset_index(drop=True)
+
+
 def _get_donor_sessions(view, pos, group_by):
     """Integer positions in ``view`` eligible as donors for unit ``pos``.
 
@@ -3451,8 +3467,7 @@ class PhotometrySessionGroup:
 
         df = enforce_schema(catalog.copy(), SESSION_SCHEMA)
 
-        parallel_cols = ['brain_region', 'hemisphere', 'target_NM']
-        df = validate_parallel_lists(df, parallel_cols)
+        df = validate_parallel_lists(df, PARALLEL_COLS)
 
         if 'logged_errors' not in df.columns:
             df['logged_errors'] = [[] for _ in range(len(df))]
@@ -3505,9 +3520,7 @@ class PhotometrySessionGroup:
         Reflects the current filter and dedup masks. Filters to
         _recordings_targetnms (set by filter_sessions) when not False.
         """
-        parallel_cols = ['brain_region', 'hemisphere', 'target_NM']
-        df = self.sessions.explode(parallel_cols).copy()
-        df['fiber_idx'] = df.groupby('eid').cumcount()
+        df = _explode_recordings(self.sessions)
         if self._recordings_targetnms is not False:
             df = df[df['target_NM'].isin(self._recordings_targetnms)]
         return df.reset_index(drop=True)
@@ -3709,6 +3722,22 @@ class PhotometrySessionGroup:
             for _, row in self.sessions.iterrows()
         ])
 
+    @contextmanager
+    def _open_h5(self, eid: str):
+        """Open one session's stored H5 read-only, yielding None when absent.
+
+        The collectors read products straight out of the file rather than
+        through a `PhotometrySession`, whose load methods would build and write
+        what they found missing. A session with no file in `self.h5_dir` yields
+        None so a caller can treat it as it treats an empty file.
+        """
+        fpath = Path(self.h5_dir) / f'{eid}.h5'
+        if not fpath.exists():
+            yield None
+            return
+        with h5py.File(fpath, 'r') as h5:
+            yield h5
+
     def _error_log(self, eids) -> pd.DataFrame:
         """Read the `errors/` tree of each named session's H5 into one table.
 
@@ -3725,11 +3754,9 @@ class PhotometrySessionGroup:
         """
         rows = []
         for eid in eids:
-            fpath = Path(self.h5_dir) / f'{eid}.h5'
-            if not fpath.exists():
-                continue
-            with h5py.File(fpath, 'r') as h5:
-                rows.extend(read_error_tree(h5))
+            with self._open_h5(eid) as h5:
+                if h5 is not None:
+                    rows.extend(read_error_tree(h5))
         return pd.DataFrame(rows, columns=LOG_COLUMNS)
 
     def collect_errors(self) -> pd.DataFrame:
@@ -3745,6 +3772,34 @@ class PhotometrySessionGroup:
             One row per logged error, with the `util.LOG_COLUMNS` schema.
         """
         return self._error_log(self.sessions['eid'])
+
+    def collect_qc(self) -> pd.DataFrame:
+        """Read every catalogued recording's stored raw photometry QC.
+
+        Like `collect_session_errors` this walks `self._catalog` rather than
+        the filtered view: the metrics it returns feed
+        `filter_sessions(photometry_qc=...)`, so the mask does not exist yet.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per catalogued recording, with `eid`, `brain_region` and
+            one column per metric stored in `photometry/{region}/raw/qc`. The
+            band is suffixed into the metric name (`n_unique_samples_GCaMP`),
+            because QC is stored per region but not per band. A recording whose
+            QC group is absent — never built, or its build failed — gets NaN
+            for every metric, which fails any threshold compared against it.
+        """
+        rows = []
+        recordings = _explode_recordings(self._catalog)
+        for eid, regions in recordings.groupby('eid')['brain_region']:
+            with self._open_h5(eid) as h5:
+                stored = (_read_photometry_qc(h5['photometry'])
+                          if h5 is not None and 'photometry' in h5 else {})
+            rows.extend({'eid': eid, 'brain_region': region}
+                        | stored.get(region, {}) for region in regions)
+        return (pd.DataFrame(rows) if rows
+                else pd.DataFrame(columns=['eid', 'brain_region']))
 
     def collect_session_errors(self) -> pd.DataFrame:
         """Read every catalogued session's error types and join them on.

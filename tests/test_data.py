@@ -4162,6 +4162,76 @@ class TestGroupCollectSessionErrors:
         assert set(group.sessions['eid']) == {'eid-2'}
 
 
+class TestGroupCollectQc:
+    """collect_qc reports every catalogued recording's stored raw-QC metrics."""
+
+    def _store_qc(self, h5_dir, eid, qc_by_region):
+        """Write one session's `photometry/{region}/raw/qc` groups."""
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(pd.Series({
+            'eid': eid, 'subject': f'mouse_{eid}', 'number': 1,
+            'start_time': '2024-01-01T10:00:00', 'session_type': 'biased',
+        }), one=None, load_data=False)
+        ps.filepath = h5_dir / f'{eid}.h5'
+        ps.photometry_qc = qc_by_region
+        ps.save_h5(groups=['photometry'])
+
+    def _group(self, h5_dir, regions_by_eid):
+        from iblnm.data import PhotometrySessionGroup
+        catalog = pd.DataFrame([
+            {'eid': eid, 'subject': f'mouse_{eid}', 'session_type': 'biased',
+             'start_time': '2024-01-01T10:00:00', 'number': 1,
+             'brain_region': regions, 'hemisphere': ['l'] * len(regions),
+             'target_NM': [f'{r}-DA' for r in regions], 'NM': 'DA'}
+            for eid, regions in regions_by_eid.items()
+        ])
+        return PhotometrySessionGroup.from_catalog(
+            catalog, one=None, h5_dir=h5_dir, scan_h5_errors=False)
+
+    def test_one_row_per_recording_with_band_suffixed_metrics(self, tmp_path):
+        self._store_qc(tmp_path, 'eid-1', {
+            'VTA': {'n_unique_samples_GCaMP': 0.5,
+                    'n_unique_samples_Isosbestic': 0.4},
+            'SNc': {'n_unique_samples_GCaMP': 0.002,
+                    'n_unique_samples_Isosbestic': 0.3}})
+        group = self._group(tmp_path, {'eid-1': ['VTA', 'SNc']})
+
+        df = group.collect_qc().set_index('brain_region')
+
+        assert set(df.index) == {'VTA', 'SNc'}
+        assert set(df['eid']) == {'eid-1'}
+        assert df.loc['VTA', 'n_unique_samples_GCaMP'] == 0.5
+        assert df.loc['SNc', 'n_unique_samples_Isosbestic'] == 0.3
+
+    def test_recording_without_stored_qc_is_nan(self, tmp_path):
+        """No value to compare, so the threshold in ticket 18 fails it."""
+        self._store_qc(tmp_path, 'eid-1',
+                       {'VTA': {'n_unique_samples_GCaMP': 0.5}})
+        group = self._group(tmp_path, {'eid-1': ['VTA', 'SNc'], 'eid-2': ['DR']})
+
+        df = group.collect_qc().set_index(['eid', 'brain_region'])
+
+        assert np.isnan(df.loc[('eid-1', 'SNc'), 'n_unique_samples_GCaMP'])
+        assert np.isnan(df.loc[('eid-2', 'DR'), 'n_unique_samples_GCaMP'])
+
+    def test_reads_the_catalog_not_the_filtered_view(self, tmp_path):
+        """It feeds filter_sessions, so it runs before the mask exists."""
+        self._store_qc(tmp_path, 'eid-1',
+                       {'VTA': {'n_unique_samples_GCaMP': 0.5}})
+        self._store_qc(tmp_path, 'eid-2',
+                       {'DR': {'n_unique_samples_GCaMP': 0.1}})
+        group = self._group(tmp_path, {'eid-1': ['VTA'], 'eid-2': ['DR']})
+        group.filter_sessions(session_types=False, targetnms=['VTA-DA'],
+                              qc_blockers=set(), min_performance=False,
+                              required_contrasts=False)
+
+        assert set(group.collect_qc()['eid']) == {'eid-1', 'eid-2'}
+
+    def test_empty_catalog(self, tmp_path):
+        group = self._group(tmp_path, {})
+        assert list(group.collect_qc().columns) == ['eid', 'brain_region']
+
+
 def _percent_contrast_trials(contrasts, fraction_correct, n_per_contrast=20):
     """Trials presenting `contrasts` (percent) at a known fraction correct.
 

@@ -9,7 +9,8 @@ Plots:
 5. QC failure rates over time
 6. Photobleaching tau over time
 
-Input:  metadata/sessions.pqt, data/sessions/*.h5 (QC metrics via collect_qc)
+Input:  metadata/sessions.pqt, data/sessions/*.h5 (QC metrics via
+        PhotometrySessionGroup.collect_qc)
 Output: figures/qc_overview/*.svg
 
 Usage:
@@ -29,7 +30,6 @@ from iblnm.config import (
     SESSIONTYPE2COLOR, VALID_TARGETNMS, TARGETNM_COLORS,
 )
 from iblnm.data import PhotometrySessionGroup
-from iblnm.util import collect_qc
 from iblnm.vis import violinplot, plot_joint_distributions
 
 plt.ion()
@@ -74,14 +74,17 @@ df_rec = group.recordings
 
 # Collect QC metrics from H5 files and merge with recordings
 print(f"Collecting QC metrics from {SESSIONS_H5_DIR}")
-df_qc = collect_qc(SESSIONS_H5_DIR)
+df_qc = group.collect_qc()
 
 if df_qc.empty:
     print("No QC data found. Exiting.")
     sys.exit(0)
 
-# Filter to GCaMP only (exclude isosbestic reference)
-df_qc = df_qc[df_qc['band'] == 'GCaMP'].copy()
+# QC is stored per region with the band suffixed into each metric name. This
+# script reads the GCaMP band only, under the bare metric names.
+gcamp = {col: col.removesuffix('_GCaMP') for col in df_qc.columns
+         if col.endswith('_GCaMP')}
+df_qc = df_qc[['eid', 'brain_region', *gcamp]].rename(columns=gcamp)
 print(f"Filtered to GCaMP: {len(df_qc)} signals")
 
 # Merge QC metrics with recording metadata

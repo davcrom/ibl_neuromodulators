@@ -69,50 +69,6 @@ def deduplicate_log(df):
     return df.drop_duplicates(subset=['eid', 'error_type', 'error_message']).reset_index(drop=True)
 
 
-def collect_qc(h5_dir):
-    """Aggregate photometry QC metrics from all H5 files in a directory.
-
-    Walks /photometry/<region>/qc/ in each .h5 file and stacks the per-region
-    QC rows into a single DataFrame.
-
-    Parameters
-    ----------
-    h5_dir : Path or str
-        Directory containing {eid}.h5 files.
-
-    Returns
-    -------
-    pd.DataFrame
-        QC metrics, one row per (eid, brain_region, band).
-    """
-    import h5py
-
-    h5_dir = Path(h5_dir)
-    frames = []
-    for fpath in sorted(h5_dir.glob('*.h5')):
-        with h5py.File(fpath, 'r') as f:
-            if 'photometry' not in f:
-                continue
-            phot_root = f['photometry']
-            for region in phot_root:
-                rg = phot_root[region]
-                if 'qc' not in rg:
-                    continue
-                qc_grp = rg['qc']
-                data = {}
-                for col in qc_grp:
-                    vals = qc_grp[col][:]
-                    if vals.dtype.kind == 'S':
-                        vals = vals.astype(str)
-                    data[col] = vals
-                if data:
-                    frames.append(pd.DataFrame(data))
-
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
-
-
 def enforce_schema(df, schema):
     """Ensure DataFrame columns match a schema with correct types and defaults.
 
