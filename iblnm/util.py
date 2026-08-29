@@ -69,57 +69,6 @@ def deduplicate_log(df):
     return df.drop_duplicates(subset=['eid', 'error_type', 'error_message']).reset_index(drop=True)
 
 
-def collect_catalog(h5_dir):
-    """Build a session catalog DataFrame from H5 metadata groups.
-
-    Reads the /metadata group from each .h5 file in h5_dir. Files without
-    a /metadata group are skipped. The resulting DataFrame is passed through
-    enforce_schema to ensure all SESSION_SCHEMA columns are present.
-
-    Parameters
-    ----------
-    h5_dir : Path or str
-        Directory containing {eid}.h5 files.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per session with all SESSION_SCHEMA columns.
-    """
-    import h5py
-    from iblnm.config import SESSION_SCHEMA
-    from iblnm.data import PhotometrySession
-
-    h5_dir = Path(h5_dir)
-    rows = []
-    for fpath in sorted(h5_dir.glob('*.h5')):
-        with h5py.File(fpath, 'r') as f:
-            if 'metadata' not in f:
-                continue
-            grp = f['metadata']
-            row = {}
-            for attr, is_list in PhotometrySession._METADATA_FIELDS:
-                if is_list:
-                    if attr in grp:
-                        row[attr] = [v.decode() if isinstance(v, bytes) else v
-                                     for v in grp[attr][:]]
-                    else:
-                        row[attr] = []
-                else:
-                    if attr in grp.attrs:
-                        val = grp.attrs[attr]
-                        if isinstance(val, bytes):
-                            val = val.decode()
-                        if val == '__none__':
-                            val = None
-                        row[attr] = val
-            rows.append(row)
-
-    if not rows:
-        return enforce_schema(pd.DataFrame(), SESSION_SCHEMA)
-    return enforce_schema(pd.DataFrame(rows), SESSION_SCHEMA)
-
-
 def collect_qc(h5_dir):
     """Aggregate photometry QC metrics from all H5 files in a directory.
 
@@ -578,6 +527,11 @@ def validate_parallel_lists(df, columns):
             else:
                 lengths.add(1)
         return len(lengths) <= 1
+
+    if df.empty:
+        # An empty apply() returns a frame, and masking with it drops the
+        # columns along with the (zero) rows.
+        return df.copy()
 
     mask = df.apply(_lengths_match, axis=1)
     n_dropped = (~mask).sum()

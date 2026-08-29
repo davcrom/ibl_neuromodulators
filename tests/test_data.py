@@ -4041,6 +4041,61 @@ class TestGroupCollectErrors:
         assert df.iloc[0]['error_type'] == 'ValueError'
 
 
+class TestGroupFromH5Dir:
+    """PhotometrySessionGroup.from_h5_dir rebuilds a catalog from the store."""
+
+    def test_catalog_from_h5_metadata_groups(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', 'biased')
+        _write_session_h5(tmp_path, 'eid-2', 'mouse_B', 'training')
+        _write_session_h5(tmp_path, 'eid-3', 'mouse_A', 'ephys')
+
+        group = PhotometrySessionGroup.from_h5_dir(tmp_path, one=None)
+
+        assert set(group._catalog['eid']) == {'eid-1', 'eid-2', 'eid-3'}
+        assert set(group._catalog['subject']) == {'mouse_A', 'mouse_B'}
+        assert group.h5_dir == tmp_path
+
+    def test_every_schema_column_present(self, tmp_path):
+        from iblnm.config import SESSION_SCHEMA
+        from iblnm.data import PhotometrySessionGroup
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A')
+
+        group = PhotometrySessionGroup.from_h5_dir(tmp_path, one=None)
+
+        assert set(SESSION_SCHEMA) <= set(group._catalog.columns)
+
+    def test_empty_directory(self, tmp_path):
+        from iblnm.data import PhotometrySessionGroup
+        assert len(PhotometrySessionGroup.from_h5_dir(tmp_path, one=None)) == 0
+
+    def test_file_without_metadata_group_skipped(self, tmp_path):
+        import h5py
+        from iblnm.data import PhotometrySessionGroup
+        from tests.test_util import _write_session_h5
+        with h5py.File(tmp_path / 'old.h5', 'w') as f:
+            f.attrs['eid'] = 'old-eid'
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A')
+
+        group = PhotometrySessionGroup.from_h5_dir(tmp_path, one=None)
+
+        assert list(group._catalog['eid']) == ['eid-1']
+
+    def test_logged_errors_scanned(self, tmp_path):
+        """The reconstructed catalog carries the errors its files recorded."""
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.validation import MissingRawData
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[MissingRawData('x')])
+
+        group = PhotometrySessionGroup.from_h5_dir(tmp_path, one=None)
+
+        assert group._catalog['logged_errors'].iloc[0] == ['MissingRawData']
+
+
 class TestGroupCollectSessionErrors:
     """collect_session_errors feeds filter_sessions, so it reads the catalog."""
 

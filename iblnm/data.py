@@ -334,6 +334,40 @@ def _save_metadata(session, h5_file):
             grp.attrs[attr] = _METADATA_NONE_SENTINEL if value is None else value
 
 
+def _read_metadata(h5_file) -> dict:
+    """Read the `metadata` group into the session row it was written from.
+
+    Parameters
+    ----------
+    h5_file : h5py.File
+        An open session file. One with no `metadata` group yields `{}`, which
+        is how a file written before the group existed drops out of a catalog
+        rebuilt from the store.
+
+    Returns
+    -------
+    dict
+        Field -> value for every `PhotometrySession._METADATA_FIELDS` entry the
+        group holds. List fields come back as lists of str, empty when the
+        dataset is absent; the `__none__` sentinel comes back as None. Dates
+        stay ISO strings, the form the catalog carries them in.
+    """
+    if 'metadata' not in h5_file:
+        return {}
+    grp = h5_file['metadata']
+    row = {}
+    for attr, is_list in PhotometrySession._METADATA_FIELDS:
+        if is_list:
+            row[attr] = [_decode(value) for value in grp[attr][:]] \
+                if attr in grp else []
+        elif attr in grp.attrs:
+            value = grp.attrs[attr]
+            value = _decode(value) if isinstance(value, bytes) else (
+                value.item() if hasattr(value, 'item') else value)
+            row[attr] = None if value == _METADATA_NONE_SENTINEL else value
+    return row
+
+
 def _load_metadata(session, h5_file):
     if 'metadata' not in h5_file:
         return
@@ -1365,27 +1399,9 @@ class PhotometrySession(PhotometrySessionLoader):
 
         # Read metadata to build the init Series
         with h5py.File(fpath, 'r') as f:
-            if 'metadata' not in f:
-                raise ValueError(f"H5 file has no /metadata group: {fpath}")
-            grp = f['metadata']
-            data = {}
-            for attr, is_list in cls._METADATA_FIELDS:
-                if is_list:
-                    if attr in grp:
-                        data[attr] = [v.decode() if isinstance(v, bytes) else v
-                                      for v in grp[attr][:]]
-                    else:
-                        data[attr] = []
-                else:
-                    if attr in grp.attrs:
-                        val = grp.attrs[attr]
-                        if isinstance(val, bytes):
-                            val = val.decode()
-                        elif hasattr(val, 'item'):
-                            val = val.item()  # numpy scalar → native
-                        if isinstance(val, str) and val == '__none__':
-                            val = None
-                        data[attr] = val
+            data = _read_metadata(f)
+        if not data:
+            raise ValueError(f"H5 file has no /metadata group: {fpath}")
 
         ps = cls(pd.Series(data), one=one, load_data=False)
 
@@ -3446,6 +3462,36 @@ class PhotometrySessionGroup:
             group.collect_session_errors()
         return group
 
+    @classmethod
+    def from_h5_dir(cls, h5_dir, one=None):
+        """Build a group from the `metadata` groups of a directory of H5 files.
+
+        The store's own inverse: where `from_catalog` starts from
+        `sessions.pqt`, this reconstructs the catalog from what was written,
+        for a script that has just built those files and holds no catalog of
+        its own. Files with no `metadata` group are skipped.
+
+        Parameters
+        ----------
+        h5_dir : Path or str
+            Directory of `{eid}.h5` files, adopted as the group's `h5_dir`.
+        one : one.api.One, optional
+            ONE connection, needed only if the group later has to fetch.
+
+        Returns
+        -------
+        PhotometrySessionGroup
+            Group over every session found, with all `SESSION_SCHEMA` columns
+            and `logged_errors` scanned as `from_catalog` does.
+        """
+        rows = []
+        for fpath in sorted(Path(h5_dir).glob('*.h5')):
+            with h5py.File(fpath, 'r') as h5:
+                row = _read_metadata(h5)
+            if row:
+                rows.append(row)
+        return cls.from_catalog(pd.DataFrame(rows), one=one, h5_dir=h5_dir)
+
     @property
     def sessions(self):
         """Session-level view: _catalog rows passing both dedup and filter masks."""
@@ -3720,10 +3766,10 @@ class PhotometrySessionGroup:
         errors = deduplicate_log(self._error_log(self._catalog['eid']))
         by_eid = (errors.groupby('eid')['error_type'].apply(list) if len(errors)
                   else pd.Series(dtype=object))
-        logged = pd.DataFrame({
-            'eid': list(self._catalog['eid']),
-            'logged_errors': [by_eid.get(eid, []) for eid in self._catalog['eid']],
-        })
+        logged = pd.DataFrame(
+            [{'eid': eid, 'logged_errors': by_eid.get(eid, [])}
+             for eid in self._catalog['eid']],
+            columns=['eid', 'logged_errors'])
         self._catalog = self._catalog.drop(
             columns='logged_errors', errors='ignore').merge(
                 logged, on='eid', how='left')

@@ -13,7 +13,6 @@ from iblnm.util import (
     enforce_schema,
     get_session_type,
     get_targetNM,
-    collect_catalog,
     fill_brain_region_from_fibers,
     count_population_by_target_event,
     LOG_COLUMNS,
@@ -1149,43 +1148,6 @@ def _write_session_h5(h5_dir, eid, subject, session_type='biased',
                 ps.log_error(e)
     fpath = h5_dir / f'{eid}.h5'
     ps.save_h5(fpath, groups=['metadata', 'errors'])
-
-
-class TestCollectCatalog:
-    """Tests for collect_catalog."""
-
-    def test_collects_metadata_from_h5_files(self, tmp_path):
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A', 'biased')
-        _write_session_h5(tmp_path, 'eid-2', 'mouse_B', 'training')
-        _write_session_h5(tmp_path, 'eid-3', 'mouse_A', 'ephys')
-
-        df = collect_catalog(tmp_path)
-        assert len(df) == 3
-        assert set(df['eid']) == {'eid-1', 'eid-2', 'eid-3'}
-        assert set(df['subject']) == {'mouse_A', 'mouse_B'}
-
-    def test_empty_directory(self, tmp_path):
-        df = collect_catalog(tmp_path)
-        assert len(df) == 0
-
-    def test_skips_h5_without_metadata(self, tmp_path):
-        import h5py
-        # Create old-style H5 with no /metadata
-        with h5py.File(tmp_path / 'old.h5', 'w') as f:
-            f.attrs['eid'] = 'old-eid'
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A')
-
-        df = collect_catalog(tmp_path)
-        assert len(df) == 1
-        assert df.iloc[0]['eid'] == 'eid-1'
-
-    def test_schema_enforced(self, tmp_path):
-        """Catalog DataFrame has all SESSION_SCHEMA columns."""
-        from iblnm.config import SESSION_SCHEMA
-        _write_session_h5(tmp_path, 'eid-1', 'mouse_A')
-        df = collect_catalog(tmp_path)
-        for col in SESSION_SCHEMA:
-            assert col in df.columns
 
 
 class TestCountPopulationByTargetEvent:
