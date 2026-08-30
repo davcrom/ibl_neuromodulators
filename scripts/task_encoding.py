@@ -36,6 +36,7 @@ from iblnm.config import (
 from iblnm.analysis import compute_feature_dispersion, select_block_terms
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
+from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 from iblnm.vis import plot_cohort_cca_summary, plot_dispersion_scatter
 
 plt.ion()
@@ -51,6 +52,10 @@ DEFAULT_PARAMS = [
 # select_block_terms. Cross-category interactions and the intercept stay in the
 # fitted features but are excluded from every block.
 CCA_BLOCK_MAINS = {'task': CCA_TASK_MAINS, 'movement': CCA_MOVEMENT_MAINS}
+
+# The neural view is read from the parquets responses.py writes; the behavioral
+# view is the psychometric fit stored in `trials/performance`.
+REQUIRED_PRODUCTS = FILTER_PRODUCTS
 
 # Grid search defaults for sparse CCA
 ALPHA_GRID = [1e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
@@ -524,7 +529,7 @@ def plot_cca_from_saved(data_dir, events, scatter_dir, summary_dir):
 # Main
 # =========================================================================
 
-if __name__ == '__main__':
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -554,7 +559,12 @@ if __name__ == '__main__':
                         help='rescale sparse CCA weights to unit L2 norm (default: True)')
     parser.add_argument('--no-unit-norm', action='store_false', dest='unit_norm',
                         help='keep raw ElasticCCA weight magnitudes')
-    args = parser.parse_args()
+    add_store_arguments(parser)
+    return parser.parse_args(argv)
+
+
+if __name__ == '__main__':
+    args = parse_args()
 
     events = args.events if args.events else RESPONSE_EVENTS
 
@@ -578,6 +588,10 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
+    # Pre-warm before filtering: the filters below read stored products too, and
+    # each skips itself where its product is missing.
+    build_store(group, products=REQUIRED_PRODUCTS,
+                rebuild=args.rebuild, workers=args.workers)
     # Before filtering: min_performance and required_contrasts read the columns
     # this joins on, and skip themselves silently when they are absent.
     group.load_performance()

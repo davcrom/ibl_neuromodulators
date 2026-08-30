@@ -7,6 +7,7 @@ as separate processes to parallelize.
 Usage:
     python scripts/baseline.py --model performance              # plot from saved parquet
     python scripts/baseline.py --model performance --reprocess  # rerun ~10h test, then plot
+    python scripts/baseline.py --model performance --rebuild photometry/preprocessed
 """
 import argparse
 from pathlib import Path
@@ -20,6 +21,7 @@ from iblnm.config import SESSIONS_FPATH, SESSION_SCHEMA, PROJECT_ROOT, FIGURE_DP
 from iblnm.io import _get_default_connection
 from iblnm.util import enforce_schema
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
+from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 from iblnm import analysis
 from iblnm.vis import (plot_baseline_propsig, plot_baseline_r2,
                        plot_baseline_slope, plot_baseline_schematic,
@@ -33,6 +35,10 @@ from iblphotometry import processing
 # with a flat, non-drifting z-scored baseline across trials. Hardcoded; not
 # derived in code.
 EXAMPLE_EID = '26d93d1d-97f1-40f0-b84c-28229135f6fa'
+
+# `prepare_session` cuts its own pre-stimulus window out of the preprocessed
+# signal, so the stored responses are not read — the signal and the trials are.
+REQUIRED_PRODUCTS = FILTER_PRODUCTS + ('trials/table', 'photometry/preprocessed')
 
 PIPELINE = [
         dict(
@@ -142,7 +148,7 @@ TERCILE_OUTCOME = {
 }
 
 
-if __name__ == '__main__':
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', choices=MODELS, required=True,
                         help='which baseline analysis to run')
@@ -150,20 +156,28 @@ if __name__ == '__main__':
                         help='rerun the ~10h permutation test and overwrite the '
                              'saved parquet; default re-plots from the saved '
                              'parquet')
-    args = parser.parse_args()
+    add_store_arguments(parser)
+    return parser.parse_args(argv)
+
+
+if __name__ == '__main__':
+    args = parse_args()
     model_fn, fixed_var, fname = MODELS[args.model]
     out_dir = Path('results/baseline')
 
-    if args.reprocess:
-        group = PhotometrySessionGroup.from_catalog(
-            pd.read_parquet(SESSIONS_FPATH),
-            one=_get_default_connection()
-            )
-        group.filter_sessions(
-            session_types=('biased', 'ephys',)
-        )
-        _ = group.deduplicate()
+    one = _get_default_connection()
+    group = PhotometrySessionGroup.from_catalog(
+        pd.read_parquet(SESSIONS_FPATH), one=one)
+    # Pre-warm before filtering: the filters below read stored products too, and
+    # each skips itself where its product is missing.
+    build_store(group, products=REQUIRED_PRODUCTS,
+                rebuild=args.rebuild, workers=args.workers)
+    group.filter_sessions(
+        session_types=('biased', 'ephys',)
+    )
+    _ = group.deduplicate()
 
+    if args.reprocess:
         out_dir.mkdir(parents=True, exist_ok=True)
         results = group.session_permutation_test(
             prepare_session,
@@ -201,13 +215,8 @@ if __name__ == '__main__':
     # fresh PhotometrySession per recording (as session_permutation_test does) so
     # the brain region comes from the catalog recordings row, not a stale
     # per-eid cache -- ps.brain_region[0] then keys the correct H5 response.
-    one = _get_default_connection()
     sig = results[results['p_value'] <= 0.05]
     sig_recordings = set(zip(sig['eid'], sig['brain_region']))
-    group = PhotometrySessionGroup.from_catalog(
-        pd.read_parquet(SESSIONS_FPATH), one=one)
-    group.filter_sessions(session_types=('biased', 'ephys',))
-    _ = group.deduplicate()
     outcome_selector = TERCILE_OUTCOME[args.model]
     recordings = group.recordings[
         [(e, r) in sig_recordings
@@ -233,7 +242,7 @@ if __name__ == '__main__':
     # attribute prepare_session sets ('correct' or 'log_rt').
     sessions = enforce_schema(pd.read_parquet(SESSIONS_FPATH), SESSION_SCHEMA)
     row = sessions[sessions['eid'] == EXAMPLE_EID].iloc[0]
-    ps = prepare_session(PhotometrySession(row, one=_get_default_connection()))
+    ps = prepare_session(PhotometrySession(row, one=one))
     schematic_fig = plot_baseline_schematic(
         ps.baseline, getattr(ps, fixed_var[0]), args.model)
     schematic_fig.savefig(fig_dir / f'{args.model}_schematic.svg',

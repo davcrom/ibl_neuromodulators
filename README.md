@@ -92,6 +92,20 @@ A product whose data is absent and whose error group records a failed attempt
 is skipped on every later run — that record is what stops a re-download every
 time — until `--retry-failed` says otherwise.
 
+**Pre-warm.** Every analysis script runs the same build over the products it is
+about to read, before it starts iterating: it prints how many sessions hold each
+one current, stale or absent, fills the gaps, and then loops over a complete
+store. The survey costs about a second across the whole store, so it is
+unconditional. Each script takes the same two flags, with the same meaning as
+above:
+
+```bash
+python scripts/responses.py --rebuild photometry/responses --workers 4
+```
+
+A stale stamp stops an analysis exactly as it stops `download.py`, before
+anything is read.
+
 ## Rollups
 
 The store is the source for every analysis; the rollup files are flat views of

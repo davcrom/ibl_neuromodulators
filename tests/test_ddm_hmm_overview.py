@@ -859,6 +859,7 @@ def _stub_main_dependencies(monkeypatch):
         ddm, 'PhotometrySessionGroup',
         SimpleNamespace(from_catalog=lambda *a, **k: SimpleNamespace(
             filter_sessions=lambda *a, **k: None)))
+    monkeypatch.setattr(ddm, 'build_store', lambda *a, **k: [])
     monkeypatch.setattr(ddm, '_assemble_mouse_views',
                         lambda group, subjects, one: views)
     monkeypatch.setattr(ddm, 'pca_2d',

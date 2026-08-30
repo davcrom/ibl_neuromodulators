@@ -14,6 +14,7 @@ Output:
 Usage:
     python scripts/responses.py              # plot from existing parquet files
     python scripts/responses.py --reprocess  # re-extract + re-fit, then plot
+    python scripts/responses.py --reprocess --rebuild photometry/responses
 """
 import argparse
 
@@ -40,6 +41,7 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
+from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 from iblnm.vis import (
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
@@ -60,6 +62,11 @@ from iblnm.analysis import (
     split_features_by_event,
 )
 from iblnm.util import count_population_by_target_event
+
+# Traces come from `photometry/responses`; the trial regressors that model them
+# come from `trials/table` and the wheel's peri-event velocity.
+REQUIRED_PRODUCTS = FILTER_PRODUCTS + (
+    'trials/table', 'photometry/responses', 'wheel/responses')
 
 
 # =========================================================================
@@ -480,7 +487,7 @@ def plot_persession_figures(group, figures_dir, display='session'):
     print("  Per-session OLS drop-one and full-model R² figures saved")
 
 
-if __name__ == '__main__':
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -494,7 +501,12 @@ if __name__ == '__main__':
                         help='per-session OLS figure display mode: per-session '
                              'dots (session), per-subject median+IQR (subject), '
                              'or per-target violin (target)')
-    args = parser.parse_args()
+    add_store_arguments(parser)
+    return parser.parse_args(argv)
+
+
+if __name__ == '__main__':
+    args = parse_args()
 
     # Create output directories
     data_dir = RESPONSES_DIR
@@ -522,6 +534,10 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
+    # Pre-warm before filtering: the filters below read stored products too, and
+    # each skips itself where its product is missing.
+    build_store(group, products=REQUIRED_PRODUCTS,
+                rebuild=args.rebuild, workers=args.workers)
     # Before filtering: min_performance and required_contrasts read the columns
     # this joins on, and skip themselves silently when they are absent.
     group.load_performance()

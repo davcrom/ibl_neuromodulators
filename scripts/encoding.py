@@ -11,6 +11,7 @@ ONE; the fit → evaluate → plot sequence is spelled out in the ``__main__`` b
 
 Usage:
     python scripts/encoding.py <eid> <brain_region>
+    python scripts/encoding.py <eid> <brain_region> --rebuild wheel/preprocessed
 """
 import argparse
 from functools import partial
@@ -35,9 +36,16 @@ from iblnm.analysis import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
+from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 from iblnm.vis import (
     plot_encoding_prediction, plot_encoding_kernels, plot_delta_r_squared,
 )
+
+
+# The pose and its camera clock are raw products the store does not keep, so
+# `load_pose` fetches them from ONE; everything else the fit reads is stored.
+REQUIRED_PRODUCTS = FILTER_PRODUCTS + (
+    'trials/table', 'photometry/preprocessed', 'wheel/preprocessed')
 
 
 # config modulator name -> trials column carrying its per-event value. `choice`
@@ -124,19 +132,29 @@ def build_encoding_design(
     return design, slices, target_grid
 
 
-if __name__ == '__main__':
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('eid', help='session to fit')
     parser.add_argument('brain_region', help='recording/channel to fit, e.g. SNc-l')
-    args = parser.parse_args()
+    add_store_arguments(parser)
+    return parser.parse_args(argv)
 
-    # --- Select the recording through the group object (single source of truth)
+
+if __name__ == '__main__':
+    args = parse_args()
+
+    # --- Select the recording through the group object (single source of truth).
+    #     One session is fitted, so the catalog is cut to it before the pre-warm:
+    #     the survey and any build then cover that session alone.
     df = pd.read_parquet(SESSIONS_FPATH)
     one = _get_default_connection()
-    group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
+    group = PhotometrySessionGroup.from_catalog(
+        df[df['eid'] == args.eid], one=one, h5_dir=SESSIONS_H5_DIR)
+    build_store(group, products=REQUIRED_PRODUCTS,
+                rebuild=args.rebuild, workers=args.workers)
     # Before filtering: min_performance and required_contrasts read the columns
     # this joins on, and skip themselves silently when they are absent.
     group.load_performance()

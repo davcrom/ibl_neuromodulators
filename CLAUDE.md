@@ -25,6 +25,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Alyx/ONE queries | `io.py → get_subject_info, get_brain_region, get_datasets, ...` |
 | Session utilities | `util.py → enforce_schema, get_session_type, ...` |
 | Store rollups | `data.py → PhotometrySessionGroup.collect_errors, collect_qc, collect_pose` |
+| Product builders, `--rebuild`, pre-warm | `store.py → PRODUCT_BUILDERS, build_store, add_store_arguments` |
 | Rollup files (parquets, pose CSV) | `scripts/rollup.py` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |
@@ -47,6 +48,8 @@ analysis.py ← signal processing (response extraction, resampling, bleaching)
 task.py ← behavioral performance (psychometrics, block validation)
      ↑
 data.py ← PhotometrySession class (composes io, analysis, task, validation)
+     ↑
+store.py ← product builders over a group (pre-warm, --rebuild, stale detection)
      ↑
 vis.py / gui.py ← plotting
      ↑
@@ -470,7 +473,8 @@ Tests use `pytest` with synthetic fixtures. No Alyx calls.
 | `test_vis.py` | Plotting functions |
 | `test_dataset_overview.py` | Dataset flag construction |
 | `test_wheel.py` | Wheel raw, preprocessed and response products |
-| `test_download.py` | Catalog fixups, per-session product building, download CLI |
+| `test_download.py` | Catalog fixups and the download CLI |
+| `test_store.py` | Per-session and group product builds, the pre-warm, the shared `--rebuild` flag |
 
 Key fixtures in test files:
 - `mock_session_series()` — synthetic session metadata row

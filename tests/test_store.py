@@ -1,4 +1,9 @@
-"""Tests for iblnm/store.py — the per-session and group-level product builds."""
+"""Tests for iblnm/store.py — the per-session and group-level product builds.
+
+Also covers the store flags the analysis scripts share, since `--rebuild` and
+the pre-warm product list mean the same thing in every one of them.
+"""
+import importlib
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -6,6 +11,19 @@ import pytest
 
 from iblnm import store
 from iblnm.validation import StaleProduct
+
+# Every script that pre-warms the store, mapped to the arguments it cannot run
+# without, so the store flags can be appended to a parsable command line.
+ANALYSIS_SCRIPTS = {
+    'baseline': ['--model', 'performance'],
+    'collect_trials': [],
+    'ddm_hmm_overview': [],
+    'encoding': ['some-eid', 'SNc'],
+    'example_session': [],
+    'responses': [],
+    'task_encoding': [],
+    'task_performance': [],
+}
 
 
 @pytest.fixture
@@ -227,3 +245,85 @@ class TestBuildStore:
         store.build_store(fake_group, rebuild={'wheel/preprocessed'})
 
         fake_group.process.assert_called_once()
+
+
+@pytest.mark.parametrize('script', sorted(ANALYSIS_SCRIPTS))
+class TestAnalysisScriptStoreFlags:
+    """Every analysis script takes `--rebuild` and names what it pre-warms."""
+
+    def test_rebuild_reaches_the_parsed_arguments(self, script):
+        """A named product is carried through to the pre-warm unchanged."""
+        module = importlib.import_module(f'scripts.{script}')
+
+        args = module.parse_args(
+            ANALYSIS_SCRIPTS[script] + ['--rebuild', 'photometry/responses'])
+
+        assert args.rebuild == ['photometry/responses']
+
+    def test_unknown_product_is_rejected_at_parse_time(self, script):
+        """A mistyped product fails before any session is touched."""
+        module = importlib.import_module(f'scripts.{script}')
+
+        with pytest.raises(SystemExit):
+            module.parse_args(
+                ANALYSIS_SCRIPTS[script] + ['--rebuild', 'photometry/nonsense'])
+
+    def test_required_products_are_buildable(self, script):
+        """The pre-warm list names products `store` knows how to build."""
+        module = importlib.import_module(f'scripts.{script}')
+
+        assert set(module.REQUIRED_PRODUCTS) <= set(store.ALL_PRODUCTS)
+        assert module.REQUIRED_PRODUCTS
+
+
+class TestStatusReport:
+    """The printed survey is what `scan_product_status` found, not a re-count."""
+
+    def test_counts_match_the_scan(self):
+        """Each verdict is reported with the number of sessions holding it."""
+        status = pd.DataFrame({
+            'eid': ['a', 'b', 'c', 'd'],
+            'trials/table': ['current', 'current', 'stale', 'absent'],
+        })
+
+        report = store.status_report(status)
+
+        counts = status['trials/table'].value_counts()
+        assert set(counts.index) == {'current', 'stale', 'absent'}
+        assert all(f'{count} {verdict}' in report
+                   for verdict, count in counts.items())
+
+
+class TestPreWarmOverAStore:
+    """The pre-warm against real H5 files: build the gap, then loop over it."""
+
+    @staticmethod
+    def _catalog(*eids):
+        return pd.DataFrame([
+            {'eid': eid, 'subject': 'test_mouse', 'number': 1,
+             'start_time': '2024-01-01T10:00:00', 'session_type': 'training',
+             'task_protocol': 'test_protocol', 'lab': 'test_lab'}
+            for eid in eids])
+
+    def test_absent_product_is_built_before_the_loop(self, tmp_path, monkeypatch):
+        """One session holds the product, the other gains it; both then read back."""
+        from iblnm.data import PhotometrySessionGroup
+
+        def build_trials(ps):
+            ps.trials = pd.DataFrame({'trial': [0, 1], 'choice': [1, -1]})
+            ps.save_h5(groups=['trials'])
+
+        monkeypatch.setattr(store, 'PRODUCT_BUILDERS', {'trials/table': build_trials})
+        group = PhotometrySessionGroup.from_catalog(
+            self._catalog('stored-eid', 'empty-eid'), one=None, h5_dir=tmp_path,
+            scan_h5_errors=False)
+        stored = group._get_session(group.sessions.iloc[0])
+        build_trials(stored)
+        stored.save_h5(groups=['metadata'])  # so `process` can rebuild it from file
+        before = group.scan_product_status('trials/table')['trials/table']
+        assert list(before) == ['current', 'absent']
+
+        store.build_store(group, products=['trials/table'])
+
+        after = group.scan_product_status('trials/table')['trials/table']
+        assert list(after) == ['current', 'current']

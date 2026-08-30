@@ -109,6 +109,14 @@ PRODUCT_BUILDERS = {
 
 ALL_PRODUCTS = tuple(PRODUCT_BUILDERS)
 
+# What `PhotometrySessionGroup.filter_sessions` reads before it can cut the
+# cohort: `load_performance` joins `fraction_correct` and `contrasts` from
+# `trials/performance`, and the `photometry_qc` thresholds compare stored
+# `photometry/{region}/raw/qc` metrics. Both filters skip themselves where the
+# product is missing, so an analysis that pre-warms these first is filtering on
+# a complete store rather than on whichever sessions happen to hold them.
+FILTER_PRODUCTS = ('trials/performance', 'photometry/raw/qc')
+
 
 def build_session(ps, products=ALL_PRODUCTS, retry_failed=False) -> dict[str, str]:
     """Build every product this session is missing, in dependency order.

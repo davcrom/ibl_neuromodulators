@@ -308,8 +308,8 @@ class TestReprocessWiring:
         assert 'def plot_movement_figures(' in src
 
     def test_persession_display_flag_wired_to_figures(self):
-        _, main_block = _responses_source()
-        assert "'--persession-display'" in main_block
+        src, main_block = _responses_source()
+        assert "'--persession-display'" in src
         assert 'display=args.persession_display' in main_block
 
 
