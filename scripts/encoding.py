@@ -137,6 +137,9 @@ if __name__ == '__main__':
     df = pd.read_parquet(SESSIONS_FPATH)
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
+    # Before filtering: min_performance and required_contrasts read the columns
+    # this joins on, and skip themselves silently when they are absent.
+    group.load_performance()
     group.filter_sessions()
     recording = group.recordings.query(
         'eid == @args.eid and brain_region == @args.brain_region').iloc[0]
@@ -145,9 +148,7 @@ if __name__ == '__main__':
 
     # --- Load and preprocess this session's data
     ps.load_trials()
-    ps.load_raw_photometry()
-    ps.preprocess(targets=[args.brain_region])
-    target = ps.photometry['GCaMP_preprocessed'][args.brain_region]
+    target = ps.load_photometry()[args.brain_region]
     wheel_velocity = ps.load_wheel()
     ps.load_camera_times()
     ps.load_pose()

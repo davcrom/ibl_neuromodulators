@@ -60,6 +60,9 @@ def test_build_mouse_states_frame_attaches_window_mean_baseline(monkeypatch):
                                         'choice': [1, -1, 1]})
             self.photometry = _step_photometry(levels, stim_times)
 
+        def load_photometry(self):
+            return self.photometry['GCaMP_preprocessed']
+
         def load_states(self):
             self.states = pd.DataFrame({'map_state': [1.0, 2.0, 1.0]})
 
@@ -96,6 +99,9 @@ def test_build_mouse_states_frame_baseline_stays_aligned_to_its_trial(monkeypatc
                                         'choice': [1, -1, 1]})
             self.photometry = _step_photometry(levels, stim_times)
 
+        def load_photometry(self):
+            return self.photometry['GCaMP_preprocessed']
+
         def load_states(self):
             # Fit dropped trial 1, so its map_state joins as NaN.
             self.states = pd.DataFrame({'map_state': [1.0, 2.0]}, index=[0, 2])
@@ -127,6 +133,9 @@ def _ambiguous_fiber_frame(monkeypatch, columns, brain_region):
             self.photometry = {'GCaMP_preprocessed': pd.DataFrame(
                 {col: single['LC'].to_numpy() for col in columns},
                 index=single.index)}
+
+        def load_photometry(self):
+            return self.photometry['GCaMP_preprocessed']
 
         def load_states(self):
             self.states = pd.DataFrame({'map_state': [1.0, 2.0, 1.0]})
@@ -208,6 +217,9 @@ def _evoked_frame(monkeypatch, photometry, stim_times, feedback_times):
                                         'feedback_times': feedback_times,
                                         'choice': [1] * n_trials})
             self.photometry = photometry
+
+        def load_photometry(self):
+            return self.photometry['GCaMP_preprocessed']
 
         def load_states(self):
             self.states = pd.DataFrame({'map_state': [1.0] * n_trials})
@@ -322,6 +334,9 @@ def test_build_mouse_states_frame_drops_unfit_and_other_subjects(monkeypatch):
             self.photometry = _step_photometry(
                 [1.0] * len(self.trials), self.trials['stimOn_times'])
 
+        def load_photometry(self):
+            return self.photometry['GCaMP_preprocessed']
+
         def load_states(self):
             self.states = states[self.eid]
 
@@ -345,6 +360,9 @@ def test_build_mouse_states_frame_empty_when_no_fit_sessions(monkeypatch):
 
         def load_h5(self, groups=None):
             self.trials = pd.DataFrame({'choice': [1]})
+
+        def load_photometry(self):
+            return self.photometry['GCaMP_preprocessed']
 
         def load_states(self):
             self.states = None
@@ -382,6 +400,9 @@ def test_build_mouse_states_frame_skips_sessions_without_trials(monkeypatch):
             self.trials = trials[self.eid]
             self.photometry = _step_photometry(
                 [1.0] * len(self.trials), self.trials.get('stimOn_times', []))
+
+        def load_photometry(self):
+            return self.photometry['GCaMP_preprocessed']
 
         def load_states(self):
             self.states = states[self.eid]

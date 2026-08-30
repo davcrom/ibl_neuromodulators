@@ -156,7 +156,8 @@ def build_mouse_states_frame(
     frames = []
     for _, row in rows.iterrows():
         ps = PhotometrySession(row, one=one)
-        ps.load_h5(groups=['trials', 'photometry'])
+        # load_trials only fetches, so the stored table is read off the H5.
+        ps.load_h5(groups=['trials'])
         if ps.trials is None or ps.trials.empty:
             print(f"  {ps.eid}: no stored trials — skipped")
             continue
@@ -164,7 +165,7 @@ def build_mouse_states_frame(
         if ps.states is None:
             continue
         frame = ps.trials.join(ps.states)
-        signals = ps.photometry['GCaMP_preprocessed']
+        signals = ps.load_photometry()
         if len(signals.columns) == 1 and len(ps.brain_region) == 1:
             column = signals.columns[0]
             responses = ps.extract_responses(

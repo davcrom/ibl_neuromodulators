@@ -74,10 +74,10 @@ PIPELINE = [
 
 def prepare_session(ps):
     assert len(ps.brain_region) == 1
-    # ~ ps.load_photometry()
-    # ~ ps.preprocess(pipeline=PIPELINE)
-    # ~ ps.load_trials()
-    ps.load_h5(groups=['trials', 'photometry'])
+    # load_trials only fetches, so the stored table is read off the H5 instead;
+    # load_photometry then reads the preprocessed signal or rebuilds it.
+    ps.load_h5(groups=['trials'])
+    ps.load_photometry()
     ps.trials = ps.trials[
         (ps.trials['choice'] != 0)
         & ((ps.trials['firstMovement_times'] - ps.trials['stimOn_times']) >= 0.05)
