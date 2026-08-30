@@ -17,7 +17,6 @@ import sys
 import pandas as pd
 from matplotlib import pyplot as plt
 
-from iblnm.config import SESSIONS_H5_DIR
 from iblnm.data import PhotometrySession
 from iblnm.gui import PhotometrySessionViewer
 from iblnm.io import _get_default_connection
@@ -86,37 +85,29 @@ def print_session_errors(ps):
 
 
 def load_session_data(ps):
-    """Populate ps with everything the viewer needs.
+    """Populate ps with the raw bands, the preprocessed signal and the responses.
 
-    Loads every cached group from the H5 when available, then fills any
-    remaining gaps from the pipeline. Each pipeline step is a no-op when its
-    output is already present, so full, partial, and missing H5s are all
-    handled uniformly.
+    Each load method reads its own stored product when the session's H5 holds a
+    current one and rebuilds it from Alyx otherwise, so full, partial and empty
+    stores need no branching here. The trials table is the exception: nothing
+    loads it back from the store, so it is read off the H5 first and left to
+    ``load_responses`` to fetch when the file has none.
     """
-    h5_path = SESSIONS_H5_DIR / f'{ps.eid}.h5'
-    if h5_path.exists():
-        ps.load_h5(h5_path)
+    if ps.filepath.exists():
+        ps.load_h5(ps.filepath, groups=['trials'])
 
-    if ps.trials is None:
-        try:
-            ps.load_trials()
-        except (MissingRawData, MissingExtractedData) as e:
-            print(f"Warning: trials not available for {ps.eid} -- {e}")
+    try:
+        ps.load_raw_photometry()
+    except (MissingRawData, MissingExtractedData) as e:
+        print(f"Photometry data not available for {ps.eid}: {e}")
+        sys.exit(1)
 
-    if 'GCaMP' not in ps.photometry:
-        try:
-            ps.load_raw_photometry()
-        except (MissingRawData, MissingExtractedData) as e:
-            print(f"Photometry data not available for {ps.eid}: {e}")
-            sys.exit(1)
+    ps.load_photometry()
 
-    if 'GCaMP_preprocessed' not in ps.photometry:
-        ps.preprocess()
-
-    if ps.trials is not None and not ps.photometry_responses:
-        ps.photometry_responses = ps.extract_responses(
-            ps.photometry['GCaMP_preprocessed']
-        )
+    try:
+        ps.load_responses('photometry')
+    except (MissingRawData, MissingExtractedData) as e:
+        print(f"Warning: trials not available for {ps.eid} -- {e}")
 
     return ps
 

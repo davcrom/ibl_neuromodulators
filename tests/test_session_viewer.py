@@ -1,6 +1,7 @@
 """Tests for scripts/session_viewer.py helper functions."""
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 import scripts.session_viewer as sv
@@ -178,119 +179,115 @@ def test_print_session_errors_prints_errors(capsys):
 # load_session_data
 # =========================================================================
 
-def _make_mock_ps(load_trials_side_effect=None):
-    """Build a mock PhotometrySession with empty data state."""
+def _make_mock_ps(tmp_path, responses_side_effect=None):
+    """Mock PhotometrySession whose H5 path does not exist (empty store)."""
     ps = MagicMock()
     ps.eid = 'test-eid'
     ps.trials = None
     ps.photometry = {}
     ps.photometry_responses = {}
-    if load_trials_side_effect:
-        ps.load_trials.side_effect = load_trials_side_effect
-    else:
-        def _set_trials():
-            ps.trials = MagicMock()
-        ps.load_trials.side_effect = _set_trials
-
-    def _populate_preprocessed():
-        ps.photometry['GCaMP_preprocessed'] = MagicMock()
-    ps.preprocess.side_effect = _populate_preprocessed
+    ps.filepath = tmp_path / 'test-eid.h5'
+    if responses_side_effect:
+        ps.load_responses.side_effect = responses_side_effect
     return ps
 
 
-def test_load_session_data_complete_h5_skips_pipeline(monkeypatch, tmp_path):
-    """A complete H5 supplies trials too, so nothing is re-fetched from ONE."""
-    ps = _make_mock_ps()
-    h5_path = tmp_path / 'test-eid.h5'
-    h5_path.touch()
-    monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
-
-    def _populate_from_h5(path, groups=None):
-        ps.trials = MagicMock()
-        ps.photometry = {'GCaMP': MagicMock(),
-                         'Isosbestic': MagicMock(),
-                         'GCaMP_preprocessed': MagicMock()}
-        ps.photometry_responses = {'VTA': MagicMock()}
-    ps.load_h5.side_effect = _populate_from_h5
+def test_load_session_data_empty_store_builds_through_load_methods(tmp_path):
+    """With no H5, the three load methods are called and nothing is read back."""
+    ps = _make_mock_ps(tmp_path)
 
     result = load_session_data(ps)
 
     assert result is ps
-    ps.load_h5.assert_called_once_with(h5_path)
-    ps.load_trials.assert_not_called()
-    ps.load_raw_photometry.assert_not_called()
-    ps.preprocess.assert_not_called()
-    ps.extract_responses.assert_not_called()
+    ps.load_h5.assert_not_called()
+    ps.load_raw_photometry.assert_called_once_with()
+    ps.load_photometry.assert_called_once_with()
+    ps.load_responses.assert_called_once_with('photometry')
 
 
-def test_load_session_data_partial_h5_runs_pipeline(monkeypatch, tmp_path):
-    """When H5 exists but lacks photometry, pipeline fills the gaps."""
-    ps = _make_mock_ps()
-    h5_path = tmp_path / 'test-eid.h5'
-    h5_path.touch()
-    monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
-
-    def _populate_raw():
-        ps.photometry['GCaMP'] = MagicMock()
-        ps.photometry['Isosbestic'] = MagicMock()
-    ps.load_raw_photometry.side_effect = _populate_raw
+def test_load_session_data_reads_stored_trials(tmp_path):
+    """An existing H5 supplies the trials table, which has no load method."""
+    ps = _make_mock_ps(tmp_path)
+    ps.filepath.touch()
 
     load_session_data(ps)
 
-    ps.load_h5.assert_called_once_with(h5_path)
-    ps.load_trials.assert_called_once()
-    ps.load_raw_photometry.assert_called_once()
-    ps.preprocess.assert_called_once()
-    ps.extract_responses.assert_called_once()
+    ps.load_h5.assert_called_once_with(ps.filepath, groups=['trials'])
 
 
-def test_load_session_data_missing_raw_data_continues(monkeypatch, tmp_path):
-    """MissingRawData from load_trials prints a warning but does not raise."""
-    ps = _make_mock_ps(load_trials_side_effect=MissingRawData("no raw data"))
-    monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)  # no H5 exists
+def test_load_session_data_missing_raw_data_continues(tmp_path):
+    """MissingRawData from load_responses warns but does not raise."""
+    ps = _make_mock_ps(tmp_path,
+                       responses_side_effect=MissingRawData("no raw data"))
 
     result = load_session_data(ps)
 
     assert result is ps
-    ps.extract_responses.assert_not_called()
+    assert ps.photometry_responses == {}
 
 
-def test_load_session_data_missing_extracted_data_continues(monkeypatch, tmp_path):
-    """MissingExtractedData from load_trials prints a warning but does not raise."""
-    ps = _make_mock_ps(load_trials_side_effect=MissingExtractedData("not extracted"))
-    monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
+def test_load_session_data_missing_extracted_data_continues(tmp_path):
+    """MissingExtractedData from load_responses warns but does not raise."""
+    ps = _make_mock_ps(
+        tmp_path, responses_side_effect=MissingExtractedData("not extracted"))
 
     result = load_session_data(ps)
 
     assert result is ps
-    ps.extract_responses.assert_not_called()
+    assert ps.photometry_responses == {}
 
 
-def test_load_session_data_with_trials_calls_extract_responses(monkeypatch, tmp_path):
-    """When trials load successfully, extract_responses is called."""
-    ps = _make_mock_ps()
-    monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
-
-    load_session_data(ps)
-
-    ps.extract_responses.assert_called_once()
-
-
-def test_load_session_data_missing_photometry_exits(monkeypatch, tmp_path):
-    """MissingRawData from load_raw_photometry → sys.exit."""
-    ps = _make_mock_ps()
+def test_load_session_data_missing_photometry_exits(tmp_path):
+    """MissingRawData from load_raw_photometry -> sys.exit."""
+    ps = _make_mock_ps(tmp_path)
     ps.load_raw_photometry.side_effect = MissingRawData("no photometry")
-    monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
     with pytest.raises(SystemExit):
         load_session_data(ps)
 
 
-def test_load_session_data_missing_extracted_photometry_exits(monkeypatch, tmp_path):
-    """MissingExtractedData from load_raw_photometry → sys.exit."""
-    ps = _make_mock_ps()
+def test_load_session_data_missing_extracted_photometry_exits(tmp_path):
+    """MissingExtractedData from load_raw_photometry -> sys.exit."""
+    ps = _make_mock_ps(tmp_path)
     ps.load_raw_photometry.side_effect = MissingExtractedData("not extracted")
-    monkeypatch.setattr(sv, 'SESSIONS_H5_DIR', tmp_path)
 
     with pytest.raises(SystemExit):
         load_session_data(ps)
+
+
+def test_load_session_data_complete_store_makes_no_one_call(tmp_path, monkeypatch):
+    """A store holding every product is read back without touching Alyx."""
+    import numpy as np
+    from iblnm.data import PhotometrySession
+
+    monkeypatch.setattr('iblnm.data.store_raw', True)
+    row = pd.Series({'eid': 'stored-eid', 'subject': 'ZFM-01',
+                     'start_time': '2024-01-01T10:00:00', 'number': 1,
+                     'brain_region': ['VTA'], 'hemisphere': ['l'],
+                     'target_NM': ['VTA-DA']})
+    times = np.linspace(0, 600, 6000)
+    bands = {band: pd.DataFrame({'VTA': np.linspace(500, 400, 6000)}, index=times)
+             for band in ('GCaMP', 'Isosbestic')}
+    builder = PhotometrySession(row, one=MagicMock(), load_data=False)
+    builder.filepath = tmp_path / 'stored-eid.h5'
+    builder.photometry = dict(bands)
+    builder.trials = pd.DataFrame({
+        'trial': np.arange(20),
+        'stimOn_times': np.linspace(50, 550, 20),
+        'firstMovement_times': np.linspace(50.3, 550.3, 20),
+        'feedback_times': np.linspace(51, 551, 20),
+    })
+    builder.preprocess()
+    builder.load_responses('photometry')
+    builder.save_h5()
+
+    ps = PhotometrySession(row, one=MagicMock(), load_data=False)
+    ps.filepath = builder.filepath
+    ps.one.reset_mock()  # construction resolves the session path via eid2path
+
+    load_session_data(ps)
+
+    assert ps.one.method_calls == []
+    assert set(ps.photometry) == {'GCaMP', 'Isosbestic', 'GCaMP_preprocessed'}
+    assert 'VTA' in ps.photometry_responses
+    assert len(ps.trials) == 20
