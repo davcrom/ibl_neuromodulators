@@ -13,7 +13,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
@@ -26,12 +26,11 @@ if __name__ == '__main__':
     # Load sessions and create group (same pattern as task_encoding.py)
     print(f"Loading sessions from {SESSIONS_FPATH}")
     df = pd.read_parquet(SESSIONS_FPATH)
-    if PERFORMANCE_FPATH.exists():
-        perf = pd.read_parquet(
-            PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
-        df = df.merge(perf, on='eid', how='left')
 
     group = PhotometrySessionGroup.from_catalog(df, one=None, h5_dir=SESSIONS_H5_DIR)
+    # Before filtering: min_performance and required_contrasts read the columns
+    # this joins on, and skip themselves silently when they are absent.
+    group.load_performance()
     group.filter_sessions(
         session_types=SESSION_TYPES_TO_ANALYZE,
         qc_blockers=ANALYSIS_QC_BLOCKERS,

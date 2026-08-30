@@ -25,7 +25,7 @@ plt.ioff()
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, FIGURE_DPI,
-    PERFORMANCE_FPATH, ERRORS_FPATH,
+    ERRORS_FPATH,
     SESSION_TYPES_TO_ANALYZE, VALID_TARGETNMS,
     TARGETNMS_TO_ANALYZE, POSE_FPATH,
     SESSIONTYPE2FLOAT, SESSIONTYPE2COLOR, TARGETNM_COLORS,
@@ -121,9 +121,6 @@ parser.add_argument('--horizontal', action='store_true',
 args = parser.parse_args()
 
 if args.session_split == 'proficient':
-    if not PERFORMANCE_FPATH.exists():
-        print(f"Performance file not found: {PERFORMANCE_FPATH}")
-        sys.exit(1)
     split_col = 'proficient_label'
     float_map = PROFICIENT_FLOAT_MAP
     color_map = PROFICIENT_COLOR_MAP
@@ -149,18 +146,18 @@ if not SESSIONS_FPATH.exists():
     print(f"Sessions file not found: {SESSIONS_FPATH}")
     sys.exit(1)
 
-df = pd.read_parquet(SESSIONS_FPATH)
-# Scan the H5 /errors groups once, here, so the video blockers below can be
-# appended to the result before any group filters on it.
+# Scan the H5 /errors groups and the stored performance once, here, so the
+# video blockers below can be appended before any group filters on them. Both
+# calls join their columns onto the scanning group's own catalog, which is
+# then taken back as the enriched table the plots are built from.
 _scan = PhotometrySessionGroup.from_catalog(
-    df, one=None, h5_dir=SESSIONS_H5_DIR, scan_h5_errors=False)
-df = df.merge(_scan.collect_session_errors(), on='eid', how='left')
-if PERFORMANCE_FPATH.exists():
-    perf = pd.read_parquet(PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
-    df = df.merge(perf, on='eid', how='left')
+    pd.read_parquet(SESSIONS_FPATH), one=None, h5_dir=SESSIONS_H5_DIR,
+    scan_h5_errors=False)
+_scan.collect_session_errors()
+_scan.load_performance()
+df = _scan.sessions
 
-if 'fraction_correct' in df.columns and 'contrasts' in df.columns:
-    df['proficient_label'] = _compute_proficient_label(df)
+df['proficient_label'] = _compute_proficient_label(df)
 
 # Merge video QC flags if available
 if POSE_FPATH.exists():

@@ -24,7 +24,7 @@ matplotlib.use('Agg')  # batch figure generation; never open interactive windows
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
     RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     MEAN_TRACES_FPATH,
     RESPONSE_OLS_PERSESSION_FPATH, RESPONSE_OLS_MOUSE_PVAL_FPATH,
@@ -519,13 +519,12 @@ if __name__ == '__main__':
     # =====================================================================
     print(f"Loading sessions from {SESSIONS_FPATH}")
     df = pd.read_parquet(SESSIONS_FPATH)
-    if PERFORMANCE_FPATH.exists():
-        perf = pd.read_parquet(
-            PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
-        df = df.merge(perf, on='eid', how='left')
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
+    # Before filtering: min_performance and required_contrasts read the columns
+    # this joins on, and skip themselves silently when they are absent.
+    group.load_performance()
     group.filter_sessions(
         session_types=('biased', 'ephys')
     )

@@ -14,7 +14,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH, FIGURE_DPI,
+    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, FIGURE_DPI,
     RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
@@ -35,13 +35,12 @@ if __name__ == '__main__':
     # =====================================================================
     print(f"Loading sessions from {SESSIONS_FPATH}")
     df = pd.read_parquet(SESSIONS_FPATH)
-    if PERFORMANCE_FPATH.exists():
-        perf = pd.read_parquet(
-            PERFORMANCE_FPATH, columns=['eid', 'fraction_correct', 'contrasts'])
-        df = df.merge(perf, on='eid', how='left')
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
+    # Before filtering: min_performance and required_contrasts read the columns
+    # this joins on, and skip themselves silently when they are absent.
+    group.load_performance()
     group.filter_sessions(
         session_types=('biased', 'ephys'),
         qc_blockers=ANALYSIS_QC_BLOCKERS,
@@ -52,12 +51,6 @@ if __name__ == '__main__':
     # =====================================================================
     # Load data onto group
     # =====================================================================
-    if not PERFORMANCE_FPATH.exists():
-        print(f"Error: {PERFORMANCE_FPATH} not found. "
-              "Run scripts/task.py first.")
-        raise SystemExit(1)
-
-    group.load_performance()
     if RESPONSES_FPATH.exists() and TRIAL_REGRESSORS_FPATH.exists():
         group.load_response_magnitudes(RESPONSES_FPATH)
         group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
