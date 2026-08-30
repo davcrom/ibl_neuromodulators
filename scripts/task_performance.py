@@ -18,7 +18,7 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, FIGURE_DPI,
     RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
-    ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
+    ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
