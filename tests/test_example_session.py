@@ -11,6 +11,7 @@ from iblnm.config import TARGETNM_COLORS
 from scripts.example_session import (
     camera_timing_ok, find_snippet_window, _normalize_window, build_traces,
     plot_example_session, contrast_rank_grays, feedback_colors,
+    select_example_session,
 )
 
 
@@ -110,6 +111,74 @@ class TestCameraTimingOk:
             [0.0, 0.1, 0.1],
         ])
         assert camera_timing_ok({'functions': functions}) is False
+
+
+# =========================================================================
+# select_example_session
+# =========================================================================
+
+def _store_pose_xcorr(h5_dir, eid, peak):
+    """Write one session's `video/pose/qc` with a known peak correlation."""
+    from unittest.mock import MagicMock
+    from iblnm.data import PhotometrySession
+
+    ps = PhotometrySession(pd.Series({
+        'eid': eid, 'subject': f'mouse_{eid}', 'number': 1,
+        'start_time': '2024-01-01T10:00:00', 'session_type': 'biased',
+    }), one=MagicMock(), load_data=False)
+    ps.filepath = h5_dir / f'{eid}.h5'
+    ps.pose_xcorr = {
+        'functions': np.full((3, 4), peak),
+        'lags': np.linspace(-1, 1, 4),
+        'peak_lags': np.zeros(3),
+        'drift': 0.0,
+    }
+    ps.save_h5(groups=['video'])
+
+
+class TestSelectExampleSession:
+    """The pick ranks on the group's performance and gates on stored pose QC."""
+
+    @pytest.fixture
+    def group(self, tmp_path):
+        """Three VTA-DA recordings: the best performer fails the timing gate."""
+        from iblnm.data import PhotometrySessionGroup
+
+        _store_pose_xcorr(tmp_path, 'eid-best', peak=0.1)   # fails the gate
+        _store_pose_xcorr(tmp_path, 'eid-mid', peak=0.9)    # passes
+        _store_pose_xcorr(tmp_path, 'eid-low', peak=0.9)    # passes, ranks last
+        catalog = pd.DataFrame([
+            {'eid': eid, 'subject': f'mouse_{eid}', 'session_type': 'biased',
+             'start_time': '2024-01-01T10:00:00', 'number': 1,
+             'brain_region': ['VTA'], 'hemisphere': ['l'],
+             'target_NM': ['VTA-DA'], 'fraction_correct': fc}
+            for eid, fc in [('eid-best', 0.95), ('eid-mid', 0.85),
+                            ('eid-low', 0.60)]
+        ])
+        return PhotometrySessionGroup.from_catalog(
+            catalog, one=None, h5_dir=tmp_path, scan_h5_errors=False)
+
+    def test_returns_best_performer_passing_the_gate(self, group):
+        """Ranking is by fraction_correct; the gate skips the top session."""
+        rec = select_example_session(group, target_nm='VTA-DA')
+        assert rec['eid'] == 'eid-mid'
+
+    def test_skips_sessions_with_no_stored_pose_qc(self, group, tmp_path):
+        """A session whose product was never built is passed over, not read."""
+        (tmp_path / 'eid-mid.h5').unlink()
+        rec = select_example_session(group, target_nm='VTA-DA')
+        assert rec['eid'] == 'eid-low'
+
+    def test_raises_when_no_session_passes(self, group, tmp_path):
+        """Every candidate failing the gate is an error, not a silent pick."""
+        for eid in ('eid-mid', 'eid-low'):
+            (tmp_path / f'{eid}.h5').unlink()
+        with pytest.raises(ValueError, match='camera-timing gate'):
+            select_example_session(group, target_nm='VTA-DA')
+
+    def test_raises_when_target_nm_absent(self, group):
+        with pytest.raises(ValueError, match='No SNc-DA recordings'):
+            select_example_session(group, target_nm='SNc-DA')
 
 
 # =========================================================================

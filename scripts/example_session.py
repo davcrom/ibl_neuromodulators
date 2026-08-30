@@ -15,20 +15,18 @@ Usage:
 """
 import argparse
 import warnings
-from pathlib import Path
 
-import h5py
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.transforms import blended_transform_factory
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, PERFORMANCE_FPATH,
+    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
     WHEEL_FS, POSE_FS, FIGURE_DPI, TARGETNM_COLORS, ANALYSIS_QC_BLOCKERS,
 )
 from iblnm.analysis import resample_pose, movement_trace
-from iblnm.data import PhotometrySession, PhotometrySessionGroup, _load_pose_xcorr
+from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 
 plt.ion()
@@ -111,15 +109,16 @@ def select_example_session(group, target_nm=DEFAULT_TARGET_NM):
     """Pick the highest-performing analysis-ready recording for a target-NM.
 
     Ranks target-NM recordings by fraction_correct (descending), then returns
-    the first whose H5 paw–wheel cross-correlation passes the camera-timing
-    gate. A present ``video/crosscorr`` group implies LightningPose was
+    the first whose stored paw–wheel cross-correlation passes the camera-timing
+    gate. A stored ``video/pose/qc`` product implies LightningPose was
     extracted, so pose is loadable downstream.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
         Group already filtered to biased/ephys session type with no blocking
-        QC errors.
+        QC errors, with ``load_performance`` called so the recordings carry
+        ``fraction_correct``.
     target_nm : str
         Target-NM cohort to select from.
 
@@ -129,25 +128,19 @@ def select_example_session(group, target_nm=DEFAULT_TARGET_NM):
         Recording row for the chosen session.
     """
     recs = group.recordings
-    candidates = recs[recs['target_NM'] == target_nm].copy()
+    candidates = recs[recs['target_NM'] == target_nm]
     if len(candidates) == 0:
         raise ValueError(f"No {target_nm} recordings after filtering")
+    candidates = candidates.sort_values('fraction_correct', ascending=False)
 
-    # Merge performance if available
-    if PERFORMANCE_FPATH.exists():
-        perf = pd.read_parquet(PERFORMANCE_FPATH, columns=['eid', 'fraction_correct'])
-        candidates = candidates.merge(perf, on='eid', how='left')
-        candidates = candidates.sort_values('fraction_correct', ascending=False)
-    else:
-        candidates = candidates.sample(frac=1, random_state=42)
-
-    # Pick the first candidate whose camera frame timing is correct
+    # Pick the first candidate whose camera frame timing is correct. A session
+    # whose pose QC was never built is skipped rather than built here: without
+    # LightningPose there is nothing to plot downstream either.
     for _, rec in candidates.iterrows():
-        h5_path = Path(SESSIONS_H5_DIR) / f"{rec['eid']}.h5"
-        with h5py.File(h5_path, 'r') as f:
-            pose_xcorr = (_load_pose_xcorr(f['video/pose/qc'])
-                          if 'video/pose/qc' in f else None)
-        if pose_xcorr is not None and camera_timing_ok(pose_xcorr):
+        ps = group._get_session(rec)
+        if ps.product_status('video/pose/qc') != 'current':
+            continue
+        if camera_timing_ok(ps.load_pose_qc()):
             return rec
 
     raise ValueError(f"No {target_nm} session passed the camera-timing gate")
@@ -156,22 +149,6 @@ def select_example_session(group, target_nm=DEFAULT_TARGET_NM):
 # =========================================================================
 # Data loading
 # =========================================================================
-
-def load_continuous_photometry(eid, brain_region, h5_dir=SESSIONS_H5_DIR):
-    """Load the full preprocessed photometry signal from H5.
-
-    Returns
-    -------
-    pd.Series
-        Signal indexed by time in seconds.
-    """
-    h5_path = Path(h5_dir) / f'{eid}.h5'
-    with h5py.File(h5_path, 'r') as f:
-        pp_grp = f[f'photometry/{brain_region}/preprocessed']
-        times = pp_grp['times'][:]
-        signal = pp_grp['signal'][:].astype(np.float64)
-    return pd.Series(signal, index=times, name=brain_region)
-
 
 def load_continuous_wheel(one, eid):
     """Load continuous wheel velocity from ONE.
@@ -188,25 +165,6 @@ def load_continuous_wheel(one, eid):
     )
     vel, _ = velocity_filtered(pos, fs=WHEEL_FS)
     return pd.Series(vel.astype(np.float32), index=times.astype(np.float32), name='wheel_velocity')
-
-
-def load_trial_events(eid, h5_dir=SESSIONS_H5_DIR):
-    """Load trial event times from H5.
-
-    Returns
-    -------
-    pd.DataFrame
-        Trials table with event time columns.
-    """
-    h5_path = Path(h5_dir) / f'{eid}.h5'
-    with h5py.File(h5_path, 'r') as f:
-        data = {}
-        for col in f['trials/table']:
-            vals = f[f'trials/table/{col}'][:]
-            if vals.dtype.kind == 'S':
-                vals = vals.astype(str)
-            data[col] = vals
-    return pd.DataFrame(data)
 
 
 # =========================================================================
@@ -446,6 +404,9 @@ if __name__ == '__main__':
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(
         pd.read_parquet(SESSIONS_FPATH), one=one, h5_dir=SESSIONS_H5_DIR)
+    # Before filtering: min_performance and required_contrasts read the columns
+    # this joins on, and the selection below ranks on fraction_correct.
+    group.load_performance()
     group.filter_sessions(session_types=('biased', 'ephys'),
                           qc_blockers=ANALYSIS_QC_BLOCKERS)
     print(f"  {len(group)} recordings after filtering")
@@ -469,8 +430,10 @@ if __name__ == '__main__':
     # -----------------------------------------------------------------
     # Load data
     # -----------------------------------------------------------------
+    ps = group._get_session(rec)
+
     print("Loading photometry...")
-    photometry = load_continuous_photometry(eid, brain_region)
+    photometry = ps.load_photometry()[brain_region]
     print(f"  {len(photometry)} samples, {photometry.index[-1] - photometry.index[0]:.0f}s")
 
     print("Loading wheel...")
@@ -478,14 +441,15 @@ if __name__ == '__main__':
     print(f"  {len(wheel)} samples")
 
     print(f"Loading {args.camera} camera pose...")
-    ps = PhotometrySession(rec, one=one)
     ps.load_camera_times()
     ps.load_pose()
     pose_df, pose_times = resample_pose(ps.pose, ps.pose_times, POSE_FS)
     print(f"  {len(pose_times)} frames after resampling to {POSE_FS} Hz")
 
     print("Loading trials...")
-    trials = load_trial_events(eid)
+    # load_trials only fetches, so the stored table is read off the H5 instead.
+    ps.load_h5(groups=['trials'])
+    trials = ps.trials
     print(f"  {len(trials)} trials")
 
     # -----------------------------------------------------------------
