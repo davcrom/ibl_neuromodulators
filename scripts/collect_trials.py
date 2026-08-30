@@ -16,8 +16,7 @@ from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
-from iblnm.data import PhotometrySession, PhotometrySessionGroup
-from iblnm.io import _get_default_connection
+from iblnm.data import PhotometrySessionGroup
 
 OUTPUT_FPATH = PROJECT_ROOT / 'data' / 'trials.pqt'
 
@@ -40,17 +39,17 @@ if __name__ == '__main__':
     df_sessions = group.sessions.drop_duplicates(subset='eid')
     print(f"  {len(df_sessions)} sessions after filtering")
 
-    # Collect trials from H5 files
-    one = _get_default_connection()
+    # Collect trials from the store. Nothing here fetches, so the sessions the
+    # group hands out need no ONE connection; each already points at the
+    # group's h5_dir.
     all_trials = []
     n_missing = 0
     for _, row in tqdm(df_sessions.iterrows(), total=len(df_sessions), desc='Loading trials'):
-        h5_path = SESSIONS_H5_DIR / f"{row['eid']}.h5"
-        if not h5_path.exists():
+        ps = group._get_session(row)
+        if not ps.filepath.exists():
             n_missing += 1
             continue
-        ps = PhotometrySession(row, one=one)
-        ps.load_h5(h5_path, groups=['trials'])
+        ps.load_h5(groups=['trials'])
         if ps.trials is None:
             n_missing += 1
             continue
