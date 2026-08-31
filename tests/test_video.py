@@ -317,6 +317,37 @@ class TestVideoTimesQcProduct:
             assert set(measures) <= set(f['video/times/qc'].attrs)
             assert not set(measures) & set(f['video'].attrs)
 
+    def test_a_long_video_is_logged_not_raised(self, mock_session_series, tmp_path):
+        """A video outrunning the session records the mismatch and carries on.
+
+        The traces cut from an over-long video have always been kept, so the
+        check belongs in the session's error log rather than in a raise.
+        """
+        from iblnm.config import LENGTH_MISMATCH_THRESHOLD
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.session_length = (N_FRAMES - 1) / CAMERA_FS - LENGTH_MISMATCH_THRESHOLD - 80
+        ps.fetch_camera_times()
+
+        measures = ps.run_video_times_qc()
+
+        assert measures['length_discrepancy'] == pytest.approx(
+            LENGTH_MISMATCH_THRESHOLD + 80)
+        assert [(e['product'], e['error_type']) for e in ps.errors] == [
+            ('video/times/qc', 'VideoLengthError')]
+
+    def test_a_video_within_the_threshold_logs_nothing(self, mock_session_series,
+                                                       tmp_path):
+        from iblnm.config import LENGTH_MISMATCH_THRESHOLD
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.session_length = (N_FRAMES - 1) / CAMERA_FS - 10
+        ps.fetch_camera_times()
+
+        measures = ps.run_video_times_qc()
+
+        assert measures['length_discrepancy'] == pytest.approx(10)
+        assert LENGTH_MISMATCH_THRESHOLD > 10
+        assert ps.errors == []
+
     def test_reads_stored_product_without_refetching(self, mock_session_series,
                                                      tmp_path):
         ps = _make_session(mock_session_series, tmp_path)

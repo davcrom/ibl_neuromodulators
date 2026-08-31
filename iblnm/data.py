@@ -22,7 +22,7 @@ from one.alf.exceptions import ALFObjectNotFound
 from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, DDM_HMM_DIR, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD, IBL_QC_VALUES,
-    LABEL2EVENT, LP_QC_LABELS,
+    LABEL2EVENT, LENGTH_MISMATCH_THRESHOLD, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
     MOVEMENT_RESPONSE_WINDOW,
     PHOTOMETRY_QC_THRESHOLDS,
@@ -2967,6 +2967,11 @@ class PhotometrySession(PhotometrySessionLoader):
         Reads `self.pose_times`, assigned by :meth:`fetch_camera_times`; it
         never fetches and never writes. `load_video_times_qc` is what does both.
 
+        A `length_discrepancy` reaching `config.LENGTH_MISMATCH_THRESHOLD` is
+        logged as a `VideoLengthError` against `video/times/qc`, not raised: a
+        video outrunning its session has never blocked the traces cut from it,
+        and must not start. `framerate_from_tpts` is recorded and not checked.
+
         Returns
         -------
         dict
@@ -2980,6 +2985,12 @@ class PhotometrySession(PhotometrySessionLoader):
             'length_discrepancy': discrepancy,
             'framerate_from_tpts': float(np.median(np.diff(self.pose_times))),
         }
+        if discrepancy >= LENGTH_MISMATCH_THRESHOLD:
+            self.log_error(
+                VideoLengthError(
+                    f"Video–session length discrepancy {discrepancy:.0f}s "
+                    f"exceeds {LENGTH_MISMATCH_THRESHOLD}s threshold"),
+                product='video/times/qc')
         return self.video_times_qc
 
     def fetch_video_qc(self) -> dict[str, str]:
