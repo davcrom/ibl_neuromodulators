@@ -312,11 +312,12 @@ responses = ps.mask_subsequent_events(
 ### Task performance
 
 ```python
-perf = ps.basic_performance()
-# {'fraction_correct': 0.81, 'fraction_correct_easy': 0.94, 'nogo_fraction': 0.02,
-#  'psych_50_bias': -1.2, 'psych_50_threshold': 8.4, ...}
+perf = ps.extract_performance()
+# {'n_trials': 642, 'contrasts': [0.0, 0.0625, ...], 'fraction_correct': 0.81,
+#  'fraction_correct_easy': 0.94, 'nogo_fraction': 0.02, 'psych_50_bias': -1.2,
+#  'psych_50_threshold': 8.4, ...}
+# biased/ephys sessions also carry psych_20_*, psych_80_* and bias_shift
 
-block_perf = ps.block_performance()   # per-block psychometrics (biased/ephys only)
 fit = ps.fit_psychometric()           # {bias, threshold, lapse_left, lapse_right, r_squared, n_trials}
 ```
 

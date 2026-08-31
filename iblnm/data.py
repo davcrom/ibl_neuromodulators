@@ -2597,39 +2597,54 @@ class PhotometrySession(PhotometrySessionLoader):
     # Task Performance Methods
     # =========================================================================
 
-    def basic_performance(self) -> dict:
-        """Compute session-level performance metrics (all session types)."""
-        result = {}
-        result['fraction_correct'] = task.compute_fraction_correct(self.trials)
-        result['fraction_correct_easy'] = task.compute_fraction_correct(
-            self.trials[self.trials['contrast'] >= 0.5]
-        )
-        result['nogo_fraction'] = task.compute_nogo_fraction(self.trials)
-        fit_50 = task.fit_psychometric(self.trials, probability_left=0.5)
-        for param, value in fit_50.items():
-            result[f'psych_50_{param}'] = value
-        return result
+    def extract_performance(self) -> dict:
+        """Score `self.trials` into the `trials/performance` payload.
 
-    def block_performance(self) -> dict:
-        """Compute per-block psychometrics and bias shift (biased/ephys only)."""
-        if self.session_type not in ('biased', 'ephys'):
-            return {}
-        result = {}
-        fits = task.fit_psychometric_by_block(self.trials)
-        for block_name, fit in fits.items():
-            for param, value in fit.items():
-                result[f'psych_{block_name}_{param}'] = value
-        if '20' in fits and '80' in fits:
-            result['bias_shift'] = task.compute_bias_shift(fits['20'], fits['80'])
-        return result
+        Computes the metrics every session type carries — trial count, the
+        contrasts presented, correct and no-go fractions, and the unbiased
+        psychometric fit — then, where the session type has blocks, the
+        per-block psychometrics and the bias shift between the 20 and 80
+        blocks. Writes nothing; :meth:`load_performance` saves.
+
+        Returns
+        -------
+        dict
+            Metric name -> value. Block metrics are keyed
+            `psych_{block}_{param}`, with `block` one of `20`, `50`, `80`.
+            Also assigned to ``self.performance``.
+        """
+        performance = {
+            'n_trials': len(self.trials),
+            'contrasts': sorted(self.trials['contrast'].unique().tolist()),
+            'fraction_correct': task.compute_fraction_correct(self.trials),
+            'fraction_correct_easy': task.compute_fraction_correct(
+                self.trials[self.trials['contrast'] >= 0.5]
+            ),
+            'nogo_fraction': task.compute_nogo_fraction(self.trials),
+        }
+        fit_50 = task.fit_psychometric(self.trials, probability_left=0.5)
+        performance.update(
+            {f'psych_50_{param}': value for param, value in fit_50.items()}
+        )
+        if self.session_type in ('biased', 'ephys'):
+            fits = task.fit_psychometric_by_block(self.trials)
+            performance.update({
+                f'psych_{block}_{param}': value
+                for block, fit in fits.items() for param, value in fit.items()
+            })
+            if '20' in fits and '80' in fits:
+                performance['bias_shift'] = task.compute_bias_shift(
+                    fits['20'], fits['80']
+                )
+        self.performance = performance
+        return self.performance
 
     def load_performance(self) -> dict:
         """Return the per-session behavioral scalars, scoring them if absent.
 
         Reads `trials/performance` when it is stored and its stamp still matches
         `config.PRODUCT_SPEC`; otherwise scores the trials table with
-        :meth:`basic_performance` and — for a session type that has blocks —
-        :meth:`block_performance`, and writes the result. A product named in
+        :meth:`extract_performance` and writes the result. A product named in
         `self.rebuild` skips the read and is rescored.
 
         Returns
@@ -2648,13 +2663,8 @@ class PhotometrySession(PhotometrySessionLoader):
                 self.performance = _load_performance(h5['trials/performance'])
             return self.performance
         if self.trials is None or self.trials.empty:
-            self.load_trials()
-        self.performance = {
-            'n_trials': len(self.trials),
-            'contrasts': sorted(self.trials['contrast'].unique().tolist()),
-            **self.basic_performance(),
-            **self.block_performance(),
-        }
+            self.fetch_trials()
+        self.extract_performance()
         self.save_h5(groups=['trials'])
         return self.performance
 

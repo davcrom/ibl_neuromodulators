@@ -3141,34 +3141,49 @@ def _make_biased_trials(seed=42):
     })
 
 
-class TestBasicPerformance:
-    """Tests for PhotometrySession.basic_performance()."""
+class TestExtractPerformance:
+    """Tests for PhotometrySession.extract_performance()."""
 
-    def test_returns_expected_keys(self, mock_session_series):
+    def _session(self, series, session_type, trials):
         from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = _make_training_trials()
-        result = session.basic_performance()
-        for key in ['fraction_correct', 'fraction_correct_easy', 'nogo_fraction',
-                    'psych_50_bias', 'psych_50_threshold', 'psych_50_r_squared',
-                    'psych_50_n_trials']:
+        series = series.copy()
+        series['session_type'] = session_type
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = trials
+        return session
+
+    def test_biased_returns_basic_and_block_keys(self, mock_session_series):
+        """A blocked session is scored with both halves in one call."""
+        session = self._session(mock_session_series, 'biased', _make_biased_trials())
+        result = session.extract_performance()
+        for key in ['n_trials', 'contrasts', 'fraction_correct',
+                    'fraction_correct_easy', 'nogo_fraction', 'psych_50_bias',
+                    'psych_50_threshold', 'psych_50_r_squared', 'psych_50_n_trials',
+                    'psych_20_bias', 'psych_80_bias', 'bias_shift']:
             assert key in result, f"Missing key: {key}"
+        assert result is session.performance
 
-    def test_no_block_keys(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = _make_training_trials()
-        result = session.basic_performance()
-        assert not any(k.startswith('psych_20') or k.startswith('psych_80')
-                       or k == 'bias_shift' for k in result)
+    def test_training_omits_block_keys(self, mock_session_series):
+        """An unblocked session type is scored with the basic half only."""
+        session = self._session(mock_session_series, 'training',
+                                _make_training_trials())
+        result = session.extract_performance()
+        assert not any(key.startswith(('psych_20', 'psych_80')) for key in result)
+        assert 'bias_shift' not in result
 
-    def test_fraction_correct_reasonable(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = _make_training_trials()
-        result = session.basic_performance()
-        assert 0 < result['fraction_correct'] <= 1
-        assert 0 <= result['nogo_fraction'] < 1
+    def test_no_bias_shift_without_both_blocks(self, mock_session_series):
+        """A blocked session type presenting only the 0.5 block has no shift."""
+        session = self._session(mock_session_series, 'ephys',
+                                _make_training_trials())
+        result = session.extract_performance()
+        assert 'bias_shift' not in result
+
+    def test_writes_nothing(self, mock_session_series, tmp_path):
+        """Scoring is pure: the H5 file absent before the call stays absent."""
+        session = self._session(mock_session_series, 'biased', _make_biased_trials())
+        session.filepath = tmp_path / f'{session.eid}.h5'
+        session.extract_performance()
+        assert not session.filepath.exists()
 
 
 # =============================================================================
@@ -3717,47 +3732,6 @@ class TestMatchPhotometryToMetadata:
             'GCaMP': pd.DataFrame({'VTA': np.ones(100)}, index=t),
         }
         session._match_photometry_to_metadata()  # should not raise
-
-
-class TestBlockPerformance:
-    """Tests for PhotometrySession.block_performance()."""
-
-    def test_returns_empty_for_training(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        series = mock_session_series.copy()
-        series['session_type'] = 'training'
-        session = PhotometrySession(series, one=MagicMock(), load_data=False)
-        session.trials = _make_training_trials()
-        assert session.block_performance() == {}
-
-    def test_returns_block_keys_for_biased(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        series = mock_session_series.copy()
-        series['session_type'] = 'biased'
-        session = PhotometrySession(series, one=MagicMock(), load_data=False)
-        session.trials = _make_biased_trials()
-        result = session.block_performance()
-        assert any(k.startswith('psych_20') for k in result)
-        assert any(k.startswith('psych_80') for k in result)
-
-    def test_bias_shift_present_for_biased(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        series = mock_session_series.copy()
-        series['session_type'] = 'biased'
-        session = PhotometrySession(series, one=MagicMock(), load_data=False)
-        session.trials = _make_biased_trials()
-        result = session.block_performance()
-        assert 'bias_shift' in result
-
-    def test_returns_empty_for_ephys_only_with_50_block(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        series = mock_session_series.copy()
-        series['session_type'] = 'ephys'
-        session = PhotometrySession(series, one=MagicMock(), load_data=False)
-        # Only 0.5 block — fit_psychometric_by_block returns only '50', no bias_shift
-        session.trials = _make_training_trials()
-        result = session.block_performance()
-        assert 'bias_shift' not in result  # no 20/80 blocks present
 
 
 class TestTrialsPerformanceProduct:

@@ -362,9 +362,10 @@ Two products mix structures and so keep their own pairs, stamped like the rest.
 `_save_scalars`.
 
 `trials/performance` is the behavioral scoring of `trials/table`:
-`load_performance` reads it or scores the table with `basic_performance` and —
-where the session type has blocks — `block_performance`, and it is the only
-parameter `MIN_BLOCK_LENGTH` reaches. `PhotometrySessionGroup.load_performance`
+`load_performance` reads it or scores the table with `extract_performance` —
+one method covering the always-computed metrics and, where the session type has
+blocks, the per-block psychometrics — and it is the only parameter
+`MIN_BLOCK_LENGTH` reaches. `PhotometrySessionGroup.load_performance`
 reads every catalogued session's copy and joins `fraction_correct` and
 `contrasts` onto `_catalog`, which is what makes
 `filter_sessions(min_performance=..., required_contrasts=...)` bite: both
