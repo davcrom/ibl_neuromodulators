@@ -3925,6 +3925,21 @@ class PhotometrySessionGroup:
         for _, rec in self.recordings.iterrows():
             yield rec, self._get_session(rec)
 
+    def _survey_session(self, rec) -> 'PhotometrySession':
+        """A session for reading stamps, built without a database connection.
+
+        `product_status` reads H5 attrs and needs no Alyx access, but the loader
+        parent resolves a session path through `one.eid2path` on every
+        construction — one network round trip per session, which is what makes
+        a survey of the whole store take half an hour rather than seconds.
+
+        Deliberately not memoized into ``_sessions``: a session carrying no
+        connection cannot serve `_get_session`, whose callers do load from Alyx.
+        """
+        ps = PhotometrySession(rec, one=None, load_data=False)
+        ps.filepath = Path(self.h5_dir) / f"{rec['eid']}.h5"
+        return ps
+
     def scan_product_status(self, *products: str) -> pd.DataFrame:
         """Survey which stored products are usable, without loading any data.
 
@@ -3949,7 +3964,7 @@ class PhotometrySessionGroup:
         products = [p for p in products if p not in self.rebuild]
         return pd.DataFrame([
             {'eid': row['eid'],
-             **{p: self._get_session(row).product_status(p) for p in products}}
+             **{p: self._survey_session(row).product_status(p) for p in products}}
             for _, row in self.sessions.iterrows()
         ])
 

@@ -3985,15 +3985,18 @@ class TestScanProductStatus:
         """Nothing is rebuilt unless a caller says so."""
         assert scan_group.rebuild == set()
 
-    def test_scan_loads_no_data(self, scan_group):
-        """Surveying reads stamps only: every session stays empty afterwards."""
-        scan_group.scan_product_status('trials/table', 'photometry/preprocessed')
+    def test_scan_makes_no_database_calls(self, scan_group):
+        """Surveying reads H5 attrs, so it must not reach Alyx.
 
-        assert set(scan_group._sessions) == {'eid-0', 'eid-1', 'eid-2'}
-        for ps in scan_group._sessions.values():
-            assert ps.photometry == {}
-            # The loader parent starts `trials` as an empty frame, not None.
-            assert ps.trials.empty
+        The loader parent resolves a session path through ``one.eid2path`` on
+        every construction. Going through that once per session turns a
+        stamp-reading survey into thousands of network round trips.
+        """
+        scan_group.scan_product_status(
+            'trials/table', 'photometry/preprocessed')
+
+        assert scan_group.one.method_calls == []
+
 
 
 def _collector_catalog(session_types):
