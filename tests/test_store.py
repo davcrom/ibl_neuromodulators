@@ -33,16 +33,11 @@ def fake_ps():
     ``product_status`` is driven by the ``stored`` dict, so a test names only
     the products it wants reported as 'current' or 'stale'.
     """
-    from iblnm.config import VIDEO_QC_COLS
-
     ps = MagicMock()
     ps.eid = 'test-eid'
     ps.errors = []
     ps.rebuild = set()
     ps.stored = {}
-    # All-PASS video QC, so the leftCamera checks log nothing unless a test
-    # overrides them.
-    ps.video_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
     ps.product_status.side_effect = lambda product: ps.stored.get(product, 'absent')
     return ps
 
@@ -122,27 +117,6 @@ class TestBuildSession:
 
         assert built['video/pose/qc'] == 'built'
         assert built['video/responses'] == 'built'
-
-
-class TestVideoQCValidations:
-    """The leftCamera checks the video build logs against `video/times/qc`."""
-
-    def test_failing_check_is_logged_non_blocking(self, fake_ps):
-        """A QC failure is recorded against the clock product; the build goes on."""
-        fake_ps.video_qc = {**fake_ps.video_qc, 'qc_videoLeft_pin_state': 'FAIL'}
-
-        built = store.build_session(fake_ps)
-
-        assert built['video/times/qc'] == 'built'
-        assert built['video/responses'] == 'built'
-        logged = [call.kwargs['product'] for call in fake_ps.log_error.call_args_list]
-        assert logged == ['video/times/qc']
-
-    def test_passing_checks_log_nothing(self, fake_ps):
-        """All-PASS labels leave the error log empty."""
-        store.build_session(fake_ps)
-
-        fake_ps.log_error.assert_not_called()
 
 
 class TestBuildSessionOnStoredFile:

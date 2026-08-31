@@ -35,7 +35,8 @@ from iblnm.config import (
     RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
-    VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS, WHEEL_FS, POSE_FS,
+    VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS, VIDEO_QC_PROBLEM_COLS,
+    WHEEL_FS, POSE_FS,
     resolve_product_spec, store_raw,
     _PERSESSION_REGRESSORS,
 )
@@ -57,8 +58,7 @@ from iblnm.validation import (
     InsufficientTrials, BlockStructureBug, MissingBlockInfo,
     IncompleteEventTimes, TrialsNotInPhotometryTime,
     QCValidationError, AmbiguousRegionMapping, StaleProduct,
-    VideoLengthError, VideoTimestampsQCError,
-    VideoDroppedFramesQCError, VideoPinStateQCError,
+    VideoLengthError,
 )
 
 # Long-form schema returned by per-recording drop-one OLS ΔR² (one row per
@@ -985,6 +985,7 @@ def _load_wheel(session, h5_file):
 # ----- Video / LightningPose sub-handlers (pure: parent_group + payload) -----
 
 LP_QC_NOT_SET = 'NOT_SET'
+LP_QC_PASS = 'PASS'
 
 
 def _save_frame_data(
@@ -1121,14 +1122,11 @@ def _load_video(session, h5_file):
         session.video_manual_qc = _load_manual_qc(grp['manual_qc'])
 
 
-# The four leftCamera QC checks run over a session's video, and the error types
-# that disqualify it in the rollup: any of those four, plus a camera clock that
-# was never there. `scripts/pose.py` runs the validators; the rollup only names
-# what they raise.
-VIDEO_QC_ERRORS = (
-    VideoLengthError, VideoTimestampsQCError,
-    VideoDroppedFramesQCError, VideoPinStateQCError,
-)
+# The QC check run over a session's video, and the error types that disqualify
+# it in the rollup: that check, plus a camera clock that was never there. The
+# three leftCamera problem labels disqualify too, but they are read live from
+# Alyx rather than logged, so they are scored in `_score_video_qc` directly.
+VIDEO_QC_ERRORS = (VideoLengthError,)
 VIDEO_QC_DISQUALIFYING_ERRORS = frozenset(
     e.__name__ for e in (MissingVideoTimestamps, *VIDEO_QC_ERRORS))
 
@@ -1143,19 +1141,29 @@ def _has_lp_channel(movement_responses: dict) -> bool:
 
 
 def _score_video_qc(video_qc: dict, error_types: set[str]) -> float:
-    """Video QC score in [0, 1], or ``-1`` when a disqualifying error is logged.
+    """Video QC score in [0, 1], or ``-1`` when the session is disqualified.
 
     The five ``VIDEO_QC_QUALITY_COLS`` labels in ``video_qc`` — the extended-QC
     outcomes fetched live from Alyx, never stored in the H5 — are mapped through
-    ``config.QCVAL2NUM`` and averaged with ``nanmean``. Any error type in
-    ``VIDEO_QC_DISQUALIFYING_ERRORS`` forces the score to ``-1``.
+    ``config.QCVAL2NUM`` and averaged with ``nanmean``.
 
-    ``NOT_SET`` labels are dropped rather than scored: the check produced no
-    outcome, so it carries no evidence either way. Its ``QCVAL2NUM`` value
+    Two things disqualify a session outright. Any error type in
+    ``VIDEO_QC_DISQUALIFYING_ERRORS`` logged against it, and any of the three
+    ``VIDEO_QC_PROBLEM_COLS`` labels present in ``video_qc`` reading anything
+    other than ``PASS`` — a broken camera clock, dropped frames or a bad pin
+    state make the video unusable however clean it looks. ``NOT_SET`` is not
+    ``PASS`` and disqualifies with the rest, since an unrun problem check is no
+    evidence that the problem is absent.
+
+    Among the quality labels ``NOT_SET`` is instead dropped: the check produced
+    no outcome, so it carries no evidence either way. Its ``QCVAL2NUM`` value
     exists to place it on the QC colormap, not to weigh in an average. A session
     with no scorable label left scores NaN.
     """
     if error_types & VIDEO_QC_DISQUALIFYING_ERRORS:
+        return -1.0
+    if any(video_qc[col] != LP_QC_PASS
+           for col in VIDEO_QC_PROBLEM_COLS if col in video_qc):
         return -1.0
     quality = [QCVAL2NUM.get(video_qc[col], np.nan)
                for col in VIDEO_QC_QUALITY_COLS

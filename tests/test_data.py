@@ -4728,8 +4728,9 @@ class TestGroupCollectPose:
                                    QCVAL2NUM['PASS'])
 
     def test_all_not_set_quality_scores_nan(self, tmp_path, mock_session_series):
-        from iblnm.config import VIDEO_QC_COLS
-        qc = {col: 'NOT_SET' for col in VIDEO_QC_COLS}
+        from iblnm.config import VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS
+        qc = {col: 'NOT_SET' if col in VIDEO_QC_QUALITY_COLS else 'PASS'
+              for col in VIDEO_QC_COLS}
         _write_pose_session(tmp_path, 'eid-allns', steps=None, drift=np.nan,
                             peak_lags=None, qc_lp='NOT_SET',
                             series=mock_session_series)
@@ -4773,6 +4774,38 @@ class TestGroupCollectPose:
         df = group.collect_pose(video_qc={'eid-err': clean_qc}).set_index('eid')
 
         assert df.loc['eid-err', 'video_qc_score'] == -1
+
+    def test_failing_problem_label_forces_score_minus_one(self, tmp_path,
+                                                          mock_session_series):
+        """The three problem flags disqualify from the live labels, not from H5."""
+        from iblnm.config import VIDEO_QC_COLS
+        steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
+                 'tongue_likelihood': 0.5}
+        qc = {col: 'PASS' for col in VIDEO_QC_COLS}
+        qc['qc_videoLeft_pin_state'] = 'FAIL'
+        _write_pose_session(tmp_path, 'eid-pin', steps, drift=0.1,
+                            peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
+                            series=mock_session_series)
+        group = self._group(tmp_path, {'eid-pin': 'biased'})
+
+        df = group.collect_pose(video_qc={'eid-pin': qc}).set_index('eid')
+
+        assert df.loc['eid-pin', 'video_qc_score'] == -1
+
+    def test_not_set_problem_label_forces_score_minus_one(self, tmp_path,
+                                                          mock_session_series):
+        """NOT_SET is not PASS: an unrun problem check disqualifies the session."""
+        from iblnm.config import VIDEO_QC_COLS
+        qc = {col: 'PASS' for col in VIDEO_QC_COLS}
+        qc['qc_videoLeft_timestamps'] = 'NOT_SET'
+        _write_pose_session(tmp_path, 'eid-tsns', steps=None, drift=np.nan,
+                            peak_lags=None, qc_lp='NOT_SET',
+                            series=mock_session_series)
+        group = self._group(tmp_path, {'eid-tsns': 'biased'})
+
+        df = group.collect_pose(video_qc={'eid-tsns': qc}).set_index('eid')
+
+        assert df.loc['eid-tsns', 'video_qc_score'] == -1
 
     def test_missing_timestamps_no_video_group_emits_bare_row(
             self, tmp_path, mock_session_series):

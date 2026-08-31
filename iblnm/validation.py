@@ -134,15 +134,6 @@ class MissingVideoTimestamps(Exception):
 class VideoLengthError(Exception):
     """Video length differs from session length beyond threshold."""
 
-class VideoTimestampsQCError(Exception):
-    """qc_videoLeft_timestamps is not PASS."""
-
-class VideoDroppedFramesQCError(Exception):
-    """qc_videoLeft_dropped_frames is not PASS."""
-
-class VideoPinStateQCError(Exception):
-    """qc_videoLeft_pin_state is not PASS."""
-
 class MissingMotionEnergy(Exception):
     """leftCamera.ROIMotionEnergy could not be loaded."""
 
@@ -318,41 +309,4 @@ def validate_datasets(session):
     ]
     if missing:
         raise DataNotListed(f"Missing dataset categories: {', '.join(missing)}")
-    return None
-
-
-# =============================================================================
-# Video validate functions
-# =============================================================================
-
-@exception_logger
-def validate_video_timestamps_qc(session):
-    """Raise VideoTimestampsQCError if qc_videoLeft_timestamps is not PASS."""
-    val = session.get('qc_videoLeft_timestamps')
-    if val != 'PASS':
-        raise VideoTimestampsQCError(
-            f"qc_videoLeft_timestamps is {val!r}, expected PASS"
-        )
-    return None
-
-
-@exception_logger
-def validate_video_dropped_frames_qc(session):
-    """Raise VideoDroppedFramesQCError if qc_videoLeft_dropped_frames is not PASS."""
-    val = session.get('qc_videoLeft_dropped_frames')
-    if val != 'PASS':
-        raise VideoDroppedFramesQCError(
-            f"qc_videoLeft_dropped_frames is {val!r}, expected PASS"
-        )
-    return None
-
-
-@exception_logger
-def validate_video_pin_state_qc(session):
-    """Raise VideoPinStateQCError if qc_videoLeft_pin_state is not PASS."""
-    val = session.get('qc_videoLeft_pin_state')
-    if val != 'PASS':
-        raise VideoPinStateQCError(
-            f"qc_videoLeft_pin_state is {val!r}, expected PASS"
-        )
     return None

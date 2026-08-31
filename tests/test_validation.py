@@ -1,6 +1,4 @@
 """Tests for iblnm.validation module."""
-import numpy as np
-import pandas as pd
 import pytest
 
 
@@ -23,8 +21,6 @@ class TestModuleImports:
     def test_video_exceptions_importable(self):
         from iblnm.validation import (  # noqa: F401
             MissingVideoTimestamps, VideoLengthError,
-            VideoTimestampsQCError, VideoDroppedFramesQCError,
-            VideoPinStateQCError,
         )
 
     def test_validate_functions_importable(self):
@@ -32,13 +28,6 @@ class TestModuleImports:
             validate_subject, validate_strain, validate_line,
             validate_neuromodulator, validate_brain_region, validate_hemisphere,
             validate_datasets,
-        )
-
-    def test_video_validate_functions_importable(self):
-        from iblnm.validation import (  # noqa: F401
-            validate_video_timestamps_qc,
-            validate_video_dropped_frames_qc,
-            validate_video_pin_state_qc,
         )
 
     def test_exception_logger_importable(self):
@@ -143,80 +132,3 @@ class TestValidateHemisphere:
                              'brain_region': ['VTA'], 'hemisphere': []})
         with pytest.raises(MissingHemisphere):
             validate_hemisphere(session)
-
-
-class TestValidateVideoTimestampsQC:
-    def test_raises_for_fail(self):
-        from iblnm.validation import validate_video_timestamps_qc, VideoTimestampsQCError
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_timestamps': 'FAIL'})
-        with pytest.raises(VideoTimestampsQCError):
-            validate_video_timestamps_qc(session)
-
-    def test_raises_for_nan(self):
-        from iblnm.validation import validate_video_timestamps_qc, VideoTimestampsQCError
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_timestamps': np.nan})
-        with pytest.raises(VideoTimestampsQCError):
-            validate_video_timestamps_qc(session)
-
-    def test_raises_for_not_set(self):
-        from iblnm.validation import validate_video_timestamps_qc, VideoTimestampsQCError
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_timestamps': 'NOT_SET'})
-        with pytest.raises(VideoTimestampsQCError):
-            validate_video_timestamps_qc(session)
-
-    def test_returns_none_for_pass(self):
-        from iblnm.validation import validate_video_timestamps_qc
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_timestamps': 'PASS'})
-        assert validate_video_timestamps_qc(session) is None
-
-    def test_logs_when_exlog_provided(self):
-        from iblnm.validation import validate_video_timestamps_qc
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_timestamps': 'CRITICAL'})
-        exlog = []
-        validate_video_timestamps_qc(session, exlog=exlog)
-        assert len(exlog) == 1
-        assert exlog[0]['error_type'] == 'VideoTimestampsQCError'
-
-
-class TestValidateVideoDroppedFramesQC:
-    def test_raises_for_fail(self):
-        from iblnm.validation import validate_video_dropped_frames_qc, VideoDroppedFramesQCError
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_dropped_frames': 'FAIL'})
-        with pytest.raises(VideoDroppedFramesQCError):
-            validate_video_dropped_frames_qc(session)
-
-    def test_returns_none_for_pass(self):
-        from iblnm.validation import validate_video_dropped_frames_qc
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_dropped_frames': 'PASS'})
-        assert validate_video_dropped_frames_qc(session) is None
-
-    def test_logs_when_exlog_provided(self):
-        from iblnm.validation import validate_video_dropped_frames_qc
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_dropped_frames': 'WARNING'})
-        exlog = []
-        validate_video_dropped_frames_qc(session, exlog=exlog)
-        assert len(exlog) == 1
-        assert exlog[0]['error_type'] == 'VideoDroppedFramesQCError'
-
-
-class TestValidateVideoPinStateQC:
-    def test_raises_for_fail(self):
-        from iblnm.validation import validate_video_pin_state_qc, VideoPinStateQCError
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_pin_state': 'FAIL'})
-        with pytest.raises(VideoPinStateQCError):
-            validate_video_pin_state_qc(session)
-
-    def test_returns_none_for_pass(self):
-        from iblnm.validation import validate_video_pin_state_qc
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_pin_state': 'PASS'})
-        assert validate_video_pin_state_qc(session) is None
-
-    def test_logs_when_exlog_provided(self):
-        from iblnm.validation import validate_video_pin_state_qc
-        session = pd.Series({'eid': 'e1', 'qc_videoLeft_pin_state': 'CRITICAL'})
-        exlog = []
-        validate_video_pin_state_qc(session, exlog=exlog)
-        assert len(exlog) == 1
-        assert exlog[0]['error_type'] == 'VideoPinStateQCError'
-
-
