@@ -1432,6 +1432,9 @@ class PhotometrySession(PhotometrySessionLoader):
         # region -> band-suffixed metric -> value for the raw bands.
         self.neurophotometrics_qc = {}
         self.photometry_qc = {}
+        # The pre-extraction neurophotometrics source table, fetched only to be
+        # scored: it carries the `color` column extraction drops.
+        self.neurophotometrics = None
         # Wheel products: raw encoder position on its own irregular index, the
         # velocity differentiated from it at WHEEL_FS, and the cut responses.
         self.wheel_position = None
@@ -1708,7 +1711,31 @@ class PhotometrySession(PhotometrySessionLoader):
         ('hemisphere', True), ('target_NM', True), ('datasets', True),
     ]
 
-    def load_trials(self):
+    def load_trials(self) -> pd.DataFrame:
+        """Return the trials table, fetching it from Alyx.
+
+        Nothing stores a trials table this method could read back, so it is
+        :meth:`fetch_trials` under the name every caller already uses.
+        """
+        return self.fetch_trials()
+
+    def fetch_trials(self) -> pd.DataFrame:
+        """Fetch the trials table from Alyx and add the derived columns.
+
+        Returns
+        -------
+        pandas.DataFrame
+            ONE's table plus `trial` (its index, persisted as a column so the
+            H5 round-trip cannot lose it), `stim_side`, `signed_contrast` and
+            `contrast`. Also assigned to ``self.trials``.
+
+        Raises
+        ------
+        MissingExtractedData
+            The trials table is absent but the raw task data is there.
+        MissingRawData
+            Neither is there.
+        """
         try:
             super().load_trials()
         except ALFObjectNotFound:
@@ -1728,6 +1755,7 @@ class PhotometrySession(PhotometrySessionLoader):
         self.trials['stim_side'] = contrasts['stim_side']
         self.trials['signed_contrast'] = contrasts['signed_contrast']
         self.trials['contrast'] = contrasts['contrast']
+        return self.trials
 
     def load_states(self) -> None:
         """Attach per-trial DDM-HMM state posteriors to ``self.states``.
@@ -1839,7 +1867,30 @@ class PhotometrySession(PhotometrySessionLoader):
             with h5py.File(self.filepath, 'r') as h5:
                 self.photometry.update(_read_photometry_raw(h5['photometry']))
             return
+        self.fetch_photometry(pre=pre, post=post)
 
+    def fetch_photometry(self, pre: int = -5, post: int = 5) -> None:
+        """Fetch the raw signal and reference bands from Alyx.
+
+        Populates ``self.photometry`` with one DataFrame per band (``'GCaMP'``,
+        ``'Isosbestic'``), brain regions as columns, renamed to the session's
+        `brain_region` metadata. Clears the photometry manual QC verdicts: they
+        were passed on the samples this fetch has just replaced.
+
+        Parameters
+        ----------
+        pre, post : int
+            Seconds of signal to keep either side of the session, passed to the
+            loader parent.
+
+        Raises
+        ------
+        MissingExtractedData
+            The extracted signal is absent but the neurophotometrics source
+            table is there.
+        MissingRawData
+            Neither is there.
+        """
         try:
             super().load_photometry(
                 restrict_to_session=True,
@@ -2020,14 +2071,24 @@ class PhotometrySession(PhotometrySessionLoader):
         if issues:
             raise QCValidationError('; '.join(issues))
 
-    def _load_raw_photometry(self):
+    def fetch_neurophotometrics(self) -> pd.DataFrame:
+        """Fetch the neurophotometrics source table from Alyx.
+
+        Returns
+        -------
+        pandas.DataFrame
+            The pre-extraction table, times (seconds) as the index, also
+            assigned to ``self.neurophotometrics``. It carries the `color`
+            column that `n_band_inversions` scores and that extraction drops,
+            which is why the QC reads this rather than the extracted bands.
+        """
         raw_photometry = self.one.load_dataset(
             self.eid,
             'raw_photometry_data/_neurophotometrics_fpData.raw.pqt'
             )
-        # ~ timestamp_col = 'SystemTimestamp' if 'Timestamp' not in raw_photometry.columns else 'Timestamp'
-        # ~ raw_photometry = raw_photometry.set_index(timestamp_col)
-        return from_neurophotometrics_df_to_photometry_df(raw_photometry).set_index('times')
+        self.neurophotometrics = from_neurophotometrics_df_to_photometry_df(
+            raw_photometry).set_index('times')
+        return self.neurophotometrics
 
     def load_responses(
         self,
@@ -2298,7 +2359,7 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         if raw_metrics is None:
             raw_metrics = QC_RAW_METRICS
-        raw_photometry = self._load_raw_photometry()
+        raw_photometry = self.fetch_neurophotometrics()
         self.neurophotometrics_qc = {
             name: float(getattr(metrics, name)(raw_photometry))
             for name in raw_metrics
@@ -2633,7 +2694,24 @@ class PhotometrySession(PhotometrySessionLoader):
                 self.wheel_position = _load_time_series(
                     h5[f'wheel/{WHEEL_LABEL}/raw'])
             return self.wheel_position
+        return self.fetch_wheel()
 
+    def fetch_wheel(self) -> pd.Series:
+        """Fetch the raw encoder position from Alyx, ignoring the store.
+
+        Returns
+        -------
+        pandas.Series
+            Wheel position (radians) on the encoder's own irregular timestamps
+            (seconds, session clock), also assigned to ``self.wheel_position``.
+
+        Raises
+        ------
+        MissingExtractedData
+            The wheel ALF object is absent but the raw encoder file is there.
+        MissingRawData
+            Neither is there, so nothing was recorded.
+        """
         try:
             wheel = self.one.load_object(
                 self.eid, 'wheel',
@@ -2724,11 +2802,12 @@ class PhotometrySession(PhotometrySessionLoader):
         return {WHEEL_LABEL: self.load_wheel()}
 
     def _load_raw_video(self, product: str) -> np.ndarray | pd.DataFrame:
-        """Return one raw video dataset, fetching and storing it when absent.
+        """Return one raw video dataset, fetching it when the store has none.
 
         Reads the stored product when its stamp still matches
-        `config.PRODUCT_SPEC`; otherwise fetches it from Alyx and writes it,
-        which stamps it. A product named in `self.rebuild` skips the read.
+        `config.PRODUCT_SPEC` — which only happens with `config.store_raw` on,
+        since nothing writes those groups otherwise — and goes to Alyx in every
+        other case. A product named in `self.rebuild` skips the read.
 
         Parameters
         ----------
@@ -2747,58 +2826,101 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
-        attribute, dataset, missing = _RAW_VIDEO_DATASETS[product]
-        data = None
         if self.stored_is_current(product):
+            attribute, _, _ = _RAW_VIDEO_DATASETS[product]
             with h5py.File(self.filepath, 'r') as h5:
                 data = _load_frame_data(h5[product])
-        was_fetched = data is None
-        if was_fetched:
-            try:
-                data = self.one.load_dataset(self.eid, dataset, collection='alf')
-            except ALFObjectNotFound:
-                raise missing(dataset)
-            if not isinstance(data, pd.DataFrame):
-                data = np.asarray(data)
+            setattr(self, attribute, data)
+            return data
+        return self._fetch_video(product)
+
+    def _fetch_video(self, product: str) -> np.ndarray | pd.DataFrame:
+        """Fetch one raw video dataset from Alyx, ignoring the store.
+
+        Clears the video manual QC verdict on the way out: it was passed on the
+        frames this fetch has just replaced.
+
+        Parameters
+        ----------
+        product : str
+            One of the `_RAW_VIDEO_DATASETS` keys; see :meth:`_load_raw_video`.
+
+        Returns
+        -------
+        numpy.ndarray or pandas.DataFrame
+            The dataset, also assigned to its session attribute.
+
+        Raises
+        ------
+        MissingVideoTimestamps, MissingLP, MissingMotionEnergy
+            The product's own exception, when Alyx does not have its dataset.
+        """
+        attribute, dataset, missing = _RAW_VIDEO_DATASETS[product]
+        try:
+            data = self.one.load_dataset(self.eid, dataset, collection='alf')
+        except ALFObjectNotFound:
+            raise missing(dataset)
+        if not isinstance(data, pd.DataFrame):
+            data = np.asarray(data)
         setattr(self, attribute, data)
-        if was_fetched:
-            self.save_h5(groups=['video'])
-            self._clear_manual_qc('video')
+        self._clear_manual_qc('video')
         return data
 
-    def load_camera_times(self) -> np.ndarray:
-        """Return the left-camera frame times, independently of LightningPose.
+    def fetch_camera_times(self) -> np.ndarray:
+        """Fetch the left-camera frame times from Alyx.
 
         The per-frame times (session clock, seconds) are also assigned to
         ``self.pose_times``. Raises ``MissingVideoTimestamps`` when Alyx has no
         such dataset, so the basic-video pass can block the session before LP is
-        attempted. Fetched separately from ``load_pose`` because the camera
-        timestamps gate the whole session while LP gates only the traces.
+        attempted.
+        """
+        return self._fetch_video('video/times')
+
+    def fetch_pose(self) -> pd.DataFrame:
+        """Fetch the LightningPose keypoint traces from Alyx.
+
+        The pose DataFrame (columns ``{part}_x``, ``{part}_y``,
+        ``{part}_likelihood``) is also assigned to ``self.pose``. Raises
+        ``MissingLP`` when the dataset is absent, so batch extraction can log it
+        against `video/pose` and carry on. Fetches only the ``lightningPose``
+        dataset rather than the whole ``leftCamera`` object, which would also
+        pull ``features`` and ``ROIMotionEnergy`` that we never use.
+        """
+        return self._fetch_video('video/pose')
+
+    def fetch_motion_energy(self) -> np.ndarray:
+        """Fetch the per-frame left-camera ROI motion energy from Alyx.
+
+        The per-frame scalar (on the ``leftCamera.times`` base) is also assigned
+        to ``self.motion_energy``. Raises ``MissingMotionEnergy`` when the
+        dataset is absent, logged non-fatally by the pipeline.
+        """
+        return self._fetch_video('video/motion_energy')
+
+    def load_camera_times(self) -> np.ndarray:
+        """Return the left-camera frame times, from the store or :meth:`fetch_camera_times`.
+
+        The per-frame times (session clock, seconds) are also assigned to
+        ``self.pose_times``. Loaded separately from ``load_pose`` because the
+        camera timestamps gate the whole session while LP gates only the traces.
         """
         return self._load_raw_video('video/times')
 
     def load_pose(self) -> pd.DataFrame:
-        """Return LightningPose keypoint tracking from the left camera.
+        """Return the LightningPose traces, from the store or :meth:`fetch_pose`.
 
         The pose DataFrame (columns ``{part}_x``, ``{part}_y``,
-        ``{part}_likelihood``) is also assigned to ``self.pose``. Raises
-        ``MissingLP`` when the pose dataset is not available, so batch
-        extraction can log it against `video/pose` and carry on.
-
-        Fetches only the ``lightningPose`` dataset rather than the whole
-        ``leftCamera`` object, which would also pull ``features`` and
-        ``ROIMotionEnergy`` that we never use.
+        ``{part}_likelihood``) is also assigned to ``self.pose``.
         """
         return self._load_raw_video('video/pose')
 
     def load_motion_energy(self) -> np.ndarray:
-        """Return the per-frame left-camera ROI motion energy, independently of LP.
+        """Return the ROI motion energy, from the store or :meth:`fetch_motion_energy`.
 
         The per-frame scalar (on the ``leftCamera.times`` base) is also assigned
-        to ``self.motion_energy``. Raises ``MissingMotionEnergy`` when the
-        dataset is absent, logged non-fatally by the pipeline. Unlike
-        ``lightningPose`` and ``times``, the ROIMotionEnergy dataset carries no
-        ``_ibl_`` prefix, so its ONE dataset name differs.
+        to ``self.motion_energy``. Unlike ``lightningPose`` and ``times``, the
+        ROIMotionEnergy dataset carries no ``_ibl_`` prefix, so its ONE dataset
+        name differs.
         """
         return self._load_raw_video('video/motion_energy')
 

@@ -106,10 +106,50 @@ def _make_session(mock_session_series, tmp_path, one=None):
 # video/times, video/pose, video/motion_energy — three independent raw products
 # ─────────────────────────────────────────────────────────────────────────────
 
+class TestFetchVideoTier:
+    """The three video fetches: Alyx in, session attribute out, nothing else."""
+
+    def test_fetch_pose_writes_nothing(self, mock_session_series, tmp_path):
+        """A fetch leaves the session's H5 exactly as it found it."""
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.session_length = 5.0
+        ps.load_video_times_qc()          # gives the file something to hold
+        before = ps.filepath.read_bytes()
+
+        pose = ps.fetch_pose()
+
+        assert pose is ps.pose
+        assert ps.filepath.read_bytes() == before
+
+    def test_fetch_camera_times_missing_raises(self, mock_session_series, tmp_path):
+        from iblnm.validation import MissingVideoTimestamps
+        ps = _make_session(mock_session_series, tmp_path, _one_serving(times=False))
+
+        with pytest.raises(MissingVideoTimestamps):
+            ps.fetch_camera_times()
+
+    def test_fetch_motion_energy_refetches_over_a_stored_product(
+            self, mock_session_series, tmp_path, monkeypatch):
+        """A fetch never consults the store, however current the store is."""
+        monkeypatch.setattr('iblnm.data.store_raw', True)
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.load_motion_energy()
+        ps.save_h5(groups=['video'])
+        assert ps.product_status('video/motion_energy') == 'current'
+
+        ps.load_motion_energy()
+        stored_reads = ps.one.load_dataset.call_count
+        ps.fetch_motion_energy()
+
+        assert ps.one.load_dataset.call_count == stored_reads + 1
+
+
 class TestRawVideoProducts:
     """What the three datasets do once `config.store_raw` keeps them.
 
-    The gate itself — that nothing is written with it off — is
+    The three raw loaders read the store but never write it — `build_session`
+    saves the modality once, after its block — so these tests save explicitly.
+    The gate itself — that nothing is written with `store_raw` off — is
     `tests/test_data.py::TestStoreRawGating`.
     """
 
@@ -124,6 +164,7 @@ class TestRawVideoProducts:
         ps.load_camera_times()
         ps.load_pose()
         ps.load_motion_energy()
+        ps.save_h5(groups=['video'])
 
         for product in ('video/times', 'video/pose', 'video/motion_energy'):
             assert ps.product_status(product) == 'current'
@@ -135,6 +176,7 @@ class TestRawVideoProducts:
         ps.load_camera_times()
         ps.load_pose()
         ps.load_motion_energy()
+        ps.save_h5(groups=['video'])
 
         fresh = _make_session(mock_session_series, tmp_path)
         np.testing.assert_allclose(fresh.load_camera_times(), times)
@@ -153,6 +195,7 @@ class TestRawVideoProducts:
         with pytest.raises(MissingLP):
             ps.load_pose()
         ps.load_motion_energy()
+        ps.save_h5(groups=['video'])
 
         assert ps.product_status('video/times') == 'current'
         assert ps.product_status('video/motion_energy') == 'current'
@@ -193,6 +236,7 @@ class TestRawVideoProducts:
         re-download and leaves the verdict on the data it was set for."""
         ps = _make_session(mock_session_series, tmp_path)
         ps.load_pose()
+        ps.save_h5(groups=['video'])
         ps.set_manual_qc('qc_lp', 'FAIL')
 
         fresh = _make_session(mock_session_series, tmp_path)
@@ -250,6 +294,7 @@ class TestVideoTimesQcProduct:
         ps.video_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
         ps.load_video_times_qc()
         ps.load_pose()
+        ps.save_h5(groups=['video'])
 
         with h5py.File(ps.filepath, 'r') as f:
             written = {name for group in (f['video'], f['video/times/qc'],

@@ -83,6 +83,30 @@ class TestRawWheelProduct:
         np.testing.assert_allclose(fresh.wheel_position.to_numpy(),
                                    raw['position'])
 
+    def test_fetch_wheel_goes_to_alyx_exactly_once(self, mock_session_series,
+                                                    tmp_path):
+        """`fetch_wheel` is the whole Alyx trip: one `load_object`, no store."""
+        raw = _raw_wheel()
+        ps = _make_session(mock_session_series, tmp_path, raw)
+        position = ps.fetch_wheel()
+
+        assert ps.one.load_object.call_count == 1
+        assert isinstance(position, pd.Series)
+        np.testing.assert_allclose(position.index.to_numpy(), raw['timestamps'])
+        assert ps.wheel_position is position
+        assert not ps.filepath.exists()
+
+    def test_fetch_wheel_refetches_on_every_call(self, mock_session_series,
+                                                  tmp_path, monkeypatch):
+        """Unlike `load_raw_wheel`, a fetch never consults the store."""
+        monkeypatch.setattr('iblnm.data.store_raw', True)
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.load_raw_wheel()
+        ps.save_h5(groups=['wheel'])
+        ps.fetch_wheel()
+
+        assert ps.one.load_object.call_count == 2
+
     def test_missing_extracted_data_when_raw_ssv_present(self, mock_session_series,
                                                          tmp_path):
         """Wheel ALF missing but the raw encoder file present → not extracted."""

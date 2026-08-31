@@ -1368,6 +1368,76 @@ class TestLoadTrials:
                 session.load_trials()
 
 
+class TestFetchTier:
+    """The `fetch_*` methods: Alyx in, session attribute out, nothing else."""
+
+    def test_fetch_trials_adds_the_derived_columns(self, mock_session_series):
+        """`fetch_trials` is the whole trials fetch, derived columns included."""
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+        table = pd.DataFrame({
+            'contrastLeft': [0.25, np.nan],
+            'contrastRight': [np.nan, 1.0],
+            'feedbackType': [1, -1],
+        })
+
+        def _populate(*args, **kwargs):
+            session.trials = table
+
+        with patch.object(PhotometrySession.__bases__[0], 'load_trials',
+                          side_effect=_populate):
+            trials = session.fetch_trials()
+
+        assert {'trial', 'stim_side', 'signed_contrast', 'contrast'} <= set(
+            trials.columns)
+        assert trials is session.trials
+
+    def test_fetch_photometry_refetches_over_a_stored_product(
+            self, mock_session_series, mock_photometry_data, tmp_path,
+            monkeypatch):
+        """A fetch never consults the store, however current the store is."""
+        from iblnm.data import PhotometrySession
+        monkeypatch.setattr('iblnm.data.store_raw', True)
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+        session.filepath = tmp_path / f'{session.eid}.h5'
+
+        def _populate(*args, **kwargs):
+            session.photometry = dict(mock_photometry_data)
+
+        with patch.object(PhotometrySession.__bases__[0], 'load_photometry',
+                          side_effect=_populate) as fetch:
+            session.load_raw_photometry()
+            session.save_h5(groups=['photometry'])
+            assert session.product_status('photometry/raw') == 'current'
+            session.load_raw_photometry()
+            assert fetch.call_count == 1
+            session.fetch_photometry()
+            assert fetch.call_count == 2
+
+    def test_fetch_neurophotometrics_assigns_the_source_table(
+            self, mock_session_series):
+        """The source table lands on the session, not just in the QC scorer."""
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+        raw = pd.DataFrame({'times': [0.0, 1.0], 'signal': [1.0, 2.0]})
+        with patch('iblnm.data.from_neurophotometrics_df_to_photometry_df',
+                   return_value=raw) as convert:
+            table = session.fetch_neurophotometrics()
+
+        convert.assert_called_once()
+        assert table is session.neurophotometrics
+        assert table.index.name == 'times'
+
+    def test_neurophotometrics_starts_empty(self, mock_session_series):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+        assert session.neurophotometrics is None
+
+
 class TestLoadRawPhotometry:
     """Tests for PhotometrySession.load_raw_photometry — the Alyx fetch."""
 
@@ -3085,7 +3155,7 @@ def _run_raw_qc(session, n_band_inversions=0, n_early_samples=0):
     """Run run_raw_qc with the source table and both metrics mocked out."""
     from unittest.mock import patch
     raw_phot = pd.DataFrame({'col1': [1.0, 2.0]}, index=[0.0, 1.0])
-    with patch.object(session, '_load_raw_photometry', return_value=raw_phot):
+    with patch.object(session, 'fetch_neurophotometrics', return_value=raw_phot):
         with patch('iblnm.data.metrics') as mock_metrics:
             mock_metrics.n_band_inversions.return_value = n_band_inversions
             mock_metrics.n_early_samples.return_value = n_early_samples
@@ -3122,7 +3192,7 @@ class TestRunRawQc:
         from iblnm.data import PhotometrySession
         from unittest.mock import patch
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        with patch.object(session, '_load_raw_photometry', side_effect=Exception("load failed")):
+        with patch.object(session, 'fetch_neurophotometrics', side_effect=Exception("load failed")):
             with pytest.raises(Exception, match="load failed"):
                 session.run_raw_qc()
 
@@ -3284,7 +3354,7 @@ class TestLoadNeurophotometricsQc:
         fresh = PhotometrySession(mock_session_series, one=MagicMock(),
                                   load_data=False)
         fresh.filepath = session.filepath
-        with patch.object(PhotometrySession, '_load_raw_photometry') as fetch:
+        with patch.object(PhotometrySession, 'fetch_neurophotometrics') as fetch:
             assert fresh.load_neurophotometrics_qc() == built
         fetch.assert_not_called()
 
