@@ -1816,9 +1816,9 @@ class PhotometrySession(PhotometrySessionLoader):
 
         Reads `photometry/{region}/preprocessed` when it is stored and its
         stamp still matches `config.PRODUCT_SPEC`; otherwise fetches the raw
-        bands from Alyx and preprocesses them, which writes and stamps the
-        product on the way out. A product named in `self.rebuild` skips the
-        read and is rebuilt.
+        bands from Alyx, preprocesses them, and writes and stamps the product
+        on the way out. A product named in `self.rebuild` skips the read and is
+        rebuilt.
 
         Returns
         -------
@@ -1840,7 +1840,8 @@ class PhotometrySession(PhotometrySessionLoader):
                     _read_photometry_preprocessed(h5['photometry']))
         if signal is None:
             self.load_raw_photometry()
-            signal = self.preprocess()
+            signal = self.extract_preprocessed_photometry()
+            self.save_h5(groups=['photometry'])
         self.photometry[PREPROCESSED_BAND] = signal
         return signal
 
@@ -2292,8 +2293,9 @@ class PhotometrySession(PhotometrySessionLoader):
 
         Reads `photometry/neurophotometrics/qc` when it is stored and its stamp
         still matches `config.PRODUCT_SPEC`; otherwise fetches the source table
-        from Alyx and scores it with :meth:`run_raw_qc`, which writes and stamps
-        the product. A product named in `self.rebuild` skips the read.
+        from Alyx, scores it with :meth:`run_neurophotometrics_qc`, and writes
+        and stamps the product. A product named in `self.rebuild` skips the
+        read.
 
         Returns
         -------
@@ -2310,15 +2312,18 @@ class PhotometrySession(PhotometrySessionLoader):
                 self.neurophotometrics_qc = _load_scalars(
                     h5['photometry/neurophotometrics/qc'])
             return self.neurophotometrics_qc
-        return self.run_raw_qc()
+        self.fetch_neurophotometrics()
+        self.run_neurophotometrics_qc()
+        self.save_h5(groups=['photometry'])
+        return self.neurophotometrics_qc
 
     def load_photometry_qc(self) -> dict[str, dict[str, float]]:
         """Return each region's raw-band QC metrics, scoring them if absent.
 
         Reads `photometry/{region}/raw/qc` when it is stored and its stamp still
-        matches `config.PRODUCT_SPEC`; otherwise fetches the raw bands from Alyx
-        and scores them with :meth:`run_sliding_qc`, which writes and stamps the
-        product. A product named in `self.rebuild` skips the read.
+        matches `config.PRODUCT_SPEC`; otherwise fetches the raw bands from
+        Alyx, scores them with :meth:`run_photometry_qc`, and writes and stamps
+        the product. A product named in `self.rebuild` skips the read.
 
         Returns
         -------
@@ -2336,10 +2341,18 @@ class PhotometrySession(PhotometrySessionLoader):
                 self.photometry_qc = _read_photometry_qc(h5['photometry'])
             return self.photometry_qc
         self.load_raw_photometry()
-        return self.run_sliding_qc()
+        self.run_photometry_qc()
+        self.save_h5(groups=['photometry'])
+        return self.photometry_qc
 
-    def run_raw_qc(self, raw_metrics: Sequence[str] | None = None) -> dict[str, float]:
-        """Score the neurophotometrics source table and store the result.
+    def run_neurophotometrics_qc(
+        self, raw_metrics: Sequence[str] | None = None
+    ) -> dict[str, float]:
+        """Score the neurophotometrics source table already fetched.
+
+        Reads `self.neurophotometrics`, assigned by
+        :meth:`fetch_neurophotometrics`; it never fetches and never writes.
+        `load_neurophotometrics_qc` is what does both.
 
         Parameters
         ----------
@@ -2350,8 +2363,7 @@ class PhotometrySession(PhotometrySessionLoader):
         Returns
         -------
         dict
-            Metric name -> value, also assigned to `self.neurophotometrics_qc`
-            and written to `photometry/neurophotometrics/qc` as group attrs.
+            Metric name -> value, also assigned to `self.neurophotometrics_qc`.
 
         The source table itself is never stored: `n_band_inversions` reads a
         `color` column that only exists before extraction, so the QC is all
@@ -2359,22 +2371,23 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         if raw_metrics is None:
             raw_metrics = QC_RAW_METRICS
-        raw_photometry = self.fetch_neurophotometrics()
         self.neurophotometrics_qc = {
-            name: float(getattr(metrics, name)(raw_photometry))
+            name: float(getattr(metrics, name)(self.neurophotometrics))
             for name in raw_metrics
         }
-        self.save_h5(groups=['photometry'])
         return self.neurophotometrics_qc
 
-    def run_sliding_qc(
+    def run_photometry_qc(
         self,
         sliding_metrics: Sequence[str] | None = None,
         metrics_kwargs: dict | None = None,
         sliding_kwargs: dict | None = None,
         agg: dict[str, str] | None = None,
     ) -> dict[str, dict[str, float]]:
-        """Score the raw bands in sliding windows and store the result per region.
+        """Score the raw bands in sliding windows, per region.
+
+        Reads `self.photometry`, populated by :meth:`load_raw_photometry`; it
+        never fetches and never writes. `load_photometry_qc` is what does both.
 
         Issues two `qc_signals` calls over the same windows: the metrics named
         in `config.QC_UNDETRENDED_METRICS` with `detrend=False`, the rest with
@@ -2402,8 +2415,7 @@ class PhotometrySession(PhotometrySessionLoader):
         -------
         dict
             Region -> {band-suffixed metric name: value}, also assigned to
-            `self.photometry_qc` and written to `photometry/{region}/raw/qc`
-            as group attrs.
+            `self.photometry_qc`.
         """
         if sliding_metrics is None:
             sliding_metrics = QC_SLIDING_METRICS
@@ -2429,7 +2441,6 @@ class PhotometrySession(PhotometrySessionLoader):
                   detrend=True),
         ])
         self.photometry_qc = _aggregate_qc_windows(qc_tidy, agg)
-        self.save_h5(groups=['photometry'])
         return self.photometry_qc
 
 
@@ -2437,7 +2448,7 @@ class PhotometrySession(PhotometrySessionLoader):
     # Preprocessing Methods
     # =========================================================================
 
-    def preprocess(
+    def extract_preprocessed_photometry(
         self,
         pipeline=None,
         signal_band='GCaMP',
@@ -2446,7 +2457,11 @@ class PhotometrySession(PhotometrySessionLoader):
         output_band=PREPROCESSED_BAND,
         regression_method: str = 'mse',
     ):
-        """Run preprocessing pipeline, store the result, and write it to H5.
+        """Run the preprocessing pipeline over the raw bands already loaded.
+
+        Reads `self.photometry[signal_band]` and `[reference_band]`, computes,
+        and assigns; it never fetches and never writes. `load_photometry` is
+        what saves the result.
 
         Pipeline steps (bleach correct → isosbestic correct → resample to
         TARGET_FS → zscore) are defined in config.PREPROCESSING_PIPELINES. The
@@ -2454,16 +2469,15 @@ class PhotometrySession(PhotometrySessionLoader):
         interpolating an already-z-scored signal leaves it short of unit
         variance.
 
-        The result is written to `photometry/{region}/preprocessed` and stamped
-        with the `photometry/preprocessed` spec, so a later `load_photometry`
-        reads it back instead of re-fetching from Alyx. `bleaching_tau` and
-        `iso_correlation` are computed on the partially processed signals and
-        land in `self.preprocessing_diagnostics`, written as attrs of the same
-        group: they describe this preprocessing run rather than the raw signal.
+        `bleaching_tau` and `iso_correlation` are computed on the partially
+        processed signals and land in `self.preprocessing_diagnostics`: they
+        describe this preprocessing run rather than the raw signal, which is
+        why `load_photometry` writes them as attrs of the preprocessed group.
 
         A caller passing a non-default `output_band` is opting out of the
-        product — the result is kept in `self.photometry` and nothing is
-        written, since only `PREPROCESSED_BAND` is what the product names.
+        product: the result is kept in `self.photometry` under that name, and
+        `load_photometry` saves only what the default band produced, since only
+        `PREPROCESSED_BAND` is what the product names.
         """
         from iblphotometry.pipelines import run_pipeline
         from iblnm.analysis import compute_bleaching_tau, compute_iso_correlation
@@ -2504,8 +2518,6 @@ class PhotometrySession(PhotometrySessionLoader):
 
         self.photometry[output_band] = pd.DataFrame(preprocessed)
         self.preprocessing_diagnostics = diagnostics
-        if output_band == PREPROCESSED_BAND:
-            self.save_h5(groups=['photometry'])
         return self.photometry[output_band]
 
 

@@ -277,7 +277,8 @@ def test_load_session_data_complete_store_makes_no_one_call(tmp_path, monkeypatc
         'firstMovement_times': np.linspace(50.3, 550.3, 20),
         'feedback_times': np.linspace(51, 551, 20),
     })
-    builder.preprocess()
+    builder.extract_preprocessed_photometry()
+    builder.save_h5(groups=['photometry'])  # the cut below reads it back
     builder.load_responses('photometry')
     builder.save_h5()
 

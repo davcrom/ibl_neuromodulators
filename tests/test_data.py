@@ -1510,6 +1510,36 @@ class TestLoadPhotometry:
         assert session.photometry['GCaMP_preprocessed'] is signal
         assert session.product_status('photometry/preprocessed') == 'current'
 
+    def test_saves_what_the_extraction_returned(self, fetching_session,
+                                                mock_photometry_session):
+        """The load is what writes: same signal as the bare extraction, stored."""
+        import h5py
+        session, fetch = fetching_session
+        with fetch:
+            loaded = session.load_photometry()
+
+        extracted = mock_photometry_session.extract_preprocessed_photometry()
+        np.testing.assert_allclose(loaded['VTA'].values, extracted['VTA'].values)
+        with h5py.File(session.filepath, 'r') as h5:
+            assert 'photometry/VTA/preprocessed' in h5
+
+    def test_writes_the_diagnostics_as_attrs(self, fetching_session):
+        """The diagnostics ride as attrs on the preprocessed group it wrote.
+
+        They describe the preprocessing run, not the raw signal, so they hang
+        off `preprocessed/` and leave `qc/` depending only on `raw/`.
+        """
+        import h5py
+        from iblnm.data import _load_scalars
+        session, fetch = fetching_session
+        with fetch:
+            session.load_photometry()
+
+        with h5py.File(session.filepath, 'r') as h5:
+            stored = _load_scalars(h5['photometry/VTA/preprocessed'])
+        assert set(stored) == {'bleaching_tau', 'iso_correlation'}
+        assert stored == pytest.approx(session.preprocessing_diagnostics['VTA'])
+
     def test_reads_stored_product_without_fetching(self, fetching_session,
                                                    mock_session_series):
         """A second session over the same file reads it and never fetches."""
@@ -1804,7 +1834,7 @@ class TestValidateTrialsInPhotometryTime:
     def test_uses_preprocessed_band_when_no_raw(self, mock_photometry_session):
         """Should fall back to GCaMP_preprocessed when GCaMP is not available."""
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         del session.photometry['GCaMP']
         del session.photometry['Isosbestic']
         session.trials = pd.DataFrame({
@@ -1878,14 +1908,14 @@ class TestValidateQc:
 # Preprocess Tests
 # =============================================================================
 
-class TestPreprocess:
-    """Tests for PhotometrySession.preprocess method."""
+class TestExtractPreprocessedPhotometry:
+    """Tests for PhotometrySession.extract_preprocessed_photometry."""
 
     def test_preprocess_adds_new_band(self, mock_photometry_session):
         """Preprocess should add preprocessed signal as new band in photometry dict."""
         session = mock_photometry_session
 
-        session.preprocess()
+        session.extract_preprocessed_photometry()
 
         assert 'GCaMP_preprocessed' in session.photometry
         assert isinstance(session.photometry['GCaMP_preprocessed'], pd.DataFrame)
@@ -1895,38 +1925,12 @@ class TestPreprocess:
         """Preprocess reports bleaching_tau and iso_correlation per region."""
         session = mock_photometry_session
 
-        session.preprocess()
+        session.extract_preprocessed_photometry()
 
         diagnostics = session.preprocessing_diagnostics['VTA']
         tau = diagnostics['bleaching_tau']
         assert 100 < tau < 600  # Known fixture tau=300, allow wide margin for fit
         assert 0.8 < diagnostics['iso_correlation'] <= 1.0
-
-    def test_preprocess_stores_stamped_product(self, mock_photometry_session):
-        """Preprocess writes photometry/preprocessed and stamps it current."""
-        session = mock_photometry_session
-        assert session.product_status('photometry/preprocessed') == 'absent'
-
-        session.preprocess()
-
-        assert session.product_status('photometry/preprocessed') == 'current'
-
-    def test_preprocess_writes_diagnostics_as_attrs(self, mock_photometry_session):
-        """The diagnostics ride as attrs on the preprocessed group it wrote.
-
-        They describe the preprocessing run, not the raw signal, so they hang
-        off `preprocessed/` and leave `qc/` depending only on `raw/`.
-        """
-        import h5py
-        from iblnm.data import _load_scalars
-        session = mock_photometry_session
-
-        session.preprocess()
-
-        with h5py.File(session.filepath, 'r') as h5:
-            stored = _load_scalars(h5['photometry/VTA/preprocessed'])
-        assert set(stored) == {'bleaching_tau', 'iso_correlation'}
-        assert stored == pytest.approx(session.preprocessing_diagnostics['VTA'])
 
     def test_preprocess_raises_when_no_photometry(self, mock_session_series):
         """Should raise if photometry not loaded (no explicit guard — natural error)."""
@@ -1936,7 +1940,7 @@ class TestPreprocess:
         session = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
 
         with pytest.raises((AttributeError, KeyError, TypeError)):
-            session.preprocess()
+            session.extract_preprocessed_photometry()
 
     def test_preprocess_single_band_pipeline(self, mock_photometry_session):
         """Single-band pipeline should work without reference."""
@@ -1944,7 +1948,7 @@ class TestPreprocess:
 
         session = mock_photometry_session
 
-        session.preprocess(
+        session.extract_preprocessed_photometry(
             pipeline=sliding_mad_pipeline,
             reference_band=None
         )
@@ -1959,14 +1963,15 @@ class TestPreprocess:
         from iblphotometry.pipelines import isosbestic_correction_pipeline
 
         with pytest.raises(ValueError, match="requires reference"):
-            mock_photometry_session.preprocess(
+            mock_photometry_session.extract_preprocessed_photometry(
                 pipeline=isosbestic_correction_pipeline,
                 reference_band=None
             )
 
     def test_preprocess_custom_output_band(self, mock_photometry_session):
         """Can specify custom output band name."""
-        mock_photometry_session.preprocess(output_band='corrected')
+        mock_photometry_session.extract_preprocessed_photometry(
+            output_band='corrected')
 
         assert 'corrected' in mock_photometry_session.photometry
         assert 'GCaMP_preprocessed' not in mock_photometry_session.photometry
@@ -1985,7 +1990,7 @@ class TestPreprocess:
         """Preprocessed signal should be resampled to TARGET_FS."""
         from iblnm.config import TARGET_FS
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         signal = session.photometry['GCaMP_preprocessed']['VTA']
         dt = np.diff(signal.index.values)
         np.testing.assert_allclose(dt, 1 / TARGET_FS, atol=1e-10)
@@ -1993,7 +1998,7 @@ class TestPreprocess:
     def test_preprocess_zscores_signal(self, mock_photometry_session):
         """Preprocessed signal should be z-scored (mean≈0, std≈1)."""
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         signal = session.photometry['GCaMP_preprocessed']['VTA'].values
         np.testing.assert_allclose(np.mean(signal), 0, atol=0.01)
         np.testing.assert_allclose(np.std(signal), 1, atol=0.01)
@@ -2003,15 +2008,28 @@ class TestPreprocess:
         z-score, so that the z-score is what the stored signal was last through."""
         from iblnm.config import TARGET_FS
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
 
         times = session.photometry['GCaMP_preprocessed'].index.values
         np.testing.assert_allclose(np.diff(times), 1 / TARGET_FS)
 
     def test_preprocess_accepts_regression_method(self, mock_photometry_session):
-        """preprocess() should accept regression_method kwarg without error."""
-        mock_photometry_session.preprocess(regression_method='mse')
+        """The extraction should accept regression_method without error."""
+        mock_photometry_session.extract_preprocessed_photometry(
+            regression_method='mse')
         assert 'GCaMP_preprocessed' in mock_photometry_session.photometry
+
+    def test_extract_assigns_the_band_and_writes_nothing(
+            self, mock_photometry_session):
+        """The computation is pure: it assigns, and the H5 file stays absent."""
+        session = mock_photometry_session
+        assert not session.filepath.exists()
+
+        signal = session.extract_preprocessed_photometry()
+
+        assert signal is session.photometry['GCaMP_preprocessed']
+        assert 'VTA' in signal.columns
+        assert not session.filepath.exists()
 
 
 # =============================================================================
@@ -2039,9 +2057,15 @@ class TestLoadResponses:
 
     @pytest.fixture
     def preprocessed_session(self, mock_photometry_session):
-        """Session with a preprocessed signal and trials already in hand."""
+        """Session with a stored preprocessed signal and trials in hand.
+
+        The extraction no longer writes, so the save is explicit here: without
+        the stored product `load_responses` would send `load_photometry` back
+        to the mocked Alyx.
+        """
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
+        session.save_h5(groups=['photometry'])
         session.trials = _make_trials()
         return session
 
@@ -2104,7 +2128,7 @@ class TestExtractResponses:
         """The engine returns its dict; the caller owns the attribute."""
         import xarray as xr
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         session.trials = _make_trials()
         responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed']
@@ -2116,7 +2140,7 @@ class TestExtractResponses:
     def test_labels_come_from_signals_mapping(self, mock_photometry_session):
         """Any mapping of label -> time-indexed Series is a valid signal source."""
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         session.trials = _make_trials()
         signal = session.photometry['GCaMP_preprocessed']['VTA']
         responses = session.extract_responses({'paw_speed': signal})
@@ -2126,7 +2150,7 @@ class TestExtractResponses:
     def test_returns_xarray_dataarray(self, mock_photometry_session):
         import xarray as xr
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed']
@@ -2137,7 +2161,7 @@ class TestExtractResponses:
     def test_has_correct_dims(self, mock_photometry_session):
         from iblnm.config import RESPONSE_EVENTS
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         n = 50
         session.trials = _make_trials(n)
         session.photometry_responses = session.extract_responses(
@@ -2152,7 +2176,7 @@ class TestExtractResponses:
     def test_sel_region_event(self, mock_photometry_session):
         """Selecting by event returns (trial, time) array."""
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         n = 50
         session.trials = _make_trials(n)
         session.photometry_responses = session.extract_responses(
@@ -2165,7 +2189,7 @@ class TestExtractResponses:
         """Time coordinate should span RESPONSE_WINDOW."""
         from iblnm.config import RESPONSE_WINDOW
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'], events=['feedback_times'])
@@ -2175,7 +2199,7 @@ class TestExtractResponses:
 
     def test_custom_events(self, mock_photometry_session):
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'], events=['feedback_times'])
@@ -2192,7 +2216,7 @@ class TestExtractResponses:
         its own feedback onward.
         """
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         n = 50
         session.trials = _make_trials(
             n, feedback_times=np.linspace(99.5, 499.5, n) + np.linspace(0.5, 2.5, n))
@@ -2217,7 +2241,7 @@ class TestExtractResponses:
         numbers, so responses stay aligned to the trials they came from.
         """
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         trial_numbers = np.array([3, 7, 8, 15, 40])
         session.trials = pd.DataFrame({
             'trial': trial_numbers,
@@ -2364,7 +2388,7 @@ class TestSaveLoadH5:
         """save_h5 should write preprocessed signal as float64 with timestamps."""
         from iblnm.data import _read_stamp
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         fpath = tmp_path / f'{session.eid}.h5'
         session.save_h5(fpath)
 
@@ -2394,7 +2418,7 @@ class TestSaveLoadH5:
         reads back as stale.
         """
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'])
@@ -2413,7 +2437,7 @@ class TestSaveLoadH5:
         """
         from iblnm.data import PREPROCESSED_BAND, PhotometrySession
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         fpath = tmp_path / f'{session.eid}.h5'
         session.save_h5(fpath)
 
@@ -2429,7 +2453,7 @@ class TestSaveLoadH5:
     def test_save_trials_and_responses(self, mock_photometry_session, tmp_path):
         """save_h5 in append mode should add trials and xarray responses."""
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         n = 50
         session.trials = _make_trials(
             n,
@@ -2471,7 +2495,7 @@ class TestSaveLoadH5:
         """load_h5 should restore responses as xarray DataArray."""
         import xarray as xr
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'], events=['stimOn_times', 'feedback_times'])
@@ -2496,7 +2520,7 @@ class TestSaveLoadH5:
     def test_load_h5_restores_trials(self, mock_photometry_session, tmp_path):
         """load_h5 should restore trials saved in the HDF5 trials group."""
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         n = 50
         session.trials = pd.DataFrame({
             'stimOn_times':        np.linspace(99.5, 499.5, n),
@@ -2546,7 +2570,7 @@ class TestSaveLoadH5:
     def test_load_h5_roundtrip(self, mock_photometry_session, tmp_path):
         """load_h5 should restore preprocessed signal from saved file."""
         session = mock_photometry_session
-        session.preprocess()
+        session.extract_preprocessed_photometry()
         fpath = tmp_path / f'{session.eid}.h5'
         session.save_h5(fpath)
 
@@ -3151,50 +3175,41 @@ class TestBasicPerformance:
 # QC Method Tests
 # =============================================================================
 
-def _run_raw_qc(session, n_band_inversions=0, n_early_samples=0):
-    """Run run_raw_qc with the source table and both metrics mocked out."""
+def _score_neurophotometrics(session, n_band_inversions=0, n_early_samples=0):
+    """Score a fetched source table with both metrics mocked out."""
     from unittest.mock import patch
-    raw_phot = pd.DataFrame({'col1': [1.0, 2.0]}, index=[0.0, 1.0])
-    with patch.object(session, 'fetch_neurophotometrics', return_value=raw_phot):
-        with patch('iblnm.data.metrics') as mock_metrics:
-            mock_metrics.n_band_inversions.return_value = n_band_inversions
-            mock_metrics.n_early_samples.return_value = n_early_samples
-            return session.run_raw_qc()
+    session.neurophotometrics = pd.DataFrame({'col1': [1.0, 2.0]},
+                                             index=[0.0, 1.0])
+    with patch('iblnm.data.metrics') as mock_metrics:
+        mock_metrics.n_band_inversions.return_value = n_band_inversions
+        mock_metrics.n_early_samples.return_value = n_early_samples
+        return session.run_neurophotometrics_qc()
 
 
-class TestRunRawQc:
-    """Tests for PhotometrySession.run_raw_qc."""
+class TestRunNeurophotometricsQc:
+    """Tests for PhotometrySession.run_neurophotometrics_qc."""
 
     def test_stores_metric_values(self, mock_photometry_session):
         session = mock_photometry_session
-        _run_raw_qc(session, n_band_inversions=3, n_early_samples=5)
+        _score_neurophotometrics(session, n_band_inversions=3, n_early_samples=5)
         assert session.neurophotometrics_qc == {'n_band_inversions': 3.0,
                                                 'n_early_samples': 5.0}
 
-    def test_writes_group_although_source_table_is_never_stored(
-            self, mock_photometry_session):
-        """The neurophotometrics QC group persists without its source table."""
-        import h5py
-        session = mock_photometry_session
-        _run_raw_qc(session, n_band_inversions=1)
-        with h5py.File(session.filepath, 'r') as h5:
-            group = h5['photometry/neurophotometrics/qc']
-            assert group.attrs['n_band_inversions'] == 1.0
-            assert list(h5['photometry/neurophotometrics']) == ['qc']
-
-    def test_stored_product_is_current(self, mock_photometry_session):
-        session = mock_photometry_session
-        _run_raw_qc(session)
-        assert session.product_status(
-            'photometry/neurophotometrics/qc') == 'current'
-
-    def test_propagates_load_failure(self, mock_session_series):
-        from iblnm.data import PhotometrySession
+    def test_scores_the_fetched_table_without_fetching(self,
+                                                       mock_photometry_session):
+        """It reads `self.neurophotometrics`; the fetch is the caller's job."""
         from unittest.mock import patch
-        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        with patch.object(session, 'fetch_neurophotometrics', side_effect=Exception("load failed")):
-            with pytest.raises(Exception, match="load failed"):
-                session.run_raw_qc()
+        session = mock_photometry_session
+        with patch.object(session, 'fetch_neurophotometrics') as fetch:
+            _score_neurophotometrics(session, n_early_samples=2)
+        fetch.assert_not_called()
+
+    def test_writes_nothing(self, mock_photometry_session):
+        """The computation is pure: scoring alone leaves no H5 file behind."""
+        session = mock_photometry_session
+        assert not session.filepath.exists()
+        _score_neurophotometrics(session, n_band_inversions=1)
+        assert not session.filepath.exists()
 
 
 def _tidy_qc(metric='n_unique_samples', band='GCaMP', region='VTA',
@@ -3209,8 +3224,8 @@ def _tidy_qc(metric='n_unique_samples', band='GCaMP', region='VTA',
     })
 
 
-class TestRunSlidingQc:
-    """Tests for PhotometrySession.run_sliding_qc."""
+class TestRunPhotometryQc:
+    """Tests for PhotometrySession.run_photometry_qc."""
 
     def test_stores_band_suffixed_metrics_per_region(self, mock_photometry_session):
         from unittest.mock import patch
@@ -3220,17 +3235,27 @@ class TestRunSlidingQc:
             _tidy_qc(band='Isosbestic', values=(0.2, 0.4)),
         ])
         with patch('iblnm.data.qc_signals', return_value=tidy):
-            session.run_sliding_qc(sliding_metrics=['n_unique_samples'])
+            scored = session.run_photometry_qc(sliding_metrics=['n_unique_samples'])
+        assert scored is session.photometry_qc
         assert set(session.photometry_qc) == {'VTA'}
         assert set(session.photometry_qc['VTA']) == {
             'n_unique_samples_GCaMP', 'n_unique_samples_Isosbestic'}
+
+    def test_writes_nothing(self, mock_photometry_session):
+        """The computation is pure: scoring alone leaves no H5 file behind."""
+        from unittest.mock import patch
+        session = mock_photometry_session
+        assert not session.filepath.exists()
+        with patch('iblnm.data.qc_signals', return_value=_tidy_qc()):
+            session.run_photometry_qc(sliding_metrics=['n_unique_samples'])
+        assert not session.filepath.exists()
 
     def test_splits_undetrended_metrics_into_own_call(self, mock_photometry_session):
         """n_unique_samples is scored without detrending, the rest with it."""
         from unittest.mock import patch
         session = mock_photometry_session
         with patch('iblnm.data.qc_signals', return_value=_tidy_qc()) as mock_qc:
-            session.run_sliding_qc(
+            session.run_photometry_qc(
                 sliding_metrics=['n_unique_samples', 'ar_score'],
                 sliding_kwargs={'w_len': 120, 'step_len': 60, 'detrend': True},
             )
@@ -3243,34 +3268,17 @@ class TestRunSlidingQc:
             assert kwargs['sliding_kwargs']['w_len'] == 120
             assert kwargs['sliding_kwargs']['step_len'] == 60
 
-    def test_stored_product_goes_stale_when_aggregation_changes(
-            self, mock_photometry_session, mock_session_series):
-        """Altering QC_SLIDING_AGG marks a stored region QC group stale."""
-        from unittest.mock import patch
-        from iblnm.data import PhotometrySession
-        session = mock_photometry_session
-        with patch('iblnm.data.qc_signals', return_value=_tidy_qc()):
-            session.run_sliding_qc(sliding_metrics=['n_unique_samples'])
-        assert session.product_status('photometry/raw/qc') == 'current'
-
-        with patch.dict('iblnm.config.QC_SLIDING_AGG',
-                        {'n_unique_samples': 'mean'}):
-            reopened = PhotometrySession(mock_session_series, one=MagicMock(),
-                                         load_data=False)
-            reopened.filepath = session.filepath
-            assert reopened.product_status('photometry/raw/qc') == 'stale'
-
     def test_aggregates_each_metric_by_its_own_reducer(self, mock_photometry_session):
         """n_unique_samples takes the windows' q10, ar_score their mean."""
         from unittest.mock import patch
         session = mock_photometry_session
         windows = (0.1, 0.8, 0.9, 1.0)
-        # One frame per call, in the order run_sliding_qc issues them:
+        # One frame per call, in the order run_photometry_qc issues them:
         # un-detrended first, detrended second.
         per_call = [_tidy_qc(metric='n_unique_samples', values=windows),
                     _tidy_qc(metric='ar_score', values=windows)]
         with patch('iblnm.data.qc_signals', side_effect=per_call):
-            session.run_sliding_qc(
+            session.run_photometry_qc(
                 sliding_metrics=['n_unique_samples', 'ar_score'])
         stored = session.photometry_qc['VTA']
         assert stored['n_unique_samples_GCaMP'] == pytest.approx(0.31)
@@ -3281,7 +3289,7 @@ class TestRunSlidingQc:
         session = mock_photometry_session
         with patch('iblnm.data.qc_signals', side_effect=Exception("qc_signals failed")):
             with pytest.raises(Exception, match="qc_signals failed"):
-                session.run_sliding_qc()
+                session.run_photometry_qc()
 
 
 class TestLoadPhotometryQc:
@@ -3336,20 +3344,55 @@ class TestLoadPhotometryQc:
 class TestLoadNeurophotometricsQc:
     """`load_neurophotometrics_qc` returns the stored product, scoring if absent."""
 
-    def test_scores_when_absent(self, mock_photometry_session):
+    def _build(self, session, **metric_values):
+        """Fetch-and-score through the load path, the source table mocked out."""
+        from unittest.mock import patch
+        table = pd.DataFrame({'col1': [1.0, 2.0]}, index=[0.0, 1.0])
+
+        def _assign():
+            session.neurophotometrics = table
+
+        with patch.object(session, 'fetch_neurophotometrics',
+                          side_effect=_assign):
+            with patch('iblnm.data.metrics') as mock_metrics:
+                mock_metrics.n_band_inversions.return_value = metric_values.get(
+                    'n_band_inversions', 0)
+                mock_metrics.n_early_samples.return_value = metric_values.get(
+                    'n_early_samples', 0)
+                return session.load_neurophotometrics_qc()
+
+    def test_fetches_and_scores_when_absent(self, mock_photometry_session):
+        session = mock_photometry_session
+        assert self._build(session, n_early_samples=4) == {
+            'n_band_inversions': 0.0, 'n_early_samples': 4.0}
+
+    def test_writes_group_although_source_table_is_never_stored(
+            self, mock_photometry_session):
+        """The neurophotometrics QC group persists without its source table."""
+        import h5py
+        session = mock_photometry_session
+        self._build(session, n_band_inversions=1)
+        with h5py.File(session.filepath, 'r') as h5:
+            group = h5['photometry/neurophotometrics/qc']
+            assert group.attrs['n_band_inversions'] == 1.0
+            assert list(h5['photometry/neurophotometrics']) == ['qc']
+        assert session.product_status(
+            'photometry/neurophotometrics/qc') == 'current'
+
+    def test_propagates_fetch_failure(self, mock_photometry_session):
         from unittest.mock import patch
         session = mock_photometry_session
-        with patch.object(session, 'run_raw_qc',
-                          return_value={'n_early_samples': 4.0}) as score:
-            assert session.load_neurophotometrics_qc() == {'n_early_samples': 4.0}
-        score.assert_called_once()
+        with patch.object(session, 'fetch_neurophotometrics',
+                          side_effect=Exception("load failed")):
+            with pytest.raises(Exception, match="load failed"):
+                session.load_neurophotometrics_qc()
 
     def test_reads_stored_product_without_rescoring(self, mock_photometry_session,
                                                     mock_session_series):
         from unittest.mock import patch
         from iblnm.data import PhotometrySession
         session = mock_photometry_session
-        built = _run_raw_qc(session, n_early_samples=4)
+        built = self._build(session, n_early_samples=4)
 
         fresh = PhotometrySession(mock_session_series, one=MagicMock(),
                                   load_data=False)
