@@ -167,6 +167,37 @@ class TestPreprocessedWheelProduct:
         np.testing.assert_allclose(velocity.index.to_numpy(), times)
         np.testing.assert_allclose(velocity.to_numpy(), expected)
 
+    def test_extract_computes_from_the_position_and_saves_nothing(
+            self, mock_session_series, tmp_path):
+        """`extract_wheel_velocity` differentiates in memory; only loads write."""
+        from brainbox.behavior.wheel import interpolate_position, velocity_filtered
+        from iblnm.config import WHEEL_FS
+        raw = _raw_wheel(seed=5)
+        ps = _make_session(mock_session_series, tmp_path, raw)
+        ps.load_raw_wheel()
+        velocity = ps.extract_wheel_velocity()
+
+        position, times = interpolate_position(
+            raw['timestamps'], raw['position'], freq=WHEEL_FS)
+        expected, _ = velocity_filtered(position, fs=WHEEL_FS)
+        np.testing.assert_allclose(velocity.index.to_numpy(), times)
+        np.testing.assert_allclose(velocity.to_numpy(), expected)
+        assert ps.wheel_velocity is velocity
+        assert not ps.filepath.exists()
+
+    def test_load_writes_and_stamps_the_preprocessed_group(
+            self, mock_session_series, tmp_path):
+        """The load is what saves: one velocity dataset under its own label."""
+        import h5py
+        from iblnm.data import WHEEL_LABEL
+        ps = _make_session(mock_session_series, tmp_path)
+        velocity = ps.load_wheel()
+
+        with h5py.File(ps.filepath, 'r') as h5:
+            stored = h5[f'wheel/{WHEEL_LABEL}/preprocessed/signal'][:]
+        np.testing.assert_allclose(stored, velocity.to_numpy())
+        assert ps.product_status('wheel/preprocessed') == 'current'
+
     def test_reads_stored_product_without_fetching(self, mock_session_series,
                                                    tmp_path):
         """A second session over the same file reads it and never fetches."""

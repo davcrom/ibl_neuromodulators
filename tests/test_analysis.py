@@ -623,6 +623,29 @@ class TestResampleSignal:
         assert resampled.index[-1] <= t[-1]
 
 
+class TestDifferentiate:
+    @staticmethod
+    def _ramp(slope=2.5, duration=10.0, rate=250.0, seed=0):
+        """Position ramping at a known slope on an irregularly spaced index."""
+        rng = np.random.default_rng(seed)
+        times = np.cumsum(rng.uniform(0.5, 1.5, int(duration * rate)) / rate)
+        return pd.Series(slope * times, index=times)
+
+    def test_output_is_uniform_at_fs(self):
+        from iblnm.analysis import differentiate
+        position = self._ramp()
+        velocity = differentiate(position, fs=100)
+        times = velocity.index.to_numpy()
+        np.testing.assert_allclose(np.diff(times), 1 / 100, atol=1e-9)
+        assert len(velocity) == pytest.approx(100 * np.ptp(position.index), abs=2)
+
+    def test_recovers_the_ramp_slope(self):
+        """A constant-slope position differentiates to that slope."""
+        from iblnm.analysis import differentiate
+        velocity = differentiate(self._ramp(slope=2.5), fs=100)
+        assert np.median(velocity.to_numpy()) == pytest.approx(2.5, abs=1e-3)
+
+
 class TestResamplePose:
     def test_irregular_input_to_uniform_grid(self):
         """Pose columns resample onto a uniform 1/fs grid, columns preserved."""

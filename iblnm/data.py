@@ -2708,7 +2708,7 @@ class PhotometrySession(PhotometrySessionLoader):
             (seconds, session clock). The encoder samples on movement, not on a
             clock, so the index is irregular — that is what the `wheel/raw`
             product stores, leaving the uniform grid to
-            :meth:`differentiate_wheel`. Also assigned to
+            :meth:`extract_wheel_velocity`. Also assigned to
             ``self.wheel_position``.
         """
         if self.stored_is_current('wheel/raw'):
@@ -2771,26 +2771,21 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
-        velocity = None
         if self.stored_is_current('wheel/preprocessed'):
             with h5py.File(self.filepath, 'r') as h5:
-                velocity = _load_time_series(
+                self.wheel_velocity = _load_time_series(
                     h5[f'wheel/{WHEEL_LABEL}/preprocessed'])
-        if velocity is None:
-            self.load_raw_wheel()
-            velocity = self.differentiate_wheel()
-        self.wheel_velocity = velocity
-        return velocity
+            return self.wheel_velocity
+        self.load_raw_wheel()
+        self.extract_wheel_velocity()
+        self.save_h5(groups=['wheel'])
+        return self.wheel_velocity
 
-    def differentiate_wheel(self, fs: float = WHEEL_FS) -> pd.Series:
-        """Differentiate the raw encoder position into velocity, and write it.
+    def extract_wheel_velocity(self, fs: float = WHEEL_FS) -> pd.Series:
+        """Differentiate `self.wheel_position` into the velocity product.
 
-        The encoder samples irregularly, so the position is first interpolated
-        onto a uniform `fs` grid; velocity is then the sample-to-sample
-        difference of the low-pass filtered position, following
-        :func:`brainbox.behavior.wheel.velocity_filtered` at its default corner
-        frequency and filter order. Only the velocity is kept on the grid — the
-        position stays raw, in its own product.
+        Only the velocity is put on a uniform grid — the position stays raw, in
+        its own product. Writes nothing; :meth:`load_wheel` saves.
 
         Parameters
         ----------
@@ -2802,16 +2797,9 @@ class PhotometrySession(PhotometrySessionLoader):
         -------
         pandas.Series
             Velocity (radians per second) indexed by grid time (seconds), also
-            assigned to ``self.wheel_velocity`` and written to H5.
+            assigned to ``self.wheel_velocity``.
         """
-        from brainbox.behavior.wheel import interpolate_position, velocity_filtered
-
-        position, times = interpolate_position(
-            self.wheel_position.index.to_numpy(),
-            self.wheel_position.to_numpy(), freq=fs)
-        velocity, _ = velocity_filtered(position, fs=fs)
-        self.wheel_velocity = pd.Series(velocity, index=times)
-        self.save_h5(groups=['wheel'])
+        self.wheel_velocity = analysis.differentiate(self.wheel_position, fs=fs)
         return self.wheel_velocity
 
     def _wheel_signals(self) -> dict[str, pd.Series]:

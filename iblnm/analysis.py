@@ -9,6 +9,8 @@ import patsy
 from scipy.stats import gaussian_kde
 from tqdm import tqdm
 
+from brainbox.behavior.wheel import interpolate_position, velocity_filtered
+
 from iblnm.config import (
     TARGET_FS,
     POSE_FS,
@@ -145,6 +147,34 @@ def resample_signal(signal, target_fs=TARGET_FS):
     t_uniform = np.arange(times[0], times[-1], 1 / target_fs)
     interp = PchipInterpolator(times, signal.values)
     return pd.Series(interp(t_uniform), index=t_uniform)
+
+
+def differentiate(series: pd.Series, fs: float) -> pd.Series:
+    """Differentiate an irregularly sampled position series onto a uniform grid.
+
+    The samples are first interpolated onto a uniform `fs` grid, then
+    differentiated as the sample-to-sample difference of the low-pass filtered
+    signal, following :func:`brainbox.behavior.wheel.velocity_filtered` at its
+    default corner frequency and filter order.
+
+    Parameters
+    ----------
+    series : pandas.Series
+        Position indexed by time in seconds. The index may be irregular.
+    fs : float
+        Rate in Hz of the output grid, which is also the filter's sample rate.
+
+    Returns
+    -------
+    pandas.Series
+        The derivative in units of `series` per second, indexed by the uniform
+        grid times (seconds). The grid spans the input's time range, so it is
+        shorter than the input whenever the input sampled faster than `fs`.
+    """
+    position, times = interpolate_position(series.index.to_numpy(),
+                                           series.to_numpy(), freq=fs)
+    derivative, _ = velocity_filtered(position, fs=fs)
+    return pd.Series(derivative, index=times)
 
 
 def resample_pose(pose: pd.DataFrame, times: np.ndarray,
