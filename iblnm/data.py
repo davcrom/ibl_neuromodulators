@@ -2938,9 +2938,9 @@ class PhotometrySession(PhotometrySessionLoader):
         """Return the camera-clock QC metrics, computing them if absent.
 
         Reads `video/times/qc` when it is stored and its stamp still matches
-        `config.PRODUCT_SPEC`; otherwise fetches the camera times from Alyx and
-        scores them with :meth:`compute_video_measures`, which writes and stamps
-        the product. A product named in `self.rebuild` skips the read.
+        `config.PRODUCT_SPEC`; otherwise fetches the camera times from Alyx,
+        scores them with :meth:`run_video_times_qc`, and writes and stamps the
+        product. A product named in `self.rebuild` skips the read.
 
         Returns
         -------
@@ -2957,27 +2957,29 @@ class PhotometrySession(PhotometrySessionLoader):
                 self.video_times_qc = _load_scalars(h5['video/times/qc'])
             return self.video_times_qc
         self.load_camera_times()
-        return self.compute_video_measures()
+        self.run_video_times_qc()
+        self.save_h5(groups=['video'])
+        return self.video_times_qc
 
-    def compute_video_measures(self) -> dict[str, float]:
-        """Score the camera clock and store the result, from the loaded times.
+    def run_video_times_qc(self) -> dict[str, float]:
+        """Score the camera clock from the frame times already loaded.
 
-        Requires ``load_camera_times`` to have populated ``self.pose_times``.
+        Reads `self.pose_times`, assigned by :meth:`fetch_camera_times`; it
+        never fetches and never writes. `load_video_times_qc` is what does both.
 
         Returns
         -------
         dict
             ``length_discrepancy`` (video duration minus ``session_length``,
             seconds) and ``framerate_from_tpts`` (median inter-frame interval,
-            seconds), also assigned to ``self.video_times_qc`` and written to
-            `video/times/qc` as group attrs.
+            seconds), also assigned to ``self.video_times_qc``.
         """
+        discrepancy = float(
+            (self.pose_times[-1] - self.pose_times[0]) - self.session_length)
         self.video_times_qc = {
-            'length_discrepancy': float(
-                (self.pose_times[-1] - self.pose_times[0]) - self.session_length),
+            'length_discrepancy': discrepancy,
             'framerate_from_tpts': float(np.median(np.diff(self.pose_times))),
         }
-        self.save_h5(groups=['video'])
         return self.video_times_qc
 
     def fetch_video_qc(self) -> dict[str, str]:
@@ -3069,8 +3071,8 @@ class PhotometrySession(PhotometrySessionLoader):
 
         Reads `video/{label}/preprocessed` when it is stored and its stamp still
         matches `config.PRODUCT_SPEC`; otherwise fetches the raw video datasets
-        and resamples them with :meth:`resample_movement_signals`, which writes
-        and stamps the product. A product named in `self.rebuild` skips the read.
+        resamples them with :meth:`extract_movement_signals`, and writes and
+        stamps the product. A product named in `self.rebuild` skips the read.
 
         Returns
         -------
@@ -3091,7 +3093,8 @@ class PhotometrySession(PhotometrySessionLoader):
                                                _load_time_series)
         if signals is None:
             self._load_raw_video_sources()
-            signals = self.resample_movement_signals()
+            signals = self.extract_movement_signals()
+            self.save_h5(groups=['video'])
         self.movement_signals = signals
         return signals
 
@@ -3111,8 +3114,12 @@ class PhotometrySession(PhotometrySessionLoader):
             except error as e:
                 self.log_error(e, product=product)
 
-    def resample_movement_signals(self) -> dict[str, pd.Series]:
-        """Resample the loaded raw video onto the POSE_FS grid, and write it.
+    def extract_movement_signals(self) -> dict[str, pd.Series]:
+        """Resample the raw video already loaded onto the POSE_FS grid.
+
+        Reads `self.pose`, `self.pose_times` and `self.motion_energy`, assigned
+        by the video fetches; it never fetches and never writes.
+        `_movement_signals` is what does both.
 
         The two signal sources are independent, so a session contributes the LP
         keypoint channels (``config.POSE_MEASURES``), the ``motion_energy``
@@ -3123,7 +3130,7 @@ class PhotometrySession(PhotometrySessionLoader):
         -------
         dict[str, pandas.Series]
             Channel label -> signal on the shared 1/POSE_FS time base, also
-            assigned to ``self.movement_signals`` and written to H5.
+            assigned to ``self.movement_signals``.
         """
         signals = {}
         if self.pose is not None:
@@ -3139,7 +3146,6 @@ class PhotometrySession(PhotometrySessionLoader):
             signals['motion_energy'] = resample_signal(
                 pd.Series(self.motion_energy, index=self.pose_times), POSE_FS)
         self.movement_signals = signals
-        self.save_h5(groups=['video'])
         return signals
 
     def load_pose_qc(self) -> dict:
@@ -3148,8 +3154,8 @@ class PhotometrySession(PhotometrySessionLoader):
         Reads `video/pose/qc` when it is stored and its stamp still matches
         `config.PRODUCT_SPEC`; otherwise loads the pose, the camera times and
         the wheel velocity and correlates them with
-        :meth:`extract_paw_wheel_xcorr`, which writes and stamps the product. A
-        product named in `self.rebuild` skips the read.
+        :meth:`run_pose_qc`, then writes and stamps the product. A product
+        named in `self.rebuild` skips the read.
 
         This is the one cross-modal QC product: good pose is not enough, so a
         session with no wheel fails here with the wheel's own missing-data
@@ -3173,17 +3179,23 @@ class PhotometrySession(PhotometrySessionLoader):
         self.load_camera_times()
         self.load_pose()
         self.load_wheel()
-        return self.extract_paw_wheel_xcorr()
+        self.run_pose_qc()
+        self.save_h5(groups=['video'])
+        return self.pose_xcorr
 
-    def extract_paw_wheel_xcorr(self) -> dict:
-        """Correlate paw speed against wheel speed per third, and write it.
+    def run_pose_qc(self) -> dict:
+        """Correlate paw speed against wheel speed per third.
+
+        Reads `self.pose`, `self.pose_times` and `self.wheel_velocity`, put
+        there by the pose and wheel loads; it never fetches and never writes.
+        `load_pose_qc` is what does both.
 
         Returns
         -------
         dict
             ``functions`` (one cross-correlation per third), ``lags``,
             ``peak_lags`` and the scalar ``drift``, also assigned to
-            ``self.pose_xcorr`` and written to `video/pose/qc`.
+            ``self.pose_xcorr``.
         """
         paw_speed = movement_trace(self.pose, ['paw_l', 'paw_r'], 'sum_speed')
         finite = np.isfinite(paw_speed)  # drop untracked frames (NaN speed)
@@ -3194,7 +3206,6 @@ class PhotometrySession(PhotometrySessionLoader):
         )
         self.pose_xcorr = {'functions': functions, 'lags': lags,
                            'peak_lags': peak_lags, 'drift': drift}
-        self.save_h5(groups=['video'])
         return self.pose_xcorr
 
     # =========================================================================

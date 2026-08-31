@@ -246,6 +246,55 @@ class TestRawVideoProducts:
         assert fresh.video_manual_qc == {'qc_lp': 'FAIL'}
 
 
+class TestExtractVideoTier:
+    """The three video computations: attributes in, attributes out, no I/O.
+
+    Each reads what a fetch already put on the session, assigns its result, and
+    leaves the store alone; the matching `load_*` is what writes.
+    """
+
+    def test_run_video_times_qc_writes_nothing(self, mock_session_series, tmp_path):
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.session_length = 5.0
+        ps.load_pose()
+        ps.save_h5(groups=['video'])       # gives the file something to hold
+        ps.fetch_camera_times()
+        before = ps.filepath.read_bytes()
+
+        measures = ps.run_video_times_qc()
+
+        assert measures is ps.video_times_qc
+        assert set(measures) == {'length_discrepancy', 'framerate_from_tpts'}
+        assert ps.filepath.read_bytes() == before
+
+    def test_extract_movement_signals_writes_nothing(self, mock_session_series,
+                                                     tmp_path):
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.session_length = 5.0
+        ps.load_video_times_qc()           # gives the file something to hold
+        ps._load_raw_video_sources()
+        before = ps.filepath.read_bytes()
+
+        signals = ps.extract_movement_signals()
+
+        assert signals is ps.movement_signals
+        assert ps.filepath.read_bytes() == before
+
+    def test_run_pose_qc_writes_nothing(self, mock_session_series, tmp_path):
+        ps = _make_session(mock_session_series, tmp_path, _xcorr_one())
+        ps.session_length = 5.0
+        ps.load_video_times_qc()           # gives the file something to hold
+        ps.fetch_camera_times()
+        ps.fetch_pose()
+        ps.load_wheel()
+        before = ps.filepath.read_bytes()
+
+        xcorr = ps.run_pose_qc()
+
+        assert xcorr is ps.pose_xcorr
+        assert ps.filepath.read_bytes() == before
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # video/times/qc — the camera-clock measures
 # ─────────────────────────────────────────────────────────────────────────────

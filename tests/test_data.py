@@ -2859,15 +2859,15 @@ class TestPoseMethods:
         with pytest.raises(MissingMotionEnergy):
             ps.load_motion_energy()
 
-    def test_compute_video_measures(self, mock_session_series, tmp_path):
-        """compute_video_measures yields hand-computed discrepancy and framerate."""
+    def test_run_video_times_qc(self, mock_session_series, tmp_path):
+        """run_video_times_qc yields hand-computed discrepancy and framerate."""
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(mock_session_series, one=MagicMock(),
                                load_data=False)
         ps.filepath = tmp_path / f'{ps.eid}.h5'
         ps.pose_times = np.array([1.0, 1.1, 1.2, 1.35])
         ps.session_length = 0.3
-        measures = ps.compute_video_measures()
+        measures = ps.run_video_times_qc()
         # video span 0.35 - session_length 0.3 = 0.05
         assert measures['length_discrepancy'] == pytest.approx(0.05)
         # diffs: [0.1, 0.1, 0.15] -> median 0.1
@@ -2910,7 +2910,7 @@ class TestPoseMethods:
         over time and the event a window is locked to changes its value. With
         ``motion_energy``, a per-frame ME ramp is injected on the camera time base.
 
-        `filepath` points into `tmp_path`: `resample_movement_signals` writes the
+        `filepath` points into `tmp_path`: `extract_movement_signals` writes the
         product it builds, which would otherwise land in the real store.
         """
         from iblnm.data import PhotometrySession
@@ -2948,7 +2948,7 @@ class TestPoseMethods:
         """One (event, trial, time) grid per movement label, full event axis."""
         from iblnm.config import MOVEMENT_EVENTS, POSE_MEASURES
         ps = self._make_pose_session(mock_session_series, tmp_path, fs=30)
-        responses = ps.extract_responses(ps.resample_movement_signals(),
+        responses = ps.extract_responses(ps.extract_movement_signals(),
                                          events=MOVEMENT_EVENTS)
         assert set(responses) == set(POSE_MEASURES)
         assert responses['paw'].sizes == {'event': 3, 'trial': 3, 'time': 60}
@@ -2958,7 +2958,7 @@ class TestPoseMethods:
     def _movement_responses(self, ps):
         """Movement responses for `ps` through the unified extraction engine."""
         from iblnm.config import MOVEMENT_EVENTS
-        return ps.extract_responses(ps.resample_movement_signals(),
+        return ps.extract_responses(ps.extract_movement_signals(),
                                     events=MOVEMENT_EVENTS)
 
     def test_movement_responses_own_event_and_stimon_cells(self, mock_session_series,
@@ -3027,7 +3027,7 @@ class TestPoseMethods:
         """Neither pose nor motion energy → no signals, hence no responses."""
         ps = self._make_pose_session(mock_session_series, tmp_path)
         ps.pose = None
-        assert ps.resample_movement_signals() == {}
+        assert ps.extract_movement_signals() == {}
         assert self._movement_responses(ps) == {}
 
     @staticmethod
@@ -3068,14 +3068,14 @@ class TestPoseMethods:
             wheel_velocity, index=t if wheel_times is None else wheel_times)
         return ps, shift, fs
 
-    def test_extract_paw_wheel_xcorr_recovers_drift(self, mock_session_series):
+    def test_run_pose_qc_recovers_drift(self, mock_session_series):
         """An imposed late-third paw/wheel shift surfaces in pose_xcorr['drift']."""
         ps, shift, fs = self._xcorr_session(mock_session_series)
-        ps.extract_paw_wheel_xcorr()
+        ps.run_pose_qc()
         np.testing.assert_allclose(ps.pose_xcorr['peak_lags'][0], 0.0, atol=1 / fs)
         np.testing.assert_allclose(ps.pose_xcorr['drift'], shift / fs, atol=1 / fs)
 
-    def test_extract_paw_wheel_xcorr_float32_wheel_times(self, mock_session_series):
+    def test_run_pose_qc_float32_wheel_times(self, mock_session_series):
         """float32 (non-uniform) wheel times do not raise — regression for the
         movements() even-sampling crash; drift stays finite."""
         ps, shift, fs = self._xcorr_session(mock_session_series)
@@ -3085,7 +3085,7 @@ class TestPoseMethods:
             np.float32)
         assert not np.all(np.abs(np.diff(ps.wheel_velocity.index.to_numpy())
                                  - (1 / fs)) < 1e-10)  # genuinely non-uniform
-        ps.extract_paw_wheel_xcorr()
+        ps.run_pose_qc()
         assert np.isfinite(ps.pose_xcorr['drift'])
 
 
