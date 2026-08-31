@@ -12,8 +12,6 @@ re-deriving thousands of files.
 import argparse
 from collections import Counter
 
-import pandas as pd
-
 from iblnm.config import PRODUCT_INPUTS, PRODUCT_SPEC
 from iblnm.validation import StaleProduct
 
@@ -118,41 +116,6 @@ def build_session(ps, products=ALL_PRODUCTS, retry_failed=False) -> dict[str, st
     return results
 
 
-def status_report(status: pd.DataFrame) -> str:
-    """One line per product: how many sessions hold it current, stale or absent.
-
-    `status` is a `PhotometrySessionGroup.scan_product_status` frame — an `eid`
-    column plus one column of verdicts per surveyed product.
-    """
-    counts = {product: Counter(status[product])
-              for product in status.columns if product != 'eid'}
-    return '\n'.join(
-        f'  {product:<34} ' + ', '.join(
-            f'{count[verdict]} {verdict}'
-            for verdict in ('current', 'stale', 'absent') if count[verdict])
-        for product, count in counts.items())
-
-
-def rebuild_report(status: pd.DataFrame, rebuild) -> str:
-    """How many sessions each rebuilt product will overwrite.
-
-    Only stored products can be counted, so a rebuild of a product this pass
-    never stores (a raw one, or a dependent outside the survey) reports
-    nothing — its work shows up in whichever dependent is stored.
-    """
-    return '\n'.join(
-        f'  {product:<34} {(status[product] != "absent").sum()} sessions'
-        for product in sorted(rebuild) if product in status.columns)
-
-
-def stale_products(status: pd.DataFrame, rebuild) -> dict[str, int]:
-    """Surveyed products holding a stamp that disagrees with `config.py`."""
-    return {product: int((status[product] == 'stale').sum())
-            for product in status.columns
-            if product != 'eid' and product not in rebuild
-            and (status[product] == 'stale').any()}
-
-
 def build_store(group, products=ALL_PRODUCTS, skip=frozenset(),
                 rebuild=frozenset(), retry_failed=False, workers=1) -> list:
     """Survey the store, report what it holds, then build what is missing.
@@ -194,19 +157,7 @@ def build_store(group, products=ALL_PRODUCTS, skip=frozenset(),
     """
     skip, rebuild = with_dependents(skip), with_dependents(rebuild)
     products = [product for product in products if product not in skip]
-    status = group.scan_product_status(*products)
-    print(f'Stored products across {len(status)} sessions:\n'
-          f'{status_report(status)}')
-
-    if rebuild:
-        print(f'Rebuilding:\n{rebuild_report(status, rebuild)}')
-    stale = stale_products(status, rebuild)
-    if stale:
-        raise StaleProduct(
-            'Stored stamps disagree with config.py for: '
-            + ', '.join(f'{product} ({count} sessions)'
-                        for product, count in stale.items())
-            + '\nPass --rebuild with those products to re-derive them.')
+    group.check_products(*products, rebuild=rebuild)
 
     group.rebuild = set(rebuild)
     return group.process(build_session, workers=workers,

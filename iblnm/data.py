@@ -1,8 +1,8 @@
 import json
 import operator
 import warnings
-from collections import defaultdict
-from collections.abc import Mapping, Sequence, Sized
+from collections import Counter, defaultdict
+from collections.abc import Container, Mapping, Sequence, Sized
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -4200,6 +4200,57 @@ class PhotometrySessionGroup:
              **{p: self._survey_session(row).product_status(p) for p in products}}
             for _, row in self.sessions.iterrows()
         ])
+
+    def check_products(self, *products: str,
+                       rebuild: Container[str] = frozenset()) -> pd.DataFrame:
+        """Survey the named products, print what the store holds, and stop on stale.
+
+        The one call a script makes before it starts reading: it says which
+        products it needs, sees how many sessions hold each of them, and gets a
+        hard stop if any stored stamp disagrees with `config.py`.
+
+        Parameters
+        ----------
+        *products : str
+            `config.PRODUCT_SPEC` keys to survey.
+        rebuild : set of str
+            Products the caller intends to re-derive. A stale stamp on one of
+            them is expected rather than fatal.
+
+        Returns
+        -------
+        pd.DataFrame
+            The `scan_product_status` frame: an `eid` column plus one column of
+            'current'/'stale'/'absent' verdicts per surveyed product.
+
+        Raises
+        ------
+        StaleProduct
+            A surveyed product not named in `rebuild` is stored with a stale
+            stamp. The store and `config.py` disagree, and which one is wrong
+            is the user's call: re-deriving thousands of files is not a
+            decision to take silently. An absent product does not raise — it is
+            one session's gap, built by that session's load method on demand.
+        """
+        status = self.scan_product_status(*products)
+        counts = {product: Counter(status[product])
+                  for product in status.columns if product != 'eid'}
+        lines = '\n'.join(
+            f'  {product:<34} ' + ', '.join(
+                f'{count[verdict]} {verdict}'
+                for verdict in ('current', 'stale', 'absent') if count[verdict])
+            for product, count in counts.items())
+        print(f'Stored products across {len(status)} sessions:\n{lines}')
+
+        stale = {product: count['stale'] for product, count in counts.items()
+                 if count['stale'] and product not in rebuild}
+        if stale:
+            raise StaleProduct(
+                'Stored stamps disagree with config.py for: '
+                + ', '.join(f'{product} ({count} sessions)'
+                            for product, count in stale.items())
+                + '\nPass --rebuild with those products to re-derive them.')
+        return status
 
     @contextmanager
     def _open_h5(self, eid: str):

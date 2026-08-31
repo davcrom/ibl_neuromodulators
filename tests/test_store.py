@@ -4,6 +4,7 @@ Also covers the store flags the analysis scripts share, since `--rebuild` and
 the pre-warm product list mean the same thing in every one of them.
 """
 import importlib
+from functools import partial
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -155,6 +156,8 @@ def fake_group(request):
     ``request.param`` (optional) maps a product to the status reported for
     every session; unnamed products come back 'absent'.
     """
+    from iblnm.data import PhotometrySessionGroup
+
     stored = getattr(request, 'param', {})
     group = MagicMock()
     group.rebuild = set()
@@ -162,22 +165,14 @@ def fake_group(request):
         {'eid': ['a', 'b', 'c'],
          **{product: [stored.get(product, 'absent')] * 3 for product in products}}
     )
+    # The survey is a real method over the mocked scan, so what stops a stale
+    # run here is the code that stops it in production.
+    group.check_products = partial(PhotometrySessionGroup.check_products, group)
     return group
 
 
 class TestBuildStore:
     """The group-level pass: report the store, then build what is missing."""
-
-    @pytest.mark.parametrize(
-        'fake_group', [{'photometry/preprocessed': 'current'}], indirect=True)
-    def test_rebuild_is_reported_before_any_build(self, fake_group, capsys):
-        """The blast radius is printed before `process` is given the work."""
-        fake_group.process.side_effect = RuntimeError('built too early')
-
-        with pytest.raises(RuntimeError):
-            store.build_store(fake_group, rebuild={'photometry/preprocessed'})
-
-        assert '3 sessions' in capsys.readouterr().out
 
     @pytest.mark.parametrize(
         'fake_group', [{'photometry/preprocessed': 'current'}], indirect=True)
@@ -251,24 +246,6 @@ class TestAnalysisScriptStoreFlags:
 
         assert set(module.REQUIRED_PRODUCTS) <= set(store.ALL_PRODUCTS)
         assert module.REQUIRED_PRODUCTS
-
-
-class TestStatusReport:
-    """The printed survey is what `scan_product_status` found, not a re-count."""
-
-    def test_counts_match_the_scan(self):
-        """Each verdict is reported with the number of sessions holding it."""
-        status = pd.DataFrame({
-            'eid': ['a', 'b', 'c', 'd'],
-            'trials/table': ['current', 'current', 'stale', 'absent'],
-        })
-
-        report = store.status_report(status)
-
-        counts = status['trials/table'].value_counts()
-        assert set(counts.index) == {'current', 'stale', 'absent'}
-        assert all(f'{count} {verdict}' in report
-                   for verdict, count in counts.items())
 
 
 class TestPreWarmOverAStore:

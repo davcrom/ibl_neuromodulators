@@ -4142,6 +4142,61 @@ class TestScanProductStatus:
         assert scan_group.one.method_calls == []
 
 
+class TestCheckProducts:
+    """The one call a script makes over the store it is about to read."""
+
+    @staticmethod
+    def _group(tmp_path, stale_eids=()):
+        """Group over three sessions, each holding a stamped trials table.
+
+        Sessions named in ``stale_eids`` are stamped with a spec that
+        disagrees with `config.py`, which is what `product_status` reports as
+        'stale'.
+        """
+        import h5py
+        from iblnm.data import PhotometrySession, PhotometrySessionGroup, _write_stamp
+
+        catalog = pd.DataFrame([
+            {'eid': f'eid-{i}', 'subject': f'mouse_{i}', 'session_type': 'biased',
+             'start_time': f'2024-01-0{i + 1}T10:00:00', 'number': 1,
+             'brain_region': ['VTA'], 'hemisphere': ['l'],
+             'target_NM': ['VTA-DA'], 'NM': 'DA'}
+            for i in range(3)])
+        spec = PhotometrySession(catalog.iloc[0]).spec['trials/table']
+        for eid in catalog['eid']:
+            stamp = spec | {'fs': 15} if eid in stale_eids else spec
+            with h5py.File(tmp_path / f'{eid}.h5', 'w') as h5:
+                _write_stamp(h5.require_group('trials/table'), stamp)
+        return PhotometrySessionGroup(catalog, one=MagicMock(), h5_dir=tmp_path)
+
+    def test_tally_is_printed_and_returned(self, tmp_path, capsys):
+        """A complete store reports every session holding the product."""
+        group = self._group(tmp_path)
+
+        status = group.check_products('trials/table')
+
+        out = capsys.readouterr().out
+        assert 'Stored products across 3 sessions:' in out
+        assert 'trials/table' in out and '3 current' in out
+        assert list(status['trials/table']) == ['current'] * 3
+
+    def test_stale_stamp_stops_the_run(self, tmp_path):
+        """A stamp disagreeing with config.py raises instead of rebuilding."""
+        from iblnm.validation import StaleProduct
+        group = self._group(tmp_path, stale_eids=['eid-1'])
+
+        with pytest.raises(StaleProduct, match='trials/table') as error:
+            group.check_products('trials/table')
+
+        assert '1 session' in str(error.value)
+
+    def test_rebuilding_a_stale_product_is_allowed(self, tmp_path):
+        """Naming the product in `rebuild` is how the user accepts the change."""
+        group = self._group(tmp_path, stale_eids=['eid-1'])
+
+        group.check_products('trials/table', rebuild={'trials/table'})
+
+
 
 def _collector_catalog(session_types):
     """Catalog of single-region sessions, one row per (eid -> session_type)."""
