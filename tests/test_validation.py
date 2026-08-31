@@ -36,7 +36,6 @@ class TestModuleImports:
 
     def test_video_validate_functions_importable(self):
         from iblnm.validation import (  # noqa: F401
-            validate_video_length,
             validate_video_timestamps_qc,
             validate_video_dropped_frames_qc,
             validate_video_pin_state_qc,
@@ -144,42 +143,6 @@ class TestValidateHemisphere:
                              'brain_region': ['VTA'], 'hemisphere': []})
         with pytest.raises(MissingHemisphere):
             validate_hemisphere(session)
-
-
-class TestValidateVideoLength:
-    def test_raises_when_discrepancy_exceeds_threshold(self):
-        from iblnm.validation import validate_video_length, VideoLengthError
-        session = pd.Series({'eid': 'e1', 'length_discrepancy': 200.0})
-        with pytest.raises(VideoLengthError):
-            validate_video_length(session)
-
-    def test_returns_none_when_within_threshold(self):
-        from iblnm.validation import validate_video_length
-        session = pd.Series({'eid': 'e1', 'length_discrepancy': 50.0})
-        assert validate_video_length(session) is None
-
-    def test_returns_none_when_nan(self):
-        from iblnm.validation import validate_video_length
-        session = pd.Series({'eid': 'e1', 'length_discrepancy': np.nan})
-        assert validate_video_length(session) is None
-
-    def test_raises_at_exact_threshold(self):
-        from iblnm.validation import validate_video_length, VideoLengthError
-        from iblnm.config import LENGTH_MISMATCH_THRESHOLD
-        session = pd.Series({
-            'eid': 'e1',
-            'length_discrepancy': float(LENGTH_MISMATCH_THRESHOLD),
-        })
-        with pytest.raises(VideoLengthError):
-            validate_video_length(session)
-
-    def test_logs_when_exlog_provided(self):
-        from iblnm.validation import validate_video_length
-        session = pd.Series({'eid': 'e1', 'length_discrepancy': 200.0})
-        exlog = []
-        validate_video_length(session, exlog=exlog)
-        assert len(exlog) == 1
-        assert exlog[0]['error_type'] == 'VideoLengthError'
 
 
 class TestValidateVideoTimestampsQC:

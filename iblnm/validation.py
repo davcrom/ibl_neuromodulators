@@ -9,7 +9,6 @@ from iblnm.config import (
     VALID_STRAINS, VALID_LINES, VALID_NEUROMODULATORS, VALID_TARGETS,
     DATASET_CATEGORIES,
     SUBJECTS_TO_EXCLUDE, FIBERS_FPATH,
-    LENGTH_MISMATCH_THRESHOLD,
 )
 
 
@@ -325,18 +324,6 @@ def validate_datasets(session):
 # =============================================================================
 # Video validate functions
 # =============================================================================
-
-@exception_logger
-def validate_video_length(session):
-    """Raise VideoLengthError if video–session length discrepancy exceeds threshold."""
-    discrepancy = session.get('length_discrepancy', np.nan)
-    if not np.isnan(discrepancy) and discrepancy >= LENGTH_MISMATCH_THRESHOLD:
-        raise VideoLengthError(
-            f"Video–session length discrepancy {discrepancy:.0f}s "
-            f"exceeds {LENGTH_MISMATCH_THRESHOLD}s threshold"
-        )
-    return None
-
 
 @exception_logger
 def validate_video_timestamps_qc(session):

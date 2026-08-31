@@ -43,7 +43,6 @@ def fake_ps():
     # All-PASS video QC, so the leftCamera checks log nothing unless a test
     # overrides them.
     ps.video_qc = {col: 'PASS' for col in VIDEO_QC_COLS}
-    ps.video_times_qc = {'length_discrepancy': 0.0}
     ps.product_status.side_effect = lambda product: ps.stored.get(product, 'absent')
     return ps
 
@@ -130,7 +129,7 @@ class TestVideoQCValidations:
 
     def test_failing_check_is_logged_non_blocking(self, fake_ps):
         """A QC failure is recorded against the clock product; the build goes on."""
-        fake_ps.video_times_qc = {'length_discrepancy': 1e4}
+        fake_ps.video_qc = {**fake_ps.video_qc, 'qc_videoLeft_pin_state': 'FAIL'}
 
         built = store.build_session(fake_ps)
 
@@ -140,7 +139,7 @@ class TestVideoQCValidations:
         assert logged == ['video/times/qc']
 
     def test_passing_checks_log_nothing(self, fake_ps):
-        """All-PASS labels and a matching clock leave the error log empty."""
+        """All-PASS labels leave the error log empty."""
         store.build_session(fake_ps)
 
         fake_ps.log_error.assert_not_called()

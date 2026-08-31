@@ -17,14 +17,13 @@ import pandas as pd
 from iblnm.config import PRODUCT_INPUTS, PRODUCT_SPEC
 from iblnm.data import VIDEO_QC_ERRORS
 from iblnm.validation import (
-    StaleProduct, validate_video_dropped_frames_qc, validate_video_length,
+    StaleProduct, validate_video_dropped_frames_qc,
     validate_video_pin_state_qc, validate_video_timestamps_qc,
 )
 
 # The leftCamera QC checks run over every session's video. Their verdicts are
 # logged, never blocking: a session with failing video QC still gets its traces.
 VIDEO_QC_VALIDATORS = (
-    validate_video_length,
     validate_video_timestamps_qc,
     validate_video_dropped_frames_qc,
     validate_video_pin_state_qc,
@@ -68,20 +67,20 @@ def _build_trials(ps) -> None:
 
 
 def _build_video_times_qc(ps) -> None:
-    """Score the camera clock, then run the four leftCamera QC checks over it.
+    """Score the camera clock, then run the three leftCamera QC checks over it.
 
-    The checks produce no product of their own: they read the clock measures
-    just built and the eight Alyx labels fetched live, and log a failure
+    The clock's own length check lives in `run_video_times_qc` and has already
+    logged itself by the time these run. The checks produce no product of their
+    own: they read the eight Alyx labels fetched live, and log a failure
     against `video/times/qc` so the pose rollup can disqualify the session
     (`data.VIDEO_QC_DISQUALIFYING_ERRORS`). They never block — every verdict
     still gets its traces extracted.
     """
     ps.load_video_times_qc()
     ps.fetch_video_qc()
-    qc_row = {**ps.video_times_qc, **ps.video_qc}
     for validate in VIDEO_QC_VALIDATORS:
         try:
-            validate(qc_row)
+            validate(ps.video_qc)
         except VIDEO_QC_ERRORS as error:
             ps.log_error(error, product='video/times/qc')
 

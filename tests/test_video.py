@@ -348,6 +348,18 @@ class TestVideoTimesQcProduct:
         assert LENGTH_MISMATCH_THRESHOLD > 10
         assert ps.errors == []
 
+    def test_a_discrepancy_at_the_threshold_is_logged(self, mock_session_series,
+                                                      tmp_path):
+        """The threshold itself counts as a mismatch — the comparison is `>=`."""
+        from iblnm.config import LENGTH_MISMATCH_THRESHOLD
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.session_length = (N_FRAMES - 1) / CAMERA_FS - LENGTH_MISMATCH_THRESHOLD
+        ps.fetch_camera_times()
+
+        ps.run_video_times_qc()
+
+        assert [e['error_type'] for e in ps.errors] == ['VideoLengthError']
+
     def test_reads_stored_product_without_refetching(self, mock_session_series,
                                                      tmp_path):
         ps = _make_session(mock_session_series, tmp_path)
