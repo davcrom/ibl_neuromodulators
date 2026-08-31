@@ -1575,9 +1575,26 @@ class TestLoadPhotometry:
             _write_stamp(h5['photometry/VTA/preprocessed'],
                          session.spec['photometry/preprocessed'] | {'fs': 15})
 
+        # A session holding the signal answers from memory, so the stale store
+        # is only met by one that has to read it.
+        from iblnm.data import PhotometrySession
+        fresh = PhotometrySession(session.to_dict(), one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = session.filepath
         with pytest.raises(StaleProduct, match='photometry/preprocessed'):
-            session.load_photometry()
-        assert session.errors == []
+            fresh.load_photometry()
+        assert fresh.errors == []
+
+    def test_returns_the_held_signal_without_reading_the_file(self,
+                                                              fetching_session):
+        """A second load answers from memory: the file it wrote is not needed."""
+        session, fetch = fetching_session
+        with fetch as fetch_mock:
+            signal = session.load_photometry()
+            session.filepath.unlink()
+
+            assert session.load_photometry() is signal
+        assert fetch_mock.call_count == 1
 
     def test_rebuild_skips_the_stored_product(self, fetching_session):
         """A product named in self.rebuild is refetched even when current."""
@@ -2107,8 +2124,23 @@ class TestLoadResponses:
             _write_stamp(h5['photometry/VTA/responses'],
                          session.spec['photometry/responses'] | {'window': [-2, 2]})
 
+        # A session holding the matrices answers from memory, so the stale
+        # store is only met by one that has to read it.
+        from iblnm.data import PhotometrySession
+        fresh = PhotometrySession(session.to_dict(), one=MagicMock(),
+                                  load_data=False)
+        fresh.filepath = session.filepath
         with pytest.raises(StaleProduct, match='photometry/responses'):
-            session.load_responses('photometry')
+            fresh.load_responses('photometry')
+
+    def test_returns_the_held_matrices_without_reading_the_file(
+            self, preprocessed_session):
+        """A second call answers from memory: the stored matrices go unread."""
+        session = preprocessed_session
+        responses = session.load_responses('photometry')
+        session.filepath.unlink()
+
+        assert session.load_responses('photometry') is responses
 
     def test_rebuild_recuts_a_current_product(self, preprocessed_session):
         """A product named in self.rebuild is re-cut, not read."""

@@ -201,13 +201,20 @@ ps.fetch_video_qc()               # ps.video_qc, always from Alyx, never stored
 ps.set_manual_qc(field, value)    # a hand-set verdict, written on its own
 ```
 
-Load methods are not pure readers. Each attempts its stored product, falls back
-to building it, and writes what it built, so a session with an empty H5 fills
-itself from Alyx. `load_raw_photometry` and `load_photometry` stay separate —
-one method returning either raw or preprocessed is how an analysis silently
-runs on the wrong signal. `stored_is_current(product)` is the single gate they
-all pass through: it honours `ps.rebuild` and raises `StaleProduct` on a stored
-stamp that disagrees with `config.py`, rather than rebuilding silently.
+Load methods are not pure readers. Each reads in three tiers — the session
+attribute, else the stored product, else fetch — and writes what it built, so a
+session with an empty H5 fills itself from Alyx. `load_raw_photometry` and
+`load_photometry` stay separate — one method returning either raw or
+preprocessed is how an analysis silently runs on the wrong signal.
+`_held_in_memory(product, value)` is the memory tier: a product the session
+already holds is returned untouched, which is what stops a build from reading
+back what it wrote moments earlier, and what lets the video block's `load_wheel`
+find the velocity the wheel block just computed. `stored_is_current(product)`
+is the disk tier: it honours `ps.rebuild` and raises `StaleProduct` on a stored
+stamp that disagrees with `config.py`, rather than rebuilding silently. Both
+tiers honour `ps.rebuild`, so a named product is always rebuilt — but only what
+is named: rebuilding `wheel/preprocessed` re-differentiates the position already
+in memory rather than refetching it.
 
 `config.store_raw` decides whether the raw products fetched from Alyx
 (`photometry/raw`, `wheel/raw` and video's three datasets) are kept in the H5 at

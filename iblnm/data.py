@@ -2,7 +2,7 @@ import json
 import operator
 import warnings
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Sized
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1686,6 +1686,30 @@ class PhotometrySession(PhotometrySessionLoader):
                         else 'stale')
         return 'absent'
 
+    def _held_in_memory(self, product: str, value: Sized | None) -> bool:
+        """Whether a load may return `value` instead of reading or rebuilding.
+
+        The memory tier of the read order the load methods follow: session
+        attribute, else the stored product, else fetch. A product the session
+        is already holding is returned as it stands, so a build that made it
+        moments earlier is not paid for twice — the cross-modal case, where the
+        video block asks `load_wheel` for a velocity the wheel block has just
+        computed, is what the tier exists for. Naming the product in
+        `self.rebuild` forces the full path, exactly as in
+        :meth:`stored_is_current`.
+
+        Parameters
+        ----------
+        product : str
+            Key of `config.PRODUCT_SPEC`.
+        value : sized or None
+            The attribute the product lives on. An empty container counts as
+            unset: an empty response dict or trials table is what an unbuilt
+            product looks like, not a built one that happens to be empty.
+        """
+        return (product not in self.rebuild and value is not None
+                and len(value) > 0)
+
     def stored_is_current(self, product: str) -> bool:
         """Whether a load method may read `product` instead of rebuilding it.
 
@@ -1722,9 +1746,12 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_trials(self) -> pd.DataFrame:
         """Return the trials table, fetching it from Alyx.
 
-        Nothing stores a trials table this method could read back, so it is
+        A table already on the session is returned as it stands; otherwise
+        nothing stores a trials table this method could read back, so it is
         :meth:`fetch_trials` under the name every caller already uses.
         """
+        if self._held_in_memory('trials/table', self.trials):
+            return self.trials
         return self.fetch_trials()
 
     def fetch_trials(self) -> pd.DataFrame:
@@ -1841,6 +1868,9 @@ class PhotometrySession(PhotometrySessionLoader):
             back to rebuilding: a stale store means `config.py` changed, which
             is a decision for the caller, not for one session.
         """
+        if self._held_in_memory('photometry/preprocessed',
+                                self.photometry.get(PREPROCESSED_BAND)):
+            return self.photometry[PREPROCESSED_BAND]
         signal = None
         if self.stored_is_current('photometry/preprocessed'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -1872,6 +1902,10 @@ class PhotometrySession(PhotometrySessionLoader):
         goes to Alyx in every other case. Only the fetch clears the manual QC
         verdicts: reading the stored bands back replaces no samples.
         """
+        if (self._held_in_memory('photometry/raw', self.photometry)
+                and all(band in self.photometry
+                        for band in self.spec['photometry/raw']['bands'])):
+            return
         if self.stored_is_current('photometry/raw'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.photometry.update(_read_photometry_raw(h5['photometry']))
@@ -2134,6 +2168,9 @@ class PhotometrySession(PhotometrySessionLoader):
             The stored stamp disagrees with the resolved spec.
         """
         load_signals, attribute, defaults = _RESPONSE_MODALITIES[modality]
+        held = getattr(self, attribute)
+        if self._held_in_memory(f'{modality}/responses', held):
+            return held
         responses = None
         if self.stored_is_current(f'{modality}/responses'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -2315,6 +2352,9 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
+        if self._held_in_memory('photometry/neurophotometrics/qc',
+                                self.neurophotometrics_qc):
+            return self.neurophotometrics_qc
         if self.stored_is_current('photometry/neurophotometrics/qc'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.neurophotometrics_qc = _load_scalars(
@@ -2344,6 +2384,8 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
+        if self._held_in_memory('photometry/raw/qc', self.photometry_qc):
+            return self.photometry_qc
         if self.stored_is_current('photometry/raw/qc'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.photometry_qc = _read_photometry_qc(h5['photometry'])
@@ -2666,6 +2708,8 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
+        if self._held_in_memory('trials/performance', self.performance):
+            return self.performance
         if self.stored_is_current('trials/performance'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.performance = _load_performance(h5['trials/performance'])
@@ -2719,6 +2763,8 @@ class PhotometrySession(PhotometrySessionLoader):
             :meth:`extract_wheel_velocity`. Also assigned to
             ``self.wheel_position``.
         """
+        if self._held_in_memory('wheel/raw', self.wheel_position):
+            return self.wheel_position
         if self.stored_is_current('wheel/raw'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.wheel_position = _load_time_series(
@@ -2779,6 +2825,8 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
+        if self._held_in_memory('wheel/preprocessed', self.wheel_velocity):
+            return self.wheel_velocity
         if self.stored_is_current('wheel/preprocessed'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.wheel_velocity = _load_time_series(
@@ -2844,8 +2892,11 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
+        attribute, _, _ = _RAW_VIDEO_DATASETS[product]
+        held = getattr(self, attribute)
+        if self._held_in_memory(product, held):
+            return held
         if self.stored_is_current(product):
-            attribute, _, _ = _RAW_VIDEO_DATASETS[product]
             with h5py.File(self.filepath, 'r') as h5:
                 data = _load_frame_data(h5[product])
             setattr(self, attribute, data)
@@ -2960,6 +3011,8 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
+        if self._held_in_memory('video/times/qc', self.video_times_qc):
+            return self.video_times_qc
         if self.stored_is_current('video/times/qc'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.video_times_qc = _load_scalars(h5['video/times/qc'])
@@ -3105,6 +3158,8 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
+        if self._held_in_memory('video/preprocessed', self.movement_signals):
+            return self.movement_signals
         signals = None
         if self.stored_is_current('video/preprocessed'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -3191,6 +3246,8 @@ class PhotometrySession(PhotometrySessionLoader):
         StaleProduct
             The stored stamp disagrees with the resolved spec.
         """
+        if self._held_in_memory('video/pose/qc', self.pose_xcorr):
+            return self.pose_xcorr
         if self.stored_is_current('video/pose/qc'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.pose_xcorr = _load_pose_xcorr(h5['video/pose/qc'])

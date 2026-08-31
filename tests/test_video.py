@@ -456,8 +456,42 @@ class TestPoseQcProduct:
                          | {'wheel/preprocessed.fs': 1000})
 
         assert ps.product_status('video/pose/qc') == 'stale'
+        # A session holding the xcorr answers from memory, so the stale store
+        # is only met by one that has to read it.
+        fresh = _make_session(mock_session_series, tmp_path, _xcorr_one())
         with pytest.raises(StaleProduct, match='video/pose/qc'):
-            ps.load_pose_qc()
+            fresh.load_pose_qc()
+
+    def test_takes_its_inputs_from_memory(self, mock_session_series, tmp_path,
+                                          monkeypatch):
+        """Inputs already on the session: no Alyx call and no read of the H5.
+
+        The cross-modal case the memory tier exists for — a build that has just
+        made the pose and the wheel must not go back to Alyx or to disk for
+        either of them.
+        """
+        import h5py
+        import iblnm.data
+        ps = _make_session(mock_session_series, tmp_path, _xcorr_one())
+        ps.load_camera_times()
+        ps.load_pose()
+        ps.load_wheel()
+        ps.filepath.unlink()          # the wheel load wrote its product
+        fetches = ps.one.load_dataset.call_count + ps.one.load_object.call_count
+
+        modes = []
+        opened = h5py.File
+
+        def counting_open(path, mode='r', *args, **kwargs):
+            modes.append(mode)
+            return opened(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(iblnm.data.h5py, 'File', counting_open)
+        ps.load_pose_qc()
+
+        assert ps.one.load_dataset.call_count + ps.one.load_object.call_count \
+            == fetches
+        assert 'r' not in modes       # only the save of the product itself
 
     def test_missing_wheel_blocks_the_build_and_names_the_wheel(
             self, mock_session_series, tmp_path):
@@ -547,8 +581,11 @@ class TestPreprocessedVideoProduct:
                              ps.spec['video/preprocessed'] | {'fs': 1})
 
         assert ps.product_status('video/preprocessed') == 'stale'
+        # A session holding the channels answers from memory, so the stale
+        # store is only met by one that has to read it.
+        fresh = _make_session(mock_session_series, tmp_path)
         with pytest.raises(StaleProduct, match='video/preprocessed'):
-            ps._movement_signals()
+            fresh._movement_signals()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
