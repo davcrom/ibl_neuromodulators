@@ -36,18 +36,6 @@ def with_dependents(products) -> set[str]:
         dropped |= downstream
 
 
-def failed_products(ps) -> set[str]:
-    """Products this session has tried and failed to build.
-
-    A product is failed when its stored errors record an attempt and its data
-    is absent. An error logged beside data that exists is informational — the
-    build had caveats but produced something — and does not count.
-    """
-    attempted = {entry['product'] for entry in ps.errors if entry['product']}
-    return {product for product in attempted
-            if ps.product_status(product) == 'absent'}
-
-
 def _build_trials(ps) -> None:
     """Fetch the trials table and store it; `load_trials` only fetches."""
     ps.load_trials()
@@ -110,7 +98,7 @@ def build_session(ps, products=ALL_PRODUCTS, retry_failed=False) -> dict[str, st
         Products already current, out of scope, or blocked by an upstream
         failure contribute no entry.
     """
-    blocked = set() if retry_failed else with_dependents(failed_products(ps))
+    blocked = set() if retry_failed else with_dependents(ps.failed_products())
     results = {}
     for product, build in PRODUCT_BUILDERS.items():
         if product not in products or product in blocked:

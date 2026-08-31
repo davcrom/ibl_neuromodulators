@@ -31,7 +31,8 @@ def fake_ps():
     """A PhotometrySession mock whose stored products are all absent.
 
     ``product_status`` is driven by the ``stored`` dict, so a test names only
-    the products it wants reported as 'current' or 'stale'.
+    the products it wants reported as 'current' or 'stale'; ``failed_products``
+    reads ``errors`` against it, as the real method does.
     """
     ps = MagicMock()
     ps.eid = 'test-eid'
@@ -39,6 +40,9 @@ def fake_ps():
     ps.rebuild = set()
     ps.stored = {}
     ps.product_status.side_effect = lambda product: ps.stored.get(product, 'absent')
+    ps.failed_products.side_effect = lambda: {
+        entry['product'] for entry in ps.errors
+        if entry['product'] and ps.product_status(entry['product']) == 'absent'}
     return ps
 
 

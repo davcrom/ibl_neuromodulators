@@ -370,25 +370,26 @@ class TestSpecStamps:
             assert not _stamp_matches(grp.attrs, ps.spec['photometry/preprocessed'])
 
 
+@pytest.fixture
+def stamped_session(minimal_session_series, tmp_path):
+    """Session whose H5 file is built by hand, with a stamping helper."""
+    import h5py
+    from iblnm.data import PhotometrySession, _write_stamp
+
+    ps = PhotometrySession(minimal_session_series)
+    ps.filepath = tmp_path / f'{ps.eid}.h5'
+
+    def write(path, product, spec=None):
+        """Create `path` in the session's H5 file, stamped for `product`."""
+        with h5py.File(ps.filepath, 'a') as h5:
+            _write_stamp(h5.require_group(path),
+                         ps.spec[product] if spec is None else spec)
+
+    return ps, write
+
+
 class TestProductStatus:
     """Tests for PhotometrySession.product_status."""
-
-    @pytest.fixture
-    def stamped_session(self, minimal_session_series, tmp_path):
-        """Session whose H5 file is built by hand, with a stamping helper."""
-        import h5py
-        from iblnm.data import PhotometrySession, _write_stamp
-
-        ps = PhotometrySession(minimal_session_series)
-        ps.filepath = tmp_path / f'{ps.eid}.h5'
-
-        def write(path, product, spec=None):
-            """Create `path` in the session's H5 file, stamped for `product`."""
-            with h5py.File(ps.filepath, 'a') as h5:
-                _write_stamp(h5.require_group(path),
-                             ps.spec[product] if spec is None else spec)
-
-        return ps, write
 
     def test_absent_when_file_missing(self, stamped_session):
         """No H5 file at all means every product is absent."""
@@ -436,6 +437,30 @@ class TestProductStatus:
               spec=ps.spec['photometry/responses'] | {upstream_key: 15})
         assert ps.spec['photometry/responses'][upstream_key] != 15
         assert ps.product_status('photometry/responses') == 'stale'
+
+
+class TestFailedProducts:
+    """Tests for PhotometrySession.failed_products."""
+
+    def test_error_with_no_stored_data_is_a_failure(self, stamped_session):
+        """An attempt logged against a product that stored nothing failed."""
+        ps, _ = stamped_session
+        ps.log_error(ValueError('no pose on Alyx'), product='video/pose')
+        assert ps.failed_products() == {'video/pose'}
+
+    def test_error_beside_stored_data_is_informational(self, stamped_session):
+        """The same error, once the product is stored, is a caveat not a
+        failure."""
+        ps, write = stamped_session
+        ps.log_error(ValueError('short pose table'), product='video/pose')
+        write('video/pose', 'video/pose')
+        assert ps.failed_products() == set()
+
+    def test_error_without_a_product_names_nothing(self, stamped_session):
+        """A session-level error names no product, so it blocks no build."""
+        ps, _ = stamped_session
+        ps.log_error(ValueError('session is not in the catalog'))
+        assert ps.failed_products() == set()
 
 
 class TestLoadingPrimitives:

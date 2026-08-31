@@ -1686,6 +1686,20 @@ class PhotometrySession(PhotometrySessionLoader):
                         else 'stale')
         return 'absent'
 
+    def failed_products(self) -> set[str]:
+        """Products this session has tried and failed to build.
+
+        A product is failed when its stored errors record an attempt and its
+        data is absent. An error logged beside data that exists is
+        informational — the build had caveats but produced something — and does
+        not count. Entries carrying no product name a failure of the session as
+        a whole and name nothing to skip.
+        """
+        attempted = {entry['product'] for entry in self.errors
+                     if entry['product']}
+        return {product for product in attempted
+                if self.product_status(product) == 'absent'}
+
     def _held_in_memory(self, product: str, value: Sized | None) -> bool:
         """Whether a load may return `value` instead of reading or rebuilding.
 
