@@ -10,7 +10,6 @@ and is cheap to build, while a stale stamp can mean the whole store, so a
 re-deriving thousands of files.
 """
 import argparse
-from collections import Counter
 
 from iblnm.config import PRODUCT_INPUTS, PRODUCT_SPEC
 from iblnm.validation import StaleProduct
@@ -162,18 +161,6 @@ def build_store(group, products=ALL_PRODUCTS, skip=frozenset(),
     group.rebuild = set(rebuild)
     return group.process(build_session, workers=workers,
                          products=set(products), retry_failed=retry_failed)
-
-
-def build_summary(results: list) -> str:
-    """Per-product built/failed counts over one `build_store` pass."""
-    counts = Counter((product, outcome) for result in results if result
-                     for product, outcome in result.items())
-    lines = [f'  {product:<34} {count} {outcome}'
-             for (product, outcome), count in sorted(counts.items())]
-    n_fatal = sum(result is None for result in results)
-    if n_fatal:
-        lines.append(f'  {n_fatal} sessions failed outright')
-    return '\n'.join(lines) or '  nothing to build'
 
 
 def add_store_arguments(parser: argparse.ArgumentParser) -> None:
