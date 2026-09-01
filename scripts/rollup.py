@@ -180,7 +180,7 @@ def store_group(catalog: pd.DataFrame, one=None) -> PhotometrySessionGroup:
     the pose export, through `cohort_eids`.
     """
     group = PhotometrySessionGroup.from_catalog(
-        catalog, one=one, h5_dir=SESSIONS_H5_DIR, scan_h5_errors=False)
+        catalog, one=one, h5_dir=SESSIONS_H5_DIR, scan_h5=False)
     group.filter_sessions(session_types=False, qc_blockers=set(),
                           targetnms=False, photometry_qc=False,
                           min_performance=False, required_contrasts=False)

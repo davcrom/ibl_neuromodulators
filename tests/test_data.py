@@ -4018,14 +4018,14 @@ class TestFromCatalog:
         group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock(), h5_dir=None)
         assert group._catalog['logged_errors'].apply(lambda x: x == []).all()
 
-    def test_scan_h5_errors_false_reuses_existing_column(self, tmp_path):
-        """scan_h5_errors=False skips the H5 scan and keeps a pre-existing
+    def test_scan_h5_false_reuses_existing_column(self, tmp_path):
+        """scan_h5=False skips the H5 scan and keeps a pre-existing
         logged_errors column without a merge collision."""
         from iblnm.data import PhotometrySessionGroup
         catalog = self._make_catalog()
         catalog['logged_errors'] = [['MissingRawData'] for _ in range(len(catalog))]
         group = PhotometrySessionGroup.from_catalog(
-            catalog, one=MagicMock(), h5_dir=tmp_path, scan_h5_errors=False)
+            catalog, one=MagicMock(), h5_dir=tmp_path, scan_h5=False)
         assert group._catalog['logged_errors'].apply(
             lambda x: x == ['MissingRawData']).all()
 
@@ -4212,11 +4212,11 @@ def _collector_catalog(session_types):
 class TestGroupCollectErrors:
     """PhotometrySessionGroup.collect_errors reads the filtered sessions only."""
 
-    def _group(self, tmp_path, session_types, scan_h5_errors=False):
+    def _group(self, tmp_path, session_types, scan_h5=False):
         from iblnm.data import PhotometrySessionGroup
         return PhotometrySessionGroup.from_catalog(
             _collector_catalog(session_types), one=None, h5_dir=tmp_path,
-            scan_h5_errors=scan_h5_errors)
+            scan_h5=scan_h5)
 
     def test_collects_errors_from_every_session(self, tmp_path):
         from tests.test_util import _write_session_h5
@@ -4336,7 +4336,7 @@ class TestGroupCollectSessionErrors:
         from iblnm.data import PhotometrySessionGroup
         return PhotometrySessionGroup.from_catalog(
             _collector_catalog(session_types), one=None, h5_dir=tmp_path,
-            scan_h5_errors=False)
+            scan_h5=False)
 
     def test_error_types_per_eid(self, tmp_path):
         from iblnm.validation import MissingRawData, InvalidStrain
@@ -4418,7 +4418,7 @@ def qc_group(h5_dir, regions_by_eid):
         for eid, regions in regions_by_eid.items()
     ])
     return PhotometrySessionGroup.from_catalog(
-        catalog, one=None, h5_dir=h5_dir, scan_h5_errors=False)
+        catalog, one=None, h5_dir=h5_dir, scan_h5=False)
 
 
 class TestGroupCollectQc:
@@ -4647,7 +4647,7 @@ class TestGroupCollectPose:
         from iblnm.data import PhotometrySessionGroup
         return PhotometrySessionGroup.from_catalog(
             _collector_catalog(session_types), one=None, h5_dir=h5_dir,
-            scan_h5_errors=False)
+            scan_h5=False)
 
     def test_rollup_two_sessions(self, tmp_path, mock_session_series):
         steps_a = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
@@ -4968,56 +4968,111 @@ def _percent_contrast_trials(contrasts, fraction_correct, n_per_contrast=20):
     })
 
 
+def _store_performance(h5_dir, eid, trials):
+    """Write one session's `trials/performance` product into `h5_dir`."""
+    from iblnm.data import PhotometrySession
+    ps = PhotometrySession(pd.Series({
+        'eid': eid, 'subject': f'mouse_{eid}', 'number': 1,
+        'start_time': '2024-01-01T10:00:00', 'session_type': 'training',
+    }), one=None, load_data=False)
+    ps.filepath = h5_dir / f'{eid}.h5'
+    ps.trials = trials
+    return ps.load_performance()
+
+
+def _performance_group(h5_dir, **kwargs):
+    """Group over one passing and one failing session, products stored."""
+    from iblnm.data import PhotometrySessionGroup
+    _store_performance(h5_dir, 'eid-pass', _percent_contrast_trials(
+        sorted(REQUIRED_CONTRASTS), fraction_correct=0.9))
+    _store_performance(h5_dir, 'eid-fail', _percent_contrast_trials(
+        [0.0, 100.0], fraction_correct=0.4))
+    catalog = pd.DataFrame([
+        {'eid': eid, 'subject': f'mouse_{eid}', 'session_type': 'training',
+         'start_time': '2024-01-01T10:00:00', 'number': 1,
+         'brain_region': ['VTA'], 'hemisphere': ['l'],
+         'target_NM': ['VTA-DA'], 'NM': 'DA'}
+        for eid in ('eid-pass', 'eid-fail')
+    ])
+    return PhotometrySessionGroup.from_catalog(
+        catalog, one=None, h5_dir=h5_dir, **kwargs)
+
+
+def _rescan(catalog, h5_dir):
+    """Build a group over `catalog`, scanning `h5_dir` again from scratch."""
+    from iblnm.data import PhotometrySessionGroup
+    return PhotometrySessionGroup.from_catalog(
+        catalog.drop(columns=['fraction_correct', 'contrasts']),
+        one=None, h5_dir=h5_dir)
+
+
 class TestGroupLoadPerformance:
-    """PhotometrySessionGroup.load_performance joins the stored product on."""
+    """PhotometrySessionGroup.load_performance reads the stored product."""
 
-    def _store_performance(self, h5_dir, eid, trials):
-        """Write one session's `trials/performance` product into `h5_dir`."""
-        from iblnm.data import PhotometrySession
-        ps = PhotometrySession(pd.Series({
-            'eid': eid, 'subject': f'mouse_{eid}', 'number': 1,
-            'start_time': '2024-01-01T10:00:00', 'session_type': 'training',
-        }), one=None, load_data=False)
-        ps.filepath = h5_dir / f'{eid}.h5'
-        ps.trials = trials
-        return ps.load_performance()
+    def test_returns_every_metric_per_session(self, tmp_path):
+        """The full per-session table, whatever the catalog carries."""
+        group = _performance_group(tmp_path)
+        performance = group.load_performance().set_index('eid')
+        assert performance.loc['eid-pass', 'fraction_correct'] == pytest.approx(0.9)
+        assert performance.loc['eid-fail', 'contrasts'] == [0.0, 100.0]
 
-    def _group(self, h5_dir):
-        """Group over one passing and one failing session, products stored."""
-        from iblnm.data import PhotometrySessionGroup
-        self._store_performance(h5_dir, 'eid-pass', _percent_contrast_trials(
-            sorted(REQUIRED_CONTRASTS), fraction_correct=0.9))
-        self._store_performance(h5_dir, 'eid-fail', _percent_contrast_trials(
-            [0.0, 100.0], fraction_correct=0.4))
-        catalog = pd.DataFrame([
-            {'eid': eid, 'subject': f'mouse_{eid}', 'session_type': 'training',
-             'start_time': '2024-01-01T10:00:00', 'number': 1,
-             'brain_region': ['VTA'], 'hemisphere': ['l'],
-             'target_NM': ['VTA-DA'], 'NM': 'DA'}
-            for eid in ('eid-pass', 'eid-fail')
-        ])
-        return PhotometrySessionGroup.from_catalog(
-            catalog, one=None, h5_dir=h5_dir, scan_h5_errors=False)
 
-    def test_joins_columns_the_filters_read(self, tmp_path):
-        """fraction_correct and contrasts land on the catalog, per session."""
-        group = self._group(tmp_path)
-        group.load_performance()
+class TestCatalogScan:
+    """from_catalog completes the catalog with everything its filters read."""
+
+    def test_performance_columns_land_without_load_performance(self, tmp_path):
+        """fraction_correct and contrasts come off the scan, per session."""
+        group = _performance_group(tmp_path)
         catalog = group._catalog.set_index('eid')
+        assert group.performance is None
         assert catalog.loc['eid-pass', 'fraction_correct'] == pytest.approx(0.9)
         assert catalog.loc['eid-pass', 'contrasts'] == sorted(REQUIRED_CONTRASTS)
         assert catalog.loc['eid-fail', 'contrasts'] == [0.0, 100.0]
 
     def test_filters_drop_the_hand_computed_sessions(self, tmp_path, capsys):
         """min_performance and required_contrasts both bite, and say so."""
-        group = self._group(tmp_path)
-        group.load_performance()
+        group = _performance_group(tmp_path)
         group.filter_sessions(session_types=False, targetnms=False,
                               qc_blockers=set())
         assert set(group.sessions['eid']) == {'eid-pass'}
         printed = capsys.readouterr().out
         assert '-   1 performance' in printed
         assert '-   1 contrasts' in printed
+
+    def test_session_without_the_product_fails_both_filters(self, tmp_path):
+        """No stored performance is not a free pass: NaN and [] fail, not skip."""
+        group = _performance_group(tmp_path)
+        catalog = pd.concat([group._catalog, group._catalog.iloc[[0]].assign(
+            eid='eid-unbuilt')], ignore_index=True)
+        rescanned = _rescan(catalog, tmp_path)
+
+        row = rescanned._catalog.set_index('eid').loc['eid-unbuilt']
+        assert np.isnan(row['fraction_correct'])
+        assert row['contrasts'] == []
+        rescanned.filter_sessions(session_types=False, targetnms=False,
+                                  qc_blockers=set(), required_contrasts=False)
+        assert 'eid-unbuilt' not in set(rescanned.sessions['eid'])
+        rescanned.filter_sessions(session_types=False, targetnms=False,
+                                  qc_blockers=set(), min_performance=False)
+        assert 'eid-unbuilt' not in set(rescanned.sessions['eid'])
+
+    def test_reads_each_session_file_once(self, tmp_path, monkeypatch):
+        """Errors, performance and QC come off one open per catalogued file."""
+        import iblnm.data as data_module
+        group = _performance_group(tmp_path)
+        catalog = pd.concat([group._catalog, group._catalog.iloc[[0]].assign(
+            eid='eid-third')], ignore_index=True)
+        _store_performance(tmp_path, 'eid-third', _percent_contrast_trials(
+            [0.0, 100.0], fraction_correct=0.5))
+
+        opens = []
+        real_file = data_module.h5py.File
+        monkeypatch.setattr(data_module.h5py, 'File', lambda path, *a, **kw: (
+            opens.append(str(path)), real_file(path, *a, **kw))[1])
+        _rescan(catalog, tmp_path)
+
+        assert sorted(Path(p).stem for p in opens) == [
+            'eid-fail', 'eid-pass', 'eid-third']
 
 
 class TestDeduplicate:

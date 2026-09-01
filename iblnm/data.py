@@ -3831,6 +3831,8 @@ class PhotometrySessionGroup:
         self.trial_regressors = None
         self.response_features = None
         self.performance = None
+        # Per-recording raw photometry QC, scanned by complete_catalog.
+        self.photometry_qc = None
         self.psychometric_features = None
         self.similarity_matrix = None
         self.decoder = None
@@ -3844,13 +3846,12 @@ class PhotometrySessionGroup:
         self._lmm_group_by = None
 
     @classmethod
-    def from_catalog(cls, catalog, one, h5_dir=SESSIONS_H5_DIR,
-                     scan_h5_errors=True):
+    def from_catalog(cls, catalog, one, h5_dir=SESSIONS_H5_DIR, scan_h5=True):
         """Build a group from a session catalog DataFrame.
 
-        Validates parallel list columns and populates ``logged_errors`` from
-        each session's H5 ``/errors`` group when ``h5_dir`` is given and
-        ``scan_h5_errors`` is True (scans every catalogued file, so it can take
+        Validates parallel list columns and, when ``h5_dir`` is given and
+        ``scan_h5`` is True, completes the catalog with everything the filters
+        read (``complete_catalog``, one open per catalogued file, so it can take
         a moment). Call ``filter_sessions`` separately.
 
         Parameters
@@ -3862,15 +3863,16 @@ class PhotometrySessionGroup:
             ONE connection instance.
         h5_dir : Path, optional
             Directory containing {eid}.h5 files, retained on the group for
-            loading and processing. When provided and ``scan_h5_errors`` is
-            True, the H5 ``/errors`` groups are scanned to populate
-            ``logged_errors`` for error-based filtering.
-        scan_h5_errors : bool, optional
-            When True (default), populate ``logged_errors`` via
-            ``collect_session_errors``. Set False to reuse a ``logged_errors``
-            column already present on ``catalog`` and skip the scan -- useful
-            when rebuilding a group from another group's ``sessions`` (an empty
-            column is created only if none exists).
+            loading and processing. When provided and ``scan_h5`` is True, the
+            stored errors, performance and raw photometry QC are scanned out of
+            it.
+        scan_h5 : bool, optional
+            When True (default), run ``complete_catalog``. Set False to reuse
+            the filter columns already present on ``catalog`` and skip the scan
+            -- useful when rebuilding a group from another group's ``sessions``
+            (each filter column is defaulted empty only if it is missing). A
+            group that skips the scan over a catalog carrying none of those
+            columns keeps nothing when the filters reading them are on.
         """
         from iblnm.config import SESSION_SCHEMA
 
@@ -3878,12 +3880,17 @@ class PhotometrySessionGroup:
 
         df = validate_parallel_lists(df, PARALLEL_COLS)
 
-        if 'logged_errors' not in df.columns:
-            df['logged_errors'] = [[] for _ in range(len(df))]
+        # Default the columns the scan fills, so a group that skips it fails
+        # the filters reading them rather than passing them by absence.
+        for column in ('logged_errors', 'contrasts'):
+            if column not in df.columns:
+                df[column] = [[] for _ in range(len(df))]
+        if 'fraction_correct' not in df.columns:
+            df['fraction_correct'] = np.nan
 
         group = cls(df, one=one, h5_dir=h5_dir)
-        if h5_dir is not None and scan_h5_errors:
-            group.collect_session_errors()
+        if h5_dir is not None and scan_h5:
+            group.complete_catalog()
         return group
 
     @classmethod
@@ -3943,8 +3950,8 @@ class PhotometrySessionGroup:
     def _passing_recordings(self, thresholds: dict) -> set:
         """(eid, brain_region) pairs whose stored raw QC clears `thresholds`.
 
-        Reads every catalogued session's H5 through `collect_qc`, so this costs
-        one pass over the store.
+        Reads the QC `complete_catalog` scanned, so it costs nothing on a group
+        built with the scan and one pass over the store on a group without it.
 
         Parameters
         ----------
@@ -4006,13 +4013,13 @@ class PhotometrySessionGroup:
             config.PHOTOMETRY_QC_THRESHOLDS. Applies to ``recordings`` and not
             to ``sessions``, as the target-NM filter does: a recording failing
             any threshold is dropped and the rest of its session stays in
-            scope. Reads every catalogued session's H5 via ``collect_qc``.
+            scope. Reads the QC ``complete_catalog`` scanned.
         min_performance : float, dict, or False
-            Minimum fraction_correct. Defaults to config.MIN_PERFORMANCE.
-            Requires 'fraction_correct' in the catalog.
+            Minimum fraction_correct. Defaults to config.MIN_PERFORMANCE. A
+            session with no stored performance scores NaN and is dropped.
         required_contrasts : frozenset of float or False
-            Required contrast set. Defaults to config.REQUIRED_CONTRASTS.
-            Requires 'contrasts' in the catalog.
+            Required contrast set. Defaults to config.REQUIRED_CONTRASTS. A
+            session with no stored performance has no contrasts and is dropped.
         lab : str or False
             Keep only sessions from this lab.
         start_time_min : str, date, or False
@@ -4054,7 +4061,7 @@ class PhotometrySessionGroup:
         else:
             target_mask = true
 
-        if min_performance is not False and 'fraction_correct' in df.columns:
+        if min_performance is not False:
             if isinstance(min_performance, dict):
                 perf_mask = true.copy()
                 for stype, threshold in min_performance.items():
@@ -4066,7 +4073,7 @@ class PhotometrySessionGroup:
         else:
             perf_mask = true
 
-        if required_contrasts is not False and 'contrasts' in df.columns:
+        if required_contrasts is not False:
             required_set = set(required_contrasts)
             contrast_mask = df['contrasts'].apply(
                 lambda c: set(c) == required_set
@@ -4303,12 +4310,64 @@ class PhotometrySessionGroup:
         """
         return self._error_log(self.sessions['eid'])
 
-    def collect_qc(self) -> pd.DataFrame:
-        """Read every catalogued recording's stored raw photometry QC.
+    def complete_catalog(self) -> None:
+        """Read every catalogued session's H5 once, filling in what filters read.
 
-        Like `collect_session_errors` this walks `self._catalog` rather than
-        the filtered view: the metrics it returns feed
-        `filter_sessions(photometry_qc=...)`, so the mask does not exist yet.
+        `filter_sessions` reads three things a catalog does not carry: the
+        error types blocking a session, its behavioral performance, and its
+        recordings' raw photometry QC. All three are stored per session, so one
+        walk scans them together — one open per catalogued file — rather than a
+        walk apiece. It reads `self._catalog` and not the filtered view,
+        because the mask it feeds does not exist while it runs.
+
+        `logged_errors`, `fraction_correct` and `contrasts` are joined onto
+        `_catalog`; the QC is per recording rather than per session, so it
+        lands on `self.photometry_qc` instead, where `_passing_recordings`
+        reads it. Duplicate (eid, error_type, error_message) entries are
+        dropped, so an error logged by two build attempts counts once.
+
+        A session with no file, or without one of the products, gets an empty
+        error list, a NaN `fraction_correct`, an empty `contrasts` list and NaN
+        for every QC metric — each of which fails the filter reading it, rather
+        than passing it by absence.
+        """
+        regions_by_eid = dict(iter(
+            _explode_recordings(self._catalog).groupby('eid')['brain_region']))
+        errors, performance, qc = [], [], []
+        for eid in self._catalog['eid']:
+            stored_qc = {}
+            with self._open_h5(eid) as h5:
+                if h5 is not None:
+                    errors.extend(read_error_tree(h5))
+                    if 'trials/performance' in h5:
+                        performance.append({'eid': eid} | _load_performance(
+                            h5['trials/performance']))
+                    if 'photometry' in h5:
+                        stored_qc = _read_photometry_qc(h5['photometry'])
+            qc.extend({'eid': eid, 'brain_region': region} | stored_qc.get(region, {})
+                      for region in regions_by_eid.get(eid, []))
+
+        self.photometry_qc = (pd.DataFrame(qc) if qc else
+                              pd.DataFrame(columns=['eid', 'brain_region']))
+        error_types = (deduplicate_log(pd.DataFrame(errors, columns=LOG_COLUMNS))
+                       .groupby('eid')['error_type'].apply(list).to_dict())
+        scanned = pd.DataFrame(performance,
+                               columns=['eid', 'fraction_correct', 'contrasts'])
+        catalog = self._catalog.drop(
+            columns=['logged_errors', 'fraction_correct', 'contrasts'],
+            errors='ignore')
+        catalog['logged_errors'] = [error_types.get(eid, [])
+                                    for eid in catalog['eid']]
+        catalog = catalog.merge(scanned, on='eid', how='left')
+        catalog['contrasts'] = [contrasts if isinstance(contrasts, list) else []
+                                for contrasts in catalog['contrasts']]
+        self._catalog = catalog
+
+    def collect_qc(self) -> pd.DataFrame:
+        """Every catalogued recording's stored raw photometry QC.
+
+        Returns what `complete_catalog` scanned, running that scan first if the
+        group was built without one.
 
         Returns
         -------
@@ -4320,16 +4379,9 @@ class PhotometrySessionGroup:
             QC group is absent — never built, or its build failed — gets NaN
             for every metric, which fails any threshold compared against it.
         """
-        rows = []
-        recordings = _explode_recordings(self._catalog)
-        for eid, regions in recordings.groupby('eid')['brain_region']:
-            with self._open_h5(eid) as h5:
-                stored = (_read_photometry_qc(h5['photometry'])
-                          if h5 is not None and 'photometry' in h5 else {})
-            rows.extend({'eid': eid, 'brain_region': region}
-                        | stored.get(region, {}) for region in regions)
-        return (pd.DataFrame(rows) if rows
-                else pd.DataFrame(columns=['eid', 'brain_region']))
+        if self.photometry_qc is None:
+            self.complete_catalog()
+        return self.photometry_qc
 
     def collect_pose(self, video_qc: dict | None = None) -> pd.DataFrame:
         """Roll the filtered sessions' ``video`` groups up into the pose table.
@@ -4391,33 +4443,21 @@ class PhotometrySessionGroup:
         return df_pose.merge(performance, on='eid', how='left')
 
     def collect_session_errors(self) -> pd.DataFrame:
-        """Read every catalogued session's error types and join them on.
+        """Every catalogued session's error types, as `filter_sessions` reads them.
 
-        Unlike `collect_errors` this walks `self._catalog` rather than the
-        filtered view: the `logged_errors` column it writes is what
-        `filter_sessions(qc_blockers=...)` reads, so the mask it feeds does not
-        exist yet. Duplicate (eid, error_type, error_message) entries are
-        dropped before grouping, so an error logged by two build attempts
-        counts once.
+        Rescans the store through `complete_catalog` and returns the column it
+        joined on, for a script that wants that table before the filters run —
+        to append a synthetic blocker of its own, say.
 
         Returns
         -------
         pandas.DataFrame
             Columns ['eid', 'logged_errors'], one row per catalogued session in
             catalog order; a session with no H5 file, or none logged, gets an
-            empty list. Also joined onto `self._catalog`.
+            empty list.
         """
-        errors = deduplicate_log(self._error_log(self._catalog['eid']))
-        by_eid = (errors.groupby('eid')['error_type'].apply(list) if len(errors)
-                  else pd.Series(dtype=object))
-        logged = pd.DataFrame(
-            [{'eid': eid, 'logged_errors': by_eid.get(eid, [])}
-             for eid in self._catalog['eid']],
-            columns=['eid', 'logged_errors'])
-        self._catalog = self._catalog.drop(
-            columns='logged_errors', errors='ignore').merge(
-                logged, on='eid', how='left')
-        return logged
+        self.complete_catalog()
+        return self._catalog[['eid', 'logged_errors']].copy()
 
     def __getitem__(self, idx):
         rec = self.recordings.iloc[idx]
@@ -4967,13 +5007,10 @@ class PhotometrySessionGroup:
         Each session's product is read from its H5 in `self.h5_dir`; a session
         with no file, or no product in it, contributes nothing. Nothing here
         fetches, so the sessions are built without a ONE connection — this walks
-        the whole catalog, and resolving a session path per row would dominate. `fraction_correct`
-        and `contrasts` are then joined onto `_catalog`, because that is where
-        `filter_sessions(min_performance=..., required_contrasts=...)` reads them
-        — both filters skip themselves when their column is absent, so a catalog
-        that never saw this call silently keeps sessions it should drop. Sessions
-        without the product get a NaN `fraction_correct` and an empty `contrasts`
-        list, which fails both filters rather than passing them.
+        the whole catalog, and resolving a session path per row would dominate.
+        This is the full per-session metric table; the two columns the filters
+        read (`fraction_correct` and `contrasts`) reach `_catalog` through
+        `complete_catalog`, not through here.
 
         Returns
         -------
@@ -4994,13 +5031,6 @@ class PhotometrySessionGroup:
                 continue
             rows.append({'eid': ps.eid} | ps.load_performance())
         self.performance = pd.DataFrame(rows)
-
-        joined = ['eid', 'fraction_correct', 'contrasts']
-        catalog = self._catalog.drop(columns=joined[1:], errors='ignore').merge(
-            self.performance.reindex(columns=joined), on='eid', how='left')
-        catalog['contrasts'] = [contrasts if isinstance(contrasts, list) else []
-                                for contrasts in catalog['contrasts']]
-        self._catalog = catalog
         return self.performance
 
     def load_response_magnitudes(self, path):

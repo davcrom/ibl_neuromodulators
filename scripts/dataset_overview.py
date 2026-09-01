@@ -147,14 +147,11 @@ if not SESSIONS_FPATH.exists():
     sys.exit(1)
 
 # Scan the H5 /errors groups and the stored performance once, here, so the
-# video blockers below can be appended before any group filters on them. Both
-# calls join their columns onto the scanning group's own catalog, which is
-# then taken back as the enriched table the plots are built from.
+# video blockers below can be appended before any group filters on them. The
+# scan joins its columns onto the scanning group's own catalog, which is then
+# taken back as the enriched table the plots are built from.
 _scan = PhotometrySessionGroup.from_catalog(
-    pd.read_parquet(SESSIONS_FPATH), one=None, h5_dir=SESSIONS_H5_DIR,
-    scan_h5_errors=False)
-_scan.collect_session_errors()
-_scan.load_performance()
+    pd.read_parquet(SESSIONS_FPATH), one=None, h5_dir=SESSIONS_H5_DIR)
 df = _scan.sessions
 
 df['proficient_label'] = _compute_proficient_label(df)
@@ -178,9 +175,9 @@ if POSE_FPATH.exists():
     )
     df = df.drop(columns=['_passes_video_qc', '_video_qc_blocker'])
 
-# scan_h5_errors=False: the logged_errors column is already scanned above and
+# scan_h5=False: the logged_errors column is already scanned above and
 # carries the synthetic video blockers, which a rescan would drop.
-group = PhotometrySessionGroup.from_catalog(df, one=None, scan_h5_errors=False)
+group = PhotometrySessionGroup.from_catalog(df, one=None, scan_h5=False)
 dedup_errors = group.deduplicate()
 
 # ---- Base filter kwargs ----
@@ -204,7 +201,7 @@ print("\n[Matrix universe: structural filters, no QC]")
 group.filter_sessions(**_base, qc_blockers=set(), targetnms=VALID_TARGETNMS)
 df_all = group.sessions.copy()
 # Reuse the logged_errors already scanned into `group`; re-scanning is slow.
-grp = PhotometrySessionGroup.from_catalog(df_all, one=None, scan_h5_errors=False)
+grp = PhotometrySessionGroup.from_catalog(df_all, one=None, scan_h5=False)
 
 print("\n[Plot 1: All sessions]")
 grp.filter_sessions(session_types=False, qc_blockers=set(), targetnms=False,

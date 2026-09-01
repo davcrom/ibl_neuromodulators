@@ -270,7 +270,7 @@ class TestPreWarmOverAStore:
         monkeypatch.setattr(store, 'PRODUCT_BUILDERS', {'trials/table': build_trials})
         group = PhotometrySessionGroup.from_catalog(
             self._catalog('stored-eid', 'empty-eid'), one=None, h5_dir=tmp_path,
-            scan_h5_errors=False)
+            scan_h5=False)
         stored = group._get_session(group.sessions.iloc[0])
         build_trials(stored)
         stored.save_h5(groups=['metadata'])  # so `process` can rebuild it from file

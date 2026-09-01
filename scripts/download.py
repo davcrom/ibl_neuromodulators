@@ -108,7 +108,7 @@ def main(argv=None) -> None:
     catalog = fetch_catalog(one)
 
     group = PhotometrySessionGroup.from_catalog(
-        catalog, one=one, h5_dir=SESSIONS_H5_DIR, scan_h5_errors=False)
+        catalog, one=one, h5_dir=SESSIONS_H5_DIR, scan_h5=False)
     group.filter_sessions(
         session_types=args.session_type or False, qc_blockers=set(),
         targetnms=False, min_performance=False, required_contrasts=False,

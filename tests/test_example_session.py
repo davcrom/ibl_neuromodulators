@@ -156,7 +156,7 @@ class TestSelectExampleSession:
                             ('eid-low', 0.60)]
         ])
         return PhotometrySessionGroup.from_catalog(
-            catalog, one=None, h5_dir=tmp_path, scan_h5_errors=False)
+            catalog, one=None, h5_dir=tmp_path, scan_h5=False)
 
     def test_returns_best_performer_passing_the_gate(self, group):
         """Ranking is by fraction_correct; the gate skips the top session."""

@@ -11,12 +11,12 @@ from tests.test_util import _write_session_h5
 import scripts.rollup as rollup
 
 
-def _group(h5_dir, session_types, scan_h5_errors=False):
+def _group(h5_dir, session_types, scan_h5=False):
     """Group over `eid -> session_type`, single-region, reading `h5_dir`."""
     from iblnm.data import PhotometrySessionGroup
     return PhotometrySessionGroup.from_catalog(
         _collector_catalog(session_types), one=None, h5_dir=h5_dir,
-        scan_h5_errors=scan_h5_errors)
+        scan_h5=scan_h5)
 
 
 POSE_SERIES = pd.Series({
