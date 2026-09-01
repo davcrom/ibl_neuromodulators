@@ -28,17 +28,16 @@ from iblnm.config import (
 from iblnm.analysis import resample_pose, movement_trace
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 
 plt.ion()
 
 DEFAULT_TARGET_NM = 'VTA-DA'
 DEFAULT_DURATION = 30  # seconds
 
-# `video/pose/qc` gates the session choice, so it is pre-warmed across the
-# cohort rather than read for one session; the pose frames themselves are raw
-# and come from ONE, as does the continuous wheel this figure draws.
-REQUIRED_PRODUCTS = FILTER_PRODUCTS + (
+# `video/pose/qc` gates the session choice, so it is surveyed across the cohort
+# rather than read for one session; the pose frames themselves are raw and come
+# from ONE, as does the continuous wheel this figure draws.
+REQUIRED_PRODUCTS = (
     'trials/table', 'photometry/preprocessed', 'video/pose/qc')
 
 GAP = 0.15            # vertical gap between unit-height normalized trace bands
@@ -124,8 +123,8 @@ def select_example_session(group, target_nm=DEFAULT_TARGET_NM):
     ----------
     group : PhotometrySessionGroup
         Group already filtered to biased/ephys session type with no blocking
-        QC errors, with ``load_performance`` called so the recordings carry
-        ``fraction_correct``.
+        QC errors. Its catalog scan carries ``fraction_correct`` onto the
+        recordings, which is what the ranking below reads.
     target_nm : str
         Target-NM cohort to select from.
 
@@ -399,7 +398,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help='snippet duration in seconds (default: 60)')
     parser.add_argument('--camera', type=str, default='left',
                         help='camera to use for pose (default: left)')
-    add_store_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -416,17 +414,13 @@ if __name__ == '__main__':
     one = _get_default_connection()
     catalog = pd.read_parquet(SESSIONS_FPATH)
     # One session is plotted. Given its eid, the catalog is cut to it before the
-    # pre-warm; without one, the cohort is surveyed because the selection below
-    # ranks over it.
+    # survey; without one, the whole cohort is surveyed because the selection
+    # below ranks over it.
     if args.eid:
         catalog = catalog[catalog['eid'] == args.eid]
     group = PhotometrySessionGroup.from_catalog(
         catalog, one=one, h5_dir=SESSIONS_H5_DIR)
-    build_store(group, products=REQUIRED_PRODUCTS,
-                rebuild=args.rebuild, workers=args.workers)
-    # Before filtering: min_performance and required_contrasts read the columns
-    # this joins on, and the selection below ranks on fraction_correct.
-    group.load_performance()
+    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions(session_types=('biased', 'ephys'),
                           qc_blockers=ANALYSIS_QC_BLOCKERS)
     print(f"  {len(group)} recordings after filtering")

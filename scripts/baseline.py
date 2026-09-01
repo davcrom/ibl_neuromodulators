@@ -7,7 +7,6 @@ as separate processes to parallelize.
 Usage:
     python scripts/baseline.py --model performance              # plot from saved parquet
     python scripts/baseline.py --model performance --reprocess  # rerun ~10h test, then plot
-    python scripts/baseline.py --model performance --rebuild photometry/preprocessed
 """
 import argparse
 from pathlib import Path
@@ -21,7 +20,6 @@ from iblnm.config import SESSIONS_FPATH, SESSION_SCHEMA, PROJECT_ROOT, FIGURE_DP
 from iblnm.io import _get_default_connection
 from iblnm.util import enforce_schema
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
-from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 from iblnm import analysis
 from iblnm.vis import (plot_baseline_propsig, plot_baseline_r2,
                        plot_baseline_slope, plot_baseline_schematic,
@@ -38,7 +36,7 @@ EXAMPLE_EID = '26d93d1d-97f1-40f0-b84c-28229135f6fa'
 
 # `prepare_session` cuts its own pre-stimulus window out of the preprocessed
 # signal, so the stored responses are not read — the signal and the trials are.
-REQUIRED_PRODUCTS = FILTER_PRODUCTS + ('trials/table', 'photometry/preprocessed')
+REQUIRED_PRODUCTS = ('trials/table', 'photometry/preprocessed')
 
 PIPELINE = [
         dict(
@@ -156,7 +154,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help='rerun the ~10h permutation test and overwrite the '
                              'saved parquet; default re-plots from the saved '
                              'parquet')
-    add_store_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -168,10 +165,9 @@ if __name__ == '__main__':
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(
         pd.read_parquet(SESSIONS_FPATH), one=one)
-    # Pre-warm before filtering: the filters below read stored products too, and
-    # each skips itself where its product is missing.
-    build_store(group, products=REQUIRED_PRODUCTS,
-                rebuild=args.rebuild, workers=args.workers)
+    # Survey before filtering: a stale stamp stops the run here rather than
+    # part-way through the ~10h test; an absent product is one session's gap.
+    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions(
         session_types=('biased', 'ephys',)
     )

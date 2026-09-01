@@ -14,7 +14,6 @@ Output:
 Usage:
     python scripts/responses.py              # plot from existing parquet files
     python scripts/responses.py --reprocess  # re-extract + re-fit, then plot
-    python scripts/responses.py --reprocess --rebuild photometry/responses
 """
 import argparse
 
@@ -41,7 +40,6 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 from iblnm.vis import (
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
@@ -65,7 +63,7 @@ from iblnm.util import count_population_by_target_event
 
 # Traces come from `photometry/responses`; the trial regressors that model them
 # come from `trials/table` and the wheel's peri-event velocity.
-REQUIRED_PRODUCTS = FILTER_PRODUCTS + (
+REQUIRED_PRODUCTS = (
     'trials/table', 'photometry/responses', 'wheel/responses')
 
 
@@ -501,7 +499,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help='per-session OLS figure display mode: per-session '
                              'dots (session), per-subject median+IQR (subject), '
                              'or per-target violin (target)')
-    add_store_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -534,13 +531,9 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
-    # Pre-warm before filtering: the filters below read stored products too, and
-    # each skips itself where its product is missing.
-    build_store(group, products=REQUIRED_PRODUCTS,
-                rebuild=args.rebuild, workers=args.workers)
-    # Before filtering: min_performance and required_contrasts read the columns
-    # this joins on, and skip themselves silently when they are absent.
-    group.load_performance()
+    # Survey before filtering: a stale stamp stops the run here rather than
+    # part-way through the re-extraction; an absent product is one session's gap.
+    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions(
         session_types=('biased', 'ephys')
     )

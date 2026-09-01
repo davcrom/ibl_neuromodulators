@@ -8,7 +8,6 @@ Output: data/trials.pqt
 
 Usage:
     python scripts/collect_trials.py
-    python scripts/collect_trials.py --rebuild trials/table --workers 4
 """
 import argparse
 
@@ -21,21 +20,19 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 
 OUTPUT_FPATH = PROJECT_ROOT / 'data' / 'trials.pqt'
 
-REQUIRED_PRODUCTS = FILTER_PRODUCTS + ('trials/table',)
+REQUIRED_PRODUCTS = ('trials/table',)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    add_store_arguments(parser)
     return parser.parse_args(argv)
 
 
 if __name__ == '__main__':
-    args = parse_args()
+    parse_args()
 
     # Load sessions and create group (same pattern as task_encoding.py)
     print(f"Loading sessions from {SESSIONS_FPATH}")
@@ -43,14 +40,9 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
-    # Pre-warm before filtering: the filters below read stored products too, and
-    # each skips itself where its product is missing.
-    build_store(group, products=REQUIRED_PRODUCTS,
-                rebuild=args.rebuild, workers=args.workers)
-
-    # Before filtering: min_performance and required_contrasts read the columns
-    # this joins on, and skip themselves silently when they are absent.
-    group.load_performance()
+    # Survey before filtering: a stale stamp stops the run here rather than
+    # part-way through the collection; an absent product is one session's gap.
+    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions(
         session_types=SESSION_TYPES_TO_ANALYZE,
         qc_blockers=ANALYSIS_QC_BLOCKERS,

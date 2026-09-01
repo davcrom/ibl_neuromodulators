@@ -26,7 +26,6 @@ No tables are persisted — every quantity recomputes at runtime.
 
 Usage:
     python scripts/ddm_hmm_overview.py            # all modeled mice
-    python scripts/ddm_hmm_overview.py --rebuild photometry/preprocessed
 """
 import argparse
 import warnings
@@ -47,7 +46,6 @@ from iblnm.analysis import (
 )
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 from iblnm.task import fit_psychometric
 from iblnm.vis import (
     plot_state_measures, plot_state_param_scatter, plot_state_pca,
@@ -57,7 +55,7 @@ from iblnm.vis import (
 
 # The NM measures are cut here out of the preprocessed signal over this script's
 # own windows, so the stored responses are not read — the signal and trials are.
-REQUIRED_PRODUCTS = FILTER_PRODUCTS + ('trials/table', 'photometry/preprocessed')
+REQUIRED_PRODUCTS = ('trials/table', 'photometry/preprocessed')
 
 # Behavioral-parameter features feeding the figure-4 PCA (one per state).
 FEATURE_COLS = ['bias', 'threshold', 'lapse_left', 'lapse_right']
@@ -516,11 +514,10 @@ def _assemble_mouse_views(
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    add_store_arguments(parser)
     return parser.parse_args(argv)
 
 
-def main(one=None, rebuild=(), workers=1) -> None:
+def main(one=None) -> None:
     """Assemble every mouse's frame and render the seven overview figures.
 
     Parameters
@@ -528,20 +525,14 @@ def main(one=None, rebuild=(), workers=1) -> None:
     one : ONE, optional
         Connection for offline H5 access; a default read-only connection is
         created when omitted.
-    rebuild : sequence of str
-        `config.PRODUCT_SPEC` keys to re-derive rather than read back.
-    workers : int
-        Parallelism for the pre-warm that fills the store before the figures
-        are assembled.
     """
     if one is None:
         one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(
         pd.read_parquet(SESSIONS_FPATH), one=one, h5_dir=SESSIONS_H5_DIR)
-    # Pre-warm before filtering: the filters below read stored products too, and
-    # each skips itself where its product is missing.
-    build_store(group, products=REQUIRED_PRODUCTS,
-                rebuild=rebuild, workers=workers)
+    # Survey before filtering: a stale stamp stops the run here rather than
+    # after the figures have started; an absent product is one session's gap.
+    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions()
 
     ddm_params = pd.read_csv(DDM_HMM_PARAMS_FPATH)
@@ -581,5 +572,5 @@ def main(one=None, rebuild=(), workers=1) -> None:
 
 
 if __name__ == '__main__':
-    args = parse_args()
-    main(rebuild=args.rebuild, workers=args.workers)
+    parse_args()
+    main()

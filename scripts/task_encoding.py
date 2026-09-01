@@ -36,7 +36,6 @@ from iblnm.config import (
 from iblnm.analysis import compute_feature_dispersion, select_block_terms
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 from iblnm.vis import plot_cohort_cca_summary, plot_dispersion_scatter
 
 plt.ion()
@@ -55,7 +54,7 @@ CCA_BLOCK_MAINS = {'task': CCA_TASK_MAINS, 'movement': CCA_MOVEMENT_MAINS}
 
 # The neural view is read from the parquets responses.py writes; the behavioral
 # view is the psychometric fit stored in `trials/performance`.
-REQUIRED_PRODUCTS = FILTER_PRODUCTS
+REQUIRED_PRODUCTS = ('trials/performance',)
 
 # Grid search defaults for sparse CCA
 ALPHA_GRID = [1e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
@@ -559,7 +558,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help='rescale sparse CCA weights to unit L2 norm (default: True)')
     parser.add_argument('--no-unit-norm', action='store_false', dest='unit_norm',
                         help='keep raw ElasticCCA weight magnitudes')
-    add_store_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -588,13 +586,9 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
-    # Pre-warm before filtering: the filters below read stored products too, and
-    # each skips itself where its product is missing.
-    build_store(group, products=REQUIRED_PRODUCTS,
-                rebuild=args.rebuild, workers=args.workers)
-    # Before filtering: min_performance and required_contrasts read the columns
-    # this joins on, and skip themselves silently when they are absent.
-    group.load_performance()
+    # Survey before filtering: a stale stamp stops the run here rather than
+    # part-way through the fits; an absent product is one session's gap.
+    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions(
         session_types=SESSION_TYPES_TO_ANALYZE,
         qc_blockers=ANALYSIS_QC_BLOCKERS,

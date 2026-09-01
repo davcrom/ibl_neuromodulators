@@ -22,7 +22,6 @@ from iblnm.config import (
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
-from iblnm.store import FILTER_PRODUCTS, add_store_arguments, build_store
 from iblnm.vis import (
     plot_performance_grid, plot_target_comparison,
 )
@@ -33,17 +32,16 @@ PSYCH_PARAMS = ['bias', 'threshold', 'lapse_left', 'lapse_right']
 
 # Every curve in these figures is fitted in `trials/performance`; the psychometric
 # parameters plotted below are the ones its scoring writes.
-REQUIRED_PRODUCTS = FILTER_PRODUCTS
+REQUIRED_PRODUCTS = ('trials/performance',)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    add_store_arguments(parser)
     return parser.parse_args(argv)
 
 
 if __name__ == '__main__':
-    args = parse_args()
+    parse_args()
 
     # =====================================================================
     # Load sessions and create group (identical to responses.py)
@@ -53,12 +51,10 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
-    # Pre-warm before filtering: the filters below read stored products too, and
-    # each skips itself where its product is missing.
-    build_store(group, products=REQUIRED_PRODUCTS,
-                rebuild=args.rebuild, workers=args.workers)
-    # Before filtering: min_performance and required_contrasts read the columns
-    # this joins on, and skip themselves silently when they are absent.
+    # Survey before filtering: a stale stamp stops the run here rather than
+    # after the figures have started; an absent product is one session's gap.
+    group.check_products(*REQUIRED_PRODUCTS)
+    # The psychometric figures below read `group.performance` directly.
     group.load_performance()
     group.filter_sessions(
         session_types=('biased', 'ephys'),
