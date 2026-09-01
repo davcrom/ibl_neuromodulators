@@ -61,8 +61,8 @@ metadata/sessions.pqt  (the catalog)
 python scripts/download.py                          # build everything missing
 python scripts/download.py --workers 4              # in parallel
 python scripts/download.py --session-type biased    # one session type
-python scripts/download.py --skip video/pose        # leave LightningPose alone
-python scripts/download.py --rebuild photometry/preprocessed
+python scripts/download.py --skip video             # leave the camera alone
+python scripts/download.py --rebuild photometry     # re-derive the photometry
 python scripts/download.py --retry-failed           # re-attempt failed builds
 ```
 
@@ -73,38 +73,38 @@ session at once: filling empty brain regions from the subject's other sessions
 and from `metadata/fibers.csv`, normalizing region names, deriving `target_NM`,
 and ranking each session within its subject (`day_n`, `session_n`).
 
-**Phase two — products.** Builds every product each session is missing, in
-dependency order: the trials table and its performance scalars, the
-photometry QC / preprocessed signal / responses, the wheel velocity and its
-per-trial matrix, and the video clock QC, pose QC and movement responses. Each
-product is written with a stamp of the `config.py` parameters that produced it
-(`PRODUCT_SPEC`), and a session already holding a current product is left
-alone.
+**Phase two — products.** Walks each session one modality at a time —
+`trials`, `photometry`, `wheel`, `video` — fetching that modality's raw
+datasets once, computing every product made from them while they are still in
+memory, and writing the modality's H5 group once at the end. The order inside a
+block is the dependency order, and a failure abandons the rest of its block, so
+nothing is ever cut from a signal that was never built. Each product is written
+with a stamp of the `config.py` parameters that produced it (`PRODUCT_SPEC`),
+and a modality holding nothing but current products is skipped.
 
 Detection is automatic, rebuilding is manual. A stored stamp that disagrees
 with `config.py` stops the run and names the products rather than silently
-re-deriving the store; `--rebuild` is how you accept the change, and it reports
-how many sessions each named product affects before any work starts. `--skip`
-and `--rebuild` both reach through to a product's dependents, so skipping
-`video/pose` also skips the pose QC and the movement responses built from it.
+re-deriving the store; `--rebuild` is how you accept the change, and the
+startup survey reports how many sessions hold each product current, stale or
+absent before any work starts. `--skip` and `--rebuild` name modalities rather
+than products, because that is where the raw fetches sit: `--rebuild
+photometry` re-derives the raw QC, the preprocessed signal and the responses
+together, from raw that is fetched either way. A skipped modality is still
+built when another one needs it — the video block's pose QC needs the wheel
+velocity — and what it builds is stored.
 
 A product whose data is absent and whose error group records a failed attempt
 is skipped on every later run — that record is what stops a re-download every
 time — until `--retry-failed` says otherwise.
 
-**Pre-warm.** Every analysis script runs the same build over the products it is
-about to read, before it starts iterating: it prints how many sessions hold each
-one current, stale or absent, fills the gaps, and then loops over a complete
-store. The survey costs about a second across the whole store, so it is
-unconditional. Each script takes the same two flags, with the same meaning as
-above:
-
-```bash
-python scripts/responses.py --rebuild photometry/responses --workers 4
-```
-
-A stale stamp stops an analysis exactly as it stops `download.py`, before
-anything is read.
+**Analysis scripts build nothing in bulk.** Each one opens with
+`group.check_products(...)` over the products it is about to read: it prints how
+many sessions hold each one current, stale or absent, and stops on a stale stamp
+exactly as `download.py` does, before anything is read. Absent is not fatal — a
+session missing a product builds it through that session's `load_*` when the
+analysis reaches it. The survey reads H5 attrs only, one open per session in
+scope — a minute over the whole store, proportionally less for a filtered
+group — so it is unconditional.
 
 ## Rollups
 
@@ -220,14 +220,15 @@ ps.load_photometry_qc()         # → ps.photometry_qc, sliding-window signal
 
 QC is a product like any other: each load method reads the stored group when its
 stamp matches `config.py` and scores the signal when it does not, writing the
-result. `run_raw_qc` and `run_sliding_qc` are the scoring half, callable
-directly when a rescore is what you want.
+result. `run_neurophotometrics_qc` and `run_photometry_qc` are the scoring
+half, callable directly when the raw is already on the session and a rescore is
+what you want.
 
 `ps.photometry_qc` maps a brain region to a flat `{metric: value}` dict. QC is
 split per region but not per band, so the band is suffixed into the metric name:
 `n_unique_samples_GCaMP`, `n_unique_samples_Isosbestic`.
 
-`run_sliding_qc` scores each metric over 120 s windows and reduces them with
+`run_photometry_qc` scores each metric over 120 s windows and reduces them with
 `config.QC_SLIDING_AGG` — the 10th percentile for `n_unique_samples`, so a
 recording is judged by its worst windows rather than its average, and the mean
 for the rest. The metrics in `config.QC_UNDETRENDED_METRICS` are scored in their
@@ -239,9 +240,9 @@ distinct float, which would pin `n_unique_samples` at 1.0 on any signal.
 ```python
 from iblnm.config import RESPONSE_EVENTS
 
-ps.preprocess()  # bleach → isosbestic → resample to 30 Hz → zscore
-                 # → ps.photometry['GCaMP_preprocessed'], written and stamped
-                 #   into photometry/{region}/preprocessed
+ps.load_photometry()  # bleach → isosbestic → resample to 30 Hz → zscore
+                      # → ps.photometry['GCaMP_preprocessed'], written and
+                      #   stamped into photometry/{region}/preprocessed
 
 ps.load_responses('photometry', events=RESPONSE_EVENTS)
 # → ps.photometry_responses: dict[str, xr.DataArray] keyed by brain region,
@@ -254,9 +255,16 @@ ps.save_h5()  # saves all available data groups
 The load methods are not pure readers. Each attempts its stored product, falls
 back to building it, and writes what it built — so `load_photometry` on a
 session with nothing cached fetches from Alyx, preprocesses, and leaves the
-result on disk. A product whose stored stamp disagrees with `config.py` raises
-`StaleProduct` rather than rebuilding silently; name it in `ps.rebuild` to force
-the rebuild.
+result on disk. What a session already holds in memory is returned untouched,
+so a second call costs nothing and never reads back what the first one wrote. A
+product whose stored stamp disagrees with `config.py` raises `StaleProduct`
+rather than rebuilding silently; name it in `ps.rebuild` to force the rebuild.
+
+Underneath each `load_*` sit a `fetch_*` that only queries Alyx and an
+`extract_*` or `run_*_qc` that only computes — `extract_preprocessed_photometry`
+here, `extract_wheel_velocity` for the wheel, `extract_movement_signals` for the
+video channels. `scripts/download.py` calls that pair directly for the bulk
+build; a session at a prompt is better served by `load_*`.
 
 The video modality follows the same shape, with three raw products instead of
 one because its three datasets are fetched — and fail — independently:

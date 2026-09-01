@@ -25,7 +25,8 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Alyx/ONE queries | `io.py → get_subject_info, get_brain_region, get_datasets, ...` |
 | Session utilities | `util.py → enforce_schema, get_session_type, ...` |
 | Store rollups | `data.py → PhotometrySessionGroup.collect_errors, collect_qc, collect_pose` |
-| Product builders, `--rebuild`, pre-warm | `store.py → PRODUCT_BUILDERS, build_store, add_store_arguments` |
+| Session build, `--skip`, `--rebuild` | `scripts/download.py → BUILD_STEPS, build_session` |
+| Product survey and stale detection | `data.py → PhotometrySessionGroup.check_products, scan_product_status` |
 | Rollup files (parquets, pose CSV) | `scripts/rollup.py` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |
@@ -48,8 +49,6 @@ analysis.py ← signal processing (response extraction, resampling, bleaching)
 task.py ← behavioral performance (psychometrics, block validation)
      ↑
 data.py ← PhotometrySession class (composes io, analysis, task, validation)
-     ↑
-store.py ← product builders over a group (pre-warm, --rebuild, stale detection)
      ↑
 vis.py / gui.py ← plotting
      ↑
@@ -141,30 +140,35 @@ stage via `ps.log_error` / the `process` wrapper). There are no per-stage error
 log parquets to keep in sync.
 
 `PhotometrySessionGroup.from_catalog(catalog, one, h5_dir=SESSIONS_H5_DIR)`
-scans those `/errors` groups and adds a `logged_errors` column (list of
-error_type strings per eid). `filter_sessions(qc_blockers=...)` then drops
-sessions carrying a blocking error type. Pass `h5_dir=None` (the default, e.g.
-in tests) to skip the scan and leave `logged_errors` empty.
+opens each catalogued session's file once and reads out everything the filters
+need: the `/errors` tree, `trials/performance` and `photometry/{region}/raw/qc`.
+That scan is `complete_catalog`, and it leaves `logged_errors` (list of
+error_type strings per eid), `fraction_correct` and `contrasts` on `_catalog`
+and the per-recording QC on `group.photometry_qc`.
+`filter_sessions(qc_blockers=...)` then drops sessions carrying a blocking
+error type. Pass `h5_dir=None` (the default, e.g. in tests), or
+`scan_h5=False`, to skip the scan; the columns are then defaulted empty, which
+fails the filters reading them rather than passing them by absence.
 
 ```python
 group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
 group.filter_sessions(qc_blockers=ANALYSIS_QC_BLOCKERS)
 ```
 
-That scan is `group.collect_session_errors()`, callable on its own when a
-script wants the `['eid', 'logged_errors']` table before the filters run — to
-append a synthetic blocker of its own, say. Build the group with
-`scan_h5_errors=False` and call it explicitly in that case, so the table is
-scanned once rather than twice. Each script decides which error types are fatal
-for its purpose.
+`group.collect_session_errors()` returns that scan's `['eid', 'logged_errors']`
+table on its own, for a script that wants it before the filters run — to append
+a synthetic blocker of its own, say. It rescans, so build the group with
+`scan_h5=False` and call it explicitly in that case, and the store is read once
+rather than twice. Each script decides which error types are fatal for its
+purpose.
 
 Every rollup reads through the group and its filters, never by globbing the
 store: `collect_errors` (the full log for the filtered sessions), `collect_qc`
-(one row per catalogued recording, from `photometry/{region}/raw/qc`) and
-`collect_pose` (the video table). `collect_qc` and `collect_session_errors`
-walk `_catalog` rather than the filtered view, because what they return feeds
-`filter_sessions` and the mask does not exist yet — the same reason
-`load_performance` does. `PhotometrySessionGroup.from_h5_dir(h5_dir, one)`
+(one row per catalogued recording, from `photometry/{region}/raw/qc`, as
+`complete_catalog` scanned it) and `collect_pose` (the video table).
+`collect_qc` and `collect_session_errors` walk `_catalog` rather than the
+filtered view, because what they return feeds `filter_sessions` and the mask
+does not exist yet — the same reason `load_performance` does. `PhotometrySessionGroup.from_h5_dir(h5_dir, one)`
 goes the other way, rebuilding a catalog from the `metadata` groups of files
 already written.
 
@@ -182,14 +186,12 @@ ps = PhotometrySession(session_row, one=one)
 ps.load_trials()          # populates ps.trials
 ps.load_performance()     # ps.performance, from H5 or scored from the trials
 ps.load_raw_photometry()  # ps.photometry['GCaMP'], ps.photometry['Isosbestic']
-ps.preprocess()           # adds ps.photometry['GCaMP_preprocessed'], writes it
-ps.load_photometry()      # the preprocessed signal, from H5 or built as above
+ps.load_photometry()      # ps.photometry['GCaMP_preprocessed'], from H5 or built
 ps.load_responses('photometry')   # ps.photometry_responses, from H5 or cut
 ps.load_photometry_qc()           # ps.photometry_qc, from H5 or scored
 ps.load_neurophotometrics_qc()    # ps.neurophotometrics_qc, from H5 or scored
 ps.load_raw_wheel()       # ps.wheel_position, the irregular encoder samples
-ps.differentiate_wheel()  # ps.wheel_velocity at WHEEL_FS, writes it
-ps.load_wheel()           # the velocity, from H5 or built as above
+ps.load_wheel()           # ps.wheel_velocity at WHEEL_FS, from H5 or built
 ps.load_responses('wheel')        # ps.wheel_responses, from H5 or cut
 ps.load_camera_times()    # ps.pose_times, from H5 or Alyx
 ps.load_pose()            # ps.pose, from H5 or Alyx
@@ -201,7 +203,34 @@ ps.fetch_video_qc()               # ps.video_qc, always from Alyx, never stored
 ps.set_manual_qc(field, value)    # a hand-set verdict, written on its own
 ```
 
-Load methods are not pure readers. Each reads in three tiers — the session
+Three tiers of method sit under this. `fetch_*` takes Alyx in and puts a session
+attribute out, nothing else: `fetch_trials`, `fetch_photometry`,
+`fetch_neurophotometrics`, `fetch_wheel`, `fetch_camera_times`, `fetch_pose`,
+`fetch_motion_energy`. `extract_*` and `run_*_qc` read their inputs off the
+session attributes, compute, and assign the result back; they never fetch and
+never save. Every derived product has exactly one of them; the fetch-only
+products — `trials/table` and the raw groups — have none:
+
+| product | computation |
+|---|---|
+| `trials/performance` | `extract_performance` |
+| `photometry/preprocessed` | `extract_preprocessed_photometry` |
+| `wheel/preprocessed` | `extract_wheel_velocity` |
+| `video/preprocessed` | `extract_movement_signals` |
+| `photometry/responses`, `wheel/responses`, `video/responses` | `extract_responses` |
+| `photometry/neurophotometrics/qc` | `run_neurophotometrics_qc` |
+| `photometry/raw/qc` | `run_photometry_qc` |
+| `video/times/qc` | `run_video_times_qc` |
+| `video/pose/qc` | `run_pose_qc` |
+
+`load_*` is the third tier, and the convenience one: it answers "give me this,
+and repair it if it is missing". `scripts/download.py` does not use it for the
+bulk build — it sequences the `fetch_*` and computation calls itself
+(`BUILD_STEPS`), so each raw dataset is fetched once per session and each
+modality's H5 group is written once, rather than every product refetching its
+inputs and reading back what the previous one wrote.
+
+Load methods are therefore not pure readers. Each reads in order — the session
 attribute, else the stored product, else fetch — and writes what it built, so a
 session with an empty H5 fills itself from Alyx. `load_raw_photometry` and
 `load_photometry` stay separate — one method returning either raw or
@@ -231,19 +260,20 @@ computed data in its own right and is written whether or not the raw it scored
 was kept, which is why `photometry/{region}/raw/qc` can exist under an
 `absent` `photometry/raw`.
 
-QC is a product like any other. `run_raw_qc` scores the neurophotometrics source
-table into `photometry/neurophotometrics/qc`; `run_sliding_qc` scores the raw
-bands into `photometry/{region}/raw/qc`. Both store flat `{metric: value}`
+QC is a product like any other. `run_neurophotometrics_qc` scores the
+neurophotometrics source table into `photometry/neurophotometrics/qc`;
+`run_photometry_qc` scores the raw bands into `photometry/{region}/raw/qc`. Both store flat `{metric: value}`
 attrs, with the band suffixed into the metric name
 (`n_unique_samples_GCaMP`) because QC is split per region but not per band.
-`run_sliding_qc` issues two `qc_signals` calls over the same windows —
+`run_photometry_qc` issues two `qc_signals` calls over the same windows —
 `config.QC_UNDETRENDED_METRICS` without detrending, the rest with it — and
 reduces each metric's windows by `config.QC_SLIDING_AGG`.
 
 Video's QC hangs off the product it characterizes rather than off the modality:
-`compute_video_measures` scores the camera clock into `video/times/qc`
-(`length_discrepancy`, `framerate_from_tpts`), and `extract_paw_wheel_xcorr`
-correlates paw speed against wheel speed into `video/pose/qc`. The latter is the
+`run_video_times_qc` scores the camera clock into `video/times/qc`
+(`length_discrepancy`, `framerate_from_tpts`, and it raises `VideoLengthError`
+itself when the discrepancy reaches `config.LENGTH_MISMATCH_THRESHOLD`), and
+`run_pose_qc` correlates paw speed against wheel speed into `video/pose/qc`. The latter is the
 one cross-modal product — it needs the wheel as well as the pose, so its stamp
 carries `wheel/preprocessed`'s parameters and a session with good pose but no
 wheel fails it with the wheel's own missing-data error.
@@ -277,9 +307,10 @@ stimOn → feedback rather than the photometry window.
 The wheel's H5 label is `velocity`: one channel, but the label level stays so
 every modality's handlers walk labels the same way, and it names the
 preprocessed product rather than the raw position stored underneath it.
-`load_raw_wheel` fetches ONE's `_ibl_wheel.position` + `.timestamps` — the
-irregular encoder samples, kept irregular — and `differentiate_wheel`
-interpolates them onto the `WHEEL_FS` grid before differentiating, matching
+`fetch_wheel` fetches ONE's `_ibl_wheel.position` + `.timestamps` — the
+irregular encoder samples, kept irregular — and `extract_wheel_velocity` hands
+them to `analysis.differentiate(series, fs)`, which interpolates onto the
+`WHEEL_FS` grid before differentiating, matching
 `brainbox.behavior.wheel.velocity_filtered` at its default corner frequency and
 order. Only the velocity is gridded; the position stays raw.
 
@@ -293,7 +324,7 @@ no time axis of their own, which is what keeps `video/pose` and
 `video/motion_energy` free of `video/times` as an input. `_movement_signals` is
 the `video/preprocessed` load method: it reads the stored `video/{label}/
 preprocessed` channels or resamples the raw onto the `POSE_FS` grid via
-`resample_movement_signals`, logging a missing pose or motion energy against its
+`extract_movement_signals`, logging a missing pose or motion energy against its
 own product and leaving the other's channels intact. Missing camera times
 propagate — nothing can be placed on the session clock without them. The
 `motion_energy` group is both the raw product and a movement channel, so it
@@ -372,12 +403,14 @@ Two products mix structures and so keep their own pairs, stamped like the rest.
 `load_performance` reads it or scores the table with `extract_performance` —
 one method covering the always-computed metrics and, where the session type has
 blocks, the per-block psychometrics — and it is the only parameter
-`MIN_BLOCK_LENGTH` reaches. `PhotometrySessionGroup.load_performance`
-reads every catalogued session's copy and joins `fraction_correct` and
-`contrasts` onto `_catalog`, which is what makes
-`filter_sessions(min_performance=..., required_contrasts=...)` bite: both
-filters skip themselves when their column is missing, so a group that never
-called it silently keeps sessions those filters would drop.
+`MIN_BLOCK_LENGTH` reaches. `complete_catalog` joins `fraction_correct` and
+`contrasts` onto `_catalog` when the group is built, so
+`filter_sessions(min_performance=..., required_contrasts=...)` bites without a
+prerequisite call. Neither filter skips itself when its column holds nothing: a
+session with no stored performance scores NaN for `fraction_correct` and holds
+an empty `contrasts`, and is dropped by both.
+`PhotometrySessionGroup.load_performance` remains for a script wanting every
+performance metric per session rather than the two the filters read.
 
 ### 3b. PhotometrySessionGroup Lifecycle
 
@@ -481,8 +514,7 @@ Tests use `pytest` with synthetic fixtures. No Alyx calls.
 | `test_vis.py` | Plotting functions |
 | `test_dataset_overview.py` | Dataset flag construction |
 | `test_wheel.py` | Wheel raw, preprocessed and response products |
-| `test_download.py` | Catalog fixups and the download CLI |
-| `test_store.py` | Per-session and group product builds, the pre-warm, the shared `--rebuild` flag |
+| `test_download.py` | Catalog fixups, the per-modality build pass, the download CLI |
 
 Key fixtures in test files:
 - `mock_session_series()` — synthetic session metadata row
