@@ -300,9 +300,14 @@ def main(argv=None) -> None:
 
     group = PhotometrySessionGroup.from_catalog(
         catalog, one=one, h5_dir=SESSIONS_H5_DIR, scan_h5=False)
+    # Every analysis filter is off: these are the criteria a session must clear
+    # to be analysed, not to be built. The raw-photometry QC filter especially —
+    # it reads the QC this pass is here to compute, so before the store is built
+    # it fails every recording, and scans all of `data/sessions` to say so.
     group.filter_sessions(
         session_types=args.session_type or False, qc_blockers=set(),
-        targetnms=False, min_performance=False, required_contrasts=False,
+        targetnms=False, photometry_qc=False, min_performance=False,
+        required_contrasts=False,
     )
     print(f'  {len(group.sessions)} sessions after filtering')
 
