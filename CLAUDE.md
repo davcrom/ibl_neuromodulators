@@ -4,6 +4,31 @@ Fiber photometry analysis pipeline for the IBL neuromodulators project.
 See `README.md` for end-user docs (pipeline usage, PhotometrySession API,
 DataFrame schemas, HDF5 structure).
 
+## What the Signal Is
+
+**The recorded signal is a genetically encoded calcium indicator (GCaMP), not
+a neuromodulator sensor.** Nothing in this dataset uses GRAB, dLight, iAChSnFR,
+or any other transmitter-binding sensor, and no analysis here measures
+transmitter release. Do not assume otherwise.
+
+Cell-type specificity comes from a double-transgenic cross: a Cre-dependent
+GCaMP reporter line (Ai148, and Ai95 in a few subjects) crossed to a Cre driver
+for the neuromodulatory population —
+
+| Cre driver | Population | `NM` label |
+|---|---|---|
+| DAT-Cre | midbrain dopamine (VTA, SNc) | `DA` |
+| DbH-Cre (some TH-Cre) | locus coeruleus noradrenaline | `NE` |
+| ChAT-Cre | basal forebrain / brainstem acetylcholine | `ACh` |
+| SERT-Cre | raphe serotonin | `5HT` |
+
+So `NM`, `target_NM`, `STRAIN2NM`, `LINE2NM`, and `TARGET2NM` all name **which
+neuromodulatory cell population is expressing GCaMP** — the identity of the
+recorded neurons — never a chemical species being sensed. `photometry['GCaMP']`
+is the calcium band and `photometry['Isosbestic']` its control band; a response
+is calcium activity in that population, phrased as e.g. "VTA-DA calcium
+response", not "dopamine release".
+
 ## Where to Find Things
 
 **Start with `config.py`** for any constant, threshold, path, lookup table,

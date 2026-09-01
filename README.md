@@ -1,6 +1,6 @@
 # IBL Neuromodulators
 
-Fiber photometry analysis pipeline for the IBL neuromodulators project. Ingests session metadata and raw signals from Alyx/ONE, applies QC, preprocesses photometry signals, and extracts peri-event neural responses.
+Fiber photometry analysis pipeline for the IBL neuromodulators project. Ingests session metadata and raw signals from Alyx/ONE, applies QC, preprocesses photometry signals, and extracts peri-event neural responses. The signals are genetically encoded calcium indicators (GCaMP), expressed in neuromodulatory populations by crossing a Cre-dependent reporter line to DAT-Cre, DbH-Cre, ChAT-Cre, or SERT-Cre, so each recording measures calcium activity in a genetically defined cell population.
 
 ## Setup
 
