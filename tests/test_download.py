@@ -2,12 +2,15 @@
 from collections import Counter
 from unittest.mock import MagicMock
 
+import h5py
 import numpy as np
 import pandas as pd
 import pytest
 from one.alf.exceptions import ALFObjectNotFound
 
 import scripts.download as download
+from iblnm.config import MIN_NTRIALS
+from iblnm.data import WHEEL_LABEL
 
 # The synthetic session every build test runs on. The camera spans the session,
 # the photometry spans much more of it, and every trial event falls inside both,
@@ -43,8 +46,24 @@ def session_series():
     })
 
 
-def _trials(n=8):
-    """Trials whose events sit inside both the camera's and the wheel's span."""
+class _ZeroMetrics:
+    """Stand-in for `iblphotometry.metrics`, scoring a clean recording.
+
+    Every metric returns 0.0, so `validate_qc` passes: what the build tests
+    check is which call happens when, not what the metrics say about synthetic
+    data.
+    """
+
+    def __getattr__(self, _name):
+        return lambda *args, **kwargs: 0.0
+
+
+def _trials(n=MIN_NTRIALS):
+    """Trials whose events sit inside both the camera's and the wheel's span.
+
+    `MIN_NTRIALS` of them, so `validate_n_trials` passes and the blocks below
+    it run.
+    """
     rng = np.random.default_rng(0)
     stim_on = np.linspace(5.0, 50.0, n)
     contrast = rng.choice([0.0, 0.25, 1.0], size=n)
@@ -154,7 +173,7 @@ def one_calls(monkeypatch):
     monkeypatch.setattr(PhotometrySessionLoader, 'load_trials', fetch_trials)
     monkeypatch.setattr('iblnm.data.from_neurophotometrics_df_to_photometry_df',
                         lambda raw: raw)
-    monkeypatch.setattr('iblnm.data.metrics', MagicMock())
+    monkeypatch.setattr('iblnm.data.metrics', _ZeroMetrics())
     monkeypatch.setattr('iblnm.data.qc_signals', lambda *a, **k: _tidy_qc())
 
     one = MagicMock()
@@ -192,20 +211,11 @@ def saved_groups(monkeypatch):
 
 
 class TestParseArgs:
-    def test_a_product_name_is_rejected(self):
-        """Both flags name modalities now; a product name is not one."""
-        with pytest.raises(SystemExit):
-            download.parse_args(['--skip', 'video/pose'])
-        with pytest.raises(SystemExit):
-            download.parse_args(['--rebuild', 'photometry/preprocessed'])
+    def test_the_session_filters_parse(self):
+        args = download.parse_args(['--session-type', 'biased', '--workers', '4'])
 
-    def test_modalities_and_defaults(self):
-        args = download.parse_args(['--skip', 'video', '--workers', '4'])
-
-        assert args.skip == ['video']
-        assert args.rebuild == []
+        assert args.session_type == ['biased']
         assert args.workers == 4
-        assert args.retry_failed is False
 
 
 class TestFetchesOncePerDataset:
@@ -224,28 +234,31 @@ class TestFetchesOncePerDataset:
         assert calls[TRIALS] == 1
         assert calls['wheel'] == 1
 
-    def test_every_product_is_built(self, session):
-        """A session with everything to fetch ends holding every product."""
-        built = download.build_session(session)
-
-        assert [e['error_type'] for e in session.errors] == []
-        assert built == {product: 'built' for steps in
-                         download.BUILD_STEPS.values() for product, _ in steps}
-        assert all(session.product_status(product) == 'current'
-                   for product in built)
-
-    def test_each_modality_is_written_once(self, session, saved_groups):
+    def test_a_clean_session_builds_every_block(self, session):
+        """Nothing fails, and each block leaves its products on the session."""
         download.build_session(session)
 
-        assert Counter(group for groups in saved_groups for group in groups) == {
-            'trials': 1, 'photometry': 1, 'wheel': 1, 'video': 1}
+        assert [e['error_type'] for e in session.errors] == []
+        assert session.performance
+        assert 'VTA' in session.photometry_responses
+        assert WHEEL_LABEL in session.wheel_responses
+        assert session.video_times_qc and session.pose_xcorr
+
+    def test_the_file_is_written_whole(self, session, saved_groups):
+        """One truncating write of what has no data of its own, then the rest."""
+        download.build_session(session)
+
+        assert saved_groups == [['metadata', 'errors'], None]
+        with h5py.File(session.filepath, 'r') as h5:
+            assert set(h5) == {'metadata', 'errors', 'trials', 'photometry',
+                               'wheel', 'video'}
 
 
 class TestFailureBlocksItsModality:
     """Blocking comes from call order: a raise abandons the rest of its block."""
 
     def test_a_failed_fetch_stops_its_modality_only(self, session, monkeypatch):
-        """The error names the product being made, and the other blocks run on."""
+        """One error against the block, and the blocks below it still run."""
         from iblnm.data import PhotometrySession
         from iblnm.validation import MissingExtractedData
 
@@ -253,58 +266,74 @@ class TestFailureBlocksItsModality:
             PhotometrySession, 'fetch_photometry',
             MagicMock(side_effect=MissingExtractedData('photometry.signal.pqt')))
 
-        built = download.build_session(session)
+        download.build_session(session)
 
-        assert built['photometry/raw/qc'] == 'failed'
-        assert 'photometry/preprocessed' not in built
-        assert 'photometry/responses' not in built
-        assert built['trials/performance'] == 'built'
         assert [(e['product'], e['error_type']) for e in session.errors] == [
-            ('photometry/raw/qc', 'MissingExtractedData')]
+            ('photometry', 'MissingExtractedData')]
+        assert not session.photometry_responses
+        assert session.wheel_velocity is not None
+        assert WHEEL_LABEL in session.wheel_responses
 
 
-class TestSettledFailures:
-    """A product tried, failed and left absent is not attempted again."""
+class TestNonFatalSteps:
+    """The checks that degrade the build rather than abandoning their block."""
 
-    @staticmethod
-    def _drop_pose(one, calls):
-        """Serve every dataset but the LightningPose one."""
+    def test_incomplete_events_are_dropped_from_the_cut(self, session,
+                                                        monkeypatch):
+        """The events named in the error go; the rest are still cut."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import IncompleteEventTimes
+
+        monkeypatch.setattr(
+            PhotometrySession, 'validate_event_completeness',
+            MagicMock(side_effect=IncompleteEventTimes(['feedback_times'])))
+
+        download.build_session(session)
+
+        events = session.photometry_responses['VTA'].coords['event']
+        assert events.values.tolist() == ['stimOn_times']
+
+    def test_a_block_structure_bug_is_fixed_and_the_block_runs_on(
+            self, session, monkeypatch):
+        """Logged, repaired, and the performance scoring below it still runs."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import BlockStructureBug
+
+        monkeypatch.setattr(
+            PhotometrySession, 'validate_block_structure',
+            MagicMock(side_effect=BlockStructureBug('non-uniform')))
+        fix = MagicMock(return_value=True)
+        monkeypatch.setattr(PhotometrySession, 'fix_block_structure', fix)
+
+        download.build_session(session)
+
+        assert [(e['product'], e['error_type']) for e in session.errors] == [
+            ('trials', 'BlockStructureBug')]
+        assert fix.called
+        assert session.performance
+
+
+class TestVideoSourcesFailSeparately:
+    """Three independent Alyx queries: one missing source suppresses no other."""
+
+    def test_a_missing_pose_still_fetches_the_motion_energy(self, session,
+                                                           one_calls):
+        one, calls = one_calls
         served = one.load_dataset.side_effect
 
         def without_pose(eid, name, **kwargs):
             if POSE in name:
-                calls[name.split('/')[-1]] += 1
                 raise ALFObjectNotFound(name)
             return served(eid, name, **kwargs)
 
         one.load_dataset.side_effect = without_pose
 
-    def test_a_recorded_failure_skips_its_modality(self, session, one_calls):
-        """A session with no LP settles video on the first pass and skips it."""
-        one, calls = one_calls
-        self._drop_pose(one, calls)
-
         download.build_session(session)
-        assert {e['product'] for e in session.errors} == {'video/pose',
-                                                          'video/pose/qc'}
-        assert session.product_status('video/pose') == 'absent'
-        calls.clear()
 
-        assert download.build_session(session) == {}
-        assert calls[CAMERA_TIMES] == 0
-
-    def test_retry_failed_attempts_it_again(self, session, one_calls):
-        """--retry-failed is how the user asks for the refetch anyway."""
-        one, calls = one_calls
-        self._drop_pose(one, calls)
-        download.build_session(session)
-        calls.clear()
-
-        built = download.build_session(session, retry_failed=True)
-
-        assert built['video/times/qc'] == 'built'
-        assert built['video/pose/qc'] == 'failed'
-        assert calls[CAMERA_TIMES] == 1
+        assert calls[MOTION_ENERGY] == 1
+        assert session.motion_energy is not None
+        assert session.video_times_qc
+        assert {e['product'] for e in session.errors} == {'video/pose', 'video'}
 
 
 class TestCatalogPhase:
@@ -354,8 +383,6 @@ class TestCatalogPhase:
         monkeypatch.setattr(download, '_get_default_connection', lambda: one)
 
         processed = []
-        monkeypatch.setattr(PhotometrySessionGroup, 'check_products',
-                            lambda self, *a, **k: None)
         monkeypatch.setattr(PhotometrySessionGroup, 'process',
                             lambda self, *a, **k: processed.append(self))
         monkeypatch.setattr(PhotometrySessionGroup, 'collect_errors',
@@ -390,19 +417,3 @@ class TestCatalogPhase:
         monkeypatch.setattr(PhotometrySessionGroup, 'complete_catalog', refuse)
 
         download.main([])
-
-
-class TestModalityScope:
-    """`modalities` is what the `--skip` flag cuts: whole blocks, not products."""
-
-    def test_only_the_named_modality_is_built(self, session):
-        import h5py
-
-        built = download.build_session(session, modalities=('photometry',))
-
-        assert set(built) == {product for product, _
-                              in download.BUILD_STEPS['photometry']}
-        with h5py.File(session.filepath, 'r') as h5:
-            assert 'photometry' in h5
-            assert 'wheel' not in h5
-            assert 'video' not in h5

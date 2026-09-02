@@ -3,21 +3,17 @@
 Two phases. Phase one queries Alyx for the project's session list, writes each
 new session's metadata into `data/sessions/{eid}.h5`, and runs the fixups that
 need every session at once, leaving the catalog in `metadata/sessions.pqt`.
-Phase two builds every product each session is missing, through the group's
+Phase two rebuilds every product of every session, through the group's
 `process`.
 
-Detection is automatic, rebuilding is manual: missing data affects one session
-and is cheap to build, while a stale stamp can mean the whole store, so a
-`config.py` change that was not intended stops the run rather than silently
-re-deriving 5525 files.
+Nothing is skipped and nothing is read back: a session is fetched from Alyx,
+processed in memory, and written whole. The flags narrow which sessions run,
+never what is built within one.
 
 Usage:
-    python scripts/download.py                          # build everything missing
+    python scripts/download.py                          # build every session
     python scripts/download.py --workers 4              # in parallel
     python scripts/download.py --session-type biased    # one session type
-    python scripts/download.py --skip video             # leave the camera alone
-    python scripts/download.py --rebuild photometry
-    python scripts/download.py --retry-failed           # re-attempt failed builds
 """
 import os
 
@@ -33,18 +29,20 @@ import pandas as pd  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from iblnm.config import (  # noqa: E402
-    PRODUCT_SPEC, SESSION_TYPES, SESSIONS_FPATH, SESSIONS_H5_DIR,
+    RESPONSE_EVENTS, SESSION_TYPES, SESSIONS_FPATH, SESSIONS_H5_DIR,
 )
 from iblnm.data import (  # noqa: E402
-    PREPROCESSED_BAND, WHEEL_LABEL, _RESPONSE_MODALITIES, PhotometrySession,
-    PhotometrySessionGroup,
+    PREPROCESSED_BAND, WHEEL_LABEL, PhotometrySession, PhotometrySessionGroup,
 )
 from iblnm.io import _get_default_connection  # noqa: E402
 from iblnm.validation import (  # noqa: E402
-    MissingLP, MissingMotionEnergy, StaleProduct,
+    BlockStructureBug, IncompleteEventTimes,
 )
 
-MODALITIES = ('trials', 'photometry', 'wheel', 'video')
+# The wheel's own cut: each trial's wheel velocity from its stimulus onset to
+# its own feedback, rather than the fixed peri-event window the photometry uses.
+WHEEL_RESPONSE_EVENTS = ('stimOn_times',)
+WHEEL_RESPONSE_WINDOW = (0.0, 'feedback_times')
 
 
 def query_session(row: pd.Series, one) -> bool:
@@ -108,193 +106,146 @@ def fetch_catalog(one) -> PhotometrySessionGroup:
     return group
 
 
-def fetch_movement_sources(ps: PhotometrySession) -> None:
-    """Fetch the pose and the motion energy, tolerating a missing one.
+def build_trials(ps: PhotometrySession) -> None:
+    """Fetch the trials table, validate it, and score the session's behavior.
 
-    The two signal sources are independent: a session with no LightningPose
-    still contributes its motion energy channel. A missing one is logged
-    against its own product and leaves the other's channels intact, which is
-    also what marks it settled so the next run does not fetch it again.
+    Fatal: the fetch and the trial-count check, either of which leaves nothing
+    to score. Non-fatal: the two structural checks. An incomplete event is
+    recorded and left alone here — the photometry block is where it changes
+    what is cut — and a corrupted block structure is followed by the fix that
+    reconstructs `probabilityLeft` from the session JSON.
     """
-    for fetch, product, missing in (
-            (ps.fetch_pose, 'video/pose', MissingLP),
-            (ps.fetch_motion_energy, 'video/motion_energy', MissingMotionEnergy)):
+    try:
+        ps.fetch_trials()
+        ps.validate_n_trials()
+        try:
+            ps.validate_event_completeness()
+        except IncompleteEventTimes as error:
+            ps.log_error(error, product='trials')
+        try:
+            ps.validate_block_structure()
+        except BlockStructureBug as error:
+            ps.log_error(error, product='trials')
+            ps.fix_block_structure()
+        ps.extract_performance()
+    except Exception as error:
+        ps.log_error(error, product='trials')
+
+
+def complete_events(ps: PhotometrySession) -> list[str]:
+    """The `config.RESPONSE_EVENTS` whose times are complete enough to cut on.
+
+    `validate_event_completeness` is non-fatal for the response cut: the events
+    it names are dropped and the rest are cut. An empty list means no event
+    survived, and nothing is cut at all.
+    """
+    try:
+        ps.validate_event_completeness()
+    except IncompleteEventTimes as error:
+        return [event for event in RESPONSE_EVENTS
+                if event not in error.missing_events]
+    return list(RESPONSE_EVENTS)
+
+
+def build_photometry(ps: PhotometrySession) -> None:
+    """Fetch both photometry sources, score them, preprocess and cut responses.
+
+    Every step is fatal but the event-completeness check, which degrades the
+    cut to the events that survive it. The neurophotometrics table is scored
+    before the extracted bands are fetched, because a band inversion means the
+    channels are not the bands they are labelled and nothing below it is worth
+    computing.
+    """
+    try:
+        ps.fetch_neurophotometrics()
+        ps.run_neurophotometrics_qc()
+        ps.validate_qc()
+        ps.fetch_photometry()
+        ps.validate_trials_in_photometry_time()
+        ps.run_photometry_qc()
+        ps.extract_preprocessed_photometry()
+        events = complete_events(ps)
+        if events:
+            ps.photometry_responses = ps.extract_responses(
+                ps.photometry[PREPROCESSED_BAND], events=events)
+    except Exception as error:
+        ps.log_error(error, product='photometry')
+
+
+def build_wheel(ps: PhotometrySession) -> None:
+    """Fetch the encoder samples, differentiate them, and cut the responses."""
+    try:
+        ps.fetch_wheel()
+        ps.extract_wheel_velocity()
+        ps.wheel_responses = ps.extract_responses(
+            {WHEEL_LABEL: ps.wheel_velocity},
+            events=WHEEL_RESPONSE_EVENTS, window=WHEEL_RESPONSE_WINDOW)
+    except Exception as error:
+        ps.log_error(error, product='wheel')
+
+
+def build_video(ps: PhotometrySession) -> None:
+    """Fetch the three camera datasets and score the two video QC products.
+
+    The datasets are independent Alyx queries and fail separately, so each is
+    caught on its own: a session with no LightningPose still contributes its
+    motion energy and its camera clock. The two QC steps follow in one `try`,
+    so a failure in the clock check abandons the pose check below it — which
+    correlates the paw speed against the wheel velocity the block above this
+    one left on the session.
+    """
+    for fetch, product in ((ps.fetch_camera_times, 'video/times'),
+                           (ps.fetch_pose, 'video/pose'),
+                           (ps.fetch_motion_energy, 'video/motion_energy')):
         try:
             fetch()
-        except missing as error:
+        except Exception as error:
             ps.log_error(error, product=product)
+    try:
+        ps.run_video_times_qc()
+        ps.run_pose_qc()
+    except Exception as error:
+        ps.log_error(error, product='video')
 
 
-def cut_responses(ps: PhotometrySession, modality: str) -> None:
-    """Cut one modality's peri-event matrices from the signals it holds.
+def build_session(ps: PhotometrySession) -> None:
+    """Build one session's whole store from Alyx, four blocks in order.
 
-    The signals come off the session attributes the block has just populated
-    rather than through the modality's `load_*`, which would consult the store
-    for what is already in memory, and would refetch the raw under `--rebuild`.
-    The events and window are the modality's defaults, the same ones
-    `load_responses` falls back on.
-    """
-    _, attribute, defaults = _RESPONSE_MODALITIES[modality]
-    if ps.trials is None:
-        ps.load_trials()
-    signals = RESPONSE_SIGNALS[modality](ps)
-    setattr(ps, attribute, ps.extract_responses(signals, **defaults))
+    Every product is built every run; nothing is read back, skipped or checked
+    against what the file already holds. Each block is one `try`, reproducing
+    the boundary the pipeline had when every modality was its own script: a
+    fatal step abandons its block and logs one error against it, and the next
+    block still runs.
 
-
-def ensure_wheel_velocity(ps: PhotometrySession) -> None:
-    """Put the wheel velocity on the session for the cross-modal pose QC.
-
-    `video/pose/qc` is the one product needing another modality's signal. When
-    the wheel block ran, its velocity is already here; when it did not — it was
-    skipped, or had nothing left to build — `load_wheel` builds and stores it,
-    since the work has to happen either way.
-    """
-    if ps.wheel_velocity is None:
-        ps.load_wheel()
-
-
-# The preprocessed signals each modality cuts its responses from, taken from
-# memory. Photometry's labels are brain regions, the wheel's is its one channel,
-# video's are the movement channels.
-RESPONSE_SIGNALS = {
-    'photometry': lambda ps: ps.photometry[PREPROCESSED_BAND],
-    'wheel':      lambda ps: {WHEEL_LABEL: ps.wheel_velocity},
-    'video':      lambda ps: ps.movement_signals,
-}
-
-# What each modality builds, in the order that lets one fetch serve every
-# product made from it: the raw datasets arrive once, and everything cut from
-# them is cut while they are still in memory. Each entry is a product and the
-# calls that make it; a raise inside one abandons the rest of its modality,
-# which is where blocking comes from — there is no dependency walk.
-BUILD_STEPS = {
-    'trials': (
-        ('trials/table',       (lambda ps: ps.fetch_trials(),)),
-        ('trials/performance', (lambda ps: ps.extract_performance(),)),
-    ),
-    'photometry': (
-        ('photometry/neurophotometrics/qc',
-         (lambda ps: ps.fetch_neurophotometrics(),
-          lambda ps: ps.run_neurophotometrics_qc())),
-        ('photometry/raw/qc',
-         (lambda ps: ps.fetch_photometry(),
-          lambda ps: ps.run_photometry_qc())),
-        ('photometry/preprocessed',
-         (lambda ps: ps.extract_preprocessed_photometry(),)),
-        ('photometry/responses', (lambda ps: cut_responses(ps, 'photometry'),)),
-    ),
-    'wheel': (
-        ('wheel/preprocessed',
-         (lambda ps: ps.fetch_wheel(), lambda ps: ps.extract_wheel_velocity())),
-        ('wheel/responses', (lambda ps: cut_responses(ps, 'wheel'),)),
-    ),
-    'video': (
-        ('video/times/qc',
-         (lambda ps: ps.fetch_camera_times(),
-          lambda ps: ps.run_video_times_qc())),
-        ('video/preprocessed',
-         (fetch_movement_sources, lambda ps: ps.extract_movement_signals())),
-        ('video/responses', (lambda ps: cut_responses(ps, 'video'),)),
-        ('video/pose/qc', (ensure_wheel_velocity, lambda ps: ps.run_pose_qc())),
-    ),
-}
-
-
-def modality_products(modalities) -> set[str]:
-    """Every `config.PRODUCT_SPEC` product belonging to the named modalities.
-
-    The flags name modalities; a session's `rebuild` set names products, since
-    that is what its load methods and stamps are keyed on.
-    """
-    return {product for product in PRODUCT_SPEC
-            if product.split('/')[0] in modalities}
-
-
-def pending_products(ps: PhotometrySession, modality: str,
-                     retry_failed: bool = False) -> set[str]:
-    """The modality's products that are worth attempting.
-
-    A product is pending unless the store holds it current, or it is settled —
-    tried before, logged an error, and left no data. Without the settled state a
-    session whose Alyx data does not exist would refetch it on every run to fail
-    the same way; `retry_failed` is how the user asks for exactly that.
-
-    The raw products are not consulted: with `config.store_raw` off nothing
-    keeps them, so they are absent on every session and would make every
-    modality pending forever. A raw dataset that cannot be fetched settles the
-    products built from it instead.
-    """
-    settled = set() if retry_failed else ps.failed_products()
-    return {product for product, _ in BUILD_STEPS[modality]
-            if product not in settled
-            and ps.product_status(product) != 'current'}
-
-
-def build_session(ps: PhotometrySession, modalities=MODALITIES,
-                  rebuild=frozenset(), retry_failed=False) -> dict[str, str]:
-    """Build one session's whole store, one modality at a time.
-
-    Each modality fetches its raw datasets once, computes every product made
-    from them while they are in memory, and is written once at the end. This is
-    the bulk path: the `load_*` methods answer "give me this, repair it if
-    missing", which is the right contract at a prompt and the wrong one here.
+    Block order is load-bearing. Trials come first because the response cuts
+    read `ps.trials`, and the wheel precedes the video because the pose QC
+    reads `ps.wheel_velocity`.
 
     Parameters
     ----------
     ps : PhotometrySession
-        The session to build, carrying its own `rebuild` product set. Top-level
-        so `PhotometrySessionGroup.process` can pass it to workers.
-    modalities : sequence of str
-        Keys of `BUILD_STEPS`. A modality left out is not built for its own
-        sake, though another modality's product may still build it — the video
-        block's pose QC needs the wheel either way.
-    rebuild : set of str
-        Modalities to rebuild whether or not the store already holds them.
-    retry_failed : bool
-        Attempt products whose stored errors record a failed build.
+        The session to build. Top-level so `PhotometrySessionGroup.process`
+        can hand it to parallel workers.
 
-    Returns
-    -------
-    dict
-        Product -> 'built' or 'failed', one entry per product attempted. A
-        modality that was skipped contributes no entries.
+    Notes
+    -----
+    The file is rewritten rather than merged into. The truncating write carries
+    the metadata and the errors, which have no data of their own to detect;
+    the append that follows writes whatever products the four blocks built.
     """
-    results = {}
-    for modality, steps in BUILD_STEPS.items():
-        if modality not in modalities:
-            continue
-        if (modality not in rebuild
-                and not pending_products(ps, modality, retry_failed)):
-            continue
-        for product, calls in steps:
-            try:
-                for call in calls:
-                    call(ps)
-            except (BlockingIOError, StaleProduct):
-                raise
-            except Exception as error:
-                ps.log_error(error, product=product)
-                results[product] = 'failed'
-                break
-            results[product] = 'built'
-        ps.save_h5(groups=[modality])
-    return results
+    build_trials(ps)
+    build_photometry(ps)
+    build_wheel(ps)
+    build_video(ps)
+    ps.save_h5(groups=['metadata', 'errors'], mode='w')
+    ps.save_h5()
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Fetch and build the photometry session store')
-    parser.add_argument('--skip', nargs='+', default=[], metavar='MODALITY',
-                        choices=MODALITIES,
-                        help='Modalities not to build')
-    parser.add_argument('--rebuild', nargs='+', default=[], metavar='MODALITY',
-                        choices=MODALITIES,
-                        help='Modalities to rebuild rather than read back')
     parser.add_argument('--workers', '-w', type=int, default=1,
                         help='Number of parallel worker processes')
-    parser.add_argument('--retry-failed', action='store_true',
-                        help='Re-attempt products whose stored errors record a '
-                             'failed build')
     parser.add_argument('--session-type', nargs='+', choices=SESSION_TYPES,
                         default=None,
                         help='Restrict to these session types (default: all)')
@@ -318,18 +269,7 @@ def main(argv=None) -> None:
     )
     print(f'  {len(group.sessions)} sessions after filtering')
 
-    # The sessions carry the products to rebuild, the build carries the
-    # modalities: one names what a load method may read back, the other what
-    # the pass fetches at all.
-    group.rebuild = modality_products(args.rebuild)
-    group.check_products(*PRODUCT_SPEC, rebuild=group.rebuild)
-    group.process(
-        build_session,
-        modalities=tuple(m for m in MODALITIES if m not in args.skip),
-        rebuild=set(args.rebuild),
-        retry_failed=args.retry_failed,
-        workers=args.workers,
-    )
+    group.process(build_session, workers=args.workers)
 
     errors = group.collect_errors()
     if len(errors):
