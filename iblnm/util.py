@@ -793,11 +793,14 @@ def derive_target_nm(df, brain_region_col='brain_region'):
     return df
 
 
-def build_catalog(sessions: pd.DataFrame) -> pd.DataFrame:
-    """Apply the cross-session fixups to a catalog.
+def fix_catalog(sessions: pd.DataFrame) -> pd.DataFrame:
+    """Repair a catalog's brain regions and re-derive the columns off them.
 
-    These cannot live in a per-session load path: filling one session's empty
-    brain region from its subject's other sessions needs every session at once.
+    TEMPFIX in whole: every step here compensates for incomplete or wrong Alyx
+    session metadata, and the function goes away once that metadata is
+    corrected upstream. It cannot live in a per-session load path — filling one
+    session's empty brain region from its subject's other sessions needs every
+    session at once.
 
     Parameters
     ----------
@@ -809,14 +812,14 @@ def build_catalog(sessions: pd.DataFrame) -> pd.DataFrame:
     -------
     pd.DataFrame
         Copy carrying the fixed region names and the derived `target_NM`/`NM`,
-        conformed to `config.SESSION_SCHEMA`.
+        conformed to `config.SESSION_SCHEMA`. The schema is enforced on the way
+        out because `derive_target_nm` adds columns.
     """
     from iblnm.config import SESSION_SCHEMA
 
-    # TEMPFIX: these compensate for incomplete Alyx metadata and go once the
-    # upstream data is corrected. `brain_region` and `hemisphere` fill in one
-    # call because filling them separately broke their parallelism: subject
-    # CQ011's sessions agree on `hemisphere` but not on `brain_region`, so its
+    # `brain_region` and `hemisphere` fill in one call because filling them
+    # separately broke their parallelism: subject
+    # CQ011's sessions agreed on `hemisphere` but not on `brain_region`, so its
     # empty rows took a length-2 `hemisphere` beside a length-0 `brain_region`
     # and were dropped by `validate_parallel_lists`. `target_NM` is left out —
     # `derive_target_nm` has not run yet, so it still holds whatever the store's

@@ -49,8 +49,8 @@ from iblnm import analysis
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.util import (
-    LOG_COLUMNS, deduplicate_log, enforce_schema, resolve_duplicate_group,
-    validate_parallel_lists,
+    LOG_COLUMNS, deduplicate_log, enforce_schema, fix_catalog,
+    resolve_duplicate_group, validate_parallel_lists,
 )
 from iblnm.validation import (
     MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
@@ -3946,6 +3946,21 @@ class PhotometrySessionGroup:
             catalog['session_n'] = by_subject.rank(method='dense')
         return cls.from_catalog(catalog, one=one, h5_dir=h5_dir,
                                 scan_h5=scan_h5)
+
+    def fix_catalog(self) -> None:
+        """Apply the Alyx metadata fixups to the catalog the group holds.
+
+        `sessions` returns a copy, so a caller cannot repair the table the group
+        filters and builds from without going through the group. It matters
+        because `PhotometrySession` reads `brain_region` off its catalog row to
+        name the photometry columns, so the fixed regions have to be the ones
+        `process` iterates over.
+
+        The frame is replaced rather than mutated: `util.fix_catalog` returns a
+        new one, and it keeps its index through the fixups, which the positional
+        `_filter_mask` and `_dedup_mask` need.
+        """
+        self._catalog = fix_catalog(self._catalog)
 
     @property
     def sessions(self):

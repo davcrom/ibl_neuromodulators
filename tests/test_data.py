@@ -4357,6 +4357,37 @@ class TestGroupFromH5Dir:
         assert list(group._catalog['logged_errors']) == [[]]
 
 
+class TestGroupFixCatalog:
+    """fix_catalog repairs the table the group filters and builds from."""
+
+    def test_fixups_reach_the_group(self):
+        """The fixed regions and the derived target_NM land on the catalog.
+
+        `group.sessions` returns a copy, so a script cannot repair the table the
+        group iterates without this method. Asserting on `group.sessions` after
+        the call proves the fix reached `_catalog` and not a detached frame.
+        """
+        from iblnm.data import PhotometrySessionGroup
+        catalog = pd.DataFrame({
+            'eid': ['a', 'b'],
+            'subject': ['M1', 'M1'],
+            'start_time': ['2024-01-01T10:00:00', '2024-01-03T10:00:00'],
+            'brain_region': [['SNC'], []],
+            'hemisphere': [['l'], []],
+            # The store's metadata carries target_NM, and from_catalog drops
+            # rows whose parallel columns disagree in length before the fixups
+            # ever run — so the populated row needs its (stale) entry here.
+            'target_NM': [['SNC-DA'], []],
+        })
+        group = PhotometrySessionGroup.from_catalog(catalog, one=None,
+                                                    h5_dir=None)
+
+        group.fix_catalog()
+
+        assert list(group.sessions['brain_region']) == [['SNc'], ['SNc']]
+        assert list(group.sessions['target_NM']) == [['SNc-DA'], ['SNc-DA']]
+
+
 class TestGroupCollectSessionErrors:
     """collect_session_errors feeds filter_sessions, so it reads the catalog."""
 

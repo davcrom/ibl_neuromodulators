@@ -40,7 +40,7 @@ from iblnm.data import (  # noqa: E402
     PhotometrySessionGroup,
 )
 from iblnm.io import _get_default_connection  # noqa: E402
-from iblnm.util import build_catalog  # noqa: E402
+from iblnm.util import fix_catalog  # noqa: E402
 from iblnm.validation import (  # noqa: E402
     MissingLP, MissingMotionEnergy, StaleProduct,
 )
@@ -75,7 +75,7 @@ def fetch_catalog(one) -> pd.DataFrame:
 
     Sessions already holding an H5 file keep their stored metadata; only new
     eids are queried. The catalog is rebuilt from every file's `metadata` group
-    afterwards, run through `build_catalog`, and written to
+    afterwards, run through `fix_catalog`, and written to
     `config.SESSIONS_FPATH` — the store's `metadata` groups are the source, so
     that file is a convenience for the analysis scripts, not a second source.
     """
@@ -92,7 +92,7 @@ def fetch_catalog(one) -> pd.DataFrame:
     if len(new):
         print(f'Wrote metadata for {written} of {len(new)} sessions')
 
-    catalog = build_catalog(
+    catalog = fix_catalog(
         PhotometrySessionGroup.from_h5_dir(SESSIONS_H5_DIR, one=one).sessions)
     catalog.to_parquet(SESSIONS_FPATH, index=False)
     print(f'Catalogued {len(catalog)} sessions in {SESSIONS_FPATH}')

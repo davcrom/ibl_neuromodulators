@@ -1155,12 +1155,12 @@ class TestFillQCLabels:
         assert result['subject'].isna().sum() == 1
 
 
-class TestBuildCatalog:
+class TestFixCatalog:
     """The cross-session fixups run over the whole catalog at once."""
 
     def test_fixups_and_schema(self):
         """Empty lists fill from the subject and region names are fixed."""
-        from iblnm.util import build_catalog
+        from iblnm.util import fix_catalog
         sessions = pd.DataFrame({
             'eid': ['a', 'b'],
             'subject': ['M1', 'M1'],
@@ -1169,7 +1169,7 @@ class TestBuildCatalog:
             'hemisphere': [['l'], []],
         })
 
-        catalog = build_catalog(sessions)
+        catalog = fix_catalog(sessions)
 
         assert list(catalog['brain_region']) == [['SNc'], ['SNc']]
         assert list(catalog['hemisphere']) == [['l'], ['l']]
@@ -1187,7 +1187,7 @@ class TestBuildCatalog:
         gave the empty rows a length-2 `hemisphere` beside a length-0
         `brain_region`, and `validate_parallel_lists` then dropped them.
         """
-        from iblnm.util import build_catalog
+        from iblnm.util import fix_catalog
         sessions = pd.DataFrame({
             'eid': ['a', 'b', 'c', 'd'],
             'subject': ['M1'] * 4,
@@ -1197,7 +1197,7 @@ class TestBuildCatalog:
             'hemisphere': [['', ''], ['', ''], [], []],
         })
 
-        catalog = build_catalog(sessions)
+        catalog = fix_catalog(sessions)
 
         lengths = catalog[['brain_region', 'hemisphere', 'target_NM']].map(len)
         assert (lengths.nunique(axis=1) == 1).all()
