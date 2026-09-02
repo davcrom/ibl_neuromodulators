@@ -76,8 +76,8 @@ def fetch_catalog(one) -> pd.DataFrame:
     Sessions already holding an H5 file keep their stored metadata; only new
     eids are queried. The catalog is rebuilt from every file's `metadata` group
     afterwards, run through `build_catalog`, and written to
-    `config.SESSIONS_FPATH` — the rollup script regenerates the same table from
-    the same source, so this copy is a convenience, not a second source.
+    `config.SESSIONS_FPATH` — the store's `metadata` groups are the source, so
+    that file is a convenience for the analysis scripts, not a second source.
     """
     print('Querying database...')
     sessions = one.alyx.rest('sessions', 'list', project='ibl_fibrephotometry')

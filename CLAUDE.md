@@ -52,7 +52,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Store rollups | `data.py → PhotometrySessionGroup.collect_errors, collect_qc, collect_pose` |
 | Session build, `--skip`, `--rebuild` | `scripts/download.py → BUILD_STEPS, build_session` |
 | Product survey and stale detection | `data.py → PhotometrySessionGroup.check_products, scan_product_status` |
-| Rollup files (parquets, pose CSV) | `scripts/rollup.py` |
+| Session catalog (`sessions.pqt`) | `scripts/download.py → fetch_catalog` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |
 | Psychometric fitting | `task.py → fit_psychometric, fit_psychometric_by_block, compute_fraction_correct` |
@@ -188,7 +188,9 @@ rather than twice. Each script decides which error types are fatal for its
 purpose.
 
 Every rollup reads through the group and its filters, never by globbing the
-store: `collect_errors` (the full log for the filtered sessions), `collect_qc`
+store. There is no shared rollup script: a script that wants a flat table
+writes it where it reads it, from these three methods. `collect_errors` (the
+full log for the filtered sessions), `collect_qc`
 (one row per catalogued recording, from `photometry/{region}/raw/qc`, as
 `complete_catalog` scanned it) and `collect_pose` (the video table).
 `collect_qc` and `collect_session_errors` walk `_catalog` rather than the

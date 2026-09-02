@@ -108,30 +108,20 @@ group — so it is unconditional.
 
 ## Rollups
 
-The store is the source for every analysis; the rollup files are flat views of
-it, written for inspection and for the two viewers and read by no analysis.
-`rollup.py` regenerates all six from `data/sessions/*.h5`, so they never need
-keeping in sync with anything.
+The store is the source for every analysis. A flat view of it — one row per
+session or per recording — is a rollup, and each script that wants one writes
+its own from the group methods that build them: `collect_errors`, `collect_qc`
+and `collect_pose` on `PhotometrySessionGroup`. There is no shared rollup
+script, so a script's flat table is written where it is read and answers to the
+filters that script set.
 
-```bash
-python scripts/rollup.py               # all six files
-python scripts/rollup.py --skip-pose   # the four that need no Alyx call
-```
-
-| File | Content |
-|---|---|
-| `metadata/sessions.pqt` | the session catalog, rebuilt from the stored `metadata` groups |
-| `data/qc_photometry.pqt` | one row per (session, brain region), metrics band-suffixed |
-| `data/performance.pqt` | one row per session, from `trials/performance` |
-| `metadata/errors.pqt` | every logged error, with the product it was logged against |
-| `metadata/pose.pqt` | one row per session, from the `video` groups |
-| `metadata/LightningPoseSessions.csv` | the pose table as a label sheet, best candidates first |
+`scripts/download.py` writes `metadata/sessions.pqt`, the session catalog, as
+part of its catalog phase.
 
 Every rollup reads through `PhotometrySessionGroup`, so what lands in a file is
-what the group's filters admit. The pose pair is last and slowest: the eight
+what the group's filters admit. The pose table is the slow one: the eight
 leftCamera QC labels live only on Alyx — nothing here could tell that a stored
-copy had gone stale — so they cost one REST call per session, and `--skip-pose`
-is the quick run that leaves them alone.
+copy had gone stale — so they cost one REST call per session.
 
 ### `dataset_overview.py` — Session coverage figures
 
