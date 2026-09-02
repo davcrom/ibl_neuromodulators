@@ -8,7 +8,7 @@ from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
 
 from iblnm.config import (
-    LABEL2EVENT, MOVEMENT_EVENTS, resolve_product_spec)
+    LABEL2EVENT, MOVEMENT_EVENTS)
 from iblnm.data import _save_peri_event_matrix, _save_pose_xcorr
 from iblnm.lp_viewer import (
     HISTOGRAM_MEASURES,
@@ -572,10 +572,8 @@ def cohort_model(tmp_path):
             grp = f.create_group('video')
             for label, da in responses.items():
                 _save_peri_event_matrix(
-                    grp.create_group(f'{label}/responses'), da,
-                    resolve_product_spec('video/responses'))
-            _save_pose_xcorr(grp.create_group('pose/qc'), xcorr,
-                             resolve_product_spec('video/pose/qc'))
+                    grp.create_group(f'{label}/responses'), da)
+            _save_pose_xcorr(grp.create_group('pose/qc'), xcorr)
 
     df_cohort = pd.DataFrame({
         'eid': ['eid1', 'eid2'],

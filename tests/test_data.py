@@ -63,11 +63,6 @@ class TestCustomExceptions:
         from iblnm.validation import EarlySamples
         assert issubclass(EarlySamples, Exception)
 
-    def test_stale_product_names_the_product(self):
-        from iblnm.validation import StaleProduct
-        assert issubclass(StaleProduct, Exception)
-        assert 'photometry/preprocessed' in str(StaleProduct('photometry/preprocessed'))
-
 
 # =============================================================================
 # Fixtures
@@ -272,219 +267,106 @@ class TestInit:
         assert ps.target_NM == ['VTA-DA', 'SNc-DA']
 
 
-class TestProductSpecState:
-    """Tests for the product spec and rebuild set held on a session."""
-
-    def test_spec_covers_every_product_resolved(self, minimal_session_series):
-        """self.spec maps every product key to its resolved (not raw) spec."""
-        from iblnm.data import PhotometrySession
-        from iblnm.config import PRODUCT_SPEC, resolve_product_spec
-        ps = PhotometrySession(minimal_session_series)
-
-        assert set(ps.spec) == set(PRODUCT_SPEC)
-        assert ps.spec == {product: resolve_product_spec(product)
-                           for product in PRODUCT_SPEC}
-
-    def test_rebuild_defaults_to_empty_set(self, minimal_session_series):
-        """self.rebuild starts empty, so nothing is forced to rebuild."""
-        from iblnm.data import PhotometrySession
-        ps = PhotometrySession(minimal_session_series)
-        assert ps.rebuild == set()
-
-
-class TestSpecStamps:
-    """Tests for the spec stamp written beside every stored product."""
-
-    def test_stamp_roundtrip_for_every_product(self, minimal_session_series, tmp_path):
-        """Every resolved spec is writable, readable, and matches itself.
-
-        Catches both non-JSON values in PRODUCT_SPEC (the write raises) and
-        tuple/list drift through JSON (the match returns False).
-        """
-        import h5py
-        from iblnm.data import (
-            PhotometrySession, _read_stamp, _stamp_matches, _write_stamp)
-        from iblnm.config import PRODUCT_SPEC
-        ps = PhotometrySession(minimal_session_series)
-
-        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
-            for product in PRODUCT_SPEC:
-                grp = h5.create_group(product)
-                _write_stamp(grp, ps.spec[product])
-                assert _read_stamp(grp) == _read_stamp(grp)
-                assert set(_read_stamp(grp)) == set(ps.spec[product])
-                assert _stamp_matches(grp.attrs, ps.spec[product])
-
-    def test_stamp_records_build_time(self, minimal_session_series, tmp_path):
-        """built_at is an ISO-8601 UTC timestamp of when the product was built."""
-        import h5py
-        from datetime import datetime, timezone
-        from iblnm.data import PhotometrySession, _write_stamp
-        ps = PhotometrySession(minimal_session_series)
-
-        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
-            grp = h5.create_group('trials')
-            _write_stamp(grp, ps.spec['trials/table'])
-            built_at = datetime.fromisoformat(grp.attrs['built_at'])
-
-        assert built_at.tzinfo is not None
-        assert abs((datetime.now(timezone.utc) - built_at).total_seconds()) < 60
-
-    def test_stamp_mismatch_on_altered_value(self, minimal_session_series, tmp_path):
-        """A stored value that differs from the expected spec is a mismatch."""
-        import h5py
-        from iblnm.data import PhotometrySession, _stamp_matches, _write_stamp
-        ps = PhotometrySession(minimal_session_series)
-
-        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
-            grp = h5.create_group('photometry')
-            _write_stamp(grp, ps.spec['photometry/preprocessed'] | {'fs': 15})
-            assert not _stamp_matches(grp.attrs, ps.spec['photometry/preprocessed'])
-
-    def test_stamp_mismatch_on_extra_or_missing_key(self, minimal_session_series,
-                                                    tmp_path):
-        """Keys present on one side only are a mismatch, either direction."""
-        import h5py
-        from iblnm.data import PhotometrySession, _stamp_matches, _write_stamp
-        ps = PhotometrySession(minimal_session_series)
-        spec = ps.spec['photometry/preprocessed']
-
-        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
-            extra = h5.create_group('extra')
-            _write_stamp(extra, spec | {'unexpected': 1})
-            assert not _stamp_matches(extra.attrs, spec)
-
-            missing = h5.create_group('missing')
-            _write_stamp(missing, {'fs': spec['fs']})
-            assert not _stamp_matches(missing.attrs, spec)
-
-    def test_unstamped_group_does_not_match(self, minimal_session_series, tmp_path):
-        """A group written before stamping exists carries no spec, so cannot match."""
-        import h5py
-        from iblnm.data import PhotometrySession, _stamp_matches
-        ps = PhotometrySession(minimal_session_series)
-
-        with h5py.File(tmp_path / 'stamps.h5', 'w') as h5:
-            grp = h5.create_group('photometry')
-            grp.attrs['fs'] = 30
-            assert not _stamp_matches(grp.attrs, ps.spec['photometry/preprocessed'])
-
-
 @pytest.fixture
-def stamped_session(minimal_session_series, tmp_path):
-    """Session whose H5 file is built by hand, with a stamping helper."""
+def stored_session(minimal_session_series, tmp_path):
+    """Session whose H5 file is built by hand, with a group-writing helper."""
     import h5py
-    from iblnm.data import PhotometrySession, _write_stamp
+    from iblnm.data import PhotometrySession
 
     ps = PhotometrySession(minimal_session_series)
     ps.filepath = tmp_path / f'{ps.eid}.h5'
 
-    def write(path, product, spec=None):
-        """Create `path` in the session's H5 file, stamped for `product`."""
+    def write(path, data=True):
+        """Create `path` in the session's H5 file, with data unless told not to."""
         with h5py.File(ps.filepath, 'a') as h5:
-            _write_stamp(h5.require_group(path),
-                         ps.spec[product] if spec is None else spec)
+            group = h5.require_group(path)
+            if data:
+                group.create_dataset('values', data=np.arange(3.0))
 
     return ps, write
 
 
-class TestProductStatus:
-    """Tests for PhotometrySession.product_status."""
+class TestStoredProductExists:
+    """Tests for PhotometrySession.stored_product_exists."""
 
-    def test_absent_when_file_missing(self, stamped_session):
+    def test_absent_when_file_missing(self, stored_session):
         """No H5 file at all means every product is absent."""
-        ps, _ = stamped_session
+        ps, _ = stored_session
         assert not ps.filepath.exists()
-        assert ps.product_status('trials/table') == 'absent'
+        assert not ps.stored_product_exists('trials/table')
 
-    def test_absent_when_modality_group_missing(self, stamped_session):
+    def test_absent_when_modality_group_missing(self, stored_session):
         """A file holding other modalities still reports this one absent."""
-        ps, write = stamped_session
-        write('trials/table', 'trials/table')
-        assert ps.product_status('photometry/preprocessed') == 'absent'
+        ps, write = stored_session
+        write('trials/table')
+        assert not ps.stored_product_exists('photometry/preprocessed')
 
-    def test_absent_when_product_group_missing(self, stamped_session):
+    def test_absent_when_product_group_missing(self, stored_session):
         """The modality exists but not this product under it."""
-        ps, write = stamped_session
-        write('photometry/VTA/preprocessed', 'photometry/preprocessed')
-        assert ps.product_status('photometry/responses') == 'absent'
+        ps, write = stored_session
+        write('photometry/VTA/preprocessed')
+        assert not ps.stored_product_exists('photometry/responses')
 
-    def test_current_for_unlabelled_product(self, stamped_session):
+    def test_present_for_unlabelled_product(self, stored_session):
         """A product with no label level is found directly under its modality."""
-        ps, write = stamped_session
-        write('trials/table', 'trials/table')
-        assert ps.product_status('trials/table') == 'current'
+        ps, write = stored_session
+        write('trials/table')
+        assert ps.stored_product_exists('trials/table')
 
-    def test_current_for_labelled_product(self, stamped_session):
+    def test_present_for_labelled_product(self, stored_session):
         """A labelled product is found by walking the label level."""
-        ps, write = stamped_session
-        write('photometry/VTA/raw/qc', 'photometry/raw/qc')
-        write('photometry/SNc/raw/qc', 'photometry/raw/qc')
-        assert ps.product_status('photometry/raw/qc') == 'current'
+        ps, write = stored_session
+        write('photometry/VTA/raw/qc')
+        write('photometry/SNc/raw/qc')
+        assert ps.stored_product_exists('photometry/raw/qc')
 
-    def test_stale_when_stamped_value_differs(self, stamped_session):
-        """A stored spec value that no longer matches config reports stale."""
-        ps, write = stamped_session
-        write('photometry/VTA/preprocessed', 'photometry/preprocessed',
-              spec=ps.spec['photometry/preprocessed'] | {'fs': 15})
-        assert ps.product_status('photometry/preprocessed') == 'stale'
+    def test_present_for_a_group_carrying_only_attrs(self, stored_session):
+        """QC products are flat attrs with no datasets, and still count."""
+        import h5py
+        ps, _ = stored_session
+        with h5py.File(ps.filepath, 'a') as h5:
+            h5.require_group('video/times/qc').attrs['framerate_from_tpts'] = 60.0
+        assert ps.stored_product_exists('video/times/qc')
 
-    def test_stale_when_upstream_parameter_differs(self, stamped_session):
-        """An ancestor's parameter change marks the downstream product stale."""
-        ps, write = stamped_session
-        upstream_key = 'photometry/preprocessed.fs'
-        write('photometry/VTA/responses', 'photometry/responses',
-              spec=ps.spec['photometry/responses'] | {upstream_key: 15})
-        assert ps.spec['photometry/responses'][upstream_key] != 15
-        assert ps.product_status('photometry/responses') == 'stale'
+    def test_absent_for_a_container_holding_only_a_subgroup(self, stored_session):
+        """`photometry/{region}/raw` with `store_raw` off holds only its qc/."""
+        ps, write = stored_session
+        write('photometry/VTA/raw/qc')
+        assert not ps.stored_product_exists('photometry/raw')
 
-
-class TestFailedProducts:
-    """Tests for PhotometrySession.failed_products."""
-
-    def test_error_with_no_stored_data_is_a_failure(self, stamped_session):
-        """An attempt logged against a product that stored nothing failed."""
-        ps, _ = stamped_session
-        ps.log_error(ValueError('no pose on Alyx'), product='video/pose')
-        assert ps.failed_products() == {'video/pose'}
-
-    def test_error_beside_stored_data_is_informational(self, stamped_session):
-        """The same error, once the product is stored, is a caveat not a
-        failure."""
-        ps, write = stamped_session
-        ps.log_error(ValueError('short pose table'), product='video/pose')
-        write('video/pose', 'video/pose')
-        assert ps.failed_products() == set()
-
-    def test_error_without_a_product_names_nothing(self, stamped_session):
-        """A session-level error names no product, so it blocks no build."""
-        ps, _ = stamped_session
-        ps.log_error(ValueError('session is not in the catalog'))
-        assert ps.failed_products() == set()
+    def test_absent_for_a_group_carrying_only_an_old_stamp(self, stored_session):
+        """A stamp left by an earlier version is not data: the product is absent."""
+        import h5py
+        import json
+        ps, write = stored_session
+        write('photometry/VTA/raw', data=False)
+        with h5py.File(ps.filepath, 'a') as h5:
+            h5['photometry/VTA/raw'].attrs['spec_json'] = json.dumps({'fs': 30})
+        assert not ps.stored_product_exists('photometry/raw')
 
 
 class TestLoadingPrimitives:
     """Round-trip tests for the three save/load pairs keyed by data structure."""
 
     @pytest.fixture
-    def stamped_writer(self, minimal_session_series, tmp_path):
-        """Session with an H5 path, plus its resolved spec for stamping."""
+    def writing_session(self, minimal_session_series, tmp_path):
+        """Session with an H5 path to write the primitives into."""
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(minimal_session_series)
         ps.filepath = tmp_path / f'{ps.eid}.h5'
         return ps
 
-    def test_time_series_roundtrip_series(self, stamped_writer):
+    def test_time_series_roundtrip_series(self, writing_session):
         """A time-indexed Series survives the round trip as float64."""
         import h5py
         from iblnm.data import _load_time_series, _save_time_series
-        ps = stamped_writer
+        ps = writing_session
         signal = pd.Series(np.array([1.0, 2.5, -3.25]),
                            index=np.array([0.0, 0.1, 0.2]))
 
         with h5py.File(ps.filepath, 'w') as h5:
             _save_time_series(h5.create_group('photometry/VTA/preprocessed'),
-                              signal, ps.spec['photometry/preprocessed'])
+                              signal)
         with h5py.File(ps.filepath, 'r') as h5:
             out = _load_time_series(h5['photometry/VTA/preprocessed'])
 
@@ -493,11 +375,11 @@ class TestLoadingPrimitives:
         np.testing.assert_array_equal(out.index.values, signal.index.values)
         np.testing.assert_array_equal(out.values, signal.values)
 
-    def test_time_series_roundtrip_dataframe(self, stamped_writer):
+    def test_time_series_roundtrip_dataframe(self, writing_session):
         """A multi-column time-indexed DataFrame survives with its columns."""
         import h5py
         from iblnm.data import _load_time_series, _save_time_series
-        ps = stamped_writer
+        ps = writing_session
         frame = pd.DataFrame(
             {'VTA': [1.0, 2.0, 3.0], 'SNc': [-1.0, -2.0, -3.0]},
             index=np.array([0.0, 0.1, 0.2]),
@@ -505,28 +387,27 @@ class TestLoadingPrimitives:
 
         with h5py.File(ps.filepath, 'w') as h5:
             _save_time_series(h5.create_group('photometry/preprocessed'),
-                              frame, ps.spec['photometry/preprocessed'])
+                              frame)
         with h5py.File(ps.filepath, 'r') as h5:
             out = _load_time_series(h5['photometry/preprocessed'])
 
         assert isinstance(out, pd.DataFrame)
         pd.testing.assert_frame_equal(out[frame.columns], frame)
 
-    def test_time_series_save_reports_current(self, stamped_writer):
-        """The stamp written by the save makes product_status report current."""
+    def test_time_series_save_is_found_by_the_presence_check(self, writing_session):
+        """What the save writes is what `stored_product_exists` looks for."""
         import h5py
         from iblnm.data import _save_time_series
-        ps = stamped_writer
+        ps = writing_session
         signal = pd.Series([1.0, 2.0], index=[0.0, 0.1])
 
         with h5py.File(ps.filepath, 'w') as h5:
-            grp = h5.create_group('photometry/VTA/preprocessed')
-            _save_time_series(grp, signal, ps.spec['photometry/preprocessed'])
-            assert 'spec_json' in grp.attrs and 'built_at' in grp.attrs
+            _save_time_series(h5.create_group('photometry/VTA/preprocessed'),
+                              signal)
 
-        assert ps.product_status('photometry/preprocessed') == 'current'
+        assert ps.stored_product_exists('photometry/preprocessed')
 
-    def test_peri_event_matrix_roundtrip(self, stamped_writer):
+    def test_peri_event_matrix_roundtrip(self, writing_session):
         """A DataArray(event, trial, time) survives with its coords intact.
 
         Trial coords are non-contiguous integers: the trial axis is keyed by
@@ -535,7 +416,7 @@ class TestLoadingPrimitives:
         """
         import h5py
         from iblnm.data import _load_peri_event_matrix, _save_peri_event_matrix
-        ps = stamped_writer
+        ps = writing_session
         trials = np.array([0, 3, 7, 12])
         responses = xr.DataArray(
             np.arange(2 * 4 * 5, dtype=np.float64).reshape(2, 4, 5),
@@ -546,18 +427,16 @@ class TestLoadingPrimitives:
         )
 
         with h5py.File(ps.filepath, 'w') as h5:
-            grp = h5.create_group('photometry/VTA/responses')
-            _save_peri_event_matrix(grp, responses,
-                                    ps.spec['photometry/responses'])
-            assert 'spec_json' in grp.attrs and 'built_at' in grp.attrs
+            _save_peri_event_matrix(h5.create_group('photometry/VTA/responses'),
+                                    responses)
         with h5py.File(ps.filepath, 'r') as h5:
             out = _load_peri_event_matrix(h5['photometry/VTA/responses'])
 
         xr.testing.assert_allclose(out.sortby('event'), responses.sortby('event'))
         np.testing.assert_array_equal(out.coords['trial'].values, trials)
-        assert ps.product_status('photometry/responses') == 'current'
+        assert ps.stored_product_exists('photometry/responses')
 
-    def test_scalars_roundtrip_with_nan(self, stamped_writer):
+    def test_scalars_roundtrip_with_nan(self, writing_session):
         """A flat scalar mapping survives as attrs, NaN included.
 
         A metric that could not be computed is stored as NaN rather than
@@ -565,15 +444,13 @@ class TestLoadingPrimitives:
         """
         import h5py
         from iblnm.data import _load_scalars, _save_scalars
-        ps = stamped_writer
+        ps = writing_session
         qc = {'n_unique_samples_GCaMP': 0.031,
               'median_absolute_deviance_GCaMP': np.nan,
               'ar_score_GCaMP': -1.5}
 
         with h5py.File(ps.filepath, 'w') as h5:
-            grp = h5.create_group('photometry/VTA/raw/qc')
-            _save_scalars(grp, qc, ps.spec['photometry/raw/qc'])
-            assert 'spec_json' in grp.attrs and 'built_at' in grp.attrs
+            _save_scalars(h5.create_group('photometry/VTA/raw/qc'), qc)
         with h5py.File(ps.filepath, 'r') as h5:
             out = _load_scalars(h5['photometry/VTA/raw/qc'])
 
@@ -581,7 +458,7 @@ class TestLoadingPrimitives:
         assert np.isnan(out['median_absolute_deviance_GCaMP'])
         assert out['n_unique_samples_GCaMP'] == pytest.approx(0.031)
         assert out['ar_score_GCaMP'] == pytest.approx(-1.5)
-        assert ps.product_status('photometry/raw/qc') == 'current'
+        assert ps.stored_product_exists('photometry/raw/qc')
 
 
 class TestStoreRawGating:
@@ -602,8 +479,8 @@ class TestStoreRawGating:
         """Raw bands are dropped; the QC scored from them is kept regardless."""
         raw_session.save_h5(groups=['photometry'])
 
-        assert raw_session.product_status('photometry/raw') == 'absent'
-        assert raw_session.product_status('photometry/raw/qc') == 'current'
+        assert not raw_session.stored_product_exists('photometry/raw')
+        assert raw_session.stored_product_exists('photometry/raw/qc')
 
     def test_photometry_raw_roundtrips_when_on(self, raw_session, monkeypatch,
                                                mock_session_series,
@@ -613,7 +490,7 @@ class TestStoreRawGating:
         monkeypatch.setattr('iblnm.data.store_raw', True)
         raw_session.save_h5(groups=['photometry'])
 
-        assert raw_session.product_status('photometry/raw') == 'current'
+        assert raw_session.stored_product_exists('photometry/raw')
         fresh = PhotometrySession(mock_session_series, one=MagicMock(),
                                   load_data=False)
         fresh.load_h5(raw_session.filepath)
@@ -627,11 +504,11 @@ class TestStoreRawGating:
         raw_session.wheel_position = pd.Series([0.0, 0.1, 0.3],
                                                index=[0.0, 0.5, 1.7])
         raw_session.save_h5(groups=['wheel'])
-        assert raw_session.product_status('wheel/raw') == 'absent'
+        assert not raw_session.stored_product_exists('wheel/raw')
 
         monkeypatch.setattr('iblnm.data.store_raw', True)
         raw_session.save_h5(groups=['wheel'])
-        assert raw_session.product_status('wheel/raw') == 'current'
+        assert raw_session.stored_product_exists('wheel/raw')
 
         fresh = PhotometrySession(mock_session_series, one=MagicMock(),
                                   load_data=False)
@@ -686,13 +563,11 @@ class TestStoreRawGating:
         raw_session.pose = pose
         raw_session.motion_energy = np.array([0.5, 1.5, 2.5])
         raw_session.save_h5(groups=['video'])
-        assert [raw_session.product_status(p) for p in products] == \
-            ['absent'] * 3
+        assert not any(raw_session.stored_product_exists(p) for p in products)
 
         monkeypatch.setattr('iblnm.data.store_raw', True)
         raw_session.save_h5(groups=['video'])
-        assert [raw_session.product_status(p) for p in products] == \
-            ['current'] * 3
+        assert all(raw_session.stored_product_exists(p) for p in products)
 
         fresh = PhotometrySession(mock_session_series, one=MagicMock(),
                                   load_data=False)
@@ -1160,30 +1035,6 @@ class TestH5Errors:
         assert ps.errors[0]['error_type'] == 'MissingRawData'
         assert ps.errors[0]['product'] is None
 
-    def test_blocking_and_stale_errors_are_not_written(self, mock_session_series,
-                                                       tmp_path):
-        """A file lock or a spec mismatch must not mark the session failed."""
-        from iblnm.data import PhotometrySession
-        from iblnm.validation import StaleProduct
-        mock_one = MagicMock()
-        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        fpath = tmp_path / f'{ps.eid}.h5'
-
-        try:
-            raise BlockingIOError("file locked")
-        except BlockingIOError as e:
-            ps.log_error(e, product='photometry/raw')
-        try:
-            raise StaleProduct("spec changed")
-        except StaleProduct as e:
-            ps.log_error(e, product='video/pose')
-        ps.save_h5(fpath, groups=['metadata', 'errors'])
-
-        ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        ps2.load_h5(fpath, groups=['errors'])
-        assert ps2.errors == []
-
-
 class TestFromAlyx:
     """Tests for PhotometrySession.from_alyx instance method."""
 
@@ -1464,7 +1315,7 @@ class TestFetchTier:
                           side_effect=_populate) as fetch:
             session.load_raw_photometry()
             session.save_h5(groups=['photometry'])
-            assert session.product_status('photometry/raw') == 'current'
+            assert session.stored_product_exists('photometry/raw')
             session.load_raw_photometry()
             assert fetch.call_count == 1
             session.fetch_photometry()
@@ -1562,7 +1413,7 @@ class TestLoadPhotometry:
         assert fetch_mock.call_count == 1
         assert list(signal.columns) == ['VTA']
         assert session.photometry['GCaMP_preprocessed'] is signal
-        assert session.product_status('photometry/preprocessed') == 'current'
+        assert session.stored_product_exists('photometry/preprocessed')
 
     def test_saves_what_the_extraction_returned(self, fetching_session,
                                                 mock_photometry_session):
@@ -1613,30 +1464,35 @@ class TestLoadPhotometry:
         assert fresh.preprocessing_diagnostics['VTA'] == pytest.approx(
             session.preprocessing_diagnostics['VTA'])
 
-    def test_raises_on_stale_stamp_without_logging(self, fetching_session):
-        """A stamp that disagrees with config stops the load and is not logged.
+    def test_reads_a_stored_product_built_with_other_parameters(
+            self, fetching_session):
+        """Parameters differing from config.py do not stop the stored read.
 
-        StaleProduct reports a config-vs-store mismatch identical across every
-        session, so it belongs at the script's top level, not in errors/.
+        Files written before this change carry a `spec_json` attr naming the
+        parameters that produced them. Nothing compares it against `config.py`
+        any more: a stored product is present or absent, so the read returns
+        the signal rather than raising.
         """
+        import json
         import h5py
-        from iblnm.data import _write_stamp
-        from iblnm.validation import StaleProduct
+        from iblnm.data import PhotometrySession
         session, fetch = fetching_session
         with fetch:
-            session.load_photometry()
+            built = session.load_photometry()
         with h5py.File(session.filepath, 'a') as h5:
-            _write_stamp(h5['photometry/VTA/preprocessed'],
-                         session.spec['photometry/preprocessed'] | {'fs': 15})
+            h5['photometry/VTA/preprocessed'].attrs['spec_json'] = json.dumps(
+                {'fs': 15})
 
-        # A session holding the signal answers from memory, so the stale store
+        # A session holding the signal answers from memory, so the stored copy
         # is only met by one that has to read it.
-        from iblnm.data import PhotometrySession
         fresh = PhotometrySession(session.to_dict(), one=MagicMock(),
                                   load_data=False)
         fresh.filepath = session.filepath
-        with pytest.raises(StaleProduct, match='photometry/preprocessed'):
-            fresh.load_photometry()
+        with patch.object(PhotometrySession, 'load_raw_photometry') as fetch_mock:
+            signal = fresh.load_photometry()
+
+        fetch_mock.assert_not_called()
+        np.testing.assert_allclose(signal['VTA'].values, built['VTA'].values)
         assert fresh.errors == []
 
     def test_returns_the_held_signal_without_reading_the_file(self,
@@ -1649,17 +1505,6 @@ class TestLoadPhotometry:
 
             assert session.load_photometry() is signal
         assert fetch_mock.call_count == 1
-
-    def test_rebuild_skips_the_stored_product(self, fetching_session):
-        """A product named in self.rebuild is refetched even when current."""
-        session, fetch = fetching_session
-        with fetch as fetch_mock:
-            session.load_photometry()
-            assert session.product_status('photometry/preprocessed') == 'current'
-            session.rebuild.add('photometry/preprocessed')
-            session.load_photometry()
-
-        assert fetch_mock.call_count == 2
 
     def test_never_returns_raw(self, fetching_session, mock_photometry_data):
         """Holding the raw bands is not enough: the fetch failure propagates.
@@ -2143,13 +1988,13 @@ class TestLoadResponses:
     def test_builds_and_stores_when_absent(self, preprocessed_session):
         """Nothing stored: the matrices are cut, assigned, and written."""
         session = preprocessed_session
-        assert session.product_status('photometry/responses') == 'absent'
+        assert not session.stored_product_exists('photometry/responses')
 
         responses = session.load_responses('photometry')
 
         assert isinstance(responses['VTA'], xr.DataArray)
         assert session.photometry_responses is responses
-        assert session.product_status('photometry/responses') == 'current'
+        assert session.stored_product_exists('photometry/responses')
 
     def test_roundtrips_a_dataarray_per_region(self, preprocessed_session,
                                                mock_session_series):
@@ -2167,26 +2012,6 @@ class TestLoadResponses:
         xr.testing.assert_allclose(reloaded['VTA'].sortby('event'),
                                    built['VTA'].sortby('event'))
 
-    def test_raises_on_stale_stamp(self, preprocessed_session):
-        """A response matrix cut with parameters that changed is not used."""
-        import h5py
-        from iblnm.data import _write_stamp
-        from iblnm.validation import StaleProduct
-        session = preprocessed_session
-        session.load_responses('photometry')
-        with h5py.File(session.filepath, 'a') as h5:
-            _write_stamp(h5['photometry/VTA/responses'],
-                         session.spec['photometry/responses'] | {'window': [-2, 2]})
-
-        # A session holding the matrices answers from memory, so the stale
-        # store is only met by one that has to read it.
-        from iblnm.data import PhotometrySession
-        fresh = PhotometrySession(session.to_dict(), one=MagicMock(),
-                                  load_data=False)
-        fresh.filepath = session.filepath
-        with pytest.raises(StaleProduct, match='photometry/responses'):
-            fresh.load_responses('photometry')
-
     def test_returns_the_held_matrices_without_reading_the_file(
             self, preprocessed_session):
         """A second call answers from memory: the stored matrices go unread."""
@@ -2195,19 +2020,6 @@ class TestLoadResponses:
         session.filepath.unlink()
 
         assert session.load_responses('photometry') is responses
-
-    def test_rebuild_recuts_a_current_product(self, preprocessed_session):
-        """A product named in self.rebuild is re-cut, not read."""
-        session = preprocessed_session
-        session.load_responses('photometry', events=['stimOn_times'])
-        session.rebuild.add('photometry/responses')
-
-        responses = session.load_responses(
-            'photometry', events=['stimOn_times', 'feedback_times'])
-
-        assert list(responses['VTA'].coords['event'].values) == [
-            'stimOn_times', 'feedback_times']
-
 
 class TestExtractResponses:
     def test_returns_dict_without_assigning_attribute(self, mock_photometry_session):
@@ -2426,13 +2238,13 @@ class TestTrialsTableProduct:
         pd.testing.assert_frame_equal(
             reloaded.trials[original.columns], original, check_dtype=False)
 
-    def test_saved_table_reports_current(self, mock_session_series, tmp_path):
-        """save_h5 stamps trials/table, so product_status sees it as current."""
+    def test_saved_table_is_found_in_the_store(self, mock_session_series, tmp_path):
+        """save_h5 writes trials/table where the presence check looks for it."""
         ps = self._session(mock_session_series, tmp_path)
-        assert ps.product_status('trials/table') == 'absent'
+        assert not ps.stored_product_exists('trials/table')
         ps.trials = _full_one_trials_frame()
         ps.save_h5(groups=['trials'])
-        assert ps.product_status('trials/table') == 'current'
+        assert ps.stored_product_exists('trials/table')
 
     def test_load_trials_records_one_index_as_trial(self, mock_session_series,
                                                     tmp_path):
@@ -2472,7 +2284,6 @@ class TestTrialsTableProduct:
 class TestSaveLoadH5:
     def test_save_preprocessed_float64(self, mock_photometry_session, tmp_path):
         """save_h5 should write preprocessed signal as float64 with timestamps."""
-        from iblnm.data import _read_stamp
         session = mock_photometry_session
         session.extract_preprocessed_photometry()
         fpath = tmp_path / f'{session.eid}.h5'
@@ -2481,8 +2292,6 @@ class TestSaveLoadH5:
         import h5py
         with h5py.File(fpath, 'r') as f:
             pp_grp = f['photometry/VTA/preprocessed']
-            # fs is no longer an ad-hoc attr: it lives inside the spec stamp.
-            assert _read_stamp(pp_grp)['fs'] == 30
             assert pp_grp['signal'].dtype == np.float64
             np.testing.assert_allclose(
                 pp_grp['signal'][:],
@@ -2495,13 +2304,13 @@ class TestSaveLoadH5:
                 rtol=1e-10
             )
 
-    def test_saved_photometry_products_report_current(
+    def test_saved_photometry_products_are_found_in_the_store(
             self, mock_photometry_session, tmp_path):
-        """save_h5 stamps what it writes, so product_status sees it as current.
+        """save_h5 writes each product where the presence check looks for it.
 
         Covers the orchestrator wiring, not the primitives: `_save_photometry`
-        must hand each product its own resolved spec, or the file it just wrote
-        reads back as stale.
+        must write each product into its own group, or the file it just wrote
+        reads back as empty.
         """
         session = mock_photometry_session
         session.extract_preprocessed_photometry()
@@ -2511,8 +2320,8 @@ class TestSaveLoadH5:
         session.filepath = tmp_path / f'{session.eid}.h5'
         session.save_h5()
 
-        assert session.product_status('photometry/preprocessed') == 'current'
-        assert session.product_status('photometry/responses') == 'current'
+        assert session.stored_product_exists('photometry/preprocessed')
+        assert session.stored_product_exists('photometry/responses')
 
     def test_preprocessed_band_comes_from_the_product(self, mock_photometry_session,
                                                        mock_session_series, tmp_path):
@@ -3405,7 +3214,7 @@ class TestLoadPhotometryQc:
         fetch.assert_called_once()
         assert set(stored) == {'VTA'}
         assert 'n_unique_samples_GCaMP' in stored['VTA']
-        assert session.product_status('photometry/raw/qc') == 'current'
+        assert session.stored_product_exists('photometry/raw/qc')
 
     def test_reads_stored_product_without_rescoring(self, mock_photometry_session,
                                                     mock_session_series):
@@ -3422,25 +3231,6 @@ class TestLoadPhotometryQc:
         with patch('iblnm.data.qc_signals') as score:
             assert fresh.load_photometry_qc() == built
         score.assert_not_called()
-
-    def test_raises_on_stale_stamp(self, mock_photometry_session,
-                                   mock_session_series):
-        from unittest.mock import patch
-        from iblnm.data import PhotometrySession
-        from iblnm.validation import StaleProduct
-        session = mock_photometry_session
-        with patch('iblnm.data.qc_signals', return_value=_tidy_qc()):
-            with patch.object(type(session), 'load_raw_photometry'):
-                session.load_photometry_qc()
-
-        with patch.dict('iblnm.config.QC_SLIDING_AGG',
-                        {'n_unique_samples': 'mean'}):
-            fresh = PhotometrySession(mock_session_series, one=MagicMock(),
-                                      load_data=False)
-            fresh.filepath = session.filepath
-            with pytest.raises(StaleProduct):
-                fresh.load_photometry_qc()
-
 
 class TestLoadNeurophotometricsQc:
     """`load_neurophotometrics_qc` returns the stored product, scoring if absent."""
@@ -3477,8 +3267,7 @@ class TestLoadNeurophotometricsQc:
             group = h5['photometry/neurophotometrics/qc']
             assert group.attrs['n_band_inversions'] == 1.0
             assert list(h5['photometry/neurophotometrics']) == ['qc']
-        assert session.product_status(
-            'photometry/neurophotometrics/qc') == 'current'
+        assert session.stored_product_exists('photometry/neurophotometrics/qc')
 
     def test_propagates_fetch_failure(self, mock_photometry_session):
         from unittest.mock import patch
@@ -3837,23 +3626,11 @@ class TestTrialsPerformanceProduct:
         """Building from trials stores a stamped product a reload reproduces."""
         ps = self._session(mock_session_series, tmp_path, _make_training_trials())
         built = ps.load_performance()
-        assert ps.product_status('trials/performance') == 'current'
+        assert ps.stored_product_exists('trials/performance')
 
         reopened = self._session(mock_session_series, tmp_path)
         reloaded = reopened.load_performance()
         assert reloaded == built
-
-    def test_stale_when_min_block_length_changes(self, mock_session_series,
-                                                 tmp_path):
-        """MIN_BLOCK_LENGTH gates which blocks are fit, so it stamps the product."""
-        import iblnm.config as config
-        ps = self._session(mock_session_series, tmp_path, _make_training_trials())
-        ps.load_performance()
-
-        with patch.dict(config.PRODUCT_SPEC['trials/performance'],
-                        {'min_block_length': 999}):
-            reopened = self._session(mock_session_series, tmp_path)
-            assert reopened.product_status('trials/performance') == 'stale'
 
     def test_training_stores_no_block_keys(self, mock_session_series, tmp_path):
         """A training session has one block, so no 20/80 psychometrics are fit."""
@@ -4057,174 +3834,6 @@ class TestFromCatalog:
             catalog, one=MagicMock(), h5_dir=tmp_path, scan_h5=False)
         assert group._catalog['logged_errors'].apply(
             lambda x: x == ['MissingRawData']).all()
-
-
-class TestGroupRebuildPropagation:
-    """The group's rebuild set reaches every session it constructs."""
-
-    def test_get_session_carries_the_groups_rebuild_set(self):
-        """A session built by the group rebuilds what the group rebuilds."""
-        from iblnm.data import PhotometrySessionGroup
-
-        group = PhotometrySessionGroup(_make_recordings_df(n_eids=1, regions_per=1),
-                                       one=MagicMock())
-        group.rebuild = {'photometry/preprocessed'}
-        ps = group._get_session(group.recordings.iloc[0])
-
-        assert ps.rebuild == {'photometry/preprocessed'}
-
-    def test_worker_session_carries_the_pickled_rebuild_set(self, tmp_path):
-        """The set crosses the pool boundary as an explicit worker argument.
-
-        Calls the worker directly rather than through a pool: what is under
-        test is the payload contract, not the pool.
-        """
-        from iblnm.data import _process_worker
-
-        row = _make_recordings_df(n_eids=1, regions_per=1).iloc[0].to_dict()
-        with patch('iblnm.io._get_default_connection', return_value=MagicMock()):
-            rebuild = _process_worker(
-                'eid-0', row, tmp_path, lambda ps: ps.rebuild, {},
-                {'photometry/preprocessed'})
-
-        assert rebuild == {'photometry/preprocessed'}
-
-
-class TestScanProductStatus:
-    """Tests for PhotometrySessionGroup.scan_product_status."""
-
-    @pytest.fixture
-    def scan_group(self, tmp_path):
-        """Group over three sessions in known per-product states.
-
-        Files are stamped by hand in ``tmp_path``: ``eid-0`` (two regions)
-        carries a current trials table and no photometry, ``eid-1`` a current
-        trials table and a preprocessed signal stamped at the wrong sampling
-        rate, and ``eid-2`` has no file at all.
-        """
-        import h5py
-        from iblnm.data import PhotometrySession, PhotometrySessionGroup, _write_stamp
-
-        catalog = pd.DataFrame([
-            {'eid': 'eid-0', 'subject': 'mouse_A', 'session_type': 'biased',
-             'start_time': '2024-01-01T10:00:00', 'number': 1,
-             'brain_region': ['VTA', 'SNc'], 'hemisphere': ['l', 'r'],
-             'target_NM': ['VTA-DA', 'SNc-DA'], 'NM': 'DA'},
-            {'eid': 'eid-1', 'subject': 'mouse_B', 'session_type': 'biased',
-             'start_time': '2024-01-02T10:00:00', 'number': 1,
-             'brain_region': ['DR'], 'hemisphere': ['l'],
-             'target_NM': ['DR-5HT'], 'NM': '5HT'},
-            {'eid': 'eid-2', 'subject': 'mouse_C', 'session_type': 'biased',
-             'start_time': '2024-01-03T10:00:00', 'number': 1,
-             'brain_region': ['LC'], 'hemisphere': ['r'],
-             'target_NM': ['LC-NE'], 'NM': 'NE'},
-        ])
-        spec = PhotometrySession(catalog.iloc[0]).spec
-        stamps = {
-            'eid-0': {'trials/table': spec['trials/table']},
-            'eid-1': {'trials/table': spec['trials/table'],
-                      'photometry/VTA/preprocessed':
-                          spec['photometry/preprocessed'] | {'fs': 15}},
-        }
-        for eid, groups in stamps.items():
-            with h5py.File(tmp_path / f'{eid}.h5', 'w') as h5:
-                for path, stamp in groups.items():
-                    _write_stamp(h5.require_group(path), stamp)
-
-        group = PhotometrySessionGroup(catalog, one=MagicMock(), h5_dir=tmp_path)
-        return group
-
-    def test_one_row_per_session_with_a_column_per_product(self, scan_group):
-        """Three sessions, two products, one row each — never one per recording."""
-        status = scan_group.scan_product_status(
-            'trials/table', 'photometry/preprocessed')
-
-        assert list(status.columns) == [
-            'eid', 'trials/table', 'photometry/preprocessed']
-        assert list(status['eid']) == ['eid-0', 'eid-1', 'eid-2']
-        assert list(status['trials/table']) == ['current', 'current', 'absent']
-        assert list(status['photometry/preprocessed']) == [
-            'absent', 'stale', 'absent']
-
-    def test_rebuilt_product_gets_no_column(self, scan_group):
-        """A product being rebuilt is skipped — its stored state is moot."""
-        scan_group.rebuild = {'photometry/preprocessed'}
-        status = scan_group.scan_product_status(
-            'trials/table', 'photometry/preprocessed')
-
-        assert list(status.columns) == ['eid', 'trials/table']
-
-    def test_group_rebuild_defaults_empty(self, scan_group):
-        """Nothing is rebuilt unless a caller says so."""
-        assert scan_group.rebuild == set()
-
-    def test_scan_makes_no_database_calls(self, scan_group):
-        """Surveying reads H5 attrs, so it must not reach Alyx.
-
-        The loader parent resolves a session path through ``one.eid2path`` on
-        every construction. Going through that once per session turns a
-        stamp-reading survey into thousands of network round trips.
-        """
-        scan_group.scan_product_status(
-            'trials/table', 'photometry/preprocessed')
-
-        assert scan_group.one.method_calls == []
-
-
-class TestCheckProducts:
-    """The one call a script makes over the store it is about to read."""
-
-    @staticmethod
-    def _group(tmp_path, stale_eids=()):
-        """Group over three sessions, each holding a stamped trials table.
-
-        Sessions named in ``stale_eids`` are stamped with a spec that
-        disagrees with `config.py`, which is what `product_status` reports as
-        'stale'.
-        """
-        import h5py
-        from iblnm.data import PhotometrySession, PhotometrySessionGroup, _write_stamp
-
-        catalog = pd.DataFrame([
-            {'eid': f'eid-{i}', 'subject': f'mouse_{i}', 'session_type': 'biased',
-             'start_time': f'2024-01-0{i + 1}T10:00:00', 'number': 1,
-             'brain_region': ['VTA'], 'hemisphere': ['l'],
-             'target_NM': ['VTA-DA'], 'NM': 'DA'}
-            for i in range(3)])
-        spec = PhotometrySession(catalog.iloc[0]).spec['trials/table']
-        for eid in catalog['eid']:
-            stamp = spec | {'fs': 15} if eid in stale_eids else spec
-            with h5py.File(tmp_path / f'{eid}.h5', 'w') as h5:
-                _write_stamp(h5.require_group('trials/table'), stamp)
-        return PhotometrySessionGroup(catalog, one=MagicMock(), h5_dir=tmp_path)
-
-    def test_tally_is_printed_and_returned(self, tmp_path, capsys):
-        """A complete store reports every session holding the product."""
-        group = self._group(tmp_path)
-
-        status = group.check_products('trials/table')
-
-        out = capsys.readouterr().out
-        assert 'Stored products across 3 sessions:' in out
-        assert 'trials/table' in out and '3 current' in out
-        assert list(status['trials/table']) == ['current'] * 3
-
-    def test_stale_stamp_stops_the_run(self, tmp_path):
-        """A stamp disagreeing with config.py raises instead of rebuilding."""
-        from iblnm.validation import StaleProduct
-        group = self._group(tmp_path, stale_eids=['eid-1'])
-
-        with pytest.raises(StaleProduct, match='trials/table') as error:
-            group.check_products('trials/table')
-
-        assert '1 session' in str(error.value)
-
-    def test_rebuilding_a_stale_product_is_allowed(self, tmp_path):
-        """Naming the product in `rebuild` is how the user accepts the change."""
-        group = self._group(tmp_path, stale_eids=['eid-1'])
-
-        group.check_products('trials/table', rebuild={'trials/table'})
-
 
 
 def _collector_catalog(session_types):

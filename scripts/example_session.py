@@ -138,7 +138,7 @@ def select_example_session(group, target_nm=DEFAULT_TARGET_NM):
     # LightningPose there is nothing to plot downstream either.
     for _, rec in candidates.iterrows():
         ps = group._get_session(rec)
-        if ps.product_status('video/pose/qc') != 'current':
+        if not ps.stored_product_exists('video/pose/qc'):
             continue
         if camera_timing_ok(ps.load_pose_qc()):
             return rec

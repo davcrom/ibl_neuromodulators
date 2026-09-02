@@ -185,7 +185,7 @@ class TestPreprocessedWheelProduct:
         assert ps.wheel_velocity is velocity
         assert not ps.filepath.exists()
 
-    def test_load_writes_and_stamps_the_preprocessed_group(
+    def test_load_writes_the_preprocessed_group(
             self, mock_session_series, tmp_path):
         """The load is what saves: one velocity dataset under its own label."""
         import h5py
@@ -196,38 +196,20 @@ class TestPreprocessedWheelProduct:
         with h5py.File(ps.filepath, 'r') as h5:
             stored = h5[f'wheel/{WHEEL_LABEL}/preprocessed/signal'][:]
         np.testing.assert_allclose(stored, velocity.to_numpy())
-        assert ps.product_status('wheel/preprocessed') == 'current'
+        assert ps.stored_product_exists('wheel/preprocessed')
 
     def test_reads_stored_product_without_fetching(self, mock_session_series,
                                                    tmp_path):
         """A second session over the same file reads it and never fetches."""
         ps = _make_session(mock_session_series, tmp_path)
         built = ps.load_wheel()
-        assert ps.product_status('wheel/preprocessed') == 'current'
+        assert ps.stored_product_exists('wheel/preprocessed')
 
         fresh = _make_session(mock_session_series, tmp_path)
         velocity = fresh.load_wheel()
 
         fresh.one.load_object.assert_not_called()
         pd.testing.assert_series_equal(velocity, built)
-
-    def test_raises_on_stale_stamp(self, mock_session_series, tmp_path):
-        """A velocity computed at a rate that changed is not reused."""
-        import h5py
-        from iblnm.data import WHEEL_LABEL, _write_stamp
-        from iblnm.validation import StaleProduct
-        ps = _make_session(mock_session_series, tmp_path)
-        ps.load_wheel()
-        with h5py.File(ps.filepath, 'a') as h5:
-            _write_stamp(h5[f'wheel/{WHEEL_LABEL}/preprocessed'],
-                         ps.spec['wheel/preprocessed'] | {'fs': 1000})
-
-        assert ps.product_status('wheel/preprocessed') == 'stale'
-        # A session holding the velocity answers from memory, so the stale
-        # store is only met by one that has to read it.
-        fresh = _make_session(mock_session_series, tmp_path)
-        with pytest.raises(StaleProduct, match='wheel/preprocessed'):
-            fresh.load_wheel()
 
     def test_returns_the_held_velocity_without_reading_the_file(
             self, mock_session_series, tmp_path):
@@ -239,32 +221,10 @@ class TestPreprocessedWheelProduct:
         assert ps.load_wheel() is velocity
         assert ps.one.load_object.call_count == 1
 
-    def test_rebuild_skips_the_stored_product(self, mock_session_series, tmp_path):
-        """A product named in self.rebuild is refetched even when current."""
-        ps = _make_session(mock_session_series, tmp_path)
-        ps.load_wheel()
-        # The position is rebuilt too, since only what is named bypasses memory.
-        ps.rebuild.update({'wheel/raw', 'wheel/preprocessed'})
-        ps.load_wheel()
-
-        assert ps.one.load_object.call_count == 2
-
-    def test_rebuild_redifferentiates_the_held_position(self, mock_session_series,
-                                                        tmp_path):
-        """Rebuilding the velocity alone re-derives it from the position held."""
-        ps = _make_session(mock_session_series, tmp_path)
-        first = ps.load_wheel()
-        ps.rebuild.add('wheel/preprocessed')
-        second = ps.load_wheel()
-
-        assert second is not first
-        assert ps.one.load_object.call_count == 1
-        pd.testing.assert_series_equal(second, first)
-
     def test_absent_before_anything_is_stored(self, mock_session_series, tmp_path):
         ps = _make_session(mock_session_series, tmp_path)
-        assert ps.product_status('wheel/raw') == 'absent'
-        assert ps.product_status('wheel/preprocessed') == 'absent'
+        assert not ps.stored_product_exists('wheel/raw')
+        assert not ps.stored_product_exists('wheel/preprocessed')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,21 +269,6 @@ class TestWheelResponsesProduct:
         np.testing.assert_array_equal(
             responses['velocity'].coords['trial'].to_numpy(), [7, 9])
 
-    def test_events_live_in_the_stamp_not_standalone_attrs(self, wheeled_session):
-        """t0_event / t1_event are read back from the product's spec stamp."""
-        import h5py
-        from iblnm.data import WHEEL_LABEL, _read_stamp
-        wheeled_session.load_responses('wheel')
-
-        with h5py.File(wheeled_session.filepath, 'r') as h5:
-            group = h5[f'wheel/{WHEEL_LABEL}/responses']
-            stamp = _read_stamp(group)
-            assert 't0_event' not in group.attrs
-            assert 't1_event' not in group.attrs
-        assert stamp['t0_event'] == 'stimOn_times'
-        assert stamp['t1_event'] == 'feedback_times'
-        assert wheeled_session.product_status('wheel/responses') == 'current'
-
     def test_roundtrips_through_h5(self, wheeled_session, mock_session_series,
                                    tmp_path):
         import xarray as xr
@@ -334,24 +279,6 @@ class TestWheelResponsesProduct:
 
         assert set(reloaded) == {'velocity'}
         xr.testing.assert_allclose(reloaded['velocity'], built['velocity'])
-
-    def test_raises_on_stale_stamp(self, wheeled_session, mock_session_series,
-                                   tmp_path):
-        import h5py
-        from iblnm.data import WHEEL_LABEL, _write_stamp
-        from iblnm.validation import StaleProduct
-        wheeled_session.load_responses('wheel')
-        with h5py.File(wheeled_session.filepath, 'a') as h5:
-            _write_stamp(h5[f'wheel/{WHEEL_LABEL}/responses'],
-                         wheeled_session.spec['wheel/responses']
-                         | {'t1_event': 'response_times'})
-
-        # A session holding the matrices answers from memory, so the stale
-        # store is only met by one that has to read it.
-        fresh = _make_session(mock_session_series, tmp_path)
-        fresh.trials = _make_trials()
-        with pytest.raises(StaleProduct, match='wheel/responses'):
-            fresh.load_responses('wheel')
 
     def test_peak_velocity_matches_the_old_matrix(self, wheeled_session):
         """`_peak_velocity` on the responses product reproduces the old values."""

@@ -114,15 +114,6 @@ class QCValidationError(Exception):
 class AmbiguousRegionMapping(Exception):
     """Photometry columns cannot be unambiguously mapped to session brain_region metadata."""
 
-class StaleProduct(Exception):
-    """Stored product was built with parameters that no longer match config.
-
-    Raised by load methods and propagated to the script's top level; never
-    written to a session's errors group, since it reports a config-vs-store
-    mismatch that is identical across every session rather than a per-session
-    failure.
-    """
-
 
 # =============================================================================
 # Exceptions — video QC / data
@@ -149,7 +140,7 @@ def make_log_entry(eid, error=None, error_type=None, error_message=None,
     Provide either an exception via `error`, or explicit `error_type`/`error_message`.
     When `error` is given, type/message/traceback are extracted from it.
 
-    `product` is the `config.PRODUCT_SPEC` key whose build raised, e.g.
+    `product` is the '{modality}/{product}' name whose build raised, e.g.
     'video/pose'. It is what sorts the entry into its `errors/{product}` group
     in the session H5; None means the failure is not attributable to one
     product and lands in the `errors/` root.

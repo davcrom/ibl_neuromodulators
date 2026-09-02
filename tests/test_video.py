@@ -135,7 +135,7 @@ class TestFetchVideoTier:
         ps = _make_session(mock_session_series, tmp_path)
         ps.load_motion_energy()
         ps.save_h5(groups=['video'])
-        assert ps.product_status('video/motion_energy') == 'current'
+        assert ps.stored_product_exists('video/motion_energy')
 
         ps.load_motion_energy()
         stored_reads = ps.one.load_dataset.call_count
@@ -157,9 +157,9 @@ class TestRawVideoProducts:
     def keep_raw(self, monkeypatch):
         monkeypatch.setattr('iblnm.data.store_raw', True)
 
-    def test_each_dataset_stores_and_stamps_on_its_own(self, mock_session_series,
-                                                       tmp_path):
-        """Fetching all three leaves three separately stamped products."""
+    def test_each_dataset_stores_on_its_own(self, mock_session_series,
+                                            tmp_path):
+        """Fetching all three leaves three separately stored products."""
         ps = _make_session(mock_session_series, tmp_path)
         ps.load_camera_times()
         ps.load_pose()
@@ -167,7 +167,7 @@ class TestRawVideoProducts:
         ps.save_h5(groups=['video'])
 
         for product in ('video/times', 'video/pose', 'video/motion_energy'):
-            assert ps.product_status(product) == 'current'
+            assert ps.stored_product_exists(product)
 
     def test_roundtrips_each_dataset_unchanged(self, mock_session_series, tmp_path):
         times, pose, motion_energy = _camera_times(), _pose_frame(), _motion_energy()
@@ -197,22 +197,14 @@ class TestRawVideoProducts:
         ps.load_motion_energy()
         ps.save_h5(groups=['video'])
 
-        assert ps.product_status('video/times') == 'current'
-        assert ps.product_status('video/motion_energy') == 'current'
-        assert ps.product_status('video/pose') == 'absent'
+        assert ps.stored_product_exists('video/times')
+        assert ps.stored_product_exists('video/motion_energy')
+        assert not ps.stored_product_exists('video/pose')
 
     def test_absent_before_anything_is_stored(self, mock_session_series, tmp_path):
         ps = _make_session(mock_session_series, tmp_path)
         for product in ('video/times', 'video/pose', 'video/motion_energy'):
-            assert ps.product_status(product) == 'absent'
-
-    def test_rebuild_skips_the_stored_dataset(self, mock_session_series, tmp_path):
-        ps = _make_session(mock_session_series, tmp_path)
-        ps.load_pose()
-        ps.rebuild.add('video/pose')
-        ps.load_pose()
-
-        assert ps.one.load_dataset.call_count == 2
+            assert not ps.stored_product_exists(product)
 
     def test_redownloading_raw_clears_the_manual_verdicts(
             self, mock_session_series, tmp_path):
@@ -222,8 +214,7 @@ class TestRawVideoProducts:
         ps.load_pose()
         ps.set_manual_qc('qc_lp', 'FAIL')
 
-        ps.rebuild.add('video/pose')
-        ps.load_pose()
+        ps.fetch_pose()
 
         assert ps.video_manual_qc == {}
         fresh = _make_session(mock_session_series, tmp_path)
@@ -301,7 +292,7 @@ class TestExtractVideoTier:
 
 class TestVideoTimesQcProduct:
 
-    def test_measures_are_stamped_attrs_of_the_times_qc_group(
+    def test_measures_are_attrs_of_the_times_qc_group(
             self, mock_session_series, tmp_path):
         """Both measures live under video/times/qc, none on the video group."""
         import h5py
@@ -312,7 +303,7 @@ class TestVideoTimesQcProduct:
         # 600 frames at 60 Hz span 599/60 s; session_length is 5 s.
         assert measures['length_discrepancy'] == pytest.approx(599 / 60 - 5.0)
         assert measures['framerate_from_tpts'] == pytest.approx(1 / 60)
-        assert ps.product_status('video/times/qc') == 'current'
+        assert ps.stored_product_exists('video/times/qc')
         with h5py.File(ps.filepath, 'r') as f:
             assert set(measures) <= set(f['video/times/qc'].attrs)
             assert not set(measures) & set(f['video'].attrs)
@@ -430,10 +421,10 @@ class TestPoseQcProduct:
         xcorr = ps.load_pose_qc()
 
         assert set(xcorr) == set(XCORR_FIELDS)
-        assert ps.product_status('video/pose/qc') == 'current'
+        assert ps.stored_product_exists('video/pose/qc')
         # The QC group hangs under `video/pose`, so writing it must not leave
         # the raw pose product looking unstamped.
-        assert ps.product_status('video/pose') == 'current'
+        assert ps.stored_product_exists('video/pose')
 
         fresh = _make_session(mock_session_series, tmp_path, _xcorr_one())
         stored = fresh.load_pose_qc()
@@ -441,26 +432,6 @@ class TestPoseQcProduct:
             np.testing.assert_allclose(stored[field], xcorr[field])
         assert stored['drift'] == pytest.approx(xcorr['drift'])
         fresh.one.load_dataset.assert_not_called()
-
-    def test_goes_stale_when_the_wheel_rate_changes(self, mock_session_series,
-                                                    tmp_path):
-        """The wheel is an input, so its parameters ride in the pose-QC stamp."""
-        import h5py
-        from iblnm.data import _write_stamp
-        from iblnm.validation import StaleProduct
-        ps = _make_session(mock_session_series, tmp_path, _xcorr_one())
-        ps.load_pose_qc()
-        with h5py.File(ps.filepath, 'a') as f:
-            _write_stamp(f['video/pose/qc'],
-                         ps.spec['video/pose/qc']
-                         | {'wheel/preprocessed.fs': 1000})
-
-        assert ps.product_status('video/pose/qc') == 'stale'
-        # A session holding the xcorr answers from memory, so the stale store
-        # is only met by one that has to read it.
-        fresh = _make_session(mock_session_series, tmp_path, _xcorr_one())
-        with pytest.raises(StaleProduct, match='video/pose/qc'):
-            fresh.load_pose_qc()
 
     def test_takes_its_inputs_from_memory(self, mock_session_series, tmp_path,
                                           monkeypatch):
@@ -501,7 +472,7 @@ class TestPoseQcProduct:
 
         with pytest.raises(MissingRawData, match='encoderPositions'):
             ps.load_pose_qc()
-        assert ps.product_status('video/pose/qc') == 'absent'
+        assert not ps.stored_product_exists('video/pose/qc')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -528,7 +499,7 @@ class TestPreprocessedVideoProduct:
         """A second session over the same file reads them and never fetches."""
         ps = _make_session(mock_session_series, tmp_path)
         built = ps._movement_signals()
-        assert ps.product_status('video/preprocessed') == 'current'
+        assert ps.stored_product_exists('video/preprocessed')
 
         fresh = _make_session(mock_session_series, tmp_path)
         reloaded = fresh._movement_signals()
@@ -566,31 +537,6 @@ class TestPreprocessedVideoProduct:
         ps = _make_session(mock_session_series, tmp_path, _one_serving(times=False))
         with pytest.raises(MissingVideoTimestamps):
             ps._movement_signals()
-
-    def test_raises_on_stale_stamp(self, mock_session_series, tmp_path):
-        """Channels resampled at a rate that changed are not reused."""
-        import h5py
-        from iblnm.data import _write_stamp
-        from iblnm.validation import StaleProduct
-        ps = _make_session(mock_session_series, tmp_path)
-        labels = ps._movement_signals()
-        # A rate change restamps every channel, so stale them all.
-        with h5py.File(ps.filepath, 'a') as h5:
-            for label in labels:
-                _write_stamp(h5[f'video/{label}/preprocessed'],
-                             ps.spec['video/preprocessed'] | {'fs': 1})
-
-        assert ps.product_status('video/preprocessed') == 'stale'
-        # A session holding the channels answers from memory, so the stale
-        # store is only met by one that has to read it.
-        fresh = _make_session(mock_session_series, tmp_path)
-        with pytest.raises(StaleProduct, match='video/preprocessed'):
-            fresh._movement_signals()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# video/responses — every channel cut at every movement event
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _make_trials():
     """Three trials whose events all fall inside the synthetic camera window."""
@@ -656,4 +602,4 @@ class TestVideoResponsesProduct:
         responses = ps.load_responses('video')
 
         assert set(responses) == {'motion_energy'}
-        assert ps.product_status('video/responses') == 'current'
+        assert ps.stored_product_exists('video/responses')

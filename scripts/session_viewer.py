@@ -87,9 +87,9 @@ def print_session_errors(ps):
 def load_session_data(ps):
     """Populate ps with the raw bands, the preprocessed signal and the responses.
 
-    Each load method reads its own stored product when the session's H5 holds a
-    current one and rebuilds it from Alyx otherwise, so full, partial and empty
-    stores need no branching here. The trials table is the exception: nothing
+    Each load method reads its own stored product when the session's H5 holds
+    it and rebuilds it from Alyx otherwise, so full, partial and empty stores
+    need no branching here. The trials table is the exception: nothing
     loads it back from the store, so it is read off the H5 first and left to
     ``load_responses`` to fetch when the file has none.
     """

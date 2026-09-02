@@ -1,10 +1,9 @@
-import json
 import operator
 import warnings
-from collections import Counter, defaultdict
-from collections.abc import Container, Mapping, Sequence, Sized
+from collections import defaultdict
+from collections.abc import Mapping, Sequence, Sized
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import h5py
@@ -24,9 +23,9 @@ from iblnm.config import (
     EVENT_COMPLETENESS_THRESHOLD, IBL_QC_VALUES,
     LABEL2EVENT, LENGTH_MISMATCH_THRESHOLD, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
-    MOVEMENT_RESPONSE_WINDOW,
-    PHOTOMETRY_QC_THRESHOLDS,
-    POSE_MEASURES, PRODUCT_SPEC, QCVAL2NUM,
+    MOVEMENT_EVENTS, MOVEMENT_RESPONSE_WINDOW,
+    PHOTOMETRY_BANDS, PHOTOMETRY_QC_THRESHOLDS,
+    POSE_MEASURES, QCVAL2NUM,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_AGG, QC_SLIDING_KWARGS, QC_SLIDING_METRICS,
     QC_UNDETRENDED_METRICS, REQUIRED_CONTRASTS,
@@ -36,8 +35,8 @@ from iblnm.config import (
     RESPONSE_WINDOWS, SESSIONS_H5_DIR,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS, VIDEO_QC_PROBLEM_COLS,
-    WHEEL_FS, POSE_FS,
-    resolve_product_spec, store_raw,
+    WHEEL_FS, WHEEL_RESPONSE_EVENTS, WHEEL_RESPONSE_WINDOW, POSE_FS,
+    store_raw,
     _PERSESSION_REGRESSORS,
 )
 from iblnm.analysis import (
@@ -57,7 +56,7 @@ from iblnm.validation import (
     MissingMotionEnergy,
     InsufficientTrials, BlockStructureBug, MissingBlockInfo,
     IncompleteEventTimes, TrialsNotInPhotometryTime,
-    QCValidationError, AmbiguousRegionMapping, StaleProduct,
+    QCValidationError, AmbiguousRegionMapping,
     VideoLengthError,
 )
 
@@ -266,42 +265,17 @@ def _read_dataframe(h5_group):
     return pd.DataFrame(data)
 
 
-# Attrs written by _write_stamp; readers of a group's own attrs must skip them.
+# Attrs earlier versions wrote beside every stored product, naming the
+# parameters that produced it. Nothing writes them now, but files built before
+# that change still carry them, so readers of a group's own attrs skip them.
 _STAMP_ATTRS = frozenset({'spec_json', 'built_at'})
 
-
-def _write_stamp(group: h5py.Group, spec: dict) -> None:
-    """Stamp a stored product's group with the spec that produced it.
-
-    Writes two attrs: `spec_json`, the resolved spec (`resolve_product_spec`)
-    serialized with `json.dumps`, and `built_at`, an ISO-8601 UTC timestamp.
-    The stamp is what `product_status` compares against to decide whether the
-    stored product still matches the parameters in `config.py`.
-    """
-    group.attrs['spec_json'] = json.dumps(spec)
-    group.attrs['built_at'] = datetime.now(timezone.utc).isoformat()
-
-
-def _read_stamp(group: h5py.Group) -> dict | None:
-    """Return the spec stamped on `group`, or None if it carries no stamp."""
-    if 'spec_json' not in group.attrs:
-        return None
-    return json.loads(group.attrs['spec_json'])
-
-
-def _stamp_matches(attrs: h5py.AttributeManager, spec: dict) -> bool:
-    """Whether the spec stamped in `attrs` equals the expected `spec`.
-
-    Compares key by key: a key stored but not expected, or expected but not
-    stored, is a mismatch. The expected spec is round-tripped through JSON
-    first, so tuples that came back from `spec_json` as lists (e.g. the
-    ('GCaMP', 'Isosbestic') bands) compare equal instead of reporting stale on
-    every read. Attrs with no `spec_json` — written before stamping existed —
-    never match.
-    """
-    if 'spec_json' not in attrs:
-        return False
-    return json.loads(attrs['spec_json']) == json.loads(json.dumps(spec))
+# The last path component of every product name. A subgroup carrying one of
+# these names is another product, not this one's data — which is what lets
+# `stored_product_exists` tell a region's stored raw bands (named after the
+# bands) from the `qc/` group left sitting alone when the raw was not kept.
+_PRODUCT_SUBGROUPS = frozenset(
+    {'raw', 'preprocessed', 'responses', 'qc', 'manual_qc'})
 
 
 # The self.photometry key holding the preprocessed signal — the payload of the
@@ -314,7 +288,7 @@ PREPROCESSED_BAND = 'GCaMP_preprocessed'
 # raw encoder position stored underneath it.
 WHEEL_LABEL = 'velocity'
 # The event the wheel matrix is cut from, hence its only event coordinate.
-_WHEEL_T0_EVENT = PRODUCT_SPEC['wheel/responses']['t0_event']
+_WHEEL_T0_EVENT = WHEEL_RESPONSE_EVENTS[0]
 _METADATA_NONE_SENTINEL = '__none__'
 _ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback', 'product')
 # Never persisted to errors/ — see _save_errors.
@@ -322,7 +296,7 @@ _ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback', 'product')
 # region never parts company with its hemisphere and target NM.
 PARALLEL_COLS = ['brain_region', 'hemisphere', 'target_NM']
 
-_UNRECORDED_ERROR_TYPES = frozenset({'BlockingIOError', 'StaleProduct'})
+_UNRECORDED_ERROR_TYPES = frozenset({'BlockingIOError'})
 _RESPONSES_RESERVED_KEYS = {'times', 'trials'}
 
 
@@ -450,11 +424,9 @@ def _save_errors(session, h5_file):
     attempt keep their existing groups. Entries with no product go to the
     `errors/` root.
 
-    `BlockingIOError` and `StaleProduct` are never written. The first is a
-    transient file lock that `process()` retries, and the second reports a
-    `config.py`/store mismatch rather than a failed build; recording either
-    would mark the session permanently failed under the absent-data +
-    present-error rule.
+    `BlockingIOError` is never written: it is a transient file lock that
+    `process()` retries, not a failed build, and recording it would mark the
+    session permanently failed under the absent-data + present-error rule.
     """
     # Empty group signals "no errors" — distinguishable from "not yet written".
     grp = h5_file.require_group('errors')
@@ -504,19 +476,17 @@ def _save_trials(session, h5_file):
     `trials/performance` is written whenever the session holds it, independently
     of the table, so reading a stored table and scoring it does not depend on
     both being in memory at once. An empty table is not written: the loader
-    parent starts `trials` as an empty DataFrame rather than None, and stamping
-    that as a stored product would report a session that has no trials as
-    carrying a current one.
+    parent starts `trials` as an empty DataFrame rather than None, and writing
+    that would report a session with no trials as holding a stored table.
     """
     grp = h5_file.require_group('trials')
     trials = getattr(session, 'trials', None)
     if trials is not None and not trials.empty:
         group = _replace_group(grp, 'table')
         _write_dataframe(group, trials)
-        _write_stamp(group, session.spec['trials/table'])
     if session.performance:
         _save_performance(_replace_group(grp, 'performance'),
-                          session.performance, session.spec['trials/performance'])
+                          session.performance)
 
 
 def _load_trials(session, h5_file):
@@ -526,8 +496,8 @@ def _load_trials(session, h5_file):
         session.performance = _load_performance(h5_file['trials/performance'])
 
 
-def _save_performance(group: h5py.Group, performance: dict, spec: dict) -> None:
-    """Write the per-session behavioral scalars into `group`, stamped with `spec`.
+def _save_performance(group: h5py.Group, performance: dict) -> None:
+    """Write the per-session behavioral scalars into `group`.
 
     Every value is a scalar attr except `contrasts`, the sorted list of contrast
     levels the session presented, which becomes a dataset — the one entry that
@@ -539,13 +509,11 @@ def _save_performance(group: h5py.Group, performance: dict, spec: dict) -> None:
         Destination group, created (and any predecessor replaced) by the caller.
     performance : dict
         Metric name -> value, including the `contrasts` list.
-    spec : dict
-        Resolved product spec, written as the group's stamp (`_write_stamp`).
     """
     group.create_dataset('contrasts',
                          data=np.asarray(performance['contrasts'], dtype=np.float64))
     _save_scalars(group, {key: value for key, value in performance.items()
-                          if key != 'contrasts'}, spec)
+                          if key != 'contrasts'})
 
 
 def _load_performance(group: h5py.Group) -> dict:
@@ -556,9 +524,9 @@ def _load_performance(group: h5py.Group) -> dict:
 # ----- Photometry sub-handlers (pure: parent_group + payload only) -----
 
 def _save_time_series(
-    group: h5py.Group, obj: pd.Series | pd.DataFrame, spec: dict,
+    group: h5py.Group, obj: pd.Series | pd.DataFrame,
 ) -> None:
-    """Write a time-indexed pandas object into `group`, stamped with `spec`.
+    """Write a time-indexed pandas object into `group`.
 
     The index becomes the `times` dataset; each signal becomes its own dataset
     beside it, named after the DataFrame column it came from. A Series has no
@@ -570,8 +538,6 @@ def _save_time_series(
         Destination group, created (and any predecessor replaced) by the caller.
     obj : pandas.Series or pandas.DataFrame
         Time-indexed signal(s); index and values are stored as float64.
-    spec : dict
-        Resolved product spec, written as the group's stamp (`_write_stamp`).
     """
     frame = obj.to_frame('signal') if isinstance(obj, pd.Series) else obj
     group.create_dataset('times', data=frame.index.to_numpy(dtype=np.float64))
@@ -580,7 +546,6 @@ def _save_time_series(
             name, data=column.to_numpy(dtype=np.float64),
             compression='gzip', compression_opts=4,
         )
-    _write_stamp(group, spec)
 
 
 def _load_time_series(group: h5py.Group) -> pd.Series | pd.DataFrame:
@@ -600,9 +565,9 @@ def _load_time_series(group: h5py.Group) -> pd.Series | pd.DataFrame:
 
 
 def _save_peri_event_matrix(
-    group: h5py.Group, da: xr.DataArray, spec: dict,
+    group: h5py.Group, da: xr.DataArray,
 ) -> None:
-    """Write a peri-event matrix into `group`, stamped with `spec`.
+    """Write a peri-event matrix into `group`.
 
     The `time` and `trial` coords become the `times` and `trials` datasets;
     each event's `(trial, time)` slice becomes a dataset named after the event,
@@ -615,8 +580,6 @@ def _save_peri_event_matrix(
     da : xarray.DataArray
         Dims `(event, trial, time)`. The `trial` coord is the raw ONE
         trials-table index and need not be contiguous.
-    spec : dict
-        Resolved product spec, written as the group's stamp (`_write_stamp`).
     """
     group.create_dataset('times', data=da.coords['time'].values)
     group.create_dataset('trials', data=da.coords['trial'].values)
@@ -625,7 +588,6 @@ def _save_peri_event_matrix(
             event_name, data=da.sel(event=event_name).values.astype(np.float64),
             compression='gzip', compression_opts=4,
         )
-    _write_stamp(group, spec)
 
 
 def _load_peri_event_matrix(group: h5py.Group) -> xr.DataArray:
@@ -677,8 +639,8 @@ def _read_label_responses(modality_group: h5py.Group) -> dict[str, xr.DataArray]
                                 _load_peri_event_matrix)
 
 
-def _save_scalars(group: h5py.Group, mapping: dict[str, float], spec: dict) -> None:
-    """Write a flat scalar mapping into `group` as attrs, stamped with `spec`.
+def _save_scalars(group: h5py.Group, mapping: dict[str, float]) -> None:
+    """Write a flat scalar mapping into `group` as attrs.
 
     Values are coerced to float, so a metric that could not be computed stays
     a NaN attr rather than a missing key.
@@ -690,12 +652,9 @@ def _save_scalars(group: h5py.Group, mapping: dict[str, float], spec: dict) -> N
     mapping : dict
         Metric name -> value. Where a channel axis exists it is suffixed into
         the name (`n_unique_samples_GCaMP`), so the mapping stays flat.
-    spec : dict
-        Resolved product spec, written as the group's stamp (`_write_stamp`).
     """
     for key, value in mapping.items():
         group.attrs[key] = float(value)
-    _write_stamp(group, spec)
 
 
 def _load_scalars(group: h5py.Group) -> dict[str, float]:
@@ -709,9 +668,7 @@ def _save_manual_qc(group: h5py.Group, labels: dict[str, str]) -> None:
 
     One pair serves `photometry/{region}/manual_qc` and `video/manual_qc`: the
     payload is the same small `LP_QC_LABELS`-keyed dict of IBL verdict strings
-    either way, and only the parent group differs. Unlike every derived product
-    it carries no spec stamp — a verdict set by hand comes from no parameter in
-    `config.py`, so there is nothing it could go stale against.
+    either way, and only the parent group differs.
 
     Attrs are set in place rather than the group being replaced, so writing one
     field leaves the session's other verdicts standing.
@@ -727,8 +684,8 @@ def _load_manual_qc(group: h5py.Group) -> dict[str, str]:
 
 
 # How a metric's sliding windows are reduced to the one value that is stored.
-# Named by string in config.QC_SLIDING_AGG so the choice is part of the QC
-# product's spec stamp; a callable could not be serialized into it.
+# Named by string in config.QC_SLIDING_AGG, so the choice reads as data there
+# and the callable implementing it lives here.
 _QC_AGGREGATORS = {
     'mean': lambda values: values.mean(),
     'q10':  lambda values: values.quantile(0.10),
@@ -805,29 +762,26 @@ def _raw_bands(photometry: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
 
 
 def _save_raw_bands(
-    group: h5py.Group, bands: dict[str, pd.Series], spec: dict,
+    group: h5py.Group, bands: dict[str, pd.Series],
 ) -> None:
-    """Write one region's raw bands into `group`, stamped with `spec`.
+    """Write one region's raw bands into `group`.
 
     Each band becomes its own time-series subgroup: acquisition interleaves the
     excitation wavelengths, so the bands of one region carry different sample
-    times and cannot share a single index. The stamp goes on the parent group,
-    beside — not over — the `qc/` subgroup, which is scored from the raw but
-    stored whether or not the raw itself is kept.
+    times and cannot share a single index. The bands are written beside — not
+    over — the `qc/` subgroup, which is scored from the raw but stored whether
+    or not the raw itself is kept.
 
     Parameters
     ----------
     group : h5py.Group
         The region's `raw` group, required (not replaced) by the caller.
     bands : dict
-        Band name ('GCaMP', 'Isosbestic') -> that band's signal for this region,
-        indexed by time in seconds.
-    spec : dict
-        Resolved `photometry/raw` spec, written as the group's stamp.
+        Band name (`config.PHOTOMETRY_BANDS`) -> that band's signal for this
+        region, indexed by time in seconds.
     """
     for band, signal in bands.items():
-        _save_time_series(_replace_group(group, band), signal, spec)
-    _write_stamp(group, spec)
+        _save_time_series(_replace_group(group, band), signal)
 
 
 def _load_raw_bands(group: h5py.Group) -> dict[str, pd.Series]:
@@ -876,7 +830,6 @@ def _save_photometry(session, h5_file):
             _replace_group(photometry_group.require_group('neurophotometrics'),
                            'qc'),
             session.neurophotometrics_qc,
-            session.spec['photometry/neurophotometrics/qc'],
         )
 
     raw_bands = _raw_bands(session.photometry) if store_raw else {}
@@ -893,14 +846,12 @@ def _save_photometry(session, h5_file):
         band_signals = {band: frame[region] for band, frame in raw_bands.items()
                         if region in frame.columns}
         if band_signals:
-            _save_raw_bands(region_group.require_group('raw'), band_signals,
-                            session.spec['photometry/raw'])
+            _save_raw_bands(region_group.require_group('raw'), band_signals)
 
         if preprocessed is not None and region in preprocessed.columns:
             group = _replace_group(region_group, 'preprocessed')
-            _save_time_series(group, preprocessed[region],
-                              session.spec['photometry/preprocessed'])
-            # Diagnostics of the preprocessing run itself, beside the stamp.
+            _save_time_series(group, preprocessed[region])
+            # Diagnostics of the preprocessing run itself, beside the signal.
             for key, value in session.preprocessing_diagnostics.get(
                     region, {}).items():
                 group.attrs[key] = float(value)
@@ -909,7 +860,6 @@ def _save_photometry(session, h5_file):
             _save_peri_event_matrix(
                 _replace_group(region_group, 'responses'),
                 session.photometry_responses[region],
-                session.spec['photometry/responses'],
             )
 
         # The raw bands themselves may or may not be stored; their QC always is.
@@ -917,7 +867,6 @@ def _save_photometry(session, h5_file):
             _save_scalars(
                 _replace_group(region_group.require_group('raw'), 'qc'),
                 session.photometry_qc[region],
-                session.spec['photometry/raw/qc'],
             )
 
         if region in session.photometry_manual_qc:
@@ -956,15 +905,14 @@ def _save_wheel(session, h5_file):
     label_group = wheel_group.require_group(WHEEL_LABEL)
     if store_raw and session.wheel_position is not None:
         _save_time_series(_replace_group(label_group, 'raw'),
-                          session.wheel_position, session.spec['wheel/raw'])
+                          session.wheel_position)
     if session.wheel_velocity is not None:
         _save_time_series(_replace_group(label_group, 'preprocessed'),
-                          session.wheel_velocity,
-                          session.spec['wheel/preprocessed'])
+                          session.wheel_velocity)
     for label, responses in session.wheel_responses.items():
         _save_peri_event_matrix(
             _replace_group(wheel_group.require_group(label), 'responses'),
-            responses, session.spec['wheel/responses'],
+            responses,
         )
 
 
@@ -989,9 +937,9 @@ LP_QC_PASS = 'PASS'
 
 
 def _save_frame_data(
-    group: h5py.Group, data: np.ndarray | pd.DataFrame, spec: dict,
+    group: h5py.Group, data: np.ndarray | pd.DataFrame,
 ) -> None:
-    """Write per-camera-frame data into `group`, stamped with `spec`.
+    """Write per-camera-frame data into `group`.
 
     Video's three raw datasets are fetched independently, so each is stored on
     the camera's own frame axis with no time index of its own — that is what
@@ -1010,8 +958,6 @@ def _save_frame_data(
         Destination group, required (not replaced) by the caller.
     data : numpy.ndarray or pandas.DataFrame
         One value per camera frame, or one column of them per keypoint field.
-    spec : dict
-        Resolved product spec, written as the group's stamp (`_write_stamp`).
     """
     for name in [key for key in group if isinstance(group[key], h5py.Dataset)]:
         del group[name]
@@ -1020,7 +966,6 @@ def _save_frame_data(
     for name, values in columns:
         group.create_dataset(name, data=np.asarray(values),
                              compression='gzip', compression_opts=4)
-    _write_stamp(group, spec)
 
 
 def _load_frame_data(group: h5py.Group) -> np.ndarray | pd.DataFrame | None:
@@ -1040,8 +985,8 @@ def _load_frame_data(group: h5py.Group) -> np.ndarray | pd.DataFrame | None:
     return pd.DataFrame(datasets)
 
 
-def _save_pose_xcorr(group: h5py.Group, xcorr: dict, spec: dict) -> None:
-    """Write the paw–wheel cross-correlation into `group`, stamped with `spec`.
+def _save_pose_xcorr(group: h5py.Group, xcorr: dict) -> None:
+    """Write the paw–wheel cross-correlation into `group`.
 
     `video/pose/qc` is the one QC product that is not flat scalars — three
     arrays (`functions`, `lags`, `peak_lags`) beside the scalar `drift` — so it
@@ -1051,7 +996,6 @@ def _save_pose_xcorr(group: h5py.Group, xcorr: dict, spec: dict) -> None:
         group.create_dataset(field, data=np.asarray(xcorr[field],
                                                     dtype=np.float64))
     group.attrs['drift'] = xcorr['drift']
-    _write_stamp(group, spec)
 
 
 def _load_pose_xcorr(group: h5py.Group) -> dict:
@@ -1084,21 +1028,21 @@ def _save_video(session, h5_file):
                              ('video/motion_energy', session.motion_energy)):
         if store_raw and payload is not None:
             _save_frame_data(grp.require_group(product.rpartition('/')[2]),
-                             payload, session.spec[product])
+                             payload)
     if session.video_times_qc:
         _save_scalars(_replace_group(grp.require_group('times'), 'qc'),
-                      session.video_times_qc, session.spec['video/times/qc'])
+                      session.video_times_qc)
     for label, signal in session.movement_signals.items():
         _save_time_series(_replace_group(grp.require_group(label), 'preprocessed'),
-                          signal, session.spec['video/preprocessed'])
+                          signal)
     for label, responses in session.movement_responses.items():
         _save_peri_event_matrix(
             _replace_group(grp.require_group(label), 'responses'),
-            responses, session.spec['video/responses'],
+            responses,
         )
     if session.pose_xcorr is not None:
         _save_pose_xcorr(_replace_group(grp.require_group('pose'), 'qc'),
-                         session.pose_xcorr, session.spec['video/pose/qc'])
+                         session.pose_xcorr)
     if session.video_manual_qc:
         _save_manual_qc(grp.require_group('manual_qc'), session.video_manual_qc)
 
@@ -1276,16 +1220,16 @@ _RAW_VIDEO_DATASETS = {
 # attribute its response matrices are assigned to, and the extraction arguments
 # to fall back on when the caller names none. Photometry's fallback is empty
 # because `extract_responses` already defaults to the photometry window; the
-# wheel's and the video's cuts are their own, and are read off the product spec
-# so the matrix and its stamp cannot disagree about which events were used.
+# wheel's and the video's cuts are their own, read straight off `config.py`.
 _RESPONSE_MODALITIES = {
     'photometry': ('load_photometry', 'photometry_responses', {}),
     'wheel':      ('_wheel_signals', 'wheel_responses', {
-        'events': [_WHEEL_T0_EVENT],
-        'window': (0.0, PRODUCT_SPEC['wheel/responses']['t1_event']),
+        'events': WHEEL_RESPONSE_EVENTS,
+        'window': WHEEL_RESPONSE_WINDOW,
     }),
     'video':      ('_movement_signals', 'movement_responses',
-                   dict(PRODUCT_SPEC['video/responses'])),
+                   {'events': MOVEMENT_EVENTS,
+                    'window': MOVEMENT_RESPONSE_WINDOW}),
 }
 
 _SAVE_HANDLERS = {
@@ -1416,12 +1360,6 @@ class PhotometrySession(PhotometrySessionLoader):
         self.target_NM = _as_list(session_series.get('target_NM', []))
 
         self.errors = []
-
-        # Resolved once per session: product_status compares stored stamps
-        # against these, and an inspecting user reads the same dicts.
-        self.spec = {product: resolve_product_spec(product)
-                     for product in PRODUCT_SPEC}
-        self.rebuild = set()
 
         super().__init__(*args, eid=self.eid, **kwargs)
         if not isinstance(self.photometry, dict):
@@ -1637,7 +1575,7 @@ class PhotometrySession(PhotometrySessionLoader):
         error : Exception
             The exception to log. Type, message, and traceback are captured.
         product : str, optional
-            The `config.PRODUCT_SPEC` key whose build raised, e.g.
+            The '{modality}/{product}' name whose build raised, e.g.
             'video/pose'. Decides which `errors/{product}` group the entry is
             saved under; None writes it to the `errors/` root.
         """
@@ -1646,59 +1584,51 @@ class PhotometrySession(PhotometrySessionLoader):
             make_log_entry(self.eid, error=error, product=product)
         )
 
-    def product_status(self, product: str) -> str:
-        """Report whether a stored product is usable, without loading it.
+    def stored_product_exists(self, product: str) -> bool:
+        """Whether the session's H5 already holds `product`.
+
+        The store tier of the read order every load method follows: session
+        attribute, else the stored product, else fetch. A product is held when
+        its group carries data of its own: a dataset, an attr that is not a
+        stamp left by an earlier version, or a subgroup that is not itself
+        another product (`_PRODUCT_SUBGROUPS`) — the raw bands of one region,
+        which sit one level down because they carry different sample times.
+        A group with none of those only contains the products beneath it, which
+        is the state `photometry/{region}/raw` is left in when
+        `config.store_raw` is off but its `qc/` was written.
 
         Parameters
         ----------
         product : str
-            A `config.PRODUCT_SPEC` key, e.g. 'photometry/raw/qc'. Keys omit
+            A '{modality}/{product}' name, e.g. 'photometry/raw/qc'. Names omit
             the label level, so this one is searched for at both
             'photometry/raw/qc' and 'photometry/{region}/raw/qc'.
 
         Returns
         -------
-        str
-            'current' if the product is stored with a stamp matching the spec
-            resolved at construction, 'stale' if the stamp disagrees, 'absent'
-            if the file, the modality group, or the product group is missing.
-            An unstamped group is 'absent' too: a group carrying no data of its
-            own is only the container of the product beneath it, which is the
-            state `photometry/{region}/raw` is left in when `store_raw` is off
-            but its `qc/` was written.
+        bool
+            False when the file, the modality group, or the product group is
+            missing, or when the group carries no data of its own.
 
-        Reads H5 attrs only: no datasets are loaded and no ONE connection is
-        needed, so a script can survey many sessions before deciding what to
-        rebuild.
+        Reads the H5 structure only: no datasets are loaded and no ONE
+        connection is needed.
         """
         modality, _, name = product.partition('/')
         if not self.filepath.exists():
-            return 'absent'
+            return False
         with h5py.File(self.filepath, 'r') as h5:
             modality_grp = h5.get(modality)
             if modality_grp is None:
-                return 'absent'
+                return False
             for path in [name] + [f'{label}/{name}' for label in modality_grp]:
                 grp = modality_grp.get(path)
-                if grp is None or 'spec_json' not in grp.attrs:
+                if grp is None:
                     continue
-                return ('current' if _stamp_matches(grp.attrs, self.spec[product])
-                        else 'stale')
-        return 'absent'
-
-    def failed_products(self) -> set[str]:
-        """Products this session has tried and failed to build.
-
-        A product is failed when its stored errors record an attempt and its
-        data is absent. An error logged beside data that exists is
-        informational — the build had caveats but produced something — and does
-        not count. Entries carrying no product name a failure of the session as
-        a whole and name nothing to skip.
-        """
-        attempted = {entry['product'] for entry in self.errors
-                     if entry['product']}
-        return {product for product in attempted
-                if self.product_status(product) == 'absent'}
+                if (set(grp.attrs) - _STAMP_ATTRS
+                        or any(isinstance(grp[key], h5py.Dataset)
+                               or key not in _PRODUCT_SUBGROUPS for key in grp)):
+                    return True
+        return False
 
     def _held_in_memory(self, product: str, value: Sized | None) -> bool:
         """Whether a load may return `value` instead of reading or rebuilding.
@@ -1708,42 +1638,20 @@ class PhotometrySession(PhotometrySessionLoader):
         is already holding is returned as it stands, so a build that made it
         moments earlier is not paid for twice — the cross-modal case, where the
         video block asks `load_wheel` for a velocity the wheel block has just
-        computed, is what the tier exists for. Naming the product in
-        `self.rebuild` forces the full path, exactly as in
-        :meth:`stored_is_current`.
+        computed, is what the tier exists for.
 
         Parameters
         ----------
         product : str
-            Key of `config.PRODUCT_SPEC`.
+            The product the attribute holds. Not consulted — the value alone
+            decides — but named at every call site so the memory tier reads
+            beside the store tier it sits above.
         value : sized or None
             The attribute the product lives on. An empty container counts as
             unset: an empty response dict or trials table is what an unbuilt
             product looks like, not a built one that happens to be empty.
         """
-        return (product not in self.rebuild and value is not None
-                and len(value) > 0)
-
-    def stored_is_current(self, product: str) -> bool:
-        """Whether a load method may read `product` instead of rebuilding it.
-
-        The one place the stale policy lives: a stored product whose stamp
-        disagrees with the resolved spec is never silently rebuilt, because a
-        mismatch means `config.py` changed and that is the caller's decision,
-        not one session's. Naming the product in `self.rebuild` forces the
-        rebuild and skips the check.
-
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
-        """
-        if product in self.rebuild:
-            return False
-        status = self.product_status(product)
-        if status == 'stale':
-            raise StaleProduct(product)
-        return status == 'current'
+        return value is not None and len(value) > 0
 
     # Metadata fields: (attr_name, is_list)
     # Scalars are stored as H5 attrs, lists as H5 datasets.
@@ -1761,9 +1669,8 @@ class PhotometrySession(PhotometrySessionLoader):
         """Return the trials table, fetching it from Alyx if it is not stored.
 
         Reads in the order every load method follows — the session attribute,
-        else `trials/table` while its stamp still matches `config.PRODUCT_SPEC`,
-        else Alyx — and writes what it fetched, so a session with an empty H5
-        fills itself. A product named in `self.rebuild` skips both reads.
+        else the stored `trials/table`, else Alyx — and writes what it fetched,
+        so a session with an empty H5 fills itself.
 
         Returns
         -------
@@ -1771,14 +1678,10 @@ class PhotometrySession(PhotometrySessionLoader):
             The trials table, derived columns included. Also assigned to
             ``self.trials``.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         if self._held_in_memory('trials/table', self.trials):
             return self.trials
-        if self.stored_is_current('trials/table'):
+        if self.stored_product_exists('trials/table'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.trials = _read_dataframe(h5['trials/table'])
             return self.trials
@@ -1881,11 +1784,9 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_photometry(self) -> pd.DataFrame:
         """Return the preprocessed photometry signal, building it if absent.
 
-        Reads `photometry/{region}/preprocessed` when it is stored and its
-        stamp still matches `config.PRODUCT_SPEC`; otherwise fetches the raw
-        bands from Alyx, preprocesses them, and writes and stamps the product
-        on the way out. A product named in `self.rebuild` skips the read and is
-        rebuilt.
+        Reads `photometry/{region}/preprocessed` when it is stored; otherwise
+        fetches the raw bands from Alyx, preprocesses them, and writes the
+        product on the way out.
 
         Returns
         -------
@@ -1893,18 +1794,12 @@ class PhotometrySession(PhotometrySessionLoader):
             Regions as columns, time (seconds) as the index. Also assigned to
             ``self.photometry[PREPROCESSED_BAND]``.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec. Never falls
-            back to rebuilding: a stale store means `config.py` changed, which
-            is a decision for the caller, not for one session.
         """
         if self._held_in_memory('photometry/preprocessed',
                                 self.photometry.get(PREPROCESSED_BAND)):
             return self.photometry[PREPROCESSED_BAND]
         signal = None
-        if self.stored_is_current('photometry/preprocessed'):
+        if self.stored_product_exists('photometry/preprocessed'):
             with h5py.File(self.filepath, 'r') as h5:
                 signal, self.preprocessing_diagnostics = (
                     _read_photometry_preprocessed(h5['photometry']))
@@ -1928,17 +1823,15 @@ class PhotometrySession(PhotometrySessionLoader):
         one method returning either would let an analysis run on raw data
         without saying so.
 
-        Reads `photometry/{region}/raw` when it is stored and its stamp still
-        matches `config.PRODUCT_SPEC` — which only happens with
-        `config.store_raw` on, since nothing writes that group otherwise — and
-        goes to Alyx in every other case. Only the fetch clears the manual QC
-        verdicts: reading the stored bands back replaces no samples.
+        Reads `photometry/{region}/raw` when it is stored — which only happens
+        with `config.store_raw` on, since nothing writes that group otherwise —
+        and goes to Alyx in every other case. Only the fetch clears the manual
+        QC verdicts: reading the stored bands back replaces no samples.
         """
         if (self._held_in_memory('photometry/raw', self.photometry)
-                and all(band in self.photometry
-                        for band in self.spec['photometry/raw']['bands'])):
+                and all(band in self.photometry for band in PHOTOMETRY_BANDS)):
             return
-        if self.stored_is_current('photometry/raw'):
+        if self.stored_product_exists('photometry/raw'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.photometry.update(_read_photometry_raw(h5['photometry']))
             return
@@ -2173,11 +2066,9 @@ class PhotometrySession(PhotometrySessionLoader):
     ) -> dict[str, xr.DataArray]:
         """Return one modality's peri-event matrices, cutting them if absent.
 
-        Reads `{modality}/{label}/responses` when it is stored and its stamp
-        still matches `config.PRODUCT_SPEC`; otherwise loads that modality's
-        preprocessed signals plus the trials table, cuts the matrices with
-        :meth:`extract_responses`, and writes them. A product named in
-        `self.rebuild` skips the read and is re-cut.
+        Reads `{modality}/{label}/responses` when it is stored; otherwise loads
+        that modality's preprocessed signals plus the trials table, cuts the
+        matrices with :meth:`extract_responses`, and writes them.
 
         Parameters
         ----------
@@ -2194,17 +2085,13 @@ class PhotometrySession(PhotometrySessionLoader):
         dict[str, xarray.DataArray]
             One DataArray per label, dims (event, trial, time).
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         load_signals, attribute, defaults = _RESPONSE_MODALITIES[modality]
         held = getattr(self, attribute)
         if self._held_in_memory(f'{modality}/responses', held):
             return held
         responses = None
-        if self.stored_is_current(f'{modality}/responses'):
+        if self.stored_product_exists(f'{modality}/responses'):
             with h5py.File(self.filepath, 'r') as h5:
                 responses = _read_label_responses(h5[modality])
         was_cut = responses is None
@@ -2349,8 +2236,8 @@ class PhotometrySession(PhotometrySessionLoader):
         fpath : Path or str, optional
             Path to the HDF5 file. Defaults to ``self.filepath``; naming another
             path adopts it as ``self.filepath``, so the load methods and
-            :meth:`product_status` go on reading the file this data came from
-            rather than the default one for this eid.
+            :meth:`stored_product_exists` go on reading the file this data came
+            from rather than the default one for this eid.
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
             'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video'.
@@ -2368,26 +2255,20 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_neurophotometrics_qc(self) -> dict[str, float]:
         """Return the neurophotometrics QC metrics, scoring them if absent.
 
-        Reads `photometry/neurophotometrics/qc` when it is stored and its stamp
-        still matches `config.PRODUCT_SPEC`; otherwise fetches the source table
-        from Alyx, scores it with :meth:`run_neurophotometrics_qc`, and writes
-        and stamps the product. A product named in `self.rebuild` skips the
-        read.
+        Reads `photometry/neurophotometrics/qc` when it is stored; otherwise
+        fetches the source table from Alyx, scores it with
+        :meth:`run_neurophotometrics_qc`, and writes the product.
 
         Returns
         -------
         dict
             Metric name -> value, also assigned to `self.neurophotometrics_qc`.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         if self._held_in_memory('photometry/neurophotometrics/qc',
                                 self.neurophotometrics_qc):
             return self.neurophotometrics_qc
-        if self.stored_is_current('photometry/neurophotometrics/qc'):
+        if self.stored_product_exists('photometry/neurophotometrics/qc'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.neurophotometrics_qc = _load_scalars(
                     h5['photometry/neurophotometrics/qc'])
@@ -2400,10 +2281,9 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_photometry_qc(self) -> dict[str, dict[str, float]]:
         """Return each region's raw-band QC metrics, scoring them if absent.
 
-        Reads `photometry/{region}/raw/qc` when it is stored and its stamp still
-        matches `config.PRODUCT_SPEC`; otherwise fetches the raw bands from
-        Alyx, scores them with :meth:`run_photometry_qc`, and writes and stamps
-        the product. A product named in `self.rebuild` skips the read.
+        Reads `photometry/{region}/raw/qc` when it is stored; otherwise fetches
+        the raw bands from Alyx, scores them with :meth:`run_photometry_qc`,
+        and writes the product.
 
         Returns
         -------
@@ -2411,14 +2291,10 @@ class PhotometrySession(PhotometrySessionLoader):
             Region -> {band-suffixed metric name: value}, also assigned to
             `self.photometry_qc`.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         if self._held_in_memory('photometry/raw/qc', self.photometry_qc):
             return self.photometry_qc
-        if self.stored_is_current('photometry/raw/qc'):
+        if self.stored_product_exists('photometry/raw/qc'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.photometry_qc = _read_photometry_qc(h5['photometry'])
             return self.photometry_qc
@@ -2724,10 +2600,8 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_performance(self) -> dict:
         """Return the per-session behavioral scalars, scoring them if absent.
 
-        Reads `trials/performance` when it is stored and its stamp still matches
-        `config.PRODUCT_SPEC`; otherwise scores the trials table with
-        :meth:`extract_performance` and writes the result. A product named in
-        `self.rebuild` skips the read and is rescored.
+        Reads `trials/performance` when it is stored; otherwise scores the
+        trials table with :meth:`extract_performance` and writes the result.
 
         Returns
         -------
@@ -2735,14 +2609,10 @@ class PhotometrySession(PhotometrySessionLoader):
             Metric name -> value, plus `n_trials` and the sorted `contrasts`
             list the session presented. Also assigned to `self.performance`.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         if self._held_in_memory('trials/performance', self.performance):
             return self.performance
-        if self.stored_is_current('trials/performance'):
+        if self.stored_product_exists('trials/performance'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.performance = _load_performance(h5['trials/performance'])
             return self.performance
@@ -2780,10 +2650,9 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_raw_wheel(self) -> pd.Series:
         """Return the raw encoder position, fetching it if absent.
 
-        Reads `wheel/{WHEEL_LABEL}/raw` when it is stored and its stamp still
-        matches `config.PRODUCT_SPEC` — which only happens with
-        `config.store_raw` on, since nothing writes that group otherwise — and
-        goes to Alyx in every other case.
+        Reads `wheel/{WHEEL_LABEL}/raw` when it is stored — which only happens
+        with `config.store_raw` on, since nothing writes that group otherwise —
+        and goes to Alyx in every other case.
 
         Returns
         -------
@@ -2797,7 +2666,7 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         if self._held_in_memory('wheel/raw', self.wheel_position):
             return self.wheel_position
-        if self.stored_is_current('wheel/raw'):
+        if self.stored_product_exists('wheel/raw'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.wheel_position = _load_time_series(
                     h5[f'wheel/{WHEEL_LABEL}/raw'])
@@ -2840,11 +2709,9 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_wheel(self) -> pd.Series:
         """Return the preprocessed wheel velocity, building it if absent.
 
-        Reads `wheel/{WHEEL_LABEL}/preprocessed` when it is stored and its stamp
-        still matches `config.PRODUCT_SPEC`; otherwise fetches the raw encoder
-        position from Alyx and differentiates it, which writes and stamps the
-        product on the way out. A product named in `self.rebuild` skips the read
-        and is rebuilt.
+        Reads `wheel/{WHEEL_LABEL}/preprocessed` when it is stored; otherwise
+        fetches the raw encoder position from Alyx and differentiates it, which
+        writes the product on the way out.
 
         Returns
         -------
@@ -2852,14 +2719,10 @@ class PhotometrySession(PhotometrySessionLoader):
             Velocity (radians per second) on a uniform ``WHEEL_FS`` time index
             (seconds). Also assigned to ``self.wheel_velocity``.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         if self._held_in_memory('wheel/preprocessed', self.wheel_velocity):
             return self.wheel_velocity
-        if self.stored_is_current('wheel/preprocessed'):
+        if self.stored_product_exists('wheel/preprocessed'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.wheel_velocity = _load_time_series(
                     h5[f'wheel/{WHEEL_LABEL}/preprocessed'])
@@ -2878,8 +2741,8 @@ class PhotometrySession(PhotometrySessionLoader):
         Parameters
         ----------
         fs : float
-            Grid rate in Hz. Defaults to ``config.WHEEL_FS``, which is what the
-            `wheel/preprocessed` stamp records.
+            Grid rate in Hz. Defaults to ``config.WHEEL_FS``, the rate the
+            stored `wheel/preprocessed` product is written at.
 
         Returns
         -------
@@ -2902,10 +2765,9 @@ class PhotometrySession(PhotometrySessionLoader):
     def _load_raw_video(self, product: str) -> np.ndarray | pd.DataFrame:
         """Return one raw video dataset, fetching it when the store has none.
 
-        Reads the stored product when its stamp still matches
-        `config.PRODUCT_SPEC` — which only happens with `config.store_raw` on,
-        since nothing writes those groups otherwise — and goes to Alyx in every
-        other case. A product named in `self.rebuild` skips the read.
+        Reads the stored product when it is present — which only happens with
+        `config.store_raw` on, since nothing writes those groups otherwise —
+        and goes to Alyx in every other case.
 
         Parameters
         ----------
@@ -2919,16 +2781,12 @@ class PhotometrySession(PhotometrySessionLoader):
         numpy.ndarray or pandas.DataFrame
             The dataset, also assigned to its session attribute.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         attribute, _, _ = _RAW_VIDEO_DATASETS[product]
         held = getattr(self, attribute)
         if self._held_in_memory(product, held):
             return held
-        if self.stored_is_current(product):
+        if self.stored_product_exists(product):
             with h5py.File(self.filepath, 'r') as h5:
                 data = _load_frame_data(h5[product])
             setattr(self, attribute, data)
@@ -3028,24 +2886,19 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_video_times_qc(self) -> dict[str, float]:
         """Return the camera-clock QC metrics, computing them if absent.
 
-        Reads `video/times/qc` when it is stored and its stamp still matches
-        `config.PRODUCT_SPEC`; otherwise fetches the camera times from Alyx,
-        scores them with :meth:`run_video_times_qc`, and writes and stamps the
-        product. A product named in `self.rebuild` skips the read.
+        Reads `video/times/qc` when it is stored; otherwise fetches the camera
+        times from Alyx, scores them with :meth:`run_video_times_qc`, and
+        writes the product.
 
         Returns
         -------
         dict
             Metric name -> value, also assigned to `self.video_times_qc`.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         if self._held_in_memory('video/times/qc', self.video_times_qc):
             return self.video_times_qc
-        if self.stored_is_current('video/times/qc'):
+        if self.stored_product_exists('video/times/qc'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.video_times_qc = _load_scalars(h5['video/times/qc'])
             return self.video_times_qc
@@ -3091,7 +2944,7 @@ class PhotometrySession(PhotometrySessionLoader):
 
         Unlike every other QC on this class these labels are not a product:
         they change when IBL re-runs its QC and no repo parameter feeds them,
-        so they are refetched rather than stamped and cached. Assigned to
+        so they are refetched rather than cached. Assigned to
         ``self.video_qc`` and returned.
         """
         from iblnm.io import get_video_qc
@@ -3173,10 +3026,9 @@ class PhotometrySession(PhotometrySessionLoader):
     def _movement_signals(self) -> dict[str, pd.Series]:
         """Return the preprocessed movement channels, resampling them if absent.
 
-        Reads `video/{label}/preprocessed` when it is stored and its stamp still
-        matches `config.PRODUCT_SPEC`; otherwise fetches the raw video datasets
-        resamples them with :meth:`extract_movement_signals`, and writes and
-        stamps the product. A product named in `self.rebuild` skips the read.
+        Reads `video/{label}/preprocessed` when it is stored; otherwise fetches
+        the raw video datasets, resamples them with
+        :meth:`extract_movement_signals`, and writes the product.
 
         Returns
         -------
@@ -3185,15 +3037,11 @@ class PhotometrySession(PhotometrySessionLoader):
             hand to :meth:`extract_responses`. Also assigned to
             ``self.movement_signals``.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         if self._held_in_memory('video/preprocessed', self.movement_signals):
             return self.movement_signals
         signals = None
-        if self.stored_is_current('video/preprocessed'):
+        if self.stored_product_exists('video/preprocessed'):
             with h5py.File(self.filepath, 'r') as h5:
                 signals = _read_label_products(h5['video'], 'preprocessed',
                                                _load_time_series)
@@ -3257,11 +3105,9 @@ class PhotometrySession(PhotometrySessionLoader):
     def load_pose_qc(self) -> dict:
         """Return the paw–wheel timing diagnostic, computing it if absent.
 
-        Reads `video/pose/qc` when it is stored and its stamp still matches
-        `config.PRODUCT_SPEC`; otherwise loads the pose, the camera times and
-        the wheel velocity and correlates them with
-        :meth:`run_pose_qc`, then writes and stamps the product. A product
-        named in `self.rebuild` skips the read.
+        Reads `video/pose/qc` when it is stored; otherwise loads the pose, the
+        camera times and the wheel velocity and correlates them with
+        :meth:`run_pose_qc`, then writes the product.
 
         This is the one cross-modal QC product: good pose is not enough, so a
         session with no wheel fails here with the wheel's own missing-data
@@ -3273,14 +3119,10 @@ class PhotometrySession(PhotometrySessionLoader):
             ``functions``, ``lags``, ``peak_lags`` and ``drift``, also assigned
             to ``self.pose_xcorr``.
 
-        Raises
-        ------
-        StaleProduct
-            The stored stamp disagrees with the resolved spec.
         """
         if self._held_in_memory('video/pose/qc', self.pose_xcorr):
             return self.pose_xcorr
-        if self.stored_is_current('video/pose/qc'):
+        if self.stored_product_exists('video/pose/qc'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.pose_xcorr = _load_pose_xcorr(h5['video/pose/qc'])
             return self.pose_xcorr
@@ -3669,8 +3511,8 @@ class PhotometrySession(PhotometrySessionLoader):
         return pd.Series(deltas, name='delta_r2').sort_values(ascending=False)
 
 
-def _session_for_processing(h5_path, row, one, rebuild):
-    """Build the session `process` hands to `fn`, carrying the rebuild set.
+def _session_for_processing(h5_path, row, one):
+    """Build the session `process` hands to `fn`.
 
     Parameters
     ----------
@@ -3684,17 +3526,11 @@ def _session_for_processing(h5_path, row, one, rebuild):
         The catalog row, as a dict when it has crossed a pickle boundary.
     one : one.api.One
         The connection the session queries Alyx through.
-    rebuild : set of str
-        `config.PRODUCT_SPEC` keys to rebuild rather than read back. Copied
-        onto the session, which is how a group's rebuild set reaches a worker
-        process that constructs its own session object.
     """
     if h5_path.exists():
-        ps = PhotometrySession.from_h5(h5_path, one=one)
-    else:
-        ps = PhotometrySession(pd.Series(row), one=one, load_data=False)
-        ps.filepath = h5_path
-    ps.rebuild = set(rebuild)
+        return PhotometrySession.from_h5(h5_path, one=one)
+    ps = PhotometrySession(pd.Series(row), one=one, load_data=False)
+    ps.filepath = h5_path
     return ps
 
 
@@ -3720,17 +3556,17 @@ def _process_one(ps, h5_path, fn, kwargs):
     return result
 
 
-def _process_worker(eid, row_dict, h5_dir, fn, kwargs, rebuild):
+def _process_worker(eid, row_dict, h5_dir, fn, kwargs):
     """Worker function for parallel process(). Runs in a subprocess.
 
-    Creates its own ONE connection, builds a PhotometrySession carrying
-    `rebuild`, calls fn(ps, **kwargs), and flushes errors to H5.
+    Creates its own ONE connection, builds a PhotometrySession, calls
+    fn(ps, **kwargs), and flushes errors to H5.
     """
     from iblnm.io import _get_default_connection
 
     one = _get_default_connection()
     h5_path = Path(h5_dir) / f'{eid}.h5'
-    ps = _session_for_processing(h5_path, row_dict, one, rebuild)
+    ps = _session_for_processing(h5_path, row_dict, one)
     return _process_one(ps, h5_path, fn, kwargs)
 
 
@@ -3833,9 +3669,6 @@ class PhotometrySessionGroup:
         self.one = one
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
         self._sessions = {}  # eid → PhotometrySession cache
-        # PRODUCT_SPEC keys to rebuild rather than read back, mirroring
-        # PhotometrySession.rebuild for every session the group builds.
-        self.rebuild = set()
         self.response_traces = None
         self.response_traces_tpts = None
         self.mean_traces = None
@@ -4207,114 +4040,17 @@ class PhotometrySessionGroup:
 
         The session reads and writes the group's ``h5_dir``, not the default
         store, so a group pointed at another directory keeps its sessions there.
-        It also carries a copy of the group's ``rebuild`` set, so naming a
-        product on the group forces the rebuild on every session it builds.
         """
         eid = rec['eid']
         if eid not in self._sessions:
             ps = PhotometrySession(rec, one=self.one, load_data=False)
             ps.filepath = Path(self.h5_dir) / f'{eid}.h5'
-            ps.rebuild = set(self.rebuild)
             self._sessions[eid] = ps
         return self._sessions[eid]
 
     def __iter__(self):
         for _, rec in self.recordings.iterrows():
             yield rec, self._get_session(rec)
-
-    def _survey_session(self, rec) -> 'PhotometrySession':
-        """A session for reading stamps, built without a database connection.
-
-        `product_status` reads H5 attrs and needs no Alyx access, but the loader
-        parent resolves a session path through `one.eid2path` on every
-        construction — one network round trip per session, which is what makes
-        a survey of the whole store take half an hour rather than seconds.
-
-        Deliberately not memoized into ``_sessions``: a session carrying no
-        connection cannot serve `_get_session`, whose callers do load from Alyx.
-        """
-        ps = PhotometrySession(rec, one=None, load_data=False)
-        ps.filepath = Path(self.h5_dir) / f"{rec['eid']}.h5"
-        return ps
-
-    def scan_product_status(self, *products: str) -> pd.DataFrame:
-        """Survey which stored products are usable, without loading any data.
-
-        Parameters
-        ----------
-        *products : str
-            `config.PRODUCT_SPEC` keys to check. Any already named in
-            ``self.rebuild`` is skipped and gets no column: it is being rebuilt
-            either way, so its stored state is irrelevant.
-
-        Returns
-        -------
-        pd.DataFrame
-            One row per unique session (not per recording), with ``eid`` and
-            one column per surveyed product holding 'current', 'stale' or
-            'absent' as `PhotometrySession.product_status` reports it.
-
-        Reads H5 attrs only, so this is the pre-warm survey a script runs before
-        iterating: report what is missing, build it, then loop over a complete
-        store.
-        """
-        products = [p for p in products if p not in self.rebuild]
-        return pd.DataFrame([
-            {'eid': row['eid'],
-             **{p: self._survey_session(row).product_status(p) for p in products}}
-            for _, row in self.sessions.iterrows()
-        ])
-
-    def check_products(self, *products: str,
-                       rebuild: Container[str] = frozenset()) -> pd.DataFrame:
-        """Survey the named products, print what the store holds, and stop on stale.
-
-        The one call a script makes before it starts reading: it says which
-        products it needs, sees how many sessions hold each of them, and gets a
-        hard stop if any stored stamp disagrees with `config.py`.
-
-        Parameters
-        ----------
-        *products : str
-            `config.PRODUCT_SPEC` keys to survey.
-        rebuild : set of str
-            Products the caller intends to re-derive. A stale stamp on one of
-            them is expected rather than fatal.
-
-        Returns
-        -------
-        pd.DataFrame
-            The `scan_product_status` frame: an `eid` column plus one column of
-            'current'/'stale'/'absent' verdicts per surveyed product.
-
-        Raises
-        ------
-        StaleProduct
-            A surveyed product not named in `rebuild` is stored with a stale
-            stamp. The store and `config.py` disagree, and which one is wrong
-            is the user's call: re-deriving thousands of files is not a
-            decision to take silently. An absent product does not raise — it is
-            one session's gap, built by that session's load method on demand.
-        """
-        status = self.scan_product_status(*products)
-        counts = {product: Counter(status[product])
-                  for product in status.columns if product != 'eid'}
-        lines = '\n'.join(
-            f'  {product:<34} ' + ', '.join(
-                f'{count[verdict]} {verdict}'
-                for verdict in ('current', 'stale', 'absent') if count[verdict])
-            for product, count in counts.items())
-        print(f'Stored products across {len(status)} sessions:\n{lines}')
-
-        stale = {product: count['stale'] for product, count in counts.items()
-                 if count['stale'] and product not in rebuild}
-        if stale:
-            raise StaleProduct(
-                'Stored stamps disagree with config.py for: '
-                + ', '.join(f'{product} ({count} sessions)'
-                            for product, count in stale.items())
-                + '\nPass --rebuild with those products to re-derive them.')
-        return status
 
     @contextmanager
     def _open_h5(self, eid: str):
@@ -4534,9 +4270,9 @@ class PhotometrySessionGroup:
         """Apply a function to each unique session in the group.
 
         For each session, instantiates a PhotometrySession (from H5 if
-        available, otherwise from the recording row) carrying `self.rebuild`,
-        calls fn(ps, **kwargs), catches any exception as a fatal error, and
-        always flushes accumulated errors to the session's H5 file.
+        available, otherwise from the recording row), calls fn(ps, **kwargs),
+        catches any exception as a fatal error, and always flushes accumulated
+        errors to the session's H5 file.
 
         Sessions that hit an HDF5 file lock are collected and re-run once at
         the end of the pass, rather than retried in place: the lock is held
@@ -4591,7 +4327,7 @@ class PhotometrySessionGroup:
                            desc="Processing"):
             eid = row['eid']
             h5_path = Path(self.h5_dir) / f'{eid}.h5'
-            ps = _session_for_processing(h5_path, row, self.one, self.rebuild)
+            ps = _session_for_processing(h5_path, row, self.one)
             try:
                 results[eid] = _process_one(ps, h5_path, fn, kwargs)
             except BlockingIOError:
@@ -4604,8 +4340,8 @@ class PhotometrySessionGroup:
 
         Each worker creates its own ONE connection and PhotometrySession.
         fn must be a picklable top-level function (not a lambda or closure).
-        Only the row dict and the rebuild set cross the pickle boundary; bulk
-        data is read and written by each worker from its own H5 file.
+        Only the row dict crosses the pickle boundary; bulk data is read and
+        written by each worker from its own H5 file.
         """
         from concurrent.futures import ProcessPoolExecutor, as_completed
         from tqdm import tqdm
@@ -4619,7 +4355,7 @@ class PhotometrySessionGroup:
             futures = {
                 pool.submit(
                     _process_worker, eid, row_dict,
-                    str(self.h5_dir), fn, kwargs, self.rebuild,
+                    str(self.h5_dir), fn, kwargs,
                 ): eid
                 for eid, row_dict in tasks.items()
             }
@@ -5074,17 +4810,12 @@ class PhotometrySessionGroup:
         pandas.DataFrame
             One row per session that had the product, with an `eid` column and
             one column per metric. Also assigned to `self.performance`.
-
-        Raises
-        ------
-        StaleProduct
-            A stored stamp disagrees with the resolved spec.
         """
         rows = []
         for _, row in self._catalog.iterrows():
             ps = PhotometrySession(row, one=None, load_data=False)
             ps.filepath = Path(self.h5_dir) / f'{ps.eid}.h5'
-            if ps.product_status('trials/performance') == 'absent':
+            if not ps.stored_product_exists('trials/performance'):
                 continue
             rows.append({'eid': ps.eid} | ps.load_performance())
         self.performance = pd.DataFrame(rows)
