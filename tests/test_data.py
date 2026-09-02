@@ -4018,6 +4018,45 @@ class TestFromCatalog:
         group = PhotometrySessionGroup.from_catalog(self._make_catalog(), one=MagicMock(), h5_dir=None)
         assert group._catalog['logged_errors'].apply(lambda x: x == []).all()
 
+    def test_unreadable_h5_does_not_end_the_scan(self, tmp_path, capsys):
+        """A truncated file scans as an empty one; the sessions after it still read.
+
+        A build killed mid-write leaves a file whose header opens but whose
+        objects do not. One of those must not take down every group build.
+        """
+        import h5py
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.validation import MissingRawData
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-bad', 'mouse_A', 'biased',
+                          brain_region=['VTA'], errors=[MissingRawData('x')])
+        _write_session_h5(tmp_path, 'eid-good', 'mouse_B', 'biased',
+                          brain_region=['DR'], errors=[MissingRawData('y')])
+        fpath = tmp_path / 'eid-bad.h5'
+        with open(fpath, 'r+b') as fid:
+            fid.truncate(fpath.stat().st_size // 3)
+        with pytest.raises(Exception):
+            with h5py.File(fpath, 'r') as h5:
+                list(h5['errors'])
+
+        catalog = pd.DataFrame([
+            {'eid': 'eid-bad', 'subject': 'mouse_A', 'session_type': 'biased',
+             'start_time': '2024-01-01T10:00:00', 'number': 1,
+             'brain_region': ['VTA'], 'hemisphere': ['l'],
+             'target_NM': ['VTA-DA'], 'NM': 'DA'},
+            {'eid': 'eid-good', 'subject': 'mouse_B', 'session_type': 'biased',
+             'start_time': '2024-01-02T10:00:00', 'number': 1,
+             'brain_region': ['DR'], 'hemisphere': ['l'],
+             'target_NM': ['DR-5HT'], 'NM': '5HT'},
+        ])
+        group = PhotometrySessionGroup.from_catalog(
+            catalog, one=MagicMock(), h5_dir=tmp_path)
+
+        scanned = group._catalog.set_index('eid')['logged_errors']
+        assert scanned['eid-bad'] == []
+        assert scanned['eid-good'] == ['MissingRawData']
+        assert 'eid-bad' in capsys.readouterr().out
+
     def test_scan_h5_false_reuses_existing_column(self, tmp_path):
         """scan_h5=False skips the H5 scan and keeps a pre-existing
         logged_errors column without a merge collision."""
