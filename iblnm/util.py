@@ -335,57 +335,11 @@ def df2pqt(df, fpath, timestamp=None):
     df.to_parquet(fpath, index=False)
 
 
-def fill_empty_lists_from_group(df, col, group_col='subject'):
-    """Fill empty-list rows in ``col`` from a consistent value within each group.
-
-    Within each ``group_col`` group, locate the non-empty list entries in
-    ``col``. If they all agree, copy that value into the group's empty-list
-    rows. Groups with no non-empty entry, or with disagreeing non-empty
-    entries, are left untouched; non-list cells (e.g. NaN) are never filled.
-
-    Implemented with ``groupby(...)[col].transform`` rather than
-    ``groupby(...).apply`` so only ``col`` is rewritten and every other column
-    is preserved. ``apply`` excludes the grouping column from the operation in
-    pandas >=3, which silently dropped ``group_col`` from the result.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame whose ``col`` holds per-row lists (or NaN).
-    col : str
-        Name of the list-valued column to fill.
-    group_col : str
-        Column to group by (default 'subject').
-
-    Returns
-    -------
-    pd.DataFrame
-        Copy of ``df`` with empty lists in ``col`` filled where a consistent
-        source exists; all other columns unchanged.
-    """
-    df = df.copy()
-
-    def fill_series(s):
-        non_empty = s[s.apply(
-            lambda x: isinstance(x, (list, np.ndarray)) and len(x) > 0)]
-        if non_empty.empty:
-            return s  # No non-empty lists to use
-        source = non_empty.iloc[0]
-        if not all(np.array_equal(x, source) for x in non_empty):
-            return s  # Cannot fill from inconsistent lists
-        return s.apply(
-            lambda x: source if isinstance(x, (list, np.ndarray)) and len(x) == 0 else x)
-
-    df[col] = df.groupby(group_col)[col].transform(fill_series)
-    return df
-
-
 def fill_parallel_lists_from_group(df, columns, group_col='subject'):
     """Fill empty parallel list columns from a consistent source within each group.
 
-    Unlike ``fill_empty_lists_from_group`` (which fills one column at a time),
-    this fills ALL specified columns together from the same source row,
-    guaranteeing they stay in sync.
+    All specified columns are filled together from the same source row, so they
+    stay in sync — a column is never filled on its own.
 
     A source row is valid only if all specified columns are non-empty AND have
     the same length. A group is consistent if all valid source rows are identical
@@ -863,9 +817,15 @@ def build_catalog(sessions: pd.DataFrame) -> pd.DataFrame:
     from iblnm.config import SESSION_SCHEMA
 
     # TEMPFIX: these compensate for incomplete Alyx metadata and go once the
-    # upstream data is corrected.
-    catalog = fill_empty_lists_from_group(sessions, 'brain_region')
-    catalog = fill_empty_lists_from_group(catalog, 'hemisphere')
+    # upstream data is corrected. `brain_region` and `hemisphere` fill in one
+    # call because filling them separately broke their parallelism: subject
+    # CQ011's sessions agree on `hemisphere` but not on `brain_region`, so its
+    # empty rows took a length-2 `hemisphere` beside a length-0 `brain_region`
+    # and were dropped by `validate_parallel_lists`. `target_NM` is left out —
+    # `derive_target_nm` has not run yet, so it still holds whatever the store's
+    # metadata carried.
+    catalog = fill_parallel_lists_from_group(
+        sessions, ['brain_region', 'hemisphere'])
     catalog = fill_brain_region_from_fibers(catalog)
     catalog = fix_brain_regions(catalog)
     catalog = derive_target_nm(catalog)
