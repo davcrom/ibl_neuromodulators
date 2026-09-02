@@ -40,7 +40,6 @@ from iblnm.data import (  # noqa: E402
     PhotometrySessionGroup,
 )
 from iblnm.io import _get_default_connection  # noqa: E402
-from iblnm.util import fix_catalog  # noqa: E402
 from iblnm.validation import (  # noqa: E402
     MissingLP, MissingMotionEnergy, StaleProduct,
 )
@@ -70,14 +69,22 @@ def query_session(row: pd.Series, one) -> bool:
     return True
 
 
-def fetch_catalog(one) -> pd.DataFrame:
-    """Query Alyx for the project's sessions and return the fixed-up catalog.
+def fetch_catalog(one) -> PhotometrySessionGroup:
+    """Query Alyx for the project's sessions and return the group to build.
 
     Sessions already holding an H5 file keep their stored metadata; only new
-    eids are queried. The catalog is rebuilt from every file's `metadata` group
-    afterwards, run through `fix_catalog`, and written to
-    `config.SESSIONS_FPATH` — the store's `metadata` groups are the source, so
-    that file is a convenience for the analysis scripts, not a second source.
+    eids are queried. The group is then read back out of every file's
+    `metadata` group and its catalog repaired in place, so what the build
+    iterates carries the fixed brain regions rather than a copy of them.
+
+    The catalog is also written to `config.SESSIONS_FPATH` for the analysis
+    scripts that read it; the store's `metadata` groups remain the source, so
+    that file is a convenience, not a second source.
+
+    `scan_h5=False` because nothing here reads what `complete_catalog`
+    collects: `main` turns off every filter that consults it, and
+    `collect_errors` re-reads the store itself. Leaving it on opens every
+    stored file a second time to build a table that is then discarded.
     """
     print('Querying database...')
     sessions = one.alyx.rest('sessions', 'list', project='ibl_fibrephotometry')
@@ -92,11 +99,13 @@ def fetch_catalog(one) -> pd.DataFrame:
     if len(new):
         print(f'Wrote metadata for {written} of {len(new)} sessions')
 
-    catalog = fix_catalog(
-        PhotometrySessionGroup.from_h5_dir(SESSIONS_H5_DIR, one=one).sessions)
-    catalog.to_parquet(SESSIONS_FPATH, index=False)
-    print(f'Catalogued {len(catalog)} sessions in {SESSIONS_FPATH}')
-    return catalog
+    group = PhotometrySessionGroup.from_h5_dir(SESSIONS_H5_DIR, one=one,
+                                               scan_h5=False)
+    group.fix_catalog()
+    # No filter has run yet, so this is the whole catalog.
+    group.sessions.to_parquet(SESSIONS_FPATH, index=False)
+    print(f'Catalogued {len(group.sessions)} sessions in {SESSIONS_FPATH}')
+    return group
 
 
 def fetch_movement_sources(ps: PhotometrySession) -> None:
@@ -296,10 +305,8 @@ def main(argv=None) -> None:
     args = parse_args(argv)
     one = _get_default_connection()
 
-    catalog = fetch_catalog(one)
+    group = fetch_catalog(one)
 
-    group = PhotometrySessionGroup.from_catalog(
-        catalog, one=one, h5_dir=SESSIONS_H5_DIR, scan_h5=False)
     # Every analysis filter is off: these are the criteria a session must clear
     # to be analysed, not to be built. The raw-photometry QC filter especially —
     # it reads the QC this pass is here to compute, so before the store is built

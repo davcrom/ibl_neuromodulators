@@ -206,6 +206,18 @@ is in `SESSION_SCHEMA`, so `enforce_schema` carries them along untouched. Its
 `scan_h5` is passed on to `from_catalog`, so `scan_h5=False` reads each file
 once instead of twice.
 
+`group.fix_catalog()` is the step after it, and the only one that runs on a
+group rather than on a table: it repairs `_catalog` in place with the
+`util.fix_catalog` fixups — filling empty regions from the subject's other
+sessions, from `metadata/fibers.csv`, correcting region names and deriving
+`target_NM`. In place, because `group.sessions` hands back a copy, and
+`PhotometrySession` reads `brain_region` off its catalog row to name the
+photometry columns; a group built from an unrepaired catalog cannot map its own
+signal. The whole function is a TEMPFIX and goes when the upstream Alyx
+metadata is corrected. `scripts/download.py → fetch_catalog` is the caller:
+read the store, fix, write `sessions.pqt`, then filter — one group through the
+whole phase, validated once, after the fixups rather than before them.
+
 ### 3. PhotometrySession Lifecycle
 
 Lazy loading — all data attributes start empty:

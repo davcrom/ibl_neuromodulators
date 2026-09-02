@@ -307,6 +307,91 @@ class TestSettledFailures:
         assert calls[CAMERA_TIMES] == 1
 
 
+class TestCatalogPhase:
+    """One group is read from the store, fixed, saved, filtered and built."""
+
+    @staticmethod
+    def _write_metadata(h5_dir, eid, regions, one):
+        """Write one session's `metadata` group, as the Alyx query pass does."""
+        from iblnm.data import PhotometrySession
+
+        row = pd.Series({
+            'eid': eid,
+            # Not `test_mouse`: that name is in config.SUBJECTS_TO_EXCLUDE and
+            # `main`'s filter drops it before the build ever sees it.
+            'subject': 'catalog_mouse',
+            'start_time': f'2024-01-0{eid[-1]}T10:00:00',
+            'number': 1,
+            'lab': 'test_lab',
+            'task_protocol': '_iblrig_tasks_trainingChoiceWorld6.4.2',
+            'session_type': 'training',
+            'brain_region': regions,
+            'hemisphere': ['l'] * len(regions),
+            'target_NM': ['VTA-DA'] * len(regions),
+        })
+        ps = PhotometrySession(row, one=one, load_data=False)
+        ps.save_h5(h5_dir / f'{eid}.h5', groups=['metadata'], mode='w')
+
+    @pytest.fixture
+    def stored(self, tmp_path, monkeypatch):
+        """Two stored sessions, one of them missing its recorded regions.
+
+        The empty row is the case the phase exists for: the fixups fill its
+        parallel columns from its subject's other session, and they have to
+        reach the object the build iterates.
+        """
+        from iblnm.data import PhotometrySessionGroup
+
+        eids = ['eid-catalog-1', 'eid-catalog-2']
+        one = MagicMock()
+        one.alyx.rest.return_value = [{'id': eid} for eid in eids]
+        for eid, regions in zip(eids, (['VTA'], [])):
+            self._write_metadata(tmp_path, eid, regions, one)
+
+        monkeypatch.setattr(download, 'SESSIONS_H5_DIR', tmp_path)
+        monkeypatch.setattr(download, 'SESSIONS_FPATH',
+                            tmp_path / 'sessions.pqt')
+        monkeypatch.setattr(download, '_get_default_connection', lambda: one)
+
+        processed = []
+        monkeypatch.setattr(PhotometrySessionGroup, 'check_products',
+                            lambda self, *a, **k: None)
+        monkeypatch.setattr(PhotometrySessionGroup, 'process',
+                            lambda self, *a, **k: processed.append(self))
+        monkeypatch.setattr(PhotometrySessionGroup, 'collect_errors',
+                            lambda self: pd.DataFrame())
+        return eids, processed
+
+    def test_the_built_group_carries_the_fixups(self, stored):
+        """`process` iterates the fixed catalog, not a copy left behind."""
+        eids, processed = stored
+
+        download.main([])
+
+        assert len(processed) == 1
+        assert processed[0].sessions['target_NM'].tolist() == [['VTA-DA']] * 2
+        assert sorted(processed[0].sessions['eid']) == eids
+
+    def test_the_catalog_is_written(self, stored, tmp_path):
+        eids, _ = stored
+
+        download.main([])
+
+        catalog = pd.read_parquet(tmp_path / 'sessions.pqt')
+        assert sorted(catalog['eid']) == eids
+
+    def test_the_store_is_not_scanned(self, stored, monkeypatch):
+        """Nothing in the phase reads what `complete_catalog` collects."""
+        from iblnm.data import PhotometrySessionGroup
+
+        def refuse(self):
+            raise AssertionError('complete_catalog was called')
+
+        monkeypatch.setattr(PhotometrySessionGroup, 'complete_catalog', refuse)
+
+        download.main([])
+
+
 class TestModalityScope:
     """`modalities` is what the `--skip` flag cuts: whole blocks, not products."""
 
