@@ -1378,6 +1378,35 @@ class TestFromH5:
 class TestLoadTrials:
     """Tests for PhotometrySession.load_trials."""
 
+    def test_reads_the_stored_table_without_fetching(self, mock_session_series,
+                                                     tmp_path):
+        """A stored `trials/table` is read off the H5, not refetched from Alyx.
+
+        The load tiers are memory, then the store, then Alyx. Trials are stored
+        like every other product, so a session holding one must not go to the
+        network for it.
+        """
+        from iblnm.data import PhotometrySession
+
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        ps.filepath = tmp_path / 'session.h5'
+        ps.trials = pd.DataFrame({
+            'trial': [0, 1],
+            'choice': [1, -1],
+            'feedbackType': [1, -1],
+        })
+        ps.save_h5(groups=['trials'])
+        ps.trials = None
+
+        with patch.object(PhotometrySession, 'fetch_trials',
+                          side_effect=AssertionError('fetched from Alyx')):
+            trials = ps.load_trials()
+
+        assert list(trials['trial']) == [0, 1]
+        assert list(trials['choice']) == [1, -1]
+        assert trials is ps.trials
+
     def test_propagates_exception(self, mock_session_series):
         """load_trials should let exceptions propagate."""
         from iblnm.data import PhotometrySession

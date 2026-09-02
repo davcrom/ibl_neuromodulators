@@ -1758,15 +1758,33 @@ class PhotometrySession(PhotometrySessionLoader):
     ]
 
     def load_trials(self) -> pd.DataFrame:
-        """Return the trials table, fetching it from Alyx.
+        """Return the trials table, fetching it from Alyx if it is not stored.
 
-        A table already on the session is returned as it stands; otherwise
-        nothing stores a trials table this method could read back, so it is
-        :meth:`fetch_trials` under the name every caller already uses.
+        Reads in the order every load method follows — the session attribute,
+        else `trials/table` while its stamp still matches `config.PRODUCT_SPEC`,
+        else Alyx — and writes what it fetched, so a session with an empty H5
+        fills itself. A product named in `self.rebuild` skips both reads.
+
+        Returns
+        -------
+        pandas.DataFrame
+            The trials table, derived columns included. Also assigned to
+            ``self.trials``.
+
+        Raises
+        ------
+        StaleProduct
+            The stored stamp disagrees with the resolved spec.
         """
         if self._held_in_memory('trials/table', self.trials):
             return self.trials
-        return self.fetch_trials()
+        if self.stored_is_current('trials/table'):
+            with h5py.File(self.filepath, 'r') as h5:
+                self.trials = _read_dataframe(h5['trials/table'])
+            return self.trials
+        self.fetch_trials()
+        self.save_h5(groups=['trials'])
+        return self.trials
 
     def fetch_trials(self) -> pd.DataFrame:
         """Fetch the trials table from Alyx and add the derived columns.
