@@ -4349,35 +4349,6 @@ class PhotometrySessionGroup:
         """
         return self._error_log(self.sessions['eid'])
 
-    def _scan_session(self, eid: str) -> tuple[list, dict | None, dict]:
-        """Read one stored session's errors, performance and per-region QC.
-
-        Returns
-        -------
-        list
-            Error-log rows, `util.LOG_COLUMNS` schema; empty when the session
-            has no file.
-        dict or None
-            The stored `trials/performance` payload, or None when absent.
-        dict
-            Brain region -> that recording's stored raw photometry QC metrics,
-            empty when the session has no photometry group.
-
-        Raises
-        ------
-        OSError, KeyError
-            The file exists but cannot be read — see `complete_catalog`, which
-            treats those sessions as empty.
-        """
-        with self._open_h5(eid) as h5:
-            if h5 is None:
-                return [], None, {}
-            performance = (_load_performance(h5['trials/performance'])
-                           if 'trials/performance' in h5 else None)
-            stored_qc = (_read_photometry_qc(h5['photometry'])
-                         if 'photometry' in h5 else {})
-            return read_error_tree(h5), performance, stored_qc
-
     def complete_catalog(self) -> None:
         """Read every catalogued session's H5 once, filling in what filters read.
 
@@ -4397,29 +4368,23 @@ class PhotometrySessionGroup:
         A session with no file, or without one of the products, gets an empty
         error list, a NaN `fraction_correct`, an empty `contrasts` list and NaN
         for every QC metric — each of which fails the filter reading it, rather
-        than passing it by absence. A file too damaged to read scans as one of
-        those, and is named in the printout: a build killed mid-write leaves a
-        file whose header opens but whose objects do not, and one of those must
-        not end the pass for every other session.
+        than passing it by absence.
         """
         regions_by_eid = dict(iter(
             _explode_recordings(self._catalog).groupby('eid')['brain_region']))
-        errors, performance, qc, unreadable = [], [], [], []
+        errors, performance, qc = [], [], []
         for eid in self._catalog['eid']:
-            try:
-                scanned_errors, scanned_performance, stored_qc = (
-                    self._scan_session(eid))
-            except (OSError, KeyError):
-                scanned_errors, scanned_performance, stored_qc = [], None, {}
-                unreadable.append(eid)
-            errors.extend(scanned_errors)
-            if scanned_performance is not None:
-                performance.append({'eid': eid} | scanned_performance)
+            stored_qc = {}
+            with self._open_h5(eid) as h5:
+                if h5 is not None:
+                    errors.extend(read_error_tree(h5))
+                    if 'trials/performance' in h5:
+                        performance.append({'eid': eid} | _load_performance(
+                            h5['trials/performance']))
+                    if 'photometry' in h5:
+                        stored_qc = _read_photometry_qc(h5['photometry'])
             qc.extend({'eid': eid, 'brain_region': region} | stored_qc.get(region, {})
                       for region in regions_by_eid.get(eid, []))
-        if unreadable:
-            print(f'  {len(unreadable)} unreadable session files, scanned as '
-                  f'empty: {", ".join(unreadable)}')
 
         self.photometry_qc = (pd.DataFrame(qc) if qc else
                               pd.DataFrame(columns=['eid', 'brain_region']))
