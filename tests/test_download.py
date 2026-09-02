@@ -212,10 +212,12 @@ def saved_groups(monkeypatch):
 
 class TestParseArgs:
     def test_the_session_filters_parse(self):
-        args = download.parse_args(['--session-type', 'biased', '--workers', '4'])
+        args = download.parse_args(['--session-type', 'biased', '--workers', '4',
+                                    '--target-NM', 'LC-NE', 'NBM-ACh'])
 
         assert args.session_type == ['biased']
         assert args.workers == 4
+        assert args.target_NM == ['LC-NE', 'NBM-ACh']
 
 
 class TestFetchesOncePerDataset:
@@ -336,30 +338,64 @@ class TestVideoSourcesFailSeparately:
         assert {e['product'] for e in session.errors} == {'video/pose', 'video'}
 
 
+def _write_metadata(h5_dir, eid, regions, one):
+    """Write one session's `metadata` group, as the Alyx query pass does."""
+    from iblnm.data import PhotometrySession
+
+    row = pd.Series({
+        'eid': eid,
+        # Not `test_mouse`: that name is in config.SUBJECTS_TO_EXCLUDE and
+        # `main`'s filter drops it before the build ever sees it.
+        'subject': 'catalog_mouse',
+        'start_time': f'2024-01-0{eid[-1]}T10:00:00',
+        'number': 1,
+        'lab': 'test_lab',
+        'task_protocol': '_iblrig_tasks_trainingChoiceWorld6.4.2',
+        'session_type': 'training',
+        'brain_region': regions,
+        'hemisphere': ['l'] * len(regions),
+        'target_NM': ['VTA-DA'] * len(regions),
+    })
+    ps = PhotometrySession(row, one=one, load_data=False)
+    ps.save_h5(h5_dir / f'{eid}.h5', groups=['metadata'], mode='w')
+
+
+def _stub_store(tmp_path, monkeypatch, regions_per_session):
+    """Stand a store of metadata-only sessions up in front of `download.main`.
+
+    One session per entry of `regions_per_session`, its brain regions taken
+    from that entry, written into `tmp_path` and served by a mock ONE. The
+    group's `process` is replaced by a recorder, so `main` runs the whole
+    catalog phase and stops at the build.
+
+    Returns
+    -------
+    tuple of (list of str, list)
+        The eids written, in order, and the list the recorder appends each
+        processed group to.
+    """
+    from iblnm.data import PhotometrySessionGroup
+
+    eids = [f'eid-catalog-{n}' for n in range(1, len(regions_per_session) + 1)]
+    one = MagicMock()
+    one.alyx.rest.return_value = [{'id': eid} for eid in eids]
+    for eid, regions in zip(eids, regions_per_session):
+        _write_metadata(tmp_path, eid, regions, one)
+
+    monkeypatch.setattr(download, 'SESSIONS_H5_DIR', tmp_path)
+    monkeypatch.setattr(download, 'SESSIONS_FPATH', tmp_path / 'sessions.pqt')
+    monkeypatch.setattr(download, '_get_default_connection', lambda: one)
+
+    processed = []
+    monkeypatch.setattr(PhotometrySessionGroup, 'process',
+                        lambda self, *a, **k: processed.append(self))
+    monkeypatch.setattr(PhotometrySessionGroup, 'collect_errors',
+                        lambda self: pd.DataFrame())
+    return eids, processed
+
+
 class TestCatalogPhase:
     """One group is read from the store, fixed, saved, filtered and built."""
-
-    @staticmethod
-    def _write_metadata(h5_dir, eid, regions, one):
-        """Write one session's `metadata` group, as the Alyx query pass does."""
-        from iblnm.data import PhotometrySession
-
-        row = pd.Series({
-            'eid': eid,
-            # Not `test_mouse`: that name is in config.SUBJECTS_TO_EXCLUDE and
-            # `main`'s filter drops it before the build ever sees it.
-            'subject': 'catalog_mouse',
-            'start_time': f'2024-01-0{eid[-1]}T10:00:00',
-            'number': 1,
-            'lab': 'test_lab',
-            'task_protocol': '_iblrig_tasks_trainingChoiceWorld6.4.2',
-            'session_type': 'training',
-            'brain_region': regions,
-            'hemisphere': ['l'] * len(regions),
-            'target_NM': ['VTA-DA'] * len(regions),
-        })
-        ps = PhotometrySession(row, one=one, load_data=False)
-        ps.save_h5(h5_dir / f'{eid}.h5', groups=['metadata'], mode='w')
 
     @pytest.fixture
     def stored(self, tmp_path, monkeypatch):
@@ -369,25 +405,7 @@ class TestCatalogPhase:
         parallel columns from its subject's other session, and they have to
         reach the object the build iterates.
         """
-        from iblnm.data import PhotometrySessionGroup
-
-        eids = ['eid-catalog-1', 'eid-catalog-2']
-        one = MagicMock()
-        one.alyx.rest.return_value = [{'id': eid} for eid in eids]
-        for eid, regions in zip(eids, (['VTA'], [])):
-            self._write_metadata(tmp_path, eid, regions, one)
-
-        monkeypatch.setattr(download, 'SESSIONS_H5_DIR', tmp_path)
-        monkeypatch.setattr(download, 'SESSIONS_FPATH',
-                            tmp_path / 'sessions.pqt')
-        monkeypatch.setattr(download, '_get_default_connection', lambda: one)
-
-        processed = []
-        monkeypatch.setattr(PhotometrySessionGroup, 'process',
-                            lambda self, *a, **k: processed.append(self))
-        monkeypatch.setattr(PhotometrySessionGroup, 'collect_errors',
-                            lambda self: pd.DataFrame())
-        return eids, processed
+        return _stub_store(tmp_path, monkeypatch, (['VTA'], []))
 
     def test_the_built_group_carries_the_fixups(self, stored):
         """`process` iterates the fixed catalog, not a copy left behind."""
@@ -417,3 +435,30 @@ class TestCatalogPhase:
         monkeypatch.setattr(PhotometrySessionGroup, 'complete_catalog', refuse)
 
         download.main([])
+
+
+class TestTargetNMFilter:
+    """`--target-NM` narrows which sessions are built, never what is built."""
+
+    @pytest.fixture
+    def stored(self, tmp_path, monkeypatch):
+        """Three sessions: LC only, VTA only, and both fibers in one session."""
+        return _stub_store(tmp_path, monkeypatch,
+                           (['LC'], ['VTA'], ['LC', 'VTA']))
+
+    def test_a_session_is_kept_for_any_of_its_recordings(self, stored):
+        """The mixed session is built whole, on the strength of its LC fiber."""
+        eids, processed = stored
+
+        download.main(['--target-NM', 'LC-NE'])
+
+        built = processed[0].sessions
+        assert sorted(built['eid']) == [eids[0], eids[2]]
+        assert built.set_index('eid').loc[eids[2], 'brain_region'] == ['LC', 'VTA']
+
+    def test_no_flag_builds_every_target(self, stored):
+        eids, processed = stored
+
+        download.main([])
+
+        assert sorted(processed[0].sessions['eid']) == eids

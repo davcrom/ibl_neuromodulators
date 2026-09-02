@@ -14,6 +14,7 @@ Usage:
     python scripts/download.py                          # build every session
     python scripts/download.py --workers 4              # in parallel
     python scripts/download.py --session-type biased    # one session type
+    python scripts/download.py --target-NM LC-NE        # one target population
 """
 import os
 
@@ -30,6 +31,7 @@ from tqdm import tqdm  # noqa: E402
 
 from iblnm.config import (  # noqa: E402
     RESPONSE_EVENTS, SESSION_TYPES, SESSIONS_FPATH, SESSIONS_H5_DIR,
+    VALID_TARGETNMS,
 )
 from iblnm.data import (  # noqa: E402
     PREPROCESSED_BAND, WHEEL_LABEL, PhotometrySession, PhotometrySessionGroup,
@@ -249,6 +251,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--session-type', nargs='+', choices=SESSION_TYPES,
                         default=None,
                         help='Restrict to these session types (default: all)')
+    parser.add_argument('--target-NM', nargs='+', choices=VALID_TARGETNMS,
+                        default=None,
+                        help='Restrict to sessions carrying a recording from '
+                             'one of these target neuromodulators '
+                             '(default: all)')
     return parser.parse_args(argv)
 
 
@@ -264,7 +271,8 @@ def main(argv=None) -> None:
     # it fails every recording, and scans all of `data/sessions` to say so.
     group.filter_sessions(
         session_types=args.session_type or False, qc_blockers=set(),
-        targetnms=False, photometry_qc=False, min_performance=False,
+        targetnms=args.target_NM or False, photometry_qc=False,
+        min_performance=False,
         required_contrasts=False,
     )
     print(f'  {len(group.sessions)} sessions after filtering')
