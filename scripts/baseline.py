@@ -34,10 +34,6 @@ from iblphotometry import processing
 # derived in code.
 EXAMPLE_EID = '26d93d1d-97f1-40f0-b84c-28229135f6fa'
 
-# `prepare_session` cuts its own pre-stimulus window out of the preprocessed
-# signal, so the stored responses are not read — the signal and the trials are.
-REQUIRED_PRODUCTS = ('trials/table', 'photometry/preprocessed')
-
 PIPELINE = [
         dict(
             function=processing.lowpass_bleachcorrect,
@@ -165,9 +161,6 @@ if __name__ == '__main__':
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(
         pd.read_parquet(SESSIONS_FPATH), one=one)
-    # Survey before filtering: a stale stamp stops the run here rather than
-    # part-way through the ~10h test; an absent product is one session's gap.
-    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions(
         session_types=('biased', 'ephys',)
     )

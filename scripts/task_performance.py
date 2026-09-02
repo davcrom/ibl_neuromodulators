@@ -30,10 +30,6 @@ plt.ion()
 
 PSYCH_PARAMS = ['bias', 'threshold', 'lapse_left', 'lapse_right']
 
-# Every curve in these figures is fitted in `trials/performance`; the psychometric
-# parameters plotted below are the ones its scoring writes.
-REQUIRED_PRODUCTS = ('trials/performance',)
-
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -51,9 +47,6 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
-    # Survey before filtering: a stale stamp stops the run here rather than
-    # after the figures have started; an absent product is one session's gap.
-    group.check_products(*REQUIRED_PRODUCTS)
     # The psychometric figures below read `group.performance` directly.
     group.load_performance()
     group.filter_sessions(

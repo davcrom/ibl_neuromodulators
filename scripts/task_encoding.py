@@ -52,10 +52,6 @@ DEFAULT_PARAMS = [
 # fitted features but are excluded from every block.
 CCA_BLOCK_MAINS = {'task': CCA_TASK_MAINS, 'movement': CCA_MOVEMENT_MAINS}
 
-# The neural view is read from the parquets responses.py writes; the behavioral
-# view is the psychometric fit stored in `trials/performance`.
-REQUIRED_PRODUCTS = ('trials/performance',)
-
 # Grid search defaults for sparse CCA
 ALPHA_GRID = [1e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
 L1_RATIO_GRID = [0.0]
@@ -586,9 +582,6 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
-    # Survey before filtering: a stale stamp stops the run here rather than
-    # part-way through the fits; an absent product is one session's gap.
-    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions(
         session_types=SESSION_TYPES_TO_ANALYZE,
         qc_blockers=ANALYSIS_QC_BLOCKERS,

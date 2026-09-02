@@ -837,8 +837,7 @@ def _stub_main_dependencies(monkeypatch):
     Replaces the catalog/parameter reads, the group construction, the view
     assembly, the PCA and every plotter with cheap stand-ins, and returns the
     recorders: the ``_save`` names in call order, the ``plot_transition_traces``
-    calls as ``(args, kwargs)``, the stub views ``main`` renders, and the
-    products it surveyed through ``check_products``.
+    calls as ``(args, kwargs)``, and the stub views ``main`` renders.
     """
     views = {
         'states': {'M': pd.DataFrame({'map_state': [1.0]})},
@@ -856,12 +855,10 @@ def _stub_main_dependencies(monkeypatch):
     monkeypatch.setattr(ddm.pd, 'read_parquet', lambda *a, **k: pd.DataFrame())
     monkeypatch.setattr(ddm.pd, 'read_csv',
                         lambda *a, **k: pd.DataFrame({'mouse': ['M']}))
-    surveyed = []
     monkeypatch.setattr(
         ddm, 'PhotometrySessionGroup',
         SimpleNamespace(from_catalog=lambda *a, **k: SimpleNamespace(
-            filter_sessions=lambda *a, **k: None,
-            check_products=lambda *products, **k: surveyed.extend(products))))
+            filter_sessions=lambda *a, **k: None)))
     monkeypatch.setattr(ddm, '_assemble_mouse_views',
                         lambda group, subjects, one: views)
     monkeypatch.setattr(ddm, 'pca_2d',
@@ -877,7 +874,7 @@ def _stub_main_dependencies(monkeypatch):
                     'plot_state_param_scatter', 'plot_state_pca',
                     'plot_state_measures'):
         monkeypatch.setattr(ddm, plotter, lambda *a, **k: None)
-    return saved_names, transition_calls, views, surveyed
+    return saved_names, transition_calls, views
 
 
 def test_main_renders_the_state_switch_figure(monkeypatch):
@@ -887,7 +884,7 @@ def test_main_renders_the_state_switch_figure(monkeypatch):
     the ``MEASURE_LABELS`` keys in iteration order (fixing the left-to-right panel
     order), and the lag axis is labelled in trials from the state switch.
     """
-    saved_names, transition_calls, views, _ = _stub_main_dependencies(monkeypatch)
+    saved_names, transition_calls, views = _stub_main_dependencies(monkeypatch)
 
     ddm.main(one=object())
 
@@ -900,15 +897,3 @@ def test_main_renders_the_state_switch_figure(monkeypatch):
     assert switch_kwargs['xlabel'] == 'trial from state switch'
     assert list(switch_kwargs['ylabels']) == list(ddm.MEASURE_LABELS.values())
 
-
-def test_main_surveys_the_products_it_reads(monkeypatch):
-    """``main`` checks its products against the store instead of building them.
-
-    The survey names exactly ``REQUIRED_PRODUCTS``, so a stale stamp on one of
-    them stops the run; a merely absent one is left to the session's own loader.
-    """
-    *_, surveyed = _stub_main_dependencies(monkeypatch)
-
-    ddm.main(one=object())
-
-    assert surveyed == list(ddm.REQUIRED_PRODUCTS)

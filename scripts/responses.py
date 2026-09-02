@@ -61,11 +61,6 @@ from iblnm.analysis import (
 )
 from iblnm.util import count_population_by_target_event
 
-# Traces come from `photometry/responses`; the trial regressors that model them
-# come from `trials/table` and the wheel's peri-event velocity.
-REQUIRED_PRODUCTS = (
-    'trials/table', 'photometry/responses', 'wheel/responses')
-
 
 # =========================================================================
 # Response magnitude plotting
@@ -531,9 +526,6 @@ if __name__ == '__main__':
 
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
-    # Survey before filtering: a stale stamp stops the run here rather than
-    # part-way through the re-extraction; an absent product is one session's gap.
-    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions(
         session_types=('biased', 'ephys')
     )

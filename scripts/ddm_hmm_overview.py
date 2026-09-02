@@ -53,10 +53,6 @@ from iblnm.vis import (
     plot_transition_traces,
 )
 
-# The NM measures are cut here out of the preprocessed signal over this script's
-# own windows, so the stored responses are not read — the signal and trials are.
-REQUIRED_PRODUCTS = ('trials/table', 'photometry/preprocessed')
-
 # Behavioral-parameter features feeding the figure-4 PCA (one per state).
 FEATURE_COLS = ['bias', 'threshold', 'lapse_left', 'lapse_right']
 # probabilityLeft (prev, cur) pairs defining each block-transition type (figure 5).
@@ -530,9 +526,6 @@ def main(one=None) -> None:
         one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(
         pd.read_parquet(SESSIONS_FPATH), one=one, h5_dir=SESSIONS_H5_DIR)
-    # Survey before filtering: a stale stamp stops the run here rather than
-    # after the figures have started; an absent product is one session's gap.
-    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions()
 
     ddm_params = pd.read_csv(DDM_HMM_PARAMS_FPATH)

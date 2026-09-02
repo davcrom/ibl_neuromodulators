@@ -40,12 +40,6 @@ from iblnm.vis import (
 )
 
 
-# The pose and its camera clock are raw products the store does not keep, so
-# `load_pose` fetches them from ONE; everything else the fit reads is stored.
-REQUIRED_PRODUCTS = (
-    'trials/table', 'photometry/preprocessed', 'wheel/preprocessed')
-
-
 # config modulator name -> trials column carrying its per-event value. `choice`
 # enters as the chosen side relative to the recording hemisphere (choice_side).
 MODULATOR_COLUMN = {'side': 'side', 'choice': 'choice_side', 'contrast': 'contrast'}
@@ -144,13 +138,11 @@ if __name__ == '__main__':
     args = parse_args()
 
     # --- Select the recording through the group object (single source of truth).
-    #     One session is fitted, so the catalog is cut to it before the survey:
-    #     what is reported then covers that session alone.
+    #     One session is fitted, so the catalog is cut to it first.
     df = pd.read_parquet(SESSIONS_FPATH)
     one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(
         df[df['eid'] == args.eid], one=one, h5_dir=SESSIONS_H5_DIR)
-    group.check_products(*REQUIRED_PRODUCTS)
     group.filter_sessions()
     recording = group.recordings.query(
         'eid == @args.eid and brain_region == @args.brain_region').iloc[0]
