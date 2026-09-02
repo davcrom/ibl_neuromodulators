@@ -3894,7 +3894,7 @@ class PhotometrySessionGroup:
         return group
 
     @classmethod
-    def from_h5_dir(cls, h5_dir, one=None):
+    def from_h5_dir(cls, h5_dir, one=None, scan_h5=True):
         """Build a group from the `metadata` groups of a directory of H5 files.
 
         The store's own inverse: where `from_catalog` starts from
@@ -3902,18 +3902,32 @@ class PhotometrySessionGroup:
         for a script that has just built those files and holds no catalog of
         its own. Files with no `metadata` group are skipped.
 
+        The per-subject rankings `day_n` and `session_n` are derived here rather
+        than in `from_catalog`: they need every one of the subject's sessions at
+        once, which only this method has, and deriving them in `from_catalog`
+        would recompute them for every script reading the written catalog.
+        Neither column is in `config.SESSION_SCHEMA`, so `enforce_schema`
+        carries them along untouched.
+
         Parameters
         ----------
         h5_dir : Path or str
             Directory of `{eid}.h5` files, adopted as the group's `h5_dir`.
         one : one.api.One, optional
             ONE connection, needed only if the group later has to fetch.
+        scan_h5 : bool, optional
+            Forwarded to `from_catalog`. When True (default) every file is
+            opened a second time by `complete_catalog`; pass False to skip that,
+            which leaves `logged_errors` empty, `fraction_correct` NaN and
+            `contrasts` empty, and so keeps nothing if the filters reading them
+            are on.
 
         Returns
         -------
         PhotometrySessionGroup
-            Group over every session found, with all `SESSION_SCHEMA` columns
-            and `logged_errors` scanned as `from_catalog` does.
+            Group over every session found, with all `SESSION_SCHEMA` columns,
+            `day_n` (days since the subject's first session) and `session_n`
+            (that session's rank among the subject's days).
         """
         rows = []
         for fpath in sorted(Path(h5_dir).glob('*.h5')):
@@ -3921,7 +3935,17 @@ class PhotometrySessionGroup:
                 row = _read_metadata(h5)
             if row:
                 rows.append(row)
-        return cls.from_catalog(pd.DataFrame(rows), one=one, h5_dir=h5_dir)
+        catalog = pd.DataFrame(rows)
+        if rows:
+            dates = pd.to_datetime(catalog['start_time'],
+                                   format='ISO8601').dt.date
+            by_subject = dates.groupby(catalog['subject'])
+            catalog['day_n'] = by_subject.transform(
+                lambda subject_dates: [(date - subject_dates.min()).days
+                                       for date in subject_dates])
+            catalog['session_n'] = by_subject.rank(method='dense')
+        return cls.from_catalog(catalog, one=one, h5_dir=h5_dir,
+                                scan_h5=scan_h5)
 
     @property
     def sessions(self):

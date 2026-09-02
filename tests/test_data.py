@@ -4328,6 +4328,34 @@ class TestGroupFromH5Dir:
 
         assert group._catalog['logged_errors'].iloc[0] == ['MissingRawData']
 
+    def test_day_and_session_ranks_derived(self, tmp_path):
+        """Both per-subject rankings come off the store, with no fixup step."""
+        from iblnm.data import PhotometrySessionGroup
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          start_time='2024-01-01T10:00:00')
+        _write_session_h5(tmp_path, 'eid-2', 'mouse_A',
+                          start_time='2024-01-03T10:00:00')
+
+        group = PhotometrySessionGroup.from_h5_dir(tmp_path, one=None,
+                                                   scan_h5=False)
+
+        assert list(group.sessions['day_n']) == [0, 2]
+        assert list(group.sessions['session_n']) == [1, 2]
+
+    def test_scan_skipped(self, tmp_path):
+        """scan_h5=False leaves the columns complete_catalog would have filled."""
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.validation import MissingRawData
+        from tests.test_util import _write_session_h5
+        _write_session_h5(tmp_path, 'eid-1', 'mouse_A',
+                          errors=[MissingRawData('x')])
+
+        group = PhotometrySessionGroup.from_h5_dir(tmp_path, one=None,
+                                                   scan_h5=False)
+
+        assert list(group._catalog['logged_errors']) == [[]]
+
 
 class TestGroupCollectSessionErrors:
     """collect_session_errors feeds filter_sessions, so it reads the catalog."""

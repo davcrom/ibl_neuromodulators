@@ -794,11 +794,10 @@ def derive_target_nm(df, brain_region_col='brain_region'):
 
 
 def build_catalog(sessions: pd.DataFrame) -> pd.DataFrame:
-    """Apply the cross-session fixups and the per-subject ranking to a catalog.
+    """Apply the cross-session fixups to a catalog.
 
     These cannot live in a per-session load path: filling one session's empty
-    brain region from its subject's other sessions, and ranking a session
-    within its subject's days, both need every session at once.
+    brain region from its subject's other sessions needs every session at once.
 
     Parameters
     ----------
@@ -809,10 +808,8 @@ def build_catalog(sessions: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        Copy carrying the fixed region names, the derived `target_NM`/`NM`,
-        `day_n` (days since the subject's first session) and `session_n` (that
-        session's rank among the subject's days), conformed to
-        `config.SESSION_SCHEMA`.
+        Copy carrying the fixed region names and the derived `target_NM`/`NM`,
+        conformed to `config.SESSION_SCHEMA`.
     """
     from iblnm.config import SESSION_SCHEMA
 
@@ -830,13 +827,7 @@ def build_catalog(sessions: pd.DataFrame) -> pd.DataFrame:
     catalog = fix_brain_regions(catalog)
     catalog = derive_target_nm(catalog)
 
-    catalog = catalog.assign(
-        date=pd.to_datetime(catalog['start_time'], format='ISO8601').dt.date)
-    catalog['day_n'] = catalog.groupby('subject')['date'].transform(
-        lambda dates: [(date - dates.min()).days for date in dates]
-    )
-    catalog['session_n'] = catalog.groupby('subject')['date'].rank(method='dense')
-    return enforce_schema(catalog.drop(columns='date'), SESSION_SCHEMA)
+    return enforce_schema(catalog, SESSION_SCHEMA)
 
 
 def count_population_by_target_event(df: pd.DataFrame) -> pd.DataFrame:

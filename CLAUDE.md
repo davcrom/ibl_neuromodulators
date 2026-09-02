@@ -195,9 +195,16 @@ full log for the filtered sessions), `collect_qc`
 `complete_catalog` scanned it) and `collect_pose` (the video table).
 `collect_qc` and `collect_session_errors` walk `_catalog` rather than the
 filtered view, because what they return feeds `filter_sessions` and the mask
-does not exist yet — the same reason `load_performance` does. `PhotometrySessionGroup.from_h5_dir(h5_dir, one)`
+does not exist yet — the same reason `load_performance` does. `PhotometrySessionGroup.from_h5_dir(h5_dir, one, scan_h5=True)`
 goes the other way, rebuilding a catalog from the `metadata` groups of files
-already written.
+already written. It also derives the two per-subject rankings — `day_n`, days
+since the subject's first session, and `session_n`, that session's dense rank
+among the subject's days — because they need every session at once and this is
+the method that has them; deriving them in `from_catalog` instead would
+recompute them for every analysis script reading `sessions.pqt`. Neither column
+is in `SESSION_SCHEMA`, so `enforce_schema` carries them along untouched. Its
+`scan_h5` is passed on to `from_catalog`, so `scan_h5=False` reads each file
+once instead of twice.
 
 ### 3. PhotometrySession Lifecycle
 

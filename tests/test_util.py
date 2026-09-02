@@ -1070,12 +1070,13 @@ class TestFillBrainRegionFromFibers:
 
 def _write_session_h5(h5_dir, eid, subject, session_type='biased',
                       brain_region=None, errors=None, hemisphere=None,
-                      target_NM=None):
+                      target_NM=None, start_time='2024-01-01T10:00:00'):
     """Helper: write a minimal H5 with metadata and optional errors.
 
     ``brain_region``, ``hemisphere`` and ``target_NM`` are the parallel list
     columns and must match in length, or the session is dropped when a catalog
-    is rebuilt from the store.
+    is rebuilt from the store. ``start_time`` is the ISO-8601 session start, the
+    only field the per-subject day ranking reads.
     """
     from unittest.mock import MagicMock
     from iblnm.data import PhotometrySession
@@ -1083,7 +1084,7 @@ def _write_session_h5(h5_dir, eid, subject, session_type='biased',
     series = pd.Series({
         'eid': eid,
         'subject': subject,
-        'start_time': '2024-01-01T10:00:00',
+        'start_time': start_time,
         'number': 1,
         'session_type': session_type,
         'brain_region': brain_region or [],
@@ -1157,8 +1158,8 @@ class TestFillQCLabels:
 class TestBuildCatalog:
     """The cross-session fixups run over the whole catalog at once."""
 
-    def test_fixups_ranking_and_schema(self):
-        """Empty lists fill from the subject, names are fixed, days are ranked."""
+    def test_fixups_and_schema(self):
+        """Empty lists fill from the subject and region names are fixed."""
         from iblnm.util import build_catalog
         sessions = pd.DataFrame({
             'eid': ['a', 'b'],
@@ -1173,12 +1174,9 @@ class TestBuildCatalog:
         assert list(catalog['brain_region']) == [['SNc'], ['SNc']]
         assert list(catalog['hemisphere']) == [['l'], ['l']]
         assert list(catalog['target_NM']) == [['SNc-DA'], ['SNc-DA']]
-        assert list(catalog['day_n']) == [0, 2]
-        assert list(catalog['session_n']) == [1, 2]
         # enforce_schema fills every catalogued column, so the frame is usable
         # by PhotometrySessionGroup without further patching.
         assert 'session_type' in catalog.columns
-        assert 'date' not in catalog.columns
 
     def test_parallel_columns_fill_together_or_not_at_all(self):
         """A subject whose sessions disagree on region fills neither column.
