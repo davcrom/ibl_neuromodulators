@@ -76,8 +76,7 @@ class PhotometrySessionViewer:
         return bool(getattr(self.session, 'photometry_responses', None))
 
     def _has_trials(self):
-        return (hasattr(self.session, 'trials')
-                and self.session.trials is not None)
+        return hasattr(self.session, 'trials')
 
     def _events(self):
         """Return events sorted by EVENT_ORDER; unknowns appended at the end."""
@@ -197,7 +196,7 @@ class PhotometrySessionViewer:
         from matplotlib.lines import Line2D
         if not self._events_on:
             return []
-        if not hasattr(self.session, 'trials') or self.session.trials is None:
+        if not self._has_trials():
             return []
         handles = []
         xform = ax.get_xaxis_transform()

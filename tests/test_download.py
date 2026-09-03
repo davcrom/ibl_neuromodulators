@@ -272,7 +272,7 @@ class TestFailureBlocksItsModality:
 
         assert [(e['product'], e['error_type']) for e in session.errors] == [
             ('photometry', 'MissingExtractedData')]
-        assert not session.photometry_responses
+        assert not hasattr(session, 'photometry_responses')
         assert session.wheel_velocity is not None
         assert WHEEL_LABEL in session.wheel_responses
 

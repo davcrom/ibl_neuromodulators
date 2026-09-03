@@ -1,7 +1,7 @@
 import operator
 import warnings
 from collections import defaultdict
-from collections.abc import Mapping, Sequence, Sized
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -475,16 +475,12 @@ def _save_trials(session, h5_file):
 
     `trials/performance` is written whenever the session holds it, independently
     of the table, so reading a stored table and scoring it does not depend on
-    both being in memory at once. An empty table is not written: the loader
-    parent starts `trials` as an empty DataFrame rather than None, and writing
-    that would report a session with no trials as holding a stored table.
+    both being in memory at once.
     """
     grp = h5_file.require_group('trials')
-    trials = getattr(session, 'trials', None)
-    if trials is not None and not trials.empty:
-        group = _replace_group(grp, 'table')
-        _write_dataframe(group, trials)
-    if session.performance:
+    if hasattr(session, 'trials'):
+        _write_dataframe(_replace_group(grp, 'table'), session.trials)
+    if hasattr(session, 'performance'):
         _save_performance(_replace_group(grp, 'performance'),
                           session.performance)
 
@@ -821,11 +817,23 @@ def _read_photometry_qc(
             if 'raw/qc' in photometry_group[region]}
 
 
+def _set_if_read(session, attribute: str, mapping: dict) -> None:
+    """Assign a label-keyed product to `session`, unless the file had none.
+
+    The label readers return an empty mapping when the modality group holds no
+    such product, which is what "absent" looks like on disk. Assigning that
+    would put an empty product on the session and stop the load method from
+    ever building it.
+    """
+    if mapping:
+        setattr(session, attribute, mapping)
+
+
 def _save_photometry(session, h5_file):
     photometry_group = h5_file.require_group('photometry')
     preprocessed = session.photometry.get(PREPROCESSED_BAND)
 
-    if session.neurophotometrics_qc:
+    if hasattr(session, 'neurophotometrics_qc'):
         _save_scalars(
             _replace_group(photometry_group.require_group('neurophotometrics'),
                            'qc'),
@@ -834,8 +842,9 @@ def _save_photometry(session, h5_file):
 
     raw_bands = _raw_bands(session.photometry) if store_raw else {}
 
-    regions = (set(session.photometry_responses) | set(session.photometry_qc)
-               | set(session.photometry_manual_qc))
+    responses = getattr(session, 'photometry_responses', {})
+    qc = getattr(session, 'photometry_qc', {})
+    regions = set(responses) | set(qc) | set(session.photometry_manual_qc)
     if preprocessed is not None:
         regions.update(preprocessed.columns)
     regions.update(*(frame.columns for frame in raw_bands.values()))
@@ -856,17 +865,16 @@ def _save_photometry(session, h5_file):
                     region, {}).items():
                 group.attrs[key] = float(value)
 
-        if region in session.photometry_responses:
+        if region in responses:
             _save_peri_event_matrix(
-                _replace_group(region_group, 'responses'),
-                session.photometry_responses[region],
+                _replace_group(region_group, 'responses'), responses[region],
             )
 
         # The raw bands themselves may or may not be stored; their QC always is.
-        if region in session.photometry_qc:
+        if region in qc:
             _save_scalars(
                 _replace_group(region_group.require_group('raw'), 'qc'),
-                session.photometry_qc[region],
+                qc[region],
             )
 
         if region in session.photometry_manual_qc:
@@ -885,8 +893,12 @@ def _load_photometry(session, h5_file):
         session.photometry[PREPROCESSED_BAND] = preprocessed
         session.preprocessing_diagnostics = diagnostics
 
-    session.photometry_responses = _read_label_responses(photometry_group)
-    session.photometry_qc = _read_photometry_qc(photometry_group)
+    # An empty mapping means the file holds no such product, not a product that
+    # was built empty, so the attribute is left off rather than set to `{}`.
+    _set_if_read(session, 'photometry_responses',
+                 _read_label_responses(photometry_group))
+    _set_if_read(session, 'photometry_qc',
+                 _read_photometry_qc(photometry_group))
     session.photometry_manual_qc = _read_label_products(
         photometry_group, 'manual_qc', _load_manual_qc)
     if 'neurophotometrics/qc' in photometry_group:
@@ -903,13 +915,13 @@ def _save_wheel(session, h5_file):
     """
     wheel_group = h5_file.require_group('wheel')
     label_group = wheel_group.require_group(WHEEL_LABEL)
-    if store_raw and session.wheel_position is not None:
+    if store_raw and hasattr(session, 'wheel_position'):
         _save_time_series(_replace_group(label_group, 'raw'),
                           session.wheel_position)
-    if session.wheel_velocity is not None:
+    if hasattr(session, 'wheel_velocity'):
         _save_time_series(_replace_group(label_group, 'preprocessed'),
                           session.wheel_velocity)
-    for label, responses in session.wheel_responses.items():
+    for label, responses in getattr(session, 'wheel_responses', {}).items():
         _save_peri_event_matrix(
             _replace_group(wheel_group.require_group(label), 'responses'),
             responses,
@@ -927,7 +939,7 @@ def _load_wheel(session, h5_file):
         if 'preprocessed' in label_group:
             session.wheel_velocity = _load_time_series(
                 label_group['preprocessed'])
-    session.wheel_responses = _read_label_responses(wheel_group)
+    _set_if_read(session, 'wheel_responses', _read_label_responses(wheel_group))
 
 
 # ----- Video / LightningPose sub-handlers (pure: parent_group + payload) -----
@@ -1023,24 +1035,22 @@ def _save_video(session, h5_file):
     verdict alone.
     """
     grp = h5_file.require_group('video')
-    for product, payload in (('video/times', session.pose_times),
-                             ('video/pose', session.pose),
-                             ('video/motion_energy', session.motion_energy)):
-        if store_raw and payload is not None:
-            _save_frame_data(grp.require_group(product.rpartition('/')[2]),
-                             payload)
-    if session.video_times_qc:
+    for attribute, name in (('pose_times', 'times'), ('pose', 'pose'),
+                            ('motion_energy', 'motion_energy')):
+        if store_raw and hasattr(session, attribute):
+            _save_frame_data(grp.require_group(name), getattr(session, attribute))
+    if hasattr(session, 'video_times_qc'):
         _save_scalars(_replace_group(grp.require_group('times'), 'qc'),
                       session.video_times_qc)
-    for label, signal in session.movement_signals.items():
+    for label, signal in getattr(session, 'movement_signals', {}).items():
         _save_time_series(_replace_group(grp.require_group(label), 'preprocessed'),
                           signal)
-    for label, responses in session.movement_responses.items():
+    for label, responses in getattr(session, 'movement_responses', {}).items():
         _save_peri_event_matrix(
             _replace_group(grp.require_group(label), 'responses'),
             responses,
         )
-    if session.pose_xcorr is not None:
+    if hasattr(session, 'pose_xcorr'):
         _save_pose_xcorr(_replace_group(grp.require_group('pose'), 'qc'),
                          session.pose_xcorr)
     if session.video_manual_qc:
@@ -1057,9 +1067,9 @@ def _load_video(session, h5_file):
                             ('motion_energy', 'motion_energy')):
         if name in grp:
             setattr(session, attribute, _load_frame_data(grp[name]))
-    session.movement_signals = _read_label_products(grp, 'preprocessed',
-                                                    _load_time_series)
-    session.movement_responses = _read_label_responses(grp)
+    _set_if_read(session, 'movement_signals',
+                 _read_label_products(grp, 'preprocessed', _load_time_series))
+    _set_if_read(session, 'movement_responses', _read_label_responses(grp))
     if 'pose/qc' in grp:
         session.pose_xcorr = _load_pose_xcorr(grp['pose/qc'])
     if 'manual_qc' in grp:
@@ -1250,6 +1260,19 @@ _LOAD_HANDLERS = {
     'video':      _load_video,
 }
 
+# The session attributes each save handler writes from, in the order the groups
+# are written. `save_h5` consults these to decide which handlers to run when the
+# caller names no groups: a session carries a data attribute only once that
+# product exists, so the attribute being there is the whole test.
+_SAVE_GROUP_PRODUCTS = {
+    'photometry': ('photometry_responses', 'photometry_qc',
+                   'neurophotometrics_qc'),
+    'trials':     ('trials', 'performance'),
+    'wheel':      ('wheel_position', 'wheel_velocity', 'wheel_responses'),
+    'video':      ('pose_times', 'pose', 'motion_energy', 'movement_signals',
+                   'movement_responses', 'pose_xcorr', 'video_times_qc'),
+}
+
 
 def _align_posteriors_to_trials(
     block: pd.DataFrame, trials: pd.DataFrame, atol: float = 1e-3
@@ -1299,6 +1322,13 @@ def _align_posteriors_to_trials(
         matched[i] = trial_labels[j]
         j += 1
     return matched
+
+
+# Data fields the loader parent declares as dataclass fields, and so sets to an
+# empty DataFrame or dict on every construction. `PhotometrySession` guards its
+# loads on the attribute being there, so those empty containers are deleted
+# rather than mistaken for a product that was built and came back empty.
+_PARENT_DATA_FIELDS = ('trials', 'wheel', 'pose', 'motion_energy', 'pupil')
 
 
 class PhotometrySession(PhotometrySessionLoader):
@@ -1362,41 +1392,19 @@ class PhotometrySession(PhotometrySessionLoader):
         self.errors = []
 
         super().__init__(*args, eid=self.eid, **kwargs)
-        if not isinstance(self.photometry, dict):
-            self.photometry = {}
-        self.photometry_responses = {}
-        # region -> {'bleaching_tau': ..., 'iso_correlation': ...}, computed by
-        # preprocess and stored as attrs on the preprocessed group it writes.
-        self.preprocessing_diagnostics = {}
-        self.states = None
+        # No data attribute is pre-set: a product exists on the session only
+        # once it has been loaded or computed, which is what every load method
+        # guards on and what makes a missing input raise rather than pass a
+        # sentinel downstream. The loader parent is a dataclass and sets four
+        # of them to empty containers, so those are dropped here.
+        for attribute in _PARENT_DATA_FIELDS:
+            delattr(self, attribute)
+        # Two dicts survive as namespaces rather than as products. Both raw and
+        # preprocessed photometry live in `self.photometry` keyed by band, so
+        # the band key is the presence check; `self.ols_fits` accumulates fits
+        # keyed by (model, event) and is never stored.
+        self.photometry = {}
         self.ols_fits = {}
-        # Behavioral scalars scored from the trials table: fraction correct and
-        # friends, the contrast levels presented, and the per-block psychometrics
-        # where the session has blocks.
-        self.performance = {}
-        # QC products: metric -> value for the neurophotometrics source table,
-        # region -> band-suffixed metric -> value for the raw bands.
-        self.neurophotometrics_qc = {}
-        self.photometry_qc = {}
-        # The pre-extraction neurophotometrics source table, fetched only to be
-        # scored: it carries the `color` column extraction drops.
-        self.neurophotometrics = None
-        # Wheel products: raw encoder position on its own irregular index, the
-        # velocity differentiated from it at WHEEL_FS, and the cut responses.
-        self.wheel_position = None
-        self.wheel_velocity = None
-        self.wheel_responses = {}
-        # Video products: the three independently-fetched raw datasets, the
-        # movement channels resampled onto the POSE_FS grid, and their cut
-        # responses.
-        self.pose = None
-        self.pose_times = None
-        self.motion_energy = None
-        self.video_times_qc = {}
-        self.movement_signals = {}
-        self.movement_responses = {}
-        self.pose_xcorr = None
-        self.video_qc = {}
         # Manual QC verdicts, set by hand in the viewers and computed from
         # nothing: LP_QC_LABELS -> verdict for the camera, which is per session,
         # and region -> the same mapping for photometry, which is per recording.
@@ -1630,29 +1638,6 @@ class PhotometrySession(PhotometrySessionLoader):
                     return True
         return False
 
-    def _held_in_memory(self, product: str, value: Sized | None) -> bool:
-        """Whether a load may return `value` instead of reading or rebuilding.
-
-        The memory tier of the read order the load methods follow: session
-        attribute, else the stored product, else fetch. A product the session
-        is already holding is returned as it stands, so a build that made it
-        moments earlier is not paid for twice — the cross-modal case, where the
-        video block asks `load_wheel` for a velocity the wheel block has just
-        computed, is what the tier exists for.
-
-        Parameters
-        ----------
-        product : str
-            The product the attribute holds. Not consulted — the value alone
-            decides — but named at every call site so the memory tier reads
-            beside the store tier it sits above.
-        value : sized or None
-            The attribute the product lives on. An empty container counts as
-            unset: an empty response dict or trials table is what an unbuilt
-            product looks like, not a built one that happens to be empty.
-        """
-        return value is not None and len(value) > 0
-
     # Metadata fields: (attr_name, is_list)
     # Scalars are stored as H5 attrs, lists as H5 datasets.
     _METADATA_FIELDS = [
@@ -1679,7 +1664,7 @@ class PhotometrySession(PhotometrySessionLoader):
             ``self.trials``.
 
         """
-        if self._held_in_memory('trials/table', self.trials):
+        if hasattr(self, 'trials'):
             return self.trials
         if self.stored_product_exists('trials/table'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -1760,7 +1745,7 @@ class PhotometrySession(PhotometrySessionLoader):
             self.states = None
             return
 
-        if self.trials is None:
+        if not hasattr(self, 'trials'):
             raise ValueError(
                 f"load_states requires loaded trials (eid {self.eid})")
 
@@ -1795,8 +1780,7 @@ class PhotometrySession(PhotometrySessionLoader):
             ``self.photometry[PREPROCESSED_BAND]``.
 
         """
-        if self._held_in_memory('photometry/preprocessed',
-                                self.photometry.get(PREPROCESSED_BAND)):
+        if PREPROCESSED_BAND in self.photometry:
             return self.photometry[PREPROCESSED_BAND]
         signal = None
         if self.stored_product_exists('photometry/preprocessed'):
@@ -1828,8 +1812,7 @@ class PhotometrySession(PhotometrySessionLoader):
         and goes to Alyx in every other case. Only the fetch clears the manual
         QC verdicts: reading the stored bands back replaces no samples.
         """
-        if (self._held_in_memory('photometry/raw', self.photometry)
-                and all(band in self.photometry for band in PHOTOMETRY_BANDS)):
+        if all(band in self.photometry for band in PHOTOMETRY_BANDS):
             return
         if self.stored_product_exists('photometry/raw'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -2030,12 +2013,14 @@ class PhotometrySession(PhotometrySessionLoader):
         `self.neurophotometrics_qc`. Both metrics are fatal: a band inversion
         means the channels are not the bands they are labelled, and early
         samples mean the recording started before the LEDs settled. A session
-        that has not been scored has nothing to fail on.
+        that has not been scored carries no such attribute, and so has nothing
+        to fail on.
         """
+        qc = getattr(self, 'neurophotometrics_qc', {})
         issues = [message for metric, message in (
             ('n_band_inversions', 'band inversions detected'),
             ('n_early_samples', 'early samples detected'),
-        ) if self.neurophotometrics_qc.get(metric, 0) > 0]
+        ) if qc.get(metric, 0) > 0]
         if issues:
             raise QCValidationError('; '.join(issues))
 
@@ -2087,9 +2072,8 @@ class PhotometrySession(PhotometrySessionLoader):
 
         """
         load_signals, attribute, defaults = _RESPONSE_MODALITIES[modality]
-        held = getattr(self, attribute)
-        if self._held_in_memory(f'{modality}/responses', held):
-            return held
+        if hasattr(self, attribute):
+            return getattr(self, attribute)
         responses = None
         if self.stored_product_exists(f'{modality}/responses'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -2097,8 +2081,7 @@ class PhotometrySession(PhotometrySessionLoader):
         was_cut = responses is None
         if was_cut:
             signals = getattr(self, load_signals)()
-            if self.trials is None:
-                self.load_trials()
+            self.load_trials()
             named = {key: value for key, value in
                      (('events', events), ('window', window))
                      if value is not None}
@@ -2199,34 +2182,22 @@ class PhotometrySession(PhotometrySessionLoader):
             for group_name in groups:
                 _SAVE_HANDLERS[group_name](self, h5_file)
 
-    def _available_save_groups(self):
-        has_photometry = (
-            PREPROCESSED_BAND in self.photometry
-            or bool(self.photometry_responses)
-            or bool(self.photometry_qc)
-            or bool(self.neurophotometrics_qc)
-            or bool(self.photometry_manual_qc)
-        )
-        has_video = (self.pose_times is not None
-                     or self.pose is not None
-                     or self.motion_energy is not None
-                     or bool(self.movement_signals)
-                     or bool(self.movement_responses)
-                     or self.pose_xcorr is not None
-                     or bool(self.video_times_qc)
-                     or bool(self.video_manual_qc))
-        has_wheel = (self.wheel_position is not None
-                     or self.wheel_velocity is not None
-                     or bool(self.wheel_responses))
-        trials = getattr(self, 'trials', None)
-        has_trials = (trials is not None and not trials.empty
-                      or bool(self.performance))
-        return [name for name, available in (
-            ('photometry', has_photometry),
-            ('trials',     has_trials),
-            ('wheel',      has_wheel),
-            ('video',      has_video),
-        ) if available]
+    def _available_save_groups(self) -> list[str]:
+        """Name the top-level H5 groups this session holds something to write.
+
+        A group is available when any of its products is on the session, which
+        is now a question of the attribute existing: a product that was built
+        and came back empty is still a product and is still written.
+        `photometry` is the exception — it is a band namespace rather than a
+        product, so the preprocessed band key is what counts there.
+        """
+        available = {group: any(hasattr(self, attr) for attr in attributes)
+                     for group, attributes in _SAVE_GROUP_PRODUCTS.items()}
+        available['photometry'] |= (PREPROCESSED_BAND in self.photometry
+                                    or bool(self.photometry_manual_qc))
+        available['video'] |= bool(self.video_manual_qc)
+        return [group for group, is_available in available.items()
+                if is_available]
 
     def load_h5(self, fpath=None, groups=None):
         """Load session data from HDF5 file.
@@ -2265,8 +2236,7 @@ class PhotometrySession(PhotometrySessionLoader):
             Metric name -> value, also assigned to `self.neurophotometrics_qc`.
 
         """
-        if self._held_in_memory('photometry/neurophotometrics/qc',
-                                self.neurophotometrics_qc):
+        if hasattr(self, 'neurophotometrics_qc'):
             return self.neurophotometrics_qc
         if self.stored_product_exists('photometry/neurophotometrics/qc'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -2292,7 +2262,7 @@ class PhotometrySession(PhotometrySessionLoader):
             `self.photometry_qc`.
 
         """
-        if self._held_in_memory('photometry/raw/qc', self.photometry_qc):
+        if hasattr(self, 'photometry_qc'):
             return self.photometry_qc
         if self.stored_product_exists('photometry/raw/qc'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -2529,7 +2499,7 @@ class PhotometrySession(PhotometrySessionLoader):
 
         if event_order is None:
             event_order = list(RESPONSE_EVENTS)
-        if self.trials is None:
+        if not hasattr(self, 'trials'):
             return responses
         events_present = list(responses.coords['event'].values)
         sample_times = responses.coords['time'].values
@@ -2610,13 +2580,13 @@ class PhotometrySession(PhotometrySessionLoader):
             list the session presented. Also assigned to `self.performance`.
 
         """
-        if self._held_in_memory('trials/performance', self.performance):
+        if hasattr(self, 'performance'):
             return self.performance
         if self.stored_product_exists('trials/performance'):
             with h5py.File(self.filepath, 'r') as h5:
                 self.performance = _load_performance(h5['trials/performance'])
             return self.performance
-        if self.trials is None or self.trials.empty:
+        if not hasattr(self, 'trials'):
             self.fetch_trials()
         self.extract_performance()
         self.save_h5(groups=['trials'])
@@ -2664,7 +2634,7 @@ class PhotometrySession(PhotometrySessionLoader):
             :meth:`extract_wheel_velocity`. Also assigned to
             ``self.wheel_position``.
         """
-        if self._held_in_memory('wheel/raw', self.wheel_position):
+        if hasattr(self, 'wheel_position'):
             return self.wheel_position
         if self.stored_product_exists('wheel/raw'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -2720,7 +2690,7 @@ class PhotometrySession(PhotometrySessionLoader):
             (seconds). Also assigned to ``self.wheel_velocity``.
 
         """
-        if self._held_in_memory('wheel/preprocessed', self.wheel_velocity):
+        if hasattr(self, 'wheel_velocity'):
             return self.wheel_velocity
         if self.stored_product_exists('wheel/preprocessed'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -2783,9 +2753,8 @@ class PhotometrySession(PhotometrySessionLoader):
 
         """
         attribute, _, _ = _RAW_VIDEO_DATASETS[product]
-        held = getattr(self, attribute)
-        if self._held_in_memory(product, held):
-            return held
+        if hasattr(self, attribute):
+            return getattr(self, attribute)
         if self.stored_product_exists(product):
             with h5py.File(self.filepath, 'r') as h5:
                 data = _load_frame_data(h5[product])
@@ -2896,7 +2865,7 @@ class PhotometrySession(PhotometrySessionLoader):
             Metric name -> value, also assigned to `self.video_times_qc`.
 
         """
-        if self._held_in_memory('video/times/qc', self.video_times_qc):
+        if hasattr(self, 'video_times_qc'):
             return self.video_times_qc
         if self.stored_product_exists('video/times/qc'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -3038,7 +3007,7 @@ class PhotometrySession(PhotometrySessionLoader):
             ``self.movement_signals``.
 
         """
-        if self._held_in_memory('video/preprocessed', self.movement_signals):
+        if hasattr(self, 'movement_signals'):
             return self.movement_signals
         signals = None
         if self.stored_product_exists('video/preprocessed'):
@@ -3087,7 +3056,7 @@ class PhotometrySession(PhotometrySessionLoader):
             assigned to ``self.movement_signals``.
         """
         signals = {}
-        if self.pose is not None:
+        if hasattr(self, 'pose'):
             # Resample raw pose to a common rate first, so speeds (px per time
             # step) and trace lengths are comparable across camera fps.
             pose, pose_times = resample_pose(self.pose, self.pose_times, POSE_FS)
@@ -3096,7 +3065,7 @@ class PhotometrySession(PhotometrySessionLoader):
                                  index=pose_times)
                 for label, (_, keypoints, reduction) in POSE_MEASURES.items()
             })
-        if self.motion_energy is not None:
+        if hasattr(self, 'motion_energy'):
             signals['motion_energy'] = resample_signal(
                 pd.Series(self.motion_energy, index=self.pose_times), POSE_FS)
         self.movement_signals = signals
@@ -3120,7 +3089,7 @@ class PhotometrySession(PhotometrySessionLoader):
             to ``self.pose_xcorr``.
 
         """
-        if self._held_in_memory('video/pose/qc', self.pose_xcorr):
+        if hasattr(self, 'pose_xcorr'):
             return self.pose_xcorr
         if self.stored_product_exists('video/pose/qc'):
             with h5py.File(self.filepath, 'r') as h5:
@@ -5503,14 +5472,14 @@ class PhotometrySessionGroup:
             fiber_idx = int(rec['fiber_idx']) if has_fiber_idx else 0
 
             # Load H5 if responses not yet available
-            if not ps.photometry_responses or not hasattr(ps, 'trials') or ps.trials is None:
+            if not (hasattr(ps, 'photometry_responses') and hasattr(ps, 'trials')):
                 h5_path = Path(self.h5_dir) / f'{eid}.h5'
                 if not h5_path.exists():
                     print(f"  H5 file not found: {h5_path}")
                     continue
                 ps.load_h5(h5_path, groups=['trials', 'photometry'])
 
-            if brain_region not in ps.photometry_responses:
+            if brain_region not in getattr(ps, 'photometry_responses', {}):
                 continue
 
             vec = ps.get_response_vector(
@@ -5519,8 +5488,7 @@ class PhotometrySessionGroup:
             rows[(eid, target_nm, fiber_idx)] = vec
 
             # Discard raw data to free memory
-            ps.photometry_responses = {}
-            del ps.trials
+            del ps.photometry_responses, ps.trials
 
         if not rows:
             self.response_features = pd.DataFrame()

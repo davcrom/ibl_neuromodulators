@@ -56,7 +56,7 @@ if __name__ == '__main__':
             n_missing += 1
             continue
         ps.load_h5(groups=['trials'])
-        if ps.trials is None:
+        if not hasattr(ps, 'trials'):
             n_missing += 1
             continue
         trials = ps.trials.copy()

@@ -413,6 +413,47 @@ def test_build_mouse_states_frame_skips_sessions_without_trials(monkeypatch):
     assert list(frame['eid'].unique()) == ['e2']
 
 
+def test_build_mouse_states_frame_skips_sessions_holding_no_trials(monkeypatch):
+    """A session whose file never held trials carries no ``trials`` attribute.
+
+    Reading it would raise; the loop must recognise the absence and skip the
+    session, leaving only the one whose store had a table.
+    """
+    sessions = pd.DataFrame({'eid': ['e1', 'e2'], 'subject': ['M', 'M']})
+    group = SimpleNamespace(sessions=sessions)
+
+    trials = pd.DataFrame({'trial': [0, 1], 'choice': [1, -1],
+                           'stimOn_times': [5.0, 10.0],
+                           'feedback_times': [6.0, 11.0]})
+
+    class FakePS:
+        extract_responses = PhotometrySession.extract_responses
+        mask_subsequent_events = PhotometrySession.mask_subsequent_events
+        subtract_baseline = PhotometrySession.subtract_baseline
+
+        def __init__(self, row, one=None):
+            self.eid = row['eid']
+            self.brain_region = ['LC']
+
+        def load_h5(self, groups=None):
+            if self.eid == 'e1':
+                return
+            self.trials = trials
+            self.photometry = _step_photometry([1.0] * len(trials),
+                                               trials['stimOn_times'])
+
+        def load_photometry(self):
+            return self.photometry['GCaMP_preprocessed']
+
+        def load_states(self):
+            self.states = pd.DataFrame({'map_state': [1.0, 2.0]})
+
+    monkeypatch.setattr(ddm, 'PhotometrySession', FakePS)
+    frame = ddm.build_mouse_states_frame(group, 'M', one=None)
+
+    assert list(frame['eid'].unique()) == ['e2']
+
+
 # =========================================================================
 # build_state_param_table
 # =========================================================================

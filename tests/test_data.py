@@ -254,6 +254,24 @@ class TestInit:
         assert ps.hemisphere == ['l']
         assert ps.target_NM == ['VTA-DA']
 
+    def test_data_attributes_absent_until_loaded(self, minimal_session_series):
+        """A data attribute exists only once that product has been built.
+
+        The load methods guard on the attribute being there, so a session that
+        has fetched nothing must carry none of them — including the ones the
+        loader parent declares as dataclass fields.
+        """
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(minimal_session_series, one=MagicMock(),
+                               load_data=False)
+        for attribute in ('trials', 'performance', 'neurophotometrics',
+                          'neurophotometrics_qc', 'photometry_responses',
+                          'photometry_qc', 'wheel_position', 'wheel_velocity',
+                          'wheel_responses', 'pose', 'pose_times',
+                          'motion_energy', 'movement_signals',
+                          'movement_responses', 'pose_xcorr'):
+            assert not hasattr(ps, attribute), attribute
+
     def test_init_without_one(self, full_session_series):
         """Constructing with no ONE connection populates all metadata."""
         from iblnm.data import PhotometrySession
@@ -1205,21 +1223,24 @@ class TestFromH5:
         assert ps2.to_dict() == ps.to_dict()
 
     @pytest.mark.parametrize('with_one', [False, True])
-    def test_from_h5_initializes_data_attributes(
+    def test_from_h5_leaves_unstored_products_off_the_session(
             self, full_session_series, tmp_path, with_one):
-        """from_h5 leaves the same empty data attributes as a plain init."""
+        """A metadata-only file yields a session carrying no data attributes.
+
+        The load handlers read a mapping per label, and an empty one means the
+        file held no such product. Assigning it anyway would leave the session
+        holding an empty product its load method would then never build.
+        """
         from iblnm.data import PhotometrySession
         ps = PhotometrySession(full_session_series, one=MagicMock(), load_data=False)
         fpath = tmp_path / f'{ps.eid}.h5'
         ps.save_h5(fpath, groups=['metadata'])
 
         ps2 = PhotometrySession.from_h5(fpath, one=MagicMock() if with_one else None)
-        assert ps2.photometry_responses == {}
-        assert ps2.movement_responses == {}
-        assert ps2.ols_fits == {}
-        assert ps2.video_qc == {}
-        assert ps2.states is None
-        assert ps2.pose is None
+        for attribute in ('trials', 'performance', 'photometry_responses',
+                          'photometry_qc', 'wheel_responses',
+                          'movement_responses'):
+            assert not hasattr(ps2, attribute), attribute
 
 
 # =============================================================================
@@ -1248,7 +1269,7 @@ class TestLoadTrials:
             'feedbackType': [1, -1],
         })
         ps.save_h5(groups=['trials'])
-        ps.trials = None
+        del ps.trials
 
         with patch.object(PhotometrySession, 'fetch_trials',
                           side_effect=AssertionError('fetched from Alyx')):
@@ -1335,12 +1356,6 @@ class TestFetchTier:
         convert.assert_called_once()
         assert table is session.neurophotometrics
         assert table.index.name == 'times'
-
-    def test_neurophotometrics_starts_empty(self, mock_session_series):
-        from iblnm.data import PhotometrySession
-        session = PhotometrySession(mock_session_series, one=MagicMock(),
-                                    load_data=False)
-        assert session.neurophotometrics is None
 
 
 class TestLoadRawPhotometry:
@@ -1892,16 +1907,6 @@ class TestExtractPreprocessedPhotometry:
         assert 'corrected' in mock_photometry_session.photometry
         assert 'GCaMP_preprocessed' not in mock_photometry_session.photometry
 
-    def test_qc_initialized_as_empty_mappings(self, mock_session_series):
-        """Both QC products start empty on init."""
-        from iblnm.data import PhotometrySession
-
-        mock_one = MagicMock()
-        session = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-
-        assert session.neurophotometrics_qc == {}
-        assert session.photometry_qc == {}
-
     def test_preprocess_resamples_to_target_fs(self, mock_photometry_session):
         """Preprocessed signal should be resampled to TARGET_FS."""
         from iblnm.config import TARGET_FS
@@ -2033,7 +2038,7 @@ class TestExtractResponses:
         )
         assert isinstance(responses, dict)
         assert isinstance(responses['VTA'], xr.DataArray)
-        assert session.photometry_responses == {}
+        assert not hasattr(session, 'photometry_responses')
 
     def test_labels_come_from_signals_mapping(self, mock_photometry_session):
         """Any mapping of label -> time-indexed Series is a valid signal source."""
@@ -2282,6 +2287,28 @@ class TestTrialsTableProduct:
 
 
 class TestSaveLoadH5:
+    def test_auto_detect_writes_only_the_groups_held(self, mock_session_series,
+                                                     tmp_path):
+        """A session holding only trials writes the trials group and no other.
+
+        `save_h5` with no `groups` asks the session which products it carries,
+        which is a question of the attribute being there — a session that never
+        fetched photometry must not raise on the way to writing its trials.
+        """
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+        session.trials = _make_trials()
+        fpath = tmp_path / f'{session.eid}.h5'
+        session.save_h5(fpath)
+
+        import h5py
+        with h5py.File(fpath, 'r') as h5:
+            assert 'trials/table' in h5
+            assert 'photometry' not in h5
+            assert 'wheel' not in h5
+            assert 'video' not in h5
+
     def test_save_preprocessed_float64(self, mock_photometry_session, tmp_path):
         """save_h5 should write preprocessed signal as float64 with timestamps."""
         session = mock_photometry_session
@@ -2457,7 +2484,6 @@ class TestSaveLoadH5:
         ps.save_h5(fpath, groups=['metadata', 'photometry'])
 
         ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
-        assert ps2.photometry_qc == {}
         ps2.load_h5(fpath, groups=['photometry'])
         assert ps2.photometry_qc == ps.photometry_qc
         assert ps2.neurophotometrics_qc == ps.neurophotometrics_qc
@@ -2681,7 +2707,7 @@ class TestPoseMethods:
         ps.load_pose()
         one.load_object.assert_not_called()
         pd.testing.assert_frame_equal(ps.pose, pose_df)
-        assert ps.pose_times is None
+        assert not hasattr(ps, 'pose_times')
         loaded_names = [call.args[1] for call in one.load_dataset.call_args_list]
         assert all('lightningPose' in name for name in loaded_names)
 
@@ -2783,7 +2809,7 @@ class TestPoseMethods:
         ps2 = PhotometrySession(mock_session_series, one=MagicMock(),
                                 load_data=False)
         ps2.load_h5(fpath, groups=['video'])
-        assert ps2.movement_responses == {}
+        assert not hasattr(ps2, 'movement_responses')
         assert ps2.video_times_qc == pytest.approx(ps.video_times_qc)
 
     def test_available_save_groups_includes_video_for_measures_only(
@@ -2902,26 +2928,26 @@ class TestPoseMethods:
 
     def test_movement_responses_motion_energy_only(self, mock_session_series,
                                                    tmp_path):
-        """ME present, pose=None → exactly ['motion_energy']."""
+        """ME present, no pose → exactly ['motion_energy']."""
         ps = self._make_pose_session(mock_session_series, tmp_path,
                                      motion_energy=True)
-        ps.pose = None
+        del ps.pose
         assert list(self._movement_responses(ps)) == ['motion_energy']
 
     def test_movement_responses_lp_only_when_no_motion_energy(self,
                                                               mock_session_series,
                                                               tmp_path):
-        """pose present, motion_energy=None → only the LP labels."""
+        """pose present, no motion energy → only the LP labels."""
         from iblnm.config import POSE_MEASURES
         ps = self._make_pose_session(mock_session_series, tmp_path)
-        assert ps.motion_energy is None
+        assert not hasattr(ps, 'motion_energy')
         assert set(self._movement_responses(ps)) == set(POSE_MEASURES)
 
     def test_movement_signals_empty_without_sources(self, mock_session_series,
                                                     tmp_path):
         """Neither pose nor motion energy → no signals, hence no responses."""
         ps = self._make_pose_session(mock_session_series, tmp_path)
-        ps.pose = None
+        del ps.pose
         assert ps.extract_movement_signals() == {}
         assert self._movement_responses(ps) == {}
 
@@ -3079,6 +3105,19 @@ class TestExtractPerformance:
         session.filepath = tmp_path / f'{session.eid}.h5'
         session.extract_performance()
         assert not session.filepath.exists()
+
+    def test_raises_without_trials(self, mock_session_series):
+        """Scoring a session that never fetched its trials raises.
+
+        The processing tier reads its input straight off the session, so a
+        missing input surfaces as an `AttributeError` for the caller's error
+        handler rather than as an empty score.
+        """
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+        with pytest.raises(AttributeError):
+            session.extract_performance()
 
 
 # =============================================================================
@@ -5316,7 +5355,7 @@ class TestGetResponseFeatures:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.get_response_features(min_trials=1)
         _, ps = group[0]
-        assert ps.photometry_responses == {}
+        assert not hasattr(ps, 'photometry_responses')
 
     def test_default_min_trials_is_one(self, tmp_path):
         """Default min_trials=1 allows sparse conditions through."""
