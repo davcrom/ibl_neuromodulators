@@ -45,15 +45,25 @@ RAW_COLUMNS = [
     'probabilityLeft', 'rewardVolume', 'quiescencePeriod',
 ]
 
-# The columns whose NaNs mean a trial is incomplete. The four excluded ones are
+# The columns whose NaNs mean a trial is incomplete. The five excluded ones are
 # NaN by construction rather than by failure: exactly one of the two contrast
 # columns holds a value on any trial, and `stimOn_times` and
 # `firstMovement_times` are routinely absent on no-choice trials, which
 # `no_choice` already flags.
+#
+# `stimOff_times` is excluded on a rig fault rather than by construction, and
+# comes back to the scan once that fault is fixed. On the mainenlab behavior
+# rigs from 2025-06 onward the frame2ttl photodiode misses roughly half of the
+# screen flips, so the Bpod `hide_stim` state times out with no front to
+# extract and IBL writes NaN. Nothing else about those trials is affected: the
+# stimulus was shown, the choice was made and the feedback was delivered. So
+# scanning the column flagged 18% of all trials, and half the trials of some
+# mice, for an unrecorded screen blanking. Alyx flags the same sessions itself,
+# with `_task_stimOff_delays` around 0.49 and a session QC of FAIL.
 SCANNED_COLUMNS = [
     column for column in RAW_COLUMNS
-    if column not in ('contrastLeft', 'contrastRight',
-                      'stimOn_times', 'firstMovement_times')
+    if column not in ('contrastLeft', 'contrastRight', 'stimOn_times',
+                      'firstMovement_times', 'stimOff_times')
 ]
 
 # Session identity, copied onto every one of that session's trials.
