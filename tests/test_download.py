@@ -277,6 +277,31 @@ class TestFailureBlocksItsModality:
         assert WHEEL_LABEL in session.wheel_responses
 
 
+class TestMissingPhotometryIsClassified:
+    """Absent photometry must log a blocking error, not a bare ALF miss.
+
+    `config.ANALYSIS_QC_BLOCKERS` lists `MissingRawData`, not
+    `ALFObjectNotFound`, so a session with no photometry data is excluded from
+    analysis only if the block reaches the fetch that tells the two apart.
+    """
+
+    def test_absent_photometry_logs_missing_raw_data(self, session, one_calls):
+        one, _ = one_calls
+        served = one.load_dataset.side_effect
+
+        def without_photometry(eid, name, **kwargs):
+            if PHOTOMETRY_SIGNAL in name or NEUROPHOTOMETRICS in name:
+                raise ALFObjectNotFound(name)
+            return served(eid, name, **kwargs)
+
+        one.load_dataset.side_effect = without_photometry
+
+        download.build_session(session)
+
+        assert [(e['product'], e['error_type']) for e in session.errors] == [
+            ('photometry', 'MissingRawData')]
+
+
 class TestNonFatalSteps:
     """The checks that degrade the build rather than abandoning their block."""
 

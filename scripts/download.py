@@ -153,16 +153,26 @@ def build_photometry(ps: PhotometrySession) -> None:
     """Fetch both photometry sources, score them, preprocess and cut responses.
 
     Every step is fatal but the event-completeness check, which degrades the
-    cut to the events that survive it. The neurophotometrics table is scored
-    before the extracted bands are fetched, because a band inversion means the
-    channels are not the bands they are labelled and nothing below it is worth
-    computing.
+    cut to the events that survive it.
+
+    The extracted bands are fetched first because `fetch_photometry` is the
+    only step that tells an absent recording from an unextracted one, raising
+    `MissingRawData` or `MissingExtractedData` — both of which
+    `config.ANALYSIS_QC_BLOCKERS` excludes from analysis. Above it,
+    `fetch_neurophotometrics` raises a bare `ALFObjectNotFound` for the same
+    absent session, which blocks nothing, and abandons the block before the
+    classification is reached.
+
+    The neurophotometrics table is still scored before anything is computed
+    from the bands: a band inversion means the channels are not the bands they
+    are labelled, so nothing below `validate_qc` is worth computing. Fetching
+    is not computing, which is what lets it move above the score.
     """
     try:
+        ps.fetch_photometry()
         ps.fetch_neurophotometrics()
         ps.run_neurophotometrics_qc()
         ps.validate_qc()
-        ps.fetch_photometry()
         ps.validate_trials_in_photometry_time()
         ps.run_photometry_qc()
         ps.extract_preprocessed_photometry()

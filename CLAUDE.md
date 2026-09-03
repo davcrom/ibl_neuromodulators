@@ -231,6 +231,19 @@ is: trials come first because the response cuts read `ps.trials`, and the wheel
 precedes the video because `run_pose_qc` reads `ps.wheel_velocity`. A product
 finds its input because the block above it left it on the session.
 
+Order matters within a block too, and for a second reason: which error a
+failure is logged as. `build_photometry` fetches the extracted bands before the
+neurophotometrics table because `fetch_photometry` is the only step that tells
+an absent recording from an unextracted one — `MissingRawData` or
+`MissingExtractedData`, both in `config.ANALYSIS_QC_BLOCKERS` — where
+`fetch_neurophotometrics` raises a bare `ALFObjectNotFound` for the same
+session, which blocks nothing. Put the unclassified fetch first and it
+abandons the block before the classification is reached, and the session is
+analysed with no photometry in it. `validate_qc` still runs before anything is
+computed from the bands, which is the invariant that ordering has to keep: a
+band inversion means the channels are not the bands they are labelled. Fetching
+is not computing.
+
 Each block is one `try`, reproducing the boundary the pipeline had when every
 modality was its own script: a fatal step abandons its block, logs one error
 against that modality, and the next block still runs. Within a block some checks
