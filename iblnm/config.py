@@ -296,6 +296,28 @@ WHEEL_FS = 100    # Hz, interpolation rate for wheel velocity
 POSE_FS = 30      # Hz, common resample rate for pose movement traces (majority camera rate)
 
 # Events for response extraction (NOT goCue — too close to stimOn, variable latency)
+#
+# `stimOn_times` is the photodiode's report of the stimulus appearing, and on
+# the mainenlab behavior rigs from 2025-06 onward that photodiode misses about
+# half the screen flips. IBL's extractor takes the first photodiode pulse after
+# the stimulus-on trigger with no time bound, so a missed onset silently yields
+# the next pulse instead — a wheel-driven redraw, ~150 ms late. That happens on
+# 39% of trials in the affected sessions, and 42% of the catalog's sessions
+# carry it on more than 10% of their trials. Nothing marks those trials: the
+# value is a real screen event, only the wrong one.
+#
+# `stimOnTrigger_times` is the Bpod state-machine clock instead, so it never
+# sees the photodiode. It is present on every trial of every session and is
+# late by the monitor's own latency, a constant that shifts every trial alike
+# rather than smearing an average.
+#
+# Refinement worth making: add that latency back per session, as
+# `stimOnTrigger_times` plus the median `stimOn_times - stimOnTrigger_times`
+# over the session's trials whose onset the photodiode did catch. Checked
+# against the photodiode on the 507,457 trials where it worked, that lands
+# within 8.9 ms (SD; median residual 0.0 ms), and every session has enough
+# caught trials to define its own median. The whole-catalog median latency is
+# 59.8 ms, for scale.
 RESPONSE_EVENTS = ['stimOn_times', 'feedback_times']
 
 # QC parameters
