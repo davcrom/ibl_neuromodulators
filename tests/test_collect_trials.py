@@ -2,7 +2,27 @@
 import numpy as np
 import pandas as pd
 
+from iblnm import config
 import scripts.collect_trials as ct
+
+
+def test_export_is_written_beside_the_other_data_tables():
+    """The export lands at `data/trials.csv`, a CSV rather than a parquet."""
+    assert config.TRIALS_FPATH.name == 'trials.csv'
+    assert config.TRIALS_FPATH.parent == config.PROJECT_ROOT / 'data'
+
+
+def test_scope_blocks_on_behavior_errors_only():
+    """The photometry-side blockers are dropped; the behavioral ones are kept.
+
+    A session whose fiber failed leaves a hole the collaborator's HMM reads as
+    two consecutive days, so photometry never removes one.
+    """
+    assert ct.BEHAVIOR_QC_BLOCKERS == {
+        'MissingExtractedData', 'MissingRawData', 'InsufficientTrials',
+        'IncompleteEventTimes', 'MissingBlockInfo',
+    }
+    assert ct.BEHAVIOR_QC_BLOCKERS < config.ANALYSIS_QC_BLOCKERS
 
 
 def mock_trials(n_trials=5, **overrides):
