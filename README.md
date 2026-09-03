@@ -52,18 +52,16 @@ into its H5 `/errors` group, one group per product; the script prints an error
 summary rather than writing a separate log file.
 
 ```
-download.py → data/sessions/{eid}.h5  (every product, stamped)
+download.py → data/sessions/{eid}.h5  (every product, rebuilt every run)
      ↓
 metadata/sessions.pqt  (the catalog)
 ```
 
 ```bash
-python scripts/download.py                          # build everything missing
+python scripts/download.py                          # build the whole store
 python scripts/download.py --workers 4              # in parallel
 python scripts/download.py --session-type biased    # one session type
-python scripts/download.py --skip video             # leave the camera alone
-python scripts/download.py --rebuild photometry     # re-derive the photometry
-python scripts/download.py --retry-failed           # re-attempt failed builds
+python scripts/download.py --target-NM VTA-DA SNc-DA # one target neuromodulator
 ```
 
 **Phase one — catalog.** Queries the `ibl_fibrephotometry` project on Alyx,
@@ -76,35 +74,33 @@ and ranking each session within its subject (`day_n`, `session_n`).
 **Phase two — products.** Walks each session one modality at a time —
 `trials`, `photometry`, `wheel`, `video` — fetching that modality's raw
 datasets once, computing every product made from them while they are still in
-memory, and writing the modality's H5 group once at the end. The order inside a
-block is the dependency order, and a failure abandons the rest of its block, so
-nothing is ever cut from a signal that was never built. Each product is written
-with a stamp of the `config.py` parameters that produced it (`PRODUCT_SPEC`),
-and a modality holding nothing but current products is skipped.
+memory, and rewriting the session's H5 file whole at the end. Every product is
+built on every run: nothing is read back from the file, skipped, or compared
+against what is already stored. Re-running the script re-downloads all 5525
+sessions from Alyx, which is the price of never having to reason about which
+stored product was derived from which version of the code.
 
-Detection is automatic, rebuilding is manual. A stored stamp that disagrees
-with `config.py` stops the run and names the products rather than silently
-re-deriving the store; `--rebuild` is how you accept the change, and the
-startup survey reports how many sessions hold each product current, stale or
-absent before any work starts. `--skip` and `--rebuild` name modalities rather
-than products, because that is where the raw fetches sit: `--rebuild
-photometry` re-derives the raw QC, the preprocessed signal and the responses
-together, from raw that is fetched either way. A skipped modality is still
-built when another one needs it — the video block's pose QC needs the wheel
-velocity — and what it builds is stored.
+The order inside a block is the dependency order, and a failure abandons the
+rest of its block, so nothing is ever cut from a signal that was never built.
+The order *between* blocks matters for the same reason and is the only
+dependency declaration there is: the response cuts read the trials table the
+first block fetched, and the video block's pose QC reads the wheel velocity the
+block above it computed.
 
-A product whose data is absent and whose error group records a failed attempt
-is skipped on every later run — that record is what stops a re-download every
-time — until `--retry-failed` says otherwise.
+A failure logs one error against its modality and the next block still runs.
+Some checks are non-fatal by design: a corrupted block structure is logged and
+then repaired, and a session missing some event times still has its responses
+cut on the events that remain.
 
-**Analysis scripts build nothing in bulk.** Each one opens with
-`group.check_products(...)` over the products it is about to read: it prints how
-many sessions hold each one current, stale or absent, and stops on a stale stamp
-exactly as `download.py` does, before anything is read. Absent is not fatal — a
-session missing a product builds it through that session's `load_*` when the
-analysis reaches it. The survey reads H5 attrs only, one open per session in
-scope — a minute over the whole store, proportionally less for a filtered
-group — so it is unconditional.
+The three flags all narrow which sessions run, never what is built within one.
+`--workers` sets the number of parallel worker processes; `--session-type` and
+`--target-NM` restrict the pass to the named `config.SESSION_TYPES` and
+`config.VALID_TARGETNMS`.
+
+**Analysis scripts build nothing in bulk.** A session missing a product builds
+it through that session's `load_*` when the analysis reaches it. With the
+download all-or-nothing, that should not happen: an analysis running over a
+freshly built store has its data or has an error explaining why not.
 
 ## Rollups
 
@@ -120,8 +116,8 @@ part of its catalog phase.
 
 Every rollup reads through `PhotometrySessionGroup`, so what lands in a file is
 what the group's filters admit. The pose table is the slow one: the eight
-leftCamera QC labels live only on Alyx — nothing here could tell that a stored
-copy had gone stale — so they cost one REST call per session.
+leftCamera QC labels live only on Alyx and nothing here stores them, so they
+cost one REST call per session.
 
 ### `dataset_overview.py` — Session coverage figures
 
@@ -147,7 +143,11 @@ Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and the errors sca
 
 `PhotometrySession` wraps a row from `sessions.pqt` and provides methods for loading, validating, preprocessing, and extracting responses. It extends `PhotometrySessionLoader` from `brainbox.io.one`.
 
-Data attributes are lazy-loaded: `trials`, `photometry`, `responses`, `qc`, `wheel_position`, and `wheel_velocity` start empty and are populated by explicit method calls.
+Data attributes are lazy-loaded: `trials`, `photometry`, `photometry_responses`,
+`wheel_position`, `wheel_velocity` and the rest do not exist on a freshly
+constructed session, and are created by the explicit method call that fills
+them. Reading one before then raises `AttributeError` rather than handing back
+an empty value that looks like data.
 
 ### Loading from ONE
 
@@ -208,11 +208,11 @@ ps.load_photometry_qc()         # → ps.photometry_qc, sliding-window signal
                                 #   quality per region
 ```
 
-QC is a product like any other: each load method reads the stored group when its
-stamp matches `config.py` and scores the signal when it does not, writing the
-result. `run_neurophotometrics_qc` and `run_photometry_qc` are the scoring
-half, callable directly when the raw is already on the session and a rescore is
-what you want.
+QC is a product like any other: each load method reads the stored group when
+there is one and scores the signal when there is not, writing the result.
+`run_neurophotometrics_qc` and `run_photometry_qc` are the scoring half,
+callable directly when the raw is already on the session and a rescore is what
+you want.
 
 `ps.photometry_qc` maps a brain region to a flat `{metric: value}` dict. QC is
 split per region but not per band, so the band is suffixed into the metric name:
@@ -231,8 +231,8 @@ distinct float, which would pin `n_unique_samples` at 1.0 on any signal.
 from iblnm.config import RESPONSE_EVENTS
 
 ps.load_photometry()  # bleach → isosbestic → resample to 30 Hz → zscore
-                      # → ps.photometry['GCaMP_preprocessed'], written and
-                      #   stamped into photometry/{region}/preprocessed
+                      # → ps.photometry['GCaMP_preprocessed'], written into
+                      #   photometry/{region}/preprocessed
 
 ps.load_responses('photometry', events=RESPONSE_EVENTS)
 # → ps.photometry_responses: dict[str, xr.DataArray] keyed by brain region,
@@ -242,19 +242,19 @@ ps.load_responses('photometry', events=RESPONSE_EVENTS)
 ps.save_h5()  # saves all available data groups
 ```
 
-The load methods are not pure readers. Each attempts its stored product, falls
-back to building it, and writes what it built — so `load_photometry` on a
-session with nothing cached fetches from Alyx, preprocesses, and leaves the
-result on disk. What a session already holds in memory is returned untouched,
-so a second call costs nothing and never reads back what the first one wrote. A
-product whose stored stamp disagrees with `config.py` raises `StaleProduct`
-rather than rebuilding silently; name it in `ps.rebuild` to force the rebuild.
+The load methods are not pure readers. Each reads in order — the attribute the
+session already holds, else the stored product, else fetch and build — and
+writes what it built, so `load_photometry` on a session with nothing cached
+fetches from Alyx, preprocesses, and leaves the result on disk. A second call
+costs nothing and never reads back what the first one wrote.
 
 Underneath each `load_*` sit a `fetch_*` that only queries Alyx and an
 `extract_*` or `run_*_qc` that only computes — `extract_preprocessed_photometry`
 here, `extract_wheel_velocity` for the wheel, `extract_movement_signals` for the
-video channels. `scripts/download.py` calls that pair directly for the bulk
-build; a session at a prompt is better served by `load_*`.
+video channels. `scripts/download.py` calls that pair directly and never calls a
+`load_*` at all: the build fetches its raw materials, holds them on the session,
+and processes them, rather than reading the store halfway through writing it. A
+session at a prompt is better served by `load_*`.
 
 The video modality follows the same shape, with three raw products instead of
 one because its three datasets are fetched — and fail — independently:
@@ -435,7 +435,7 @@ with pytest.raises(InvalidBrainRegion):
 ```
 
 Error log entries follow the schema: `['eid', 'error_type', 'error_message',
-'traceback', 'product']`. `product` names the `config.PRODUCT_SPEC` key whose
+'traceback', 'product']`. `product` names the stored product whose
 build raised — `ps.log_error(e, product='video/pose')` — and decides which
 `errors/{product}` group the entry is saved under. It is None for failures not
 attributable to a single product, which land in the `errors/` root.
@@ -578,18 +578,15 @@ movement channel.
 │       ├── raw/                     # the bands as fetched from Alyx, kept only
 │       │   ├── {band}/              # when config.store_raw is on
 │       │   │   ├── times     float64 (R,)   that band's own sample times, since
-│       │   │   ├── signal    float64 (R,)   acquisition interleaves the bands
-│       │   │   └── attrs: spec_json, built_at
-│       │   ├── attrs: spec_json, built_at
+│       │   │   └── signal    float64 (R,)   acquisition interleaves the bands
 │       │   └── qc/                  # scored from the raw and stored either way
 │       │       └── attrs: one per QC metric, the band suffixed into its name
-│       │                  (n_unique_samples_GCaMP, ...), spec_json, built_at
+│       │                  (n_unique_samples_GCaMP, ...)
 │       │
 │       ├── preprocessed/
 │       │   ├── times     float64 (N,)    sample times at 30 Hz
 │       │   ├── signal    float64 (N,)    z-scored, isosbestic-corrected GCaMP
-│       │   └── attrs: spec_json (carries fs=30), built_at,
-│       │              bleaching_tau, iso_correlation — diagnostics of this
+│       │   └── attrs: bleaching_tau, iso_correlation — diagnostics of this
 │       │              preprocessing run, so qc/ depends only on raw/
 │       │
 │       ├── responses/
@@ -597,12 +594,10 @@ movement channel.
 │       │   ├── trials               int64   (T,)     trial indices
 │       │   ├── stimOn_times         float64 (T, W)
 │       │   ├── firstMovement_times  float64 (T, W)
-│       │   ├── feedback_times       float64 (T, W)
-│       │   └── attrs: spec_json (carries window=[-1.0, 1.0]), built_at
+│       │   └── feedback_times       float64 (T, W)
 │       │
-│       └── manual_qc/               # verdicts set by hand, one per recording;
+│       └── manual_qc/               # verdicts set by hand, one per recording
 │           └── attrs: qc_lp, qc_movement, qc_timing
-│                                    # no stamp — no parameter feeds them
 │
 ├── trials/
 │   └── table/                      # the ONE trials table verbatim, plus the
@@ -623,97 +618,90 @@ movement channel.
 │       ├── signed_contrast      float64 (T,)   percent, negative = left
 │       ├── contrast             float64 (T,)   percent, unsigned
 │       ├── stim_side            str     (T,)   'left' or 'right'
-│       ├── trial                int64   (T,)   raw ONE index; trial identity
-│       └── attrs: spec_json, built_at
+│       └── trial                int64   (T,)   raw ONE index; trial identity
 │   └── performance/                # behavioral scalars scored from the table
 │       ├── contrasts          float64 (C,)   the sorted levels presented, percent
 │       └── attrs: n_trials, fraction_correct, fraction_correct_easy,
 │                  nogo_fraction, psych_50_* — and psych_20_*, psych_80_*,
-│                  bias_shift where the session has blocks; spec_json
-│                  (carries min_block_length), built_at
+│                  bias_shift where the session has blocks
 │
 ├── wheel/
 │   └── velocity/                    the wheel's one label, named for the
 │       ├── raw/                     preprocessed signal, not the raw position;
 │       │                            kept only when config.store_raw is on
 │       │   ├── times     float64 (E,)   irregular encoder timestamps
-│       │   ├── signal    float64 (E,)   wheel position, radians
-│       │   └── attrs: spec_json, built_at
+│       │   └── signal    float64 (E,)   wheel position, radians
 │       ├── preprocessed/
 │       │   ├── times     float64 (V,)   uniform grid at WHEEL_FS
-│       │   ├── signal    float64 (V,)   velocity, radians per second
-│       │   └── attrs: spec_json (carries fs=100), built_at
+│       │   └── signal    float64 (V,)   velocity, radians per second
 │       └── responses/
 │           ├── times          float64 (Wf,)  0 → longest trial's feedback
 │           ├── trials         int64   (T,)
-│           ├── stimOn_times   float64 (T, Wf)  NaN past each trial's feedback
-│           └── attrs: spec_json (carries t0_event, t1_event), built_at
+│           └── stimOn_times   float64 (T, Wf)  NaN past each trial's feedback
 │
 └── video/
     ├── manual_qc/                   verdicts set by hand, one set per session
     │   └── attrs: qc_lp, qc_movement, qc_timing
     │
     ├── times/                       raw, one group per independently
-    │   ├── values   float64 (F,)    fetched dataset, each separately
-    │   ├── attrs: spec_json, built_at    stamped and each kept only
-    │                                     when config.store_raw is on
+    │   ├── values   float64 (F,)    fetched dataset, each kept only
+    │   │                            when config.store_raw is on
     │   └── qc/
-    │       └── attrs: length_discrepancy, framerate_from_tpts,
-    │                  spec_json, built_at
+    │       └── attrs: length_discrepancy, framerate_from_tpts
     ├── pose/
     │   ├── {keypoint}_x           float64 (F,)   LightningPose columns
     │   ├── {keypoint}_y           float64 (F,)
     │   ├── {keypoint}_likelihood  float64 (F,)
-    │   ├── attrs: spec_json, built_at
-    │   └── qc/                      paw–wheel timing diagnostic; cross-modal,
-    │       ├── functions   float64 (3, L)   so its stamp carries the wheel's
-    │       ├── lags        float64 (L,)     parameters too
+    │   └── qc/                      paw–wheel timing diagnostic; the one
+    │       ├── functions   float64 (3, L)   cross-modal product, needing the
+    │       ├── lags        float64 (L,)     wheel velocity as well as the pose
     │       ├── peak_lags   float64 (3,)
-    │       └── attrs: drift, spec_json, built_at
+    │       └── attrs: drift
     │
     └── {movement_channel}/          paw, nose, tongue_speed,
         ├── preprocessed/            tongue_likelihood, motion_energy.
         │   ├── times     float64 (P,)   uniform grid at POSE_FS
-        │   ├── signal    float64 (P,)
-        │   └── attrs: spec_json (carries fs=30), built_at
+        │   └── signal    float64 (P,)
         └── responses/
             ├── times                float64 (W,)
             ├── trials               int64   (T,)
             ├── stimOn_times         float64 (T, W)
             ├── firstMovement_times  float64 (T, W)
-            ├── feedback_times       float64 (T, W)
-            └── attrs: spec_json (carries events, window), built_at
+            └── feedback_times       float64 (T, W)
                                      The motion_energy channel's group also
                                      holds its raw `values` dataset, since the
                                      raw product and the channel share a name.
 ```
 
-`config.store_raw` decides whether the raw products fetched from Alyx —
+The `{movement_channel}/` groups are the one part of the tree `download.py` does
+not write. The video block stores the keypoints, the motion energy and the two
+QC results; the derived movement signals and their responses are built on demand
+by `load_responses('video')` and written then.
+
+`config.store_raw` decides whether the raw datasets fetched from Alyx —
 `photometry/{region}/raw`, `wheel/velocity/raw`, and video's `times/`, `pose/`
-and `motion_energy/` — are kept here at all. It ships off, because
+and `motion_energy/` — are products at all. It ships off, because
 `data/sessions` is already 14 GB of derived data and the ONE cache is where raw
-bytes belong. With it off the group is simply not written, so `product_status`
-reports the product `absent` and the load method fetches from Alyx; turning it
-on makes the files self-contained and the same load methods read their stored
-copy instead. The QC scored from the raw is stored either way — it is computed
-data in its own right — which is why `photometry/{region}/raw/qc` and
-`video/pose/qc` can sit under a group that holds no raw.
+bytes belong. With it off nothing writes those groups and the load methods fetch
+from Alyx every time; turning it on makes the files self-contained and the same
+load methods read their stored copy instead. The QC scored from the raw is
+stored either way — it is computed data in its own right — which is why
+`photometry/{region}/raw/qc` and `video/pose/qc` can sit under a group that
+holds no raw.
 
 The `manual_qc/` groups hold verdicts set by hand in the viewers, from the IBL
 vocabulary `CRITICAL`/`FAIL`/`WARNING`/`PASS` (`config.IBL_QC_VALUES`), keyed by
 `config.LP_QC_LABELS`. Photometry is scored per recording and video per session,
-because there is one fiber per region but one camera. They carry no stamp: no
-parameter in this repo feeds a verdict, so nothing can make one stale. Writing
+because there is one fiber per region but one camera. Writing
 them goes through `PhotometrySession.set_manual_qc(field, value, region=None)`,
 which validates both arguments and writes that one verdict straight to the file.
-Rebuilding a derived product leaves them alone; re-downloading a modality's raw
-data drops them, since the verdict was passed on frames or samples that have
-just been replaced.
+Re-downloading a modality's raw data drops them, since the verdict was passed on
+frames or samples that have just been replaced.
 
 The eight leftCamera extended-QC labels from Alyx are deliberately absent: they
-change when IBL re-runs its QC and no parameter in this repo feeds them, so no
-stamp could tell a stored copy had gone stale. `io.get_video_qc(eid, one)`
-fetches them on demand instead, one REST call per session.
+change when IBL re-runs its QC, independently of anything in this repo.
+`io.get_video_qc(eid, one)` fetches them on demand instead, one REST call per
+session.
 
 `N` = samples at 30 Hz, `T` = trial count, `W` = response window samples,
 `M` = logged error count, `L` = cross-correlation lag count, `E` = encoder

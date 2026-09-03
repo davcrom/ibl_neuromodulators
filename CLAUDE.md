@@ -50,8 +50,8 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Alyx/ONE queries | `io.py → get_subject_info, get_brain_region, get_datasets, ...` |
 | Session utilities | `util.py → enforce_schema, get_session_type, ...` |
 | Store rollups | `data.py → PhotometrySessionGroup.collect_errors, collect_qc, collect_pose` |
-| Session build, `--skip`, `--rebuild` | `scripts/download.py → BUILD_STEPS, build_session` |
-| Product survey and stale detection | `data.py → PhotometrySessionGroup.check_products, scan_product_status` |
+| Session build, one block per modality | `scripts/download.py → build_session, build_trials, build_photometry, build_wheel, build_video` |
+| Download CLI (`--workers`, `--session-type`, `--target-NM`) | `scripts/download.py → parse_args, main` |
 | Session catalog (`sessions.pqt`) | `scripts/download.py → fetch_catalog` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |
@@ -160,9 +160,9 @@ processing, decorate them with `@exception_logger` and accept `exlog=None`.
 ### 2. Error-Log-Driven Filtering
 
 Scripts do not re-validate upstream results. Each session's errors are the
-single source of truth in its H5 `/errors` group (written by every pipeline
-stage via `ps.log_error` / the `process` wrapper). There are no per-stage error
-log parquets to keep in sync.
+single source of truth in its H5 `/errors` group (written by each build block
+via `ps.log_error`, and by the `process` wrapper for anything that escapes
+them). There are no per-stage error log parquets to keep in sync.
 
 `PhotometrySessionGroup.from_catalog(catalog, one, h5_dir=SESSIONS_H5_DIR)`
 opens each catalogued session's file once and reads out everything the filters
@@ -218,16 +218,53 @@ metadata is corrected. `scripts/download.py → fetch_catalog` is the caller:
 read the store, fix, write `sessions.pqt`, then filter — one group through the
 whole phase, validated once, after the fixups rather than before them.
 
+### 2b. The Download Build
+
+`scripts/download.py` builds the whole store. Every product is built on every
+run: nothing is read back, skipped, or compared against what the file already
+holds. `build_session(ps)` is four straight-line blocks — `build_trials`,
+`build_photometry`, `build_wheel`, `build_video` — and then
+`ps.save_h5(mode='w')`, which rewrites the file whole.
+
+Block order is load-bearing, and it is the only dependency declaration there
+is: trials come first because the response cuts read `ps.trials`, and the wheel
+precedes the video because `run_pose_qc` reads `ps.wheel_velocity`. A product
+finds its input because the block above it left it on the session.
+
+Each block is one `try`, reproducing the boundary the pipeline had when every
+modality was its own script: a fatal step abandons its block, logs one error
+against that modality, and the next block still runs. Within a block some checks
+are non-fatal — `validate_event_completeness` and `validate_block_structure` in
+trials are caught inline and logged, and an incomplete event set in photometry
+degrades the response cut to the events that survive rather than abandoning it.
+Video's three raw fetches are caught separately, so a session with no
+LightningPose still contributes its motion energy and its camera clock.
+
+The CLI narrows which sessions run, never what is built within one:
+
+| flag | effect |
+|---|---|
+| `--workers N`, `-w N` | parallel worker processes |
+| `--session-type` | restrict to the named `config.SESSION_TYPES` |
+| `--target-NM` | restrict to sessions carrying a recording from one of the named `config.VALID_TARGETNMS` |
+
+`main` runs `fetch_catalog` first, then `filter_sessions` with every analysis
+filter switched off — those are the criteria a session must clear to be
+*analysed*, not to be built, and the raw-photometry QC filter especially, since
+it reads the QC this pass exists to compute.
+
 ### 3. PhotometrySession Lifecycle
 
-Lazy loading — all data attributes start empty:
+Lazy loading — a freshly constructed session carries its metadata and nothing
+else. Data attributes are not pre-set to `None` or `{}`: an attribute exists
+once something has put it there, so reading one that no step has filled is an
+`AttributeError`, not a silent empty value. `hasattr` is therefore the presence
+check throughout, and a processing method whose input is missing raises for the
+caller to catch and log.
 
 ```python
 ps = PhotometrySession(session_row, one=one)
-# ps.trials = None, ps.photometry = {}, ps.photometry_responses = {},
-# ps.movement_responses = {}, ps.photometry_qc = {},
-# ps.neurophotometrics_qc = {}, ps.wheel_position = None,
-# ps.wheel_velocity = None, ps.wheel_responses = {}
+# no ps.trials, no ps.photometry, no ps.photometry_responses, ...
 
 ps.load_trials()          # populates ps.trials
 ps.load_performance()     # ps.performance, from H5 or scored from the trials
@@ -270,41 +307,33 @@ products — `trials/table` and the raw groups — have none:
 | `video/pose/qc` | `run_pose_qc` |
 
 `load_*` is the third tier, and the convenience one: it answers "give me this,
-and repair it if it is missing". `scripts/download.py` does not use it for the
-bulk build — it sequences the `fetch_*` and computation calls itself
-(`BUILD_STEPS`), so each raw dataset is fetched once per session and each
-modality's H5 group is written once, rather than every product refetching its
-inputs and reading back what the previous one wrote.
+and repair it if it is missing". `scripts/download.py` does not use it at all —
+it sequences the `fetch_*` and computation calls itself, so each raw dataset is
+fetched once per session and each modality's H5 group is written once. That is
+the layering rule for the download path: it fetches its raw materials, holds
+them on the session, and processes them, never reading the store mid-build.
 
 Load methods are therefore not pure readers. Each reads in order — the session
-attribute, else the stored product, else fetch — and writes what it built, so a
-session with an empty H5 fills itself from Alyx. `load_raw_photometry` and
-`load_photometry` stay separate — one method returning either raw or
-preprocessed is how an analysis silently runs on the wrong signal.
-`_held_in_memory(product, value)` is the memory tier: a product the session
-already holds is returned untouched, which is what stops a build from reading
-back what it wrote moments earlier, and what lets the video block's `load_wheel`
-find the velocity the wheel block just computed. `stored_is_current(product)`
-is the disk tier: it honours `ps.rebuild` and raises `StaleProduct` on a stored
-stamp that disagrees with `config.py`, rather than rebuilding silently. Both
-tiers honour `ps.rebuild`, so a named product is always rebuilt — but only what
-is named: rebuilding `wheel/preprocessed` re-differentiates the position already
-in memory rather than refetching it.
+attribute if it is present, else the stored product, else fetch and process —
+and writes what it built, so a session with an empty H5 fills itself from Alyx.
+The first tier is a plain `hasattr` check; there is no staleness comparison and
+no rebuild set, because a stored product is whatever the last download run
+wrote. `load_raw_photometry` and `load_photometry` stay separate — one method
+returning either raw or preprocessed is how an analysis silently runs on the
+wrong signal.
 
-`config.store_raw` decides whether the raw products fetched from Alyx
-(`photometry/raw`, `wheel/raw` and video's three datasets) are kept in the H5 at
-all. It ships off, because `data/sessions` is already 14 GB of derived data and
-the ONE cache is where raw bytes belong. With it off the raw group is simply not
-written — no data, so no group and no stamp, so `product_status` reports the
-product `absent` and the load method goes to Alyx. There is deliberately no
-provenance-only group holding a stamp with no data: that would be a third state
-between `current` and `absent`, and the load path has no branch for it. Turning
-the constant on makes the files self-contained, and each raw load method
-(`load_raw_photometry`, `load_raw_wheel`, `_load_raw_video`) then reads its
-stored copy instead of fetching. QC is unaffected either way: `raw/qc` is
-computed data in its own right and is written whether or not the raw it scored
-was kept, which is why `photometry/{region}/raw/qc` can exist under an
-`absent` `photometry/raw`.
+`config.store_raw` decides whether the raw datasets fetched from Alyx
+(`photometry/raw`, `wheel/raw` and video's three datasets) are products at all.
+It ships off, because `data/sessions` is already 14 GB of derived data and the
+ONE cache is where raw bytes belong. With it off they are fetched by whatever
+needs them and then discarded — nothing writes them, so the load methods go to
+Alyx every time. With it on they are saved to the H5 like any other product,
+each raw load method (`load_raw_photometry`, `load_raw_wheel`,
+`_load_raw_video`) reads its stored copy instead of fetching, and the files
+become self-contained. QC is unaffected either way: `raw/qc` is computed data in
+its own right and is written whether or not the raw it scored was kept, which is
+why `photometry/{region}/raw/qc` can exist in a file that stores no
+`photometry/raw`.
 
 QC is a product like any other. `run_neurophotometrics_qc` scores the
 neurophotometrics source table into `photometry/neurophotometrics/qc`;
@@ -320,27 +349,24 @@ Video's QC hangs off the product it characterizes rather than off the modality:
 (`length_discrepancy`, `framerate_from_tpts`, and it raises `VideoLengthError`
 itself when the discrepancy reaches `config.LENGTH_MISMATCH_THRESHOLD`), and
 `run_pose_qc` correlates paw speed against wheel speed into `video/pose/qc`. The latter is the
-one cross-modal product — it needs the wheel as well as the pose, so its stamp
-carries `wheel/preprocessed`'s parameters and a session with good pose but no
-wheel fails it with the wheel's own missing-data error.
+one cross-modal product — it needs the wheel as well as the pose, which is why
+the video block runs after the wheel block in the download pass and a session
+with good pose but no wheel fails it with the wheel's own missing-data error.
 
 Manual QC is not a product either, but it is stored. `photometry/{region}/
 manual_qc` and `video/manual_qc` hold `config.LP_QC_LABELS`-keyed verdicts from
 `config.IBL_QC_VALUES`, set by hand in the viewers — per recording for
 photometry, per session for video, because there is one fiber per region and one
-camera. They carry no stamp: nothing in `config.py` feeds a verdict, so none can
-go stale. `set_manual_qc(field, value, region=None)` validates both arguments
+camera. `set_manual_qc(field, value, region=None)` validates both arguments
 and writes that one verdict directly, rather than through `save_h5`, so what is
-persisted does not depend on what the session is holding. Rebuilding a derived
-product leaves the group alone; `_clear_manual_qc(modality)` drops it where the
-raw data is refetched, because the verdict was passed on samples that have just
-been replaced. That rule is what the old read-back hack in `_save_video`
-approximated.
+persisted does not depend on what the session is holding. `_clear_manual_qc
+(modality)` drops the verdicts where the raw data is refetched, because they
+were passed on samples that have just been replaced.
 
 The eight `config.VIDEO_QC_COLS` leftCamera labels are **not** a product.
 `io.get_video_qc(eid, one)` fetches them from Alyx on every use and nothing
-stores them: they change when IBL re-runs its QC and no repo parameter feeds
-them, so no stamp could detect that a stored copy had gone stale.
+stores them: they change when IBL re-runs its QC, independently of anything in
+this repo.
 `PhotometrySession.fetch_video_qc` is the per-session wrapper; the pose rollup
 fetches the whole set itself and passes it to `collect_pose(video_qc=...)`.
 
@@ -401,10 +427,11 @@ DataArray at a time — pass `ps.photometry_responses[region]`.
 Access data attributes directly, not through getters. The class extends
 `PhotometrySessionLoader` from `brainbox.io.one`.
 
-HDF5 round-trip: `save_h5()` writes all available data groups.
-`load_h5(fpath)` populates all available groups and adopts `fpath` as
-`self.filepath`, so later `product_status` checks read the file the data
-actually came from. Both dispatch to per-group
+HDF5 round-trip: `save_h5()` writes all available data groups, appending by
+default; `save_h5(mode='w')` truncates first, which is how the download pass
+rewrites a file whole. `load_h5(fpath)` populates all available groups and
+adopts `fpath` as `self.filepath`, so a later save writes back to the file the
+data came from. Both dispatch to per-group
 handler functions via `_SAVE_HANDLERS` / `_LOAD_HANDLERS` registries keyed
 by top-level group name (`metadata`, `errors`, `photometry`, `trials`,
 `wheel`, `video`). Adding a new top-level group means writing a handler pair
@@ -413,9 +440,8 @@ and registering it in both dicts. See README for the on-disk layout.
 Beneath the top-level handlers sit five save/load pairs keyed by the **data
 structure** they carry rather than by modality. Each is pure: it takes one
 `h5py.Group` plus a payload and never touches the session object. The
-orchestrator creates the group (`_replace_group`), loops over regions or
-labels, and passes the product's resolved spec, which the save writes as the
-group's stamp (`_write_stamp`, read back by `product_status`).
+orchestrator creates the group (`_replace_group`) and loops over regions or
+labels, handing each pair one group and one payload.
 
 | pair | payload | used for |
 |---|---|---|
@@ -423,7 +449,7 @@ group's stamp (`_write_stamp`, read back by `product_status`).
 | `_save_peri_event_matrix` / `_load_peri_event_matrix` | `xr.DataArray(event, trial, time)` | responses, whether the label is a brain region (`photometry/`), the wheel (`wheel/`) or a movement channel (`video/`) |
 | `_save_scalars` / `_load_scalars` | flat `dict[str, float]` stored as group attrs | QC metrics, preprocessing diagnostics |
 | `_save_frame_data` / `_load_frame_data` | per-camera-frame `np.ndarray` (dataset `values`) or `pd.DataFrame` (one dataset per column), with no time index | the three raw video datasets |
-| `_save_manual_qc` / `_load_manual_qc` | flat `dict[str, str]` of verdicts stored as group attrs, unstamped | `photometry/{region}/manual_qc`, `video/manual_qc` |
+| `_save_manual_qc` / `_load_manual_qc` | flat `dict[str, str]` of verdicts stored as group attrs | `photometry/{region}/manual_qc`, `video/manual_qc` |
 
 `_save_frame_data` replaces only the group's datasets, not the group, because
 `video/motion_energy` holds this product beside the movement channel's
@@ -438,7 +464,7 @@ want the whole mapping rather than one label; `_read_label_responses` is the
 and QC groups sitting beside the labels — drop out on their own, so there is no
 skip list to keep in sync.
 
-Two products mix structures and so keep their own pairs, stamped like the rest.
+Two products mix structures and so keep their own pairs.
 `video/pose/qc` holds arrays plus a scalar (`_save_pose_xcorr` /
 `_load_pose_xcorr`). `trials/performance` holds scalars plus the session's
 `contrasts` list, which `_save_scalars` could not carry, so
