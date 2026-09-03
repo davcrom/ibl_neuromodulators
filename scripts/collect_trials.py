@@ -18,6 +18,7 @@ from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
 )
+from iblnm.analysis import state_dwell_times
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 
@@ -54,6 +55,10 @@ IDENTITY_COLUMNS = ['subject', 'eid', 'day_n', 'session_n', 'session_type']
 # Seconds from go cue to feedback below which a response is taken to have been
 # committed before the stimulus could have driven it.
 FALSE_START_THRESHOLD = 0.05
+
+# The per-trial flags, each reported on its own. They are independent by
+# construction, so a mouse's three fractions add rather than nest.
+FLAGS = ('false_start', 'no_choice', 'incomplete')
 
 
 def build_export(trials: pd.DataFrame, session: pd.Series) -> pd.DataFrame | None:
@@ -92,6 +97,46 @@ def build_export(trials: pd.DataFrame, session: pd.Series) -> pd.DataFrame | Non
     one_contrast = trials[['contrastLeft', 'contrastRight']].notna().sum(axis=1) == 1
     export['incomplete'] = trials[SCANNED_COLUMNS].isna().any(axis=1) | ~one_contrast
     return export
+
+
+def _flag_summary(trials: pd.DataFrame, subject: str, flag: str) -> dict:
+    """One report row: how often `flag` fired over `trials`, and in what runs.
+
+    The run lengths are counted per eid, so a stretch of flagged trials ending
+    one session and another opening the next are two runs rather than one.
+    """
+    flagged = trials[flag]
+    runs = state_dwell_times(flagged.to_numpy(), trials['eid'].to_numpy())
+    lengths = runs.loc[runs['state'].astype(bool), 'length']
+    return {'subject': subject, 'flag': flag,
+            'n_trials': len(trials), 'n_flagged': int(flagged.sum()),
+            'fraction': flagged.mean(),
+            'run_q1': lengths.quantile(0.25),
+            'run_median': lengths.quantile(0.5),
+            'run_q3': lengths.quantile(0.75),
+            'run_max': lengths.max()}
+
+
+def flag_report(df: pd.DataFrame) -> pd.DataFrame:
+    """Summarize each flag's prevalence per mouse and over every mouse.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        The trials export, carrying `subject`, `eid` and the `FLAGS` columns.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per (subject, flag) plus one per flag with `subject` set to
+        `'all'`, carrying `n_trials`, `n_flagged` and `fraction`. The pooled row
+        is computed over every trial, not averaged over the per-mouse rows.
+    """
+    rows = [_flag_summary(trials, subject, flag)
+            for subject, trials in df.groupby('subject', sort=True)
+            for flag in FLAGS]
+    rows += [_flag_summary(df, 'all', flag) for flag in FLAGS]
+    return pd.DataFrame(rows)
 
 
 def parse_args(argv=None) -> argparse.Namespace:

@@ -59,6 +59,89 @@ EXPECTED_COLUMNS = (
 )
 
 
+def mock_export(subjects_eids, **flags):
+    """An exported frame carrying only what `flag_report` reads.
+
+    ``subjects_eids`` is a list of ``(subject, eid)`` pairs, one per trial, in
+    order. Every flag is False unless ``flags`` names it with a full column.
+    """
+    export = pd.DataFrame(subjects_eids, columns=['subject', 'eid'])
+    for flag in ct.FLAGS:
+        export[flag] = np.asarray(flags.get(flag, np.zeros(len(export))), dtype=bool)
+    return export
+
+
+def test_flag_report_pools_over_trials_not_over_mice():
+    """The `'all'` row's fraction is total flagged over total trials."""
+    export = mock_export(
+        [('A', 'a')] * 4 + [('B', 'b')] * 6,
+        false_start=[1, 0, 0, 0] + [1, 1, 0, 0, 0, 0],
+    )
+
+    report = ct.flag_report(export)
+    starts = report[report['flag'] == 'false_start'].set_index('subject')
+
+    assert starts.loc['A', 'fraction'] == 0.25
+    assert starts.loc['B', 'fraction'] == 2 / 6
+    assert starts.loc['all', 'fraction'] == 0.3
+    assert starts.loc['all', 'n_trials'] == 10
+    assert starts.loc['all', 'n_flagged'] == 3
+
+
+def test_flag_report_runs_never_cross_a_session_boundary():
+    """Four adjacent flagged trials over two eids are two runs of 2, not one of 4."""
+    export = mock_export(
+        [('A', 'a')] * 4 + [('A', 'b')] * 4,
+        no_choice=[0, 0, 1, 1] + [1, 1, 0, 0],
+    )
+
+    report = ct.flag_report(export)
+    row = report.query("subject == 'A' and flag == 'no_choice'").iloc[0]
+
+    assert row['run_max'] == 2
+    assert row['run_median'] == 2
+    assert row['n_flagged'] == 4
+
+
+def test_flag_report_run_quartiles_over_the_run_lengths():
+    """The run columns are the quartiles of the flagged-run lengths."""
+    export = mock_export(
+        [('A', 'a')] * 12,
+        incomplete=[1, 0, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1],
+    )
+
+    report = ct.flag_report(export)
+    row = report.query("subject == 'A' and flag == 'incomplete'").iloc[0]
+
+    # Run lengths, in order: 1, 2, 3, 3.
+    assert row['run_q1'] == 1.75
+    assert row['run_median'] == 2.5
+    assert row['run_q3'] == 3.0
+    assert row['run_max'] == 3
+
+
+def test_flag_report_unflagged_gives_zero_fraction_and_nan_runs():
+    """A flag that never fires has no run to measure."""
+    export = mock_export([('A', 'a')] * 4)
+
+    report = ct.flag_report(export)
+    row = report.query("subject == 'A' and flag == 'false_start'").iloc[0]
+
+    assert row['fraction'] == 0.0
+    assert row['n_flagged'] == 0
+    assert row[['run_q1', 'run_median', 'run_q3', 'run_max']].isna().all()
+
+
+def test_flag_report_one_row_per_mouse_per_flag_plus_the_pooled_rows():
+    """Three flags for each of two mice, and three pooled."""
+    export = mock_export([('A', 'a')] * 3 + [('B', 'b')] * 3)
+
+    report = ct.flag_report(export)
+
+    assert len(report) == 2 * 3 + 3
+    assert set(report['flag']) == set(ct.FLAGS)
+
+
 def test_build_export_columns_in_order():
     """The export's columns are exactly the fixed set, in the fixed order."""
     export = ct.build_export(mock_trials(n_trials=5), mock_session())
