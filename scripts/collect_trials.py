@@ -31,9 +31,12 @@ from iblnm.io import _get_default_connection
 BEHAVIOR_QC_BLOCKERS = ANALYSIS_QC_BLOCKERS - {
     'TrialsNotInPhotometryTime', 'QCValidationError', 'AmbiguousRegionMapping'}
 
-# The raw task columns exported verbatim, in export order. A session whose
-# stored table lacks any of them is dropped whole, so every run writes the same
-# columns and no cell is empty because one extractor never produced it.
+# The raw task columns exported in export order. A session whose stored table
+# lacks any of them is dropped whole, so every run writes the same columns and
+# no cell is empty because one extractor never produced it. Every column is
+# ONE's own value except `stimOn_times`, which `PhotometrySession.fetch_trials`
+# replaces with `stimOnTrigger_times` because the photodiode that produced it
+# misses about half the screen flips on the mainenlab rigs from 2025-06.
 RAW_COLUMNS = [
     'intervals_0', 'intervals_1',
     'stimOnTrigger_times', 'stimOn_times',

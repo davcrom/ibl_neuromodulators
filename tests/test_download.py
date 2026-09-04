@@ -74,7 +74,8 @@ def _trials(n=MIN_NTRIALS):
         'choice': np.where(left, -1, 1),
         'feedbackType': np.ones(n),
         'probabilityLeft': np.full(n, 0.5),
-        'stimOn_times': stim_on,
+        'stimOnTrigger_times': stim_on,
+        'stimOn_times': stim_on + 0.06,
         'firstMovement_times': stim_on + 0.1,
         'feedback_times': stim_on + 0.4,
     })

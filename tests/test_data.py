@@ -1306,6 +1306,7 @@ class TestFetchTier:
             'contrastLeft': [0.25, np.nan],
             'contrastRight': [np.nan, 1.0],
             'feedbackType': [1, -1],
+            'stimOnTrigger_times': [10.0, 20.0],
         })
 
         def _populate(*args, **kwargs):
@@ -1318,6 +1319,30 @@ class TestFetchTier:
         assert {'trial', 'stim_side', 'signed_contrast', 'contrast'} <= set(
             trials.columns)
         assert trials is session.trials
+
+    def test_fetch_trials_takes_the_onset_from_the_trigger(self,
+                                                          mock_session_series):
+        """`stimOn_times` is the Bpod trigger, not the photodiode's report."""
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(mock_session_series, one=MagicMock(),
+                                    load_data=False)
+        table = pd.DataFrame({
+            'contrastLeft': [0.25, np.nan],
+            'contrastRight': [np.nan, 1.0],
+            'feedbackType': [1, -1],
+            'stimOnTrigger_times': [10.0, 20.0],
+            'stimOn_times': [10.06, 20.21],
+        })
+
+        def _populate(*args, **kwargs):
+            session.trials = table
+
+        with patch.object(PhotometrySession.__bases__[0], 'load_trials',
+                          side_effect=_populate):
+            trials = session.fetch_trials()
+
+        np.testing.assert_array_equal(trials['stimOn_times'].to_numpy(),
+                                      [10.0, 20.0])
 
     def test_fetch_photometry_refetches_over_a_stored_product(
             self, mock_session_series, mock_photometry_data, tmp_path,
@@ -2260,6 +2285,7 @@ class TestTrialsTableProduct:
         raw = pd.DataFrame({
             'contrastLeft':  [0.25, np.nan, np.nan, 0.0625],
             'contrastRight': [np.nan, 1.0, 0.0, np.nan],
+            'stimOnTrigger_times': [1.0, 2.0, 3.0, 4.0],
         }, index=one_index)
 
         def _set_trials():
