@@ -42,7 +42,7 @@ def test_pose_measures_structure():
     assert config.POSE_MEASURES['paw'] == (
         'firstMovement_times', ['paw_l', 'paw_r'], 'sum_speed')
     assert config.POSE_MEASURES['nose'] == (
-        'stimOn_times', ['nose_tip'], 'speed')
+        'stimOnTrigger_times', ['nose_tip'], 'speed')
     assert config.POSE_MEASURES['tongue_speed'] == (
         'feedback_times', ['tongue_end_l', 'tongue_end_r'], 'sum_speed')
     assert config.POSE_MEASURES['tongue_likelihood'] == (
@@ -59,14 +59,14 @@ def test_task_reliability_formulas():
     # disabled). Reward is known only at feedback, so stimOn drops it
     # (contrast*side only); feedback keeps it.
     event_sets = LMM_FORMULAS['task_reliability']
-    assert set(event_sets) == {'stimOn_times', 'feedback_times'}
+    assert set(event_sets) == {config.STIM_ONSET_EVENT, 'feedback_times'}
     no_reward = {
         'full': 'response ~ contrast * side',
         'contrast': 'response ~ side',
         'side': 'response ~ contrast',
         'interactions': 'response ~ contrast + side',
     }
-    assert _format(event_sets['stimOn_times']) == no_reward
+    assert _format(event_sets[config.STIM_ONSET_EVENT]) == no_reward
     # 2nd-order only, no side:reward (that interaction encodes choice).
     assert _format(event_sets['feedback_times']) == {
         'full': 'response ~ contrast * side + contrast * reward',
@@ -87,7 +87,7 @@ def test_task_ceiling_formula():
     # Per-event: reward only at feedback; side:reward dropped, 3-way kept.
     ceiling = LMM_FORMULAS['task_ceiling']
     no_reward = {'ceiling': 'response ~ C(contrast) * side'}
-    assert _format(ceiling['stimOn_times']) == no_reward
+    assert _format(ceiling[config.STIM_ONSET_EVENT]) == no_reward
     assert _format(ceiling['firstMovement_times']) == no_reward
     assert _format(ceiling['feedback_times']) == {
         'ceiling': 'response ~ C(contrast) * side * reward - side:reward'}
@@ -128,7 +128,7 @@ def test_movement_family_formulas_choice():
         'movement': 'response ~ contrast + side + contrast:side',
         'interactions': 'response ~ contrast + side + contrast:side + choice_side',
     }
-    assert _format(family['stimOn_times']) == no_reward
+    assert _format(family[config.STIM_ONSET_EVENT]) == no_reward
     assert _format(family['firstMovement_times']) == no_reward
 
 
@@ -150,7 +150,7 @@ def test_movement_families_per_event_reference_and_predictor():
         pred = _EXPECTED_PREDICTORS[var]
         family = LMM_FORMULAS[f'movement_{var}']
         assert set(family) == {
-            'stimOn_times', 'firstMovement_times', 'feedback_times'}
+            config.STIM_ONSET_EVENT, 'firstMovement_times', 'feedback_times'}
         for event, event_set in family.items():
             full = event_set['full'].format(response='response')
             assert pred in full

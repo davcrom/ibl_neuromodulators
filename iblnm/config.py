@@ -295,20 +295,22 @@ TARGET_FS = 30    # Hz, target sampling rate for photometry signals
 WHEEL_FS = 100    # Hz, interpolation rate for wheel velocity
 POSE_FS = 30      # Hz, common resample rate for pose movement traces (majority camera rate)
 
-# Events for response extraction (NOT goCue — too close to stimOn, variable latency)
+# The trials column every stimulus-onset alignment reads: response cuts,
+# reaction times, the encoding and LMM event sets, the viewers. Named once here
+# so no consumer hardcodes a column of its own.
 #
-# `stimOn_times` is the photodiode's report of the stimulus appearing, and on
-# the mainenlab behavior rigs from 2025-06 onward that photodiode misses about
-# half the screen flips. IBL's extractor takes the first photodiode pulse after
-# the stimulus-on trigger with no time bound, so a missed onset silently yields
-# the next pulse instead — a wheel-driven redraw, ~150 ms late. That happens on
-# 39% of trials in the affected sessions, and 42% of the catalog's sessions
-# carry it on more than 10% of their trials. Nothing marks those trials: the
-# value is a real screen event, only the wrong one.
+# ONE's `stimOn_times` is the photodiode's report of the stimulus appearing,
+# and on the mainenlab behavior rigs from 2025-06 onward that photodiode misses
+# about half the screen flips. IBL's extractor takes the first photodiode pulse
+# after the stimulus-on trigger with no time bound, so a missed onset silently
+# yields the next pulse instead — a wheel-driven redraw, ~150 ms late. That
+# happens on 39% of trials in the affected sessions, and 42% of the catalog's
+# sessions carry it on more than 10% of their trials. Nothing marks those
+# trials: the value is a real screen event, only the wrong one.
 #
 # `stimOnTrigger_times` is the Bpod state-machine clock instead, so it never
 # sees the photodiode. It is present on every trial of every session and is
-# late by the monitor's own latency, a constant that shifts every trial alike
+# early by the monitor's own latency, a constant that shifts every trial alike
 # rather than smearing an average.
 #
 # Refinement worth making: add that latency back per session, as
@@ -318,7 +320,10 @@ POSE_FS = 30      # Hz, common resample rate for pose movement traces (majority 
 # within 8.9 ms (SD; median residual 0.0 ms), and every session has enough
 # caught trials to define its own median. The whole-catalog median latency is
 # 59.8 ms, for scale.
-RESPONSE_EVENTS = ['stimOn_times', 'feedback_times']
+STIM_ONSET_EVENT = 'stimOnTrigger_times'
+
+# Events for response extraction (NOT goCue — too close to stimOn, variable latency)
+RESPONSE_EVENTS = [STIM_ONSET_EVENT, 'feedback_times']
 
 # QC parameters
 MIN_NTRIALS = 90
@@ -532,13 +537,13 @@ IBL_QC_VALUES = ('CRITICAL', 'FAIL', 'WARNING', 'PASS')  # settable verdicts ('N
 # Bodypart trace label -> (event column, keypoints, reduction)
 POSE_MEASURES = {
     'paw': ('firstMovement_times', ['paw_l', 'paw_r'], 'sum_speed'),
-    'nose': ('stimOn_times', ['nose_tip'], 'speed'),
+    'nose': (STIM_ONSET_EVENT, ['nose_tip'], 'speed'),
     'tongue_speed': ('feedback_times', ['tongue_end_l', 'tongue_end_r'], 'sum_speed'),
     'tongue_likelihood': ('feedback_times', ['tongue_end_l', 'tongue_end_r'], 'max_likelihood'),
 }
 
-# Event the motion_energy channel locks to (baseline is also stimOn-locked).
-MOTION_ENERGY_EVENT = 'stimOn_times'
+# Event the motion_energy channel locks to (baseline is also onset-locked).
+MOTION_ENERGY_EVENT = STIM_ONSET_EVENT
 
 # Every movement channel is extracted at every event in this union, so any
 # (label, event) cell exists for a consumer; each channel's own response event
@@ -570,7 +575,7 @@ PHOTOMETRY_BANDS = ('GCaMP', 'Isosbestic')
 
 # The wheel matrix is cut from stimulus onset to each trial's own feedback, so
 # the window end names a trials column rather than a fixed offset in seconds.
-WHEEL_RESPONSE_EVENTS = ['stimOn_times']
+WHEEL_RESPONSE_EVENTS = [STIM_ONSET_EVENT]
 WHEEL_RESPONSE_WINDOW = (0.0, 'feedback_times')
 
 
@@ -592,7 +597,7 @@ ENCODING_POSE_KEYPOINTS = ['paw_l', 'paw_r', 'nose']  # continuous pose regresso
 # 'categorical' [deviation-coded ±0.5 contra/ipsi]), `interactions` (modulator
 # tuples coded as the product). Every event also emits its baseline kernel.
 ENCODING_TERMS = {
-    'stimOn_times': {
+    STIM_ONSET_EVENT: {
         'split_by': None,
         'modulators': {'side': 'categorical', 'contrast': 'continuous'},
         'interactions': [('side', 'contrast')],
@@ -714,7 +719,7 @@ LMM_FORMULAS = {
     # drops the reward predictor entirely (contrast*side only); the feedback set
     # keeps it. firstMovement is currently disabled (see below).
     'task_reliability': {
-        'stimOn_times': {
+        STIM_ONSET_EVENT: {
             'full': '{response} ~ contrast * side',
             'contrast': '{response} ~ side',
             'side': '{response} ~ contrast',
@@ -744,7 +749,7 @@ LMM_FORMULAS = {
     # movement set); the feedback 3-way C(contrast):side:reward is kept, so the
     # ceiling sits just below a fully saturated cell-means model.
     'task_ceiling': {
-        'stimOn_times': {'ceiling': '{response} ~ C(contrast) * side'},
+        STIM_ONSET_EVENT: {'ceiling': '{response} ~ C(contrast) * side'},
         'firstMovement_times': {'ceiling': '{response} ~ C(contrast) * side'},
         'feedback_times': {
             'ceiling': '{response} ~ C(contrast) * side * reward - side:reward'},
@@ -756,7 +761,7 @@ LMM_FORMULAS = {
     # `full`/`contrast`/`movement` subset.
     **{
         f'movement_{var}': {
-            'stimOn_times': _movement_family(pred, reward=False),
+            STIM_ONSET_EVENT: _movement_family(pred, reward=False),
             'firstMovement_times': _movement_family(pred, reward=False),
             'feedback_times': _movement_family(pred, reward=True),
         }
