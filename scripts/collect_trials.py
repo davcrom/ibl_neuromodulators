@@ -20,7 +20,8 @@ import pandas as pd
 from tqdm import tqdm
 
 from iblnm.config import (
-    SESSIONS_FPATH, SESSIONS_H5_DIR, TRIALS_DIR, ANALYSIS_QC_BLOCKERS,
+    SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT, TRIALS_DIR,
+    ANALYSIS_QC_BLOCKERS,
 )
 from iblnm.analysis import state_dwell_times
 from iblnm.data import PhotometrySessionGroup
@@ -72,8 +73,8 @@ SCANNED_COLUMNS = [
 # mouse, carried per trial so a pooled file needs no join against the catalog.
 IDENTITY_COLUMNS = ['subject', 'eid', 'NM', 'day_n', 'session_n', 'session_type']
 
-# Seconds from go cue to feedback below which a response is taken to have been
-# committed before the stimulus could have driven it.
+# Seconds from stimulus onset to response below which a response is taken to
+# have been committed before the stimulus could have driven it.
 FALSE_START_THRESHOLD = 0.05
 
 # The per-trial flags, each reported on its own. They are independent by
@@ -107,10 +108,19 @@ def build_export(trials: pd.DataFrame, session: pd.Series) -> pd.DataFrame | Non
     export[RAW_COLUMNS] = trials[RAW_COLUMNS]
     export['stim_side'] = trials['stim_side']
     no_choice = trials['choice'] == 0
-    # On a no-choice trial feedback lands at the response-window timeout, a
+    # Stimulus onset to response, measured from the same Bpod-clock onset the
+    # rest of the pipeline aligns to (`config.STIM_ONSET_EVENT`). Both ends are
+    # state-machine columns, so neither carries the sound card's latency. `goCue_times` and `feedback_times` are
+    # the sound card's own timestamps: the go cue runs up to ~0.3 s late on the
+    # pre-2025 rigs, and error feedback is the noise burst, so it lags the
+    # response by ~30 ms there and is absent altogether on the fastest error
+    # trials, where the burst starts before the go-cue pulse has fallen. The
+    # trigger and the response are present on every trial of every session.
+    #
+    # On a no-choice trial the response is the response-window timeout, a
     # constant rather than a measurement of anything the mouse did.
-    export['reaction_time'] = (trials['feedback_times']
-                               - trials['goCue_times']).mask(no_choice)
+    export['reaction_time'] = (trials['response_times']
+                               - trials[STIM_ONSET_EVENT]).mask(no_choice)
     # A NaN reaction time compares False, so no-choice trials never false-start.
     export['false_start'] = export['reaction_time'] < FALSE_START_THRESHOLD
     export['no_choice'] = no_choice

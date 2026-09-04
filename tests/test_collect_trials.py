@@ -232,9 +232,14 @@ def test_build_export_no_choice_trial_has_no_reaction_time():
 
 
 def test_build_export_false_start_below_threshold_only():
-    """A 20 ms response is a false start; a 200 ms one is not."""
+    """A 20 ms response is a false start; a 200 ms one is not.
+
+    Both ends of the reaction time are Bpod-clock columns, so the sound card's
+    latency cannot move a trial across the threshold: `feedback_times` stays
+    where the fixture put it and only `response_times` decides.
+    """
     trials = mock_trials(n_trials=2)
-    trials['feedback_times'] = trials['goCue_times'] + [0.02, 0.2]
+    trials['response_times'] = trials['stimOnTrigger_times'] + [0.02, 0.2]
 
     export = ct.build_export(trials, mock_session())
 
