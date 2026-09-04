@@ -189,6 +189,21 @@ def flag_report(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def format_flag_report(report: pd.DataFrame) -> str:
+    """Render `flag_report`'s rows as one headed table per flag.
+
+    The flags are independent, so the mice are easier to compare within a flag
+    than across all three at once: each block heads with the flag name and
+    carries every mouse plus the pooled row, and the `flag` column drops out of
+    the table it now names.
+    """
+    blocks = []
+    for flag in FLAGS:
+        rows = report[report['flag'] == flag].drop(columns='flag')
+        blocks.append(f"{flag}\n{rows.to_string(index=False)}")
+    return '\n\n'.join(blocks)
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     return parser.parse_args(argv)
@@ -234,4 +249,4 @@ if __name__ == '__main__':
     print(f"Saved {len(written)} per-mouse CSVs to {TRIALS_DIR}")
     print(f"  {n_skipped} sessions skipped for a missing column")
     print(f"  {len(df_trials)} trials from {len(exports)} sessions")
-    print(flag_report(df_trials).to_string(index=False))
+    print(format_flag_report(flag_report(df_trials)))

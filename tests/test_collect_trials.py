@@ -122,6 +122,22 @@ def test_write_per_subject_sorts_by_session_then_trial(tmp_path):
     assert out['trial_n'].tolist() == [2, 3, 4, 5]
 
 
+def test_format_flag_report_gives_one_block_per_flag():
+    """Each flag gets its own headed table, in `FLAGS` order, mice within it."""
+    export = mock_export([('A', 'a')] * 2 + [('B', 'b')] * 2,
+                         false_start=[1, 0, 0, 0])
+
+    text = ct.format_flag_report(ct.flag_report(export))
+
+    headings = [line for line in text.splitlines() if line in ct.FLAGS]
+    assert headings == list(ct.FLAGS)
+    first, second = text.index('false_start'), text.index('no_choice')
+    subjects = text[first:second].count('A') + text[first:second].count('B')
+    assert subjects == 2                      # both mice inside the one block
+    header = text.splitlines()[1].split()     # the column is the heading now
+    assert 'flag' not in header and 'subject' in header
+
+
 def test_flag_report_pools_over_trials_not_over_mice():
     """The `'all'` row's fraction is total flagged over total trials."""
     export = mock_export(
