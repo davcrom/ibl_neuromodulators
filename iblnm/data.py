@@ -3674,7 +3674,8 @@ class PhotometrySessionGroup:
         self._lmm_group_by = None
 
     @classmethod
-    def from_catalog(cls, catalog, one, h5_dir=SESSIONS_H5_DIR, scan_h5=True):
+    def from_catalog(cls, catalog, one=None, h5_dir=SESSIONS_H5_DIR,
+                     scan_h5=True):
         """Build a group from a session catalog DataFrame.
 
         Validates parallel list columns and, when ``h5_dir`` is given and
@@ -3687,8 +3688,10 @@ class PhotometrySessionGroup:
         catalog : pd.DataFrame
             Session catalog (one row per session, with list columns for
             brain_region, hemisphere, target_NM).
-        one : one.api.One
-            ONE connection instance.
+        one : one.api.One, optional
+            ONE connection instance. Omit it for a group that reads only the
+            store: every product is loaded from ``h5_dir``, and a session whose
+            file lacks one raises rather than fetching it from Alyx.
         h5_dir : Path, optional
             Directory containing {eid}.h5 files, retained on the group for
             loading and processing. When provided and ``scan_h5`` is True, the

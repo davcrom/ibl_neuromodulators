@@ -3798,6 +3798,16 @@ class TestFromCatalog:
         # 'lab' is in SESSION_SCHEMA but absent from the catalog fixture
         assert 'lab' in group._catalog.columns
 
+    def test_from_catalog_without_a_connection(self):
+        """No `one`: an offline group over stored sessions needs no Alyx."""
+        from iblnm.data import PhotometrySessionGroup
+        group = PhotometrySessionGroup.from_catalog(self._make_catalog(),
+                                                    h5_dir=None)
+        connected = PhotometrySessionGroup.from_catalog(
+            self._make_catalog(), one=MagicMock(), h5_dir=None)
+        assert group.one is None
+        assert len(group.sessions) == len(connected.sessions)
+
     def test_recordings_reflects_refilter(self):
         """recordings updates automatically when filter_sessions is re-called."""
         from iblnm.data import PhotometrySessionGroup

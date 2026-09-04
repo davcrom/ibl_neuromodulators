@@ -1,28 +1,29 @@
 """
 Collect Trials Data
 
-Exports every trial of every biased and ephys session in scope as one ordered
-table, for a collaborator's per-mouse DDM-HMM fit. Each trial carries the raw
-task columns verbatim, a reaction time, and three independent flags describing
-it; no trial is dropped and no column recommends an exclusion policy. A summary
-of how often each flag fired, per mouse and pooled, is printed afterwards.
+Exports every trial of every biased and ephys session in scope, one ordered
+table per mouse, for a collaborator's per-mouse DDM-HMM fit. Each trial carries
+the mouse's neuromodulator, the raw task columns, a reaction time, and three
+independent flags describing it; no trial is dropped and no column recommends an
+exclusion policy. A summary of how often each flag fired, per mouse and pooled,
+is printed afterwards.
 
-Output: data/trials.csv
+Output: data/trials/{subject}.csv, one per mouse
 
 Usage:
     python scripts/collect_trials.py
 """
 import argparse
+from pathlib import Path
 
 import pandas as pd
 from tqdm import tqdm
 
 from iblnm.config import (
-    SESSIONS_FPATH, SESSIONS_H5_DIR, TRIALS_FPATH, ANALYSIS_QC_BLOCKERS,
+    SESSIONS_FPATH, SESSIONS_H5_DIR, TRIALS_DIR, ANALYSIS_QC_BLOCKERS,
 )
 from iblnm.analysis import state_dwell_times
 from iblnm.data import PhotometrySessionGroup
-from iblnm.io import _get_default_connection
 
 # The error types that disqualify a session from the export. The three
 # photometry-side blockers are dropped from the analysis set: a session removed
@@ -66,8 +67,10 @@ SCANNED_COLUMNS = [
                       'firstMovement_times', 'stimOff_times')
 ]
 
-# Session identity, copied onto every one of that session's trials.
-IDENTITY_COLUMNS = ['subject', 'eid', 'day_n', 'session_n', 'session_type']
+# Session identity, copied onto every one of that session's trials. `NM` is the
+# neuromodulatory cell population expressing GCaMP in that mouse — one value per
+# mouse, carried per trial so a pooled file needs no join against the catalog.
+IDENTITY_COLUMNS = ['subject', 'eid', 'NM', 'day_n', 'session_n', 'session_type']
 
 # Seconds from go cue to feedback below which a response is taken to have been
 # committed before the stimulus could have driven it.
@@ -114,6 +117,32 @@ def build_export(trials: pd.DataFrame, session: pd.Series) -> pd.DataFrame | Non
     one_contrast = trials[['contrastLeft', 'contrastRight']].notna().sum(axis=1) == 1
     export['incomplete'] = trials[SCANNED_COLUMNS].isna().any(axis=1) | ~one_contrast
     return export
+
+
+def write_per_subject(df: pd.DataFrame, out_dir: Path) -> list[Path]:
+    """Write one mouse per CSV, named for the mouse, into `out_dir`.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        The pooled export, carrying `subject`.
+    out_dir : pathlib.Path
+        Destination directory, created if absent. Files already in it are left
+        alone, so a mouse dropped from the scope keeps its last export until it
+        is deleted by hand.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The files written, in mouse order.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for subject, trials in df.groupby('subject', sort=True):
+        fpath = out_dir / f'{subject}.csv'
+        trials.to_csv(fpath, index=False)
+        written.append(fpath)
+    return written
 
 
 def _flag_summary(trials: pd.DataFrame, subject: str, flag: str) -> dict:
@@ -167,8 +196,9 @@ if __name__ == '__main__':
     print(f"Loading sessions from {SESSIONS_FPATH}")
     df = pd.read_parquet(SESSIONS_FPATH)
 
-    one = _get_default_connection()
-    group = PhotometrySessionGroup.from_catalog(df, one=one, h5_dir=SESSIONS_H5_DIR)
+    # No ONE connection: every trials table is read from the local store, so
+    # the run touches neither Alyx nor the ONE cache.
+    group = PhotometrySessionGroup.from_catalog(df, h5_dir=SESSIONS_H5_DIR)
     # Target-NM selects the mice, behavioral criteria alone select their days,
     # so the photometry QC filter is off. Training sessions hold probabilityLeft
     # at 0.5, which would change what the HMM's state transitions mean.
@@ -181,8 +211,8 @@ if __name__ == '__main__':
     df_sessions = group.sessions
     print(f"  {len(df_sessions)} sessions in scope")
 
-    # `load_trials` fetches from Alyx when a session holds no stored table, so a
-    # first run against a store predating the rebuild downloads what it lacks.
+    # `load_trials` reads the stored table. With no connection on the group, a
+    # session whose file holds none raises rather than fetching it.
     exports = []
     n_skipped = 0
     for _, row in tqdm(df_sessions.iterrows(), total=len(df_sessions),
@@ -196,8 +226,8 @@ if __name__ == '__main__':
         exports.append(export)
 
     df_trials = pd.concat(exports, ignore_index=True)
-    df_trials.to_csv(TRIALS_FPATH, index=False)
-    print(f"Saved to {TRIALS_FPATH}")
+    written = write_per_subject(df_trials, TRIALS_DIR)
+    print(f"Saved {len(written)} per-mouse CSVs to {TRIALS_DIR}")
     print(f"  {n_skipped} sessions skipped for a missing column")
     print(f"  {len(df_trials)} trials from {len(exports)} sessions")
     print(flag_report(df_trials).to_string(index=False))

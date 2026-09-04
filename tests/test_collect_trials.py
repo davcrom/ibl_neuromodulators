@@ -7,9 +7,21 @@ import scripts.collect_trials as ct
 
 
 def test_export_is_written_beside_the_other_data_tables():
-    """The export lands at `data/trials.csv`, a CSV rather than a parquet."""
-    assert config.TRIALS_FPATH.name == 'trials.csv'
-    assert config.TRIALS_FPATH.parent == config.PROJECT_ROOT / 'data'
+    """The export lands in `data/trials/`, one CSV per mouse."""
+    assert config.TRIALS_DIR == config.PROJECT_ROOT / 'data/trials'
+
+
+def test_write_per_subject_writes_one_csv_per_mouse(tmp_path):
+    """Each mouse's trials round-trip to `{subject}.csv`, that mouse's only."""
+    df = mock_export([('A', 'e1'), ('A', 'e2'), ('B', 'e3')])
+
+    written = ct.write_per_subject(df, tmp_path)
+
+    assert sorted(p.name for p in written) == ['A.csv', 'B.csv']
+    a = pd.read_csv(tmp_path / 'A.csv')
+    assert set(a['subject']) == {'A'}
+    assert sorted(a['eid'].unique()) == ['e1', 'e2']
+    assert len(a) == (df['subject'] == 'A').sum()
 
 
 def test_scope_blocks_on_behavior_errors_only():
@@ -68,12 +80,13 @@ def mock_session():
         'day_n': 7,
         'session_n': 3,
         'session_type': 'biased',
+        'NM': 'DA',
         'target_NM': ['VTA-DA'],
     })
 
 
 EXPECTED_COLUMNS = (
-    ['subject', 'eid', 'day_n', 'session_n', 'session_type', 'trial_n']
+    ['subject', 'eid', 'NM', 'day_n', 'session_n', 'session_type', 'trial_n']
     + ct.RAW_COLUMNS
     + ['stim_side', 'reaction_time', 'false_start', 'no_choice', 'incomplete']
 )
