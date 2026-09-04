@@ -485,7 +485,7 @@ def video_h5(tmp_path):
     paw = xr.DataArray(
         np.arange(12, dtype=np.float64).reshape(1, 3, 4),
         dims=['event', 'trial', 'time'],
-        coords={'event': ['stimOn_times'], 'trial': np.arange(3),
+        coords={'event': ['stimOnTrigger_times'], 'trial': np.arange(3),
                 'time': np.linspace(-1, 1, 4)},
     )
     ps = PhotometrySession(
@@ -519,7 +519,7 @@ def test_save_label_leaves_the_responses_untouched(video_h5):
     save_label(h5_path, 'eid1', 'qc_movement', 'WARNING')
     with h5py.File(h5_path, 'r') as f:
         np.testing.assert_array_equal(
-            f['video']['paw']['responses']['stimOn_times'][:], paw.values[0])
+            f['video']['paw']['responses']['stimOnTrigger_times'][:], paw.values[0])
 
 
 def test_save_label_reports_failure_without_raising(tmp_path):

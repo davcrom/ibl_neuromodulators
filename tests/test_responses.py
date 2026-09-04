@@ -42,7 +42,7 @@ def _make_movement_group(n_per_cell=50, seed=0):
                             response = (0.3 * (contrast / 100)
                                         + subj_slope * log_rt
                                         + rng.normal(0, 0.5))
-                            for event in ['stimOn_times',
+                            for event in ['stimOnTrigger_times',
                                           'firstMovement_times',
                                           'feedback_times']:
                                 resp_rows.append({
@@ -75,10 +75,10 @@ class TestSaveLMMFrames:
         from scripts.responses import _save_lmm_frames
         frames = {
             'response_lmm_task_ceiling': pd.DataFrame({
-                'target_NM': ['VTA-DA'], 'event': ['stimOn_times'],
+                'target_NM': ['VTA-DA'], 'event': ['stimOnTrigger_times'],
                 'marginal': [0.1], 'conditional': [0.3]}),
             'response_lmm_task_reliability_cv': pd.DataFrame({
-                'target_NM': ['VTA-DA'], 'event': ['stimOn_times'],
+                'target_NM': ['VTA-DA'], 'event': ['stimOnTrigger_times'],
                 'predictor': ['contrast'], 'fold': ['s0'], 'delta_r2': [0.02]}),
         }
         _save_lmm_frames(frames, tmp_path)
@@ -138,7 +138,7 @@ class TestPlotLMMFigures:
         df = pd.read_csv(tmp_path / 'response_lmm_task_reliability_cv.csv')
         reward_events = set(df[df['predictor'] == 'reward']['event'])
         assert reward_events == {'feedback_times'}
-        preds = set(df[df['event'] == 'stimOn_times']['predictor'])
+        preds = set(df[df['event'] == 'stimOnTrigger_times']['predictor'])
         assert 'reward' not in preds
         assert {'contrast', 'side', 'interactions'} <= preds
 
@@ -207,7 +207,7 @@ class TestPlotPersessionFigures:
             for p in predictors:
                 rows.append({
                     'eid': f'e{s}', 'subject': f's{s}', 'target_NM': 'VTA-DA',
-                    'brain_region': 'VTA', 'event': 'stimOn_times',
+                    'brain_region': 'VTA', 'event': 'stimOnTrigger_times',
                     'predictor': p, 'r2': 0.5, 'delta_r2': 0.05,
                     'n_trials': 100})
         return pd.DataFrame(rows)

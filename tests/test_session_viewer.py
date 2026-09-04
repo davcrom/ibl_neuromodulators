@@ -273,7 +273,7 @@ def test_load_session_data_complete_store_makes_no_one_call(tmp_path, monkeypatc
     builder.photometry = dict(bands)
     builder.trials = pd.DataFrame({
         'trial': np.arange(20),
-        'stimOn_times': np.linspace(50, 550, 20),
+        'stimOnTrigger_times': np.linspace(50, 550, 20),
         'firstMovement_times': np.linspace(50.3, 550.3, 20),
         'feedback_times': np.linspace(51, 551, 20),
     })

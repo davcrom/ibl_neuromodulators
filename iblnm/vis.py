@@ -17,7 +17,7 @@ from sklearn.preprocessing import quantile_transform
 from iblnm.config import (
     ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP,
     PERSESSION_SIGNIFICANCE_ALPHA, _PERSESSION_REGRESSORS,
-    RESPONSE_EVENTS, RESPONSE_WINDOWS,
+    RESPONSE_EVENTS, RESPONSE_WINDOWS, STIM_ONSET_EVENT,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
@@ -2059,7 +2059,7 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
 
 
 def plot_movement_response(df_group, response_col, timing_col, target_nm,
-                           event='stimOn_times', fig=None):
+                           event=STIM_ONSET_EVENT, fig=None):
     """Scatter response magnitude against a timing variable, colored by contrast.
 
     The raw-data within-contrast check for the within-contrast model: one point
@@ -2286,7 +2286,11 @@ def plot_feature_contributions(contributions, fig=None):
 
 
 _SIDE_ORDER = {'contra': 0, 'ipsi': 1}
-_EVENT_ORDER = {'stimOn': 0, 'firstMovement': 1, 'feedback': 2}
+# Feature labels carry the event with its `_times` suffix stripped (see
+# `PhotometrySessionGroup.get_response_vector`), so the onset key follows
+# whichever column `STIM_ONSET_EVENT` names.
+_EVENT_ORDER = {STIM_ONSET_EVENT.replace('_times', ''): 0,
+                'firstMovement': 1, 'feedback': 2}
 _FB_ORDER = {'correct': 0, 'incorrect': 1}
 
 def _sort_events(events: Iterable[str]) -> list[str]:

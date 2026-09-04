@@ -439,7 +439,7 @@ class TestLoadingPrimitives:
         responses = xr.DataArray(
             np.arange(2 * 4 * 5, dtype=np.float64).reshape(2, 4, 5),
             dims=['event', 'trial', 'time'],
-            coords={'event': ['stimOn_times', 'feedback_times'],
+            coords={'event': ['stimOnTrigger_times', 'feedback_times'],
                     'trial': trials,
                     'time': np.linspace(-0.2, 0.8, 5)},
         )
@@ -1729,11 +1729,11 @@ class TestValidateEventCompleteness:
         from iblnm.validation import IncompleteEventTimes
         from iblnm.config import RESPONSE_EVENTS
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
-        session.trials = pd.DataFrame({'stimOn_times': np.random.rand(100)})
+        session.trials = pd.DataFrame({'stimOnTrigger_times': np.random.rand(100)})
         with pytest.raises(IncompleteEventTimes) as exc_info:
             session.validate_event_completeness()
         for event in RESPONSE_EVENTS:
-            if event != 'stimOn_times':
+            if event != 'stimOnTrigger_times':
                 assert event in exc_info.value.missing_events
 
 
@@ -1746,7 +1746,7 @@ class TestValidateTrialsInPhotometryTime:
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.photometry = mock_photometry_data
         session.trials = pd.DataFrame({
-            'stimOn_times': [-10.0, 100.0],
+            'stimOnTrigger_times': [-10.0, 100.0],
             'feedback_times': [100.0, 200.0],
         })
         with pytest.raises(TrialsNotInPhotometryTime):
@@ -1757,7 +1757,7 @@ class TestValidateTrialsInPhotometryTime:
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
         session.photometry = mock_photometry_data
         session.trials = pd.DataFrame({
-            'stimOn_times': [10.0, 100.0],
+            'stimOnTrigger_times': [10.0, 100.0],
             'feedback_times': [100.0, 500.0],
         })
         session.validate_trials_in_photometry_time()  # should not raise
@@ -1769,7 +1769,7 @@ class TestValidateTrialsInPhotometryTime:
         del session.photometry['GCaMP']
         del session.photometry['Isosbestic']
         session.trials = pd.DataFrame({
-            'stimOn_times': [10.0, 100.0],
+            'stimOnTrigger_times': [10.0, 100.0],
             'feedback_times': [100.0, 500.0],
         })
         session.validate_trials_in_photometry_time()  # should not raise
@@ -1966,7 +1966,7 @@ def _make_trials(n=50, **columns):
     """
     return pd.DataFrame({
         'trial': np.arange(n),
-        'stimOn_times': np.linspace(99.5, 499.5, n),
+        'stimOnTrigger_times': np.linspace(99.5, 499.5, n),
         'firstMovement_times': np.linspace(100.3, 500.3, n),
         'feedback_times': np.linspace(101, 501, n),
         **columns,
@@ -2084,7 +2084,7 @@ class TestExtractResponses:
         session.trials = _make_trials(n)
         session.photometry_responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'])
-        sel = session.photometry_responses['VTA'].sel(event='stimOn_times')
+        sel = session.photometry_responses['VTA'].sel(event='stimOnTrigger_times')
         assert sel.dims == ('trial', 'time')
         assert sel.shape[0] == n
 
@@ -2125,13 +2125,13 @@ class TestExtractResponses:
             n, feedback_times=np.linspace(99.5, 499.5, n) + np.linspace(0.5, 2.5, n))
         responses = session.extract_responses(
             session.photometry['GCaMP_preprocessed'],
-            events=['stimOn_times'], window=(0.0, 'feedback_times'))
+            events=['stimOnTrigger_times'], window=(0.0, 'feedback_times'))
 
-        cut = responses['VTA'].sel(event='stimOn_times')
+        cut = responses['VTA'].sel(event='stimOnTrigger_times')
         tpts = cut.coords['time'].values
         assert tpts[-1] == pytest.approx(2.5, abs=0.1)
         durations = (session.trials['feedback_times']
-                     - session.trials['stimOn_times']).to_numpy()
+                     - session.trials['stimOnTrigger_times']).to_numpy()
         for trial, duration in enumerate(durations):
             values = cut.values[trial]
             assert not np.any(np.isnan(values[tpts <= duration]))
@@ -2203,7 +2203,7 @@ def _full_one_trials_frame(n=6, index=None):
         'goCue_times':         np.linspace(99.6, 499.6, n),
         'response_times':      np.linspace(100.4, 500.4, n),
         'choice':              np.tile([-1.0, 1.0], n // 2),
-        'stimOn_times':        np.linspace(99.5, 499.5, n),
+        'stimOnTrigger_times':        np.linspace(99.5, 499.5, n),
         'contrastLeft':        np.tile([0.25, np.nan], n // 2),
         'contrastRight':       np.tile([np.nan, 1.0], n // 2),
         'feedback_times':      np.linspace(101.0, 501.0, n),
@@ -2390,7 +2390,7 @@ class TestSaveLoadH5:
             contrast=np.random.choice([0, 25, 100], n).astype(float),
         )
         session.photometry_responses = session.extract_responses(
-            session.photometry['GCaMP_preprocessed'], events=['stimOn_times', 'feedback_times'])
+            session.photometry['GCaMP_preprocessed'], events=['stimOnTrigger_times', 'feedback_times'])
 
         fpath = tmp_path / f'{session.eid}.h5'
         session.save_h5(fpath)  # Create with preprocessed
@@ -2400,13 +2400,13 @@ class TestSaveLoadH5:
         with h5py.File(fpath, 'r') as f:
             assert 'photometry/VTA/preprocessed/signal' in f
             assert 'trials/table/choice' in f
-            assert 'photometry/VTA/responses/stimOn_times' in f
+            assert 'photometry/VTA/responses/stimOnTrigger_times' in f
             assert 'photometry/VTA/responses/feedback_times' in f
             # fs is never read back (the time axis is rebuilt from `times`)
             assert 'fs' not in f['photometry/VTA/responses'].attrs
             # Verify response data matches xarray content
-            resp_h5 = f['photometry/VTA/responses/stimOn_times'][:]
-            resp_xr = session.photometry_responses['VTA'].sel(event='stimOn_times').values
+            resp_h5 = f['photometry/VTA/responses/stimOnTrigger_times'][:]
+            resp_xr = session.photometry_responses['VTA'].sel(event='stimOnTrigger_times').values
             np.testing.assert_allclose(resp_h5, resp_xr, rtol=1e-5)
             np.testing.assert_array_equal(
                 f['trials/table/choice'][:],
@@ -2420,7 +2420,7 @@ class TestSaveLoadH5:
         session.extract_preprocessed_photometry()
         session.trials = _make_trials()
         session.photometry_responses = session.extract_responses(
-            session.photometry['GCaMP_preprocessed'], events=['stimOn_times', 'feedback_times'])
+            session.photometry['GCaMP_preprocessed'], events=['stimOnTrigger_times', 'feedback_times'])
         original = {r: da.copy() for r, da in session.photometry_responses.items()}
 
         fpath = tmp_path / f'{session.eid}.h5'
@@ -2434,8 +2434,8 @@ class TestSaveLoadH5:
         assert isinstance(session.photometry_responses['VTA'], xr.DataArray)
         assert set(session.photometry_responses['VTA'].dims) == {'event', 'trial', 'time'}
         np.testing.assert_allclose(
-            session.photometry_responses['VTA'].sel(event='stimOn_times').values,
-            original['VTA'].sel(event='stimOn_times').values,
+            session.photometry_responses['VTA'].sel(event='stimOnTrigger_times').values,
+            original['VTA'].sel(event='stimOnTrigger_times').values,
             rtol=1e-5,
         )
 
@@ -2445,7 +2445,7 @@ class TestSaveLoadH5:
         session.extract_preprocessed_photometry()
         n = 50
         session.trials = pd.DataFrame({
-            'stimOn_times':        np.linspace(99.5, 499.5, n),
+            'stimOnTrigger_times':        np.linspace(99.5, 499.5, n),
             'firstMovement_times': np.linspace(100.3, 500.3, n),
             'feedback_times':      np.linspace(101.0, 501.0, n),
             'goCue_times':         np.linspace(99.6, 499.6, n),
@@ -2458,15 +2458,15 @@ class TestSaveLoadH5:
             'signed_contrast':     np.zeros(n),
             'contrast':            np.zeros(n),
         })
-        saved_stim = session.trials['stimOn_times'].values.copy()
+        saved_stim = session.trials['stimOnTrigger_times'].values.copy()
         fpath = tmp_path / f'{session.eid}.h5'
         session.save_h5(fpath)
         session.save_h5(fpath, mode='a')
         session.trials = None
         session.load_h5(fpath)
         assert session.trials is not None
-        assert 'stimOn_times' in session.trials.columns
-        np.testing.assert_allclose(session.trials['stimOn_times'].values, saved_stim)
+        assert 'stimOnTrigger_times' in session.trials.columns
+        np.testing.assert_allclose(session.trials['stimOnTrigger_times'].values, saved_stim)
 
     def test_save_load_qc_roundtrip(self, mock_session_series, tmp_path):
         """Per-region QC attrs under photometry/<region>/raw/qc/ survive H5 roundtrip."""
@@ -2858,7 +2858,7 @@ class TestPoseMethods:
         ps.pose_times = t
         ps.trials = pd.DataFrame({
             'trial': [0, 1, 2],
-            'stimOn_times': [9.0, 19.0, 29.0],
+            'stimOnTrigger_times': [9.0, 19.0, 29.0],
             'firstMovement_times': [10.0, 20.0, 30.0],
             'feedback_times': [12.0, 22.0, 32.0],
         })
@@ -2893,10 +2893,10 @@ class TestPoseMethods:
         responses = self._movement_responses(ps)
         np.testing.assert_allclose(
             responses['nose'].sel(event=LABEL2EVENT['nose']).values,
-            responses['nose'].sel(event='stimOn_times').values)
+            responses['nose'].sel(event='stimOnTrigger_times').values)
         assert not np.allclose(
             responses['paw'].sel(event=LABEL2EVENT['paw']).values,
-            responses['paw'].sel(event='stimOn_times').values,
+            responses['paw'].sel(event='stimOnTrigger_times').values,
             equal_nan=True)
 
     def test_movement_responses_tongue_likelihood_is_max(self, mock_session_series,
@@ -3429,7 +3429,7 @@ class TestMaskSubsequentEvents:
             data,
             dims=['event', 'trial', 'time'],
             coords={
-                'event':  ['stimOn_times', 'firstMovement_times'],
+                'event':  ['stimOnTrigger_times', 'firstMovement_times'],
                 'trial':  [0, 1],
                 'time':   tpts,
             },
@@ -3437,7 +3437,7 @@ class TestMaskSubsequentEvents:
         # trial 0: dt = 0.3 - 0.0 = 0.3 → mask tpts > 0.3 (indices 3, 4)
         # trial 1: firstMovement = NaN → no masking
         session.trials = pd.DataFrame({
-            'stimOn_times':        [0.0, 0.0],
+            'stimOnTrigger_times':        [0.0, 0.0],
             'firstMovement_times': [0.3, np.nan],
             'feedback_times':      [1.5, 1.5],
         })
@@ -3447,9 +3447,9 @@ class TestMaskSubsequentEvents:
         session, responses = self._make_session_and_responses(mock_session_series)
         result = session.mask_subsequent_events(
             responses,
-            event_order=['stimOn_times', 'firstMovement_times', 'feedback_times'],
+            event_order=['stimOnTrigger_times', 'firstMovement_times', 'feedback_times'],
         )
-        mat = result.sel(event='stimOn_times').values
+        mat = result.sel(event='stimOnTrigger_times').values
         assert np.isnan(mat[0, 3])       # trial 0, t=0.5 > 0.3 → NaN
         assert np.isnan(mat[0, 4])       # trial 0, t=1.0 > 0.3 → NaN
         assert not np.isnan(mat[0, 2])   # trial 0, t=0.0 ≤ 0.3 → kept
@@ -3460,7 +3460,7 @@ class TestMaskSubsequentEvents:
         session, responses = self._make_session_and_responses(mock_session_series)
         result = session.mask_subsequent_events(
             responses,
-            event_order=['stimOn_times', 'firstMovement_times'],
+            event_order=['stimOnTrigger_times', 'firstMovement_times'],
         )
         mat = result.sel(event='firstMovement_times').values
         assert not np.any(np.isnan(mat))
@@ -3470,9 +3470,9 @@ class TestMaskSubsequentEvents:
         session, responses = self._make_session_and_responses(mock_session_series)
         result = session.mask_subsequent_events(
             responses,
-            event_order=['stimOn_times', 'firstMovement_times', 'feedback_times'],
+            event_order=['stimOnTrigger_times', 'firstMovement_times', 'feedback_times'],
         )
-        mat = result.sel(event='stimOn_times').values
+        mat = result.sel(event='stimOnTrigger_times').values
         assert not np.any(np.isnan(mat[1]))
 
     def test_no_trials_returns_unchanged(self, mock_session_series):
@@ -3500,14 +3500,14 @@ class TestMaskSubsequentEvents:
                     'trial': [0, 1], 'time': tpts},
         )
         session.trials = pd.DataFrame({
-            'stimOn_times':        [0.0, 0.0],
+            'stimOnTrigger_times':        [0.0, 0.0],
             'firstMovement_times': [0.3, 0.4],
             'feedback_times':      [1.5, 1.5],
         })
-        # stimOn_times not in responses → skip without error
+        # stimOnTrigger_times not in responses → skip without error
         result = session.mask_subsequent_events(
             responses,
-            event_order=['stimOn_times', 'firstMovement_times', 'feedback_times'],
+            event_order=['stimOnTrigger_times', 'firstMovement_times', 'feedback_times'],
         )
         np.testing.assert_array_equal(result.values, responses.values)
 
@@ -3521,15 +3521,15 @@ class TestMaskSubsequentEvents:
         responses = xr.DataArray(
             np.ones((1, 2, 5)),
             dims=['event', 'trial', 'time'],
-            coords={'event': ['stimOn_times'], 'trial': [0, 1], 'time': tpts},
+            coords={'event': ['stimOnTrigger_times'], 'trial': [0, 1], 'time': tpts},
         )
         session.trials = pd.DataFrame({
-            'stimOn_times':        [0.0, 0.0],
+            'stimOnTrigger_times':        [0.0, 0.0],
             'firstMovement_times': [np.nan, np.nan],
             'feedback_times':      [0.3, np.nan],
         })
         result = session.mask_subsequent_events(responses)  # default event_order
-        mat = result.sel(event='stimOn_times').values
+        mat = result.sel(event='stimOnTrigger_times').values
         assert np.isnan(mat[0, 3])      # t=0.5 > feedback-stimOn=0.3 → masked
         assert np.isnan(mat[0, 4])      # t=1.0 > 0.3 → masked
         assert not np.isnan(mat[0, 2])  # t=0.0 ≤ 0.3 → kept
@@ -4297,7 +4297,7 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
     ``DECOY_LEVEL``, so a collected scalar of ``step - baseline`` can only come
     from selecting the right two cells and windows. Pass ``steps=None`` to write
     a video group with `video/times/qc` but no responses (LP-absent case).
-    ``trials``, when given, maps ``stimOn_times`` / ``feedback_times`` to 1D
+    ``trials``, when given, maps ``stimOnTrigger_times`` / ``feedback_times`` to 1D
     arrays written as flat datasets under a ``trials`` group. ``functions``,
     when given, is the (3, n_lags) xcorr array; defaults to zeros.
 
@@ -4324,7 +4324,7 @@ def _write_pose_session(h5_dir, eid, steps, drift, peak_lags, qc_lp,
             cells = [
                 np.where(
                     time < 0,
-                    baselines.get(label, 0.0) if event == 'stimOn_times'
+                    baselines.get(label, 0.0) if event == 'stimOnTrigger_times'
                     else DECOY_LEVEL,
                     steps[label] if event == LABEL2EVENT[label] else DECOY_LEVEL,
                 )
@@ -4449,7 +4449,7 @@ class TestGroupCollectPose:
     def test_mean_rt_from_trials_group(self, tmp_path, mock_session_series):
         steps = {'paw': 1.0, 'nose': 2.0, 'tongue_speed': 3.0,
                  'tongue_likelihood': 0.5}
-        trials = {'stimOn_times': [0.0, 0.0, 0.0],
+        trials = {'stimOnTrigger_times': [0.0, 0.0, 0.0],
                   'feedback_times': [0.5, 1.0, np.nan]}
         _write_pose_session(tmp_path, 'eid-rt', steps, drift=0.1,
                             peak_lags=[0.0, 0.0, 0.0], qc_lp='PASS',
@@ -5079,7 +5079,7 @@ def _make_session_with_responses(mock_one, n_trials=100, post_event_value=1.0):
     rng = np.random.default_rng(42)
     n_time = 61
     tpts = np.linspace(-1, 1, n_time)
-    events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+    events = ['stimOnTrigger_times', 'firstMovement_times', 'feedback_times']
 
     # Baseline = 0, post-event = post_event_value
     data = np.zeros((3, n_trials, n_time))
@@ -5099,7 +5099,7 @@ def _make_session_with_responses(mock_one, n_trials=100, post_event_value=1.0):
     contrast_vals = rng.choice(contrasts, n_trials)
     signed = np.where(sides == 'left', -1, 1) * contrast_vals
     ps.trials = pd.DataFrame({
-        'stimOn_times': np.linspace(10, 10 + n_trials, n_trials),
+        'stimOnTrigger_times': np.linspace(10, 10 + n_trials, n_trials),
         'firstMovement_times': np.linspace(10.2, 10.2 + n_trials, n_trials),
         'feedback_times': np.linspace(11, 11 + n_trials, n_trials),
         'signed_contrast': signed,
@@ -5132,20 +5132,20 @@ class TestGetResponseVector:
         vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r',
                                      min_trials=1)
         # Non-zero contrasts
-        assert 'stimOn_c0.0625_contra_correct' in vec.index
-        assert 'stimOn_c0.0625_ipsi_correct' in vec.index
+        assert 'stimOnTrigger_c0.0625_contra_correct' in vec.index
+        assert 'stimOnTrigger_c0.0625_ipsi_correct' in vec.index
         assert 'feedback_c1_contra_incorrect' in vec.index
         assert 'feedback_c1_ipsi_incorrect' in vec.index
         # Zero contrast retains ipsi/contra (side matters for action contingencies)
-        assert 'stimOn_c0_contra_correct' in vec.index
-        assert 'stimOn_c0_ipsi_correct' in vec.index
+        assert 'stimOnTrigger_c0_contra_correct' in vec.index
+        assert 'stimOnTrigger_c0_ipsi_correct' in vec.index
 
     def test_custom_events_includes_firstMovement(self):
         """Passing events explicitly can include firstMovement."""
         ps = _make_session_with_responses(MagicMock(), n_trials=200)
         vec = ps.get_response_vector(
             brain_region='VTA-r', hemisphere='r',
-            events=['stimOn_times', 'firstMovement_times', 'feedback_times'],
+            events=['stimOnTrigger_times', 'firstMovement_times', 'feedback_times'],
             min_trials=1,
         )
         assert any('firstMovement' in label for label in vec.index)
@@ -5186,7 +5186,7 @@ class TestGetResponseVector:
 
         n_trials, n_time = 200, 61
         tpts = np.linspace(-1, 1, n_time)
-        events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+        events = ['stimOnTrigger_times', 'firstMovement_times', 'feedback_times']
 
         # Baseline (t<0) = 0, post-event varies by event
         rng = np.random.default_rng(0)
@@ -5209,7 +5209,7 @@ class TestGetResponseVector:
         contrast_vals = rng.choice(contrasts, n_trials)
         signed = np.where(sides == 'left', -1, 1) * contrast_vals
         ps.trials = pd.DataFrame({
-            'stimOn_times': np.linspace(10, 10 + n_trials, n_trials),
+            'stimOnTrigger_times': np.linspace(10, 10 + n_trials, n_trials),
             'firstMovement_times': np.linspace(10.2, 10.2 + n_trials, n_trials),
             'feedback_times': np.linspace(11, 11 + n_trials, n_trials),
             'signed_contrast': signed,
@@ -5238,8 +5238,8 @@ class TestGetResponseVector:
         """Labels follow event_cContrast_side_feedback."""
         ps = _make_session_with_responses(MagicMock())
         vec = ps.get_response_vector(brain_region='VTA-r', hemisphere='r')
-        assert 'stimOn_c0_contra_correct' in vec.index
-        assert 'stimOn_c1_ipsi_incorrect' in vec.index
+        assert 'stimOnTrigger_c0_contra_correct' in vec.index
+        assert 'stimOnTrigger_c1_ipsi_incorrect' in vec.index
         assert 'feedback_c0.25_contra_correct' in vec.index
 
 
@@ -5258,14 +5258,14 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
     all_nogo : bool
         If True, set all choice to 0 (no-go).
     fast_response : bool
-        If True, set feedback_times = stimOn_times + 0.01 (response_time < 0.05).
+        If True, set feedback_times = stimOnTrigger_times + 0.01 (response_time < 0.05).
     """
     import h5py
 
     rng = np.random.default_rng(seed)
     n_time = 61
     tpts = np.linspace(-1, 1, n_time)
-    events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+    events = ['stimOnTrigger_times', 'firstMovement_times', 'feedback_times']
     contrasts = np.array([0.0, 0.0625, 0.125, 0.25, 1.0])
 
     # Pre-event = 0, post-event = 1.0
@@ -5277,7 +5277,7 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
     with h5py.File(path, 'w') as f:
         grp = f.create_group('trials/table')
         grp.create_dataset('trial', data=np.arange(n_trials))
-        grp.create_dataset('stimOn_times', data=stim_on)
+        grp.create_dataset('stimOnTrigger_times', data=stim_on)
         grp.create_dataset('firstMovement_times',
                            data=stim_on + 0.2)
         grp.create_dataset('feedback_times', data=feedback)
@@ -5813,13 +5813,13 @@ class TestLoaderMethods:
         group = self._make_group()
         rows = [
             {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
-             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'r2': 0.5, 'delta_r2': 0.1, 'n_trials': 80},
             {'eid': 'eid-1', 'subject': 'subj-1', 'target_NM': 'target-0',
              'brain_region': 'region-0', 'event': 'feedback_times',
              'predictor': 'reward', 'r2': 0.4, 'delta_r2': 0.2, 'n_trials': 70},
             {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
-             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
              'predictor': 'side', 'r2': 0.3, 'delta_r2': 0.05, 'n_trials': 60},
         ]
         df = pd.DataFrame(rows)[RESPONSE_OLS_DROPONE_COLUMNS]
@@ -5838,7 +5838,7 @@ class TestLoaderMethods:
         group = self._make_group()
         rows = [
             {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
-             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
              'regressor': 'contrast', 'coef': 0.5, 'coef_se': 0.1,
              'n_trials': 80},
             {'eid': 'eid-1', 'subject': 'subj-1', 'target_NM': 'target-0',
@@ -5846,7 +5846,7 @@ class TestLoaderMethods:
              'regressor': 'reward', 'coef': 0.4, 'coef_se': 0.2,
              'n_trials': 70},
             {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
-             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
              'regressor': 'side', 'coef': 0.3, 'coef_se': 0.05,
              'n_trials': 60},
         ]
@@ -5866,10 +5866,10 @@ class TestLoaderMethods:
         from iblnm.config import RESPONSE_VARCOMP_SUMMARY_COLUMNS
         group = self._make_group()
         df = pd.DataFrame([
-            {'target_NM': 'target-0', 'event': 'stimOn_times',
+            {'target_NM': 'target-0', 'event': 'stimOnTrigger_times',
              'regressor': 'contrast', 'component': 'V_mouse', 'mean': 0.3,
              'hdi_low': 0.1, 'hdi_high': 0.5, 'n_mice': 4, 'n_sessions': 22},
-            {'target_NM': 'target-0', 'event': 'stimOn_times',
+            {'target_NM': 'target-0', 'event': 'stimOnTrigger_times',
              'regressor': 'contrast', 'component': 'V_session', 'mean': 0.2,
              'hdi_low': 0.05, 'hdi_high': 0.4, 'n_mice': 4, 'n_sessions': 22},
         ])[RESPONSE_VARCOMP_SUMMARY_COLUMNS]
@@ -5887,7 +5887,7 @@ class TestLoaderMethods:
         from iblnm.data import RESPONSE_OLS_MOUSE_PVAL_COLUMNS
         group = self._make_group()
         df = pd.DataFrame([
-            {'target_NM': 'target-0', 'event': 'stimOn_times',
+            {'target_NM': 'target-0', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'subject': 'subj-0',
              'mean_delta_r2': 0.12, 'p_value': 0.01, 'q_value': 0.03,
              'n_sessions': 3},
@@ -5915,11 +5915,11 @@ class TestLoaderMethods:
         assert group.response_ols_session_pvalues is None
         df = pd.DataFrame([
             {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
-             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'delta_r2': 0.1, 'p_value': 0.01,
              'q_value': 0.03},
             {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
-             'brain_region': 'region-0', 'event': 'stimOn_times',
+             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'delta_r2': 0.2, 'p_value': 0.02,
              'q_value': 0.04},  # not in group
         ])[RESPONSE_OLS_SESSION_PVAL_COLUMNS]
@@ -5938,7 +5938,7 @@ class TestLoaderMethods:
         group = self._make_group()
         df = pd.DataFrame({
             'target_NM': ['target-0'] * 4,
-            'event': ['stimOn_times'] * 4,
+            'event': ['stimOnTrigger_times'] * 4,
             'regressor': ['contrast'] * 4,
             'component': ['V_mouse', 'V_mouse', 'V_session', 'V_session'],
             'x': [0.0, 0.5, 0.0, 0.5],
@@ -6049,7 +6049,7 @@ def _make_varcomp_coefficients():
                 rows.append({
                     'eid': f'eid-{eid}', 'subject': f'{target_nm}-m{m}',
                     'target_NM': target_nm, 'brain_region': 'region-0',
-                    'event': 'stimOn_times', 'regressor': 'contrast',
+                    'event': 'stimOnTrigger_times', 'regressor': 'contrast',
                     'coef': mouse_means[m] + rng.normal(0, 0.3),
                     'coef_se': 0.1, 'n_trials': 80})
                 eid += 1
@@ -6235,7 +6235,7 @@ def _make_group_with_events():
     rng = np.random.default_rng(0)
     subjects = ['s0', 's1', 's2']
     target_nms = ['VTA-DA', 'DR-5HT']
-    events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+    events = ['stimOnTrigger_times', 'firstMovement_times', 'feedback_times']
     contrasts = [0.0, 0.0625, 0.125, 0.25, 1.0]
     n_per_cell = 15
 
@@ -6401,7 +6401,7 @@ def _make_group_with_planted_trials():
         'NM': 'DA',
         'brain_region': 'VTA',
         'hemisphere': 'r',
-        'event': 'stimOn_times',
+        'event': 'stimOnTrigger_times',
         'trial': [0, 1, 2, 3],
         'session_type': 'biased',
         'response': [1.0, 1.1, 1.2, 1.3],
@@ -6668,7 +6668,7 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
     rng = np.random.default_rng(seed)
     n_time = 61
     tpts = np.linspace(-1, 1, n_time)
-    events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+    events = ['stimOnTrigger_times', 'firstMovement_times', 'feedback_times']
 
     # Percent units, as the real `contrast` column is stored (log2 coding
     # expects nonzero values >= 1).
@@ -6698,7 +6698,7 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
     movement = rng.uniform(0.2, 1.0, n_trials)
     ps.trials = pd.DataFrame({
         'trial': np.arange(n_trials),
-        'stimOn_times': stim_on,
+        'stimOnTrigger_times': stim_on,
         'firstMovement_times': stim_on + reaction,
         'feedback_times': stim_on + reaction + movement,
         'signed_contrast': signed,
@@ -6717,7 +6717,7 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
         WHEEL_LABEL: xr.DataArray(
             rng.normal(0, 1, (1, n_trials, 50)),
             dims=['event', 'trial', 'time'],
-            coords={'event': ['stimOn_times'], 'trial': np.arange(n_trials),
+            coords={'event': ['stimOnTrigger_times'], 'trial': np.arange(n_trials),
                     'time': np.arange(50) / 100},
         )
     }
@@ -7325,7 +7325,7 @@ class TestGetGLMResponseFeatures:
         """Columns are the persession model's coefficient names."""
         group = _make_group_for_response_lmm()
         result = group.get_persession_ols_features(
-            self._formula(), event_name='stimOn_times')
+            self._formula(), event_name='stimOnTrigger_times')
         assert isinstance(result, pd.DataFrame)
         for col in ('Intercept', 'contrast', 'side', 'reward', 'choice_side',
                     'log_reaction_time', 'peak_velocity', 'contrast:side'):
@@ -7334,7 +7334,7 @@ class TestGetGLMResponseFeatures:
     def test_stored_as_attribute(self):
         """Result is stored as self.persession_ols_features."""
         group = _make_group_for_response_lmm()
-        group.get_persession_ols_features(self._formula(), event_name='stimOn_times')
+        group.get_persession_ols_features(self._formula(), event_name='stimOnTrigger_times')
         assert group.persession_ols_features is not None
         assert len(group.persession_ols_features) > 0
 
@@ -7342,24 +7342,24 @@ class TestGetGLMResponseFeatures:
         """Index has (eid, target_NM, fiber_idx) levels."""
         group = _make_group_for_response_lmm()
         result = group.get_persession_ols_features(
-            self._formula(), event_name='stimOn_times')
+            self._formula(), event_name='stimOnTrigger_times')
         assert result.index.names == ['eid', 'target_NM', 'fiber_idx']
 
     def test_weight_by_se(self):
         """With weight_by_se=True, values are t-statistics (coef / SE)."""
         group = _make_group_for_response_lmm()
         coefs = group.get_persession_ols_features(
-            self._formula(), event_name='stimOn_times', weight_by_se=False)
+            self._formula(), event_name='stimOnTrigger_times', weight_by_se=False)
         group2 = _make_group_for_response_lmm()
         tstats = group2.get_persession_ols_features(
-            self._formula(), event_name='stimOn_times', weight_by_se=True)
+            self._formula(), event_name='stimOnTrigger_times', weight_by_se=True)
         assert not np.allclose(coefs.values, tstats.values)
 
     def test_one_row_per_recording(self):
         """Each scorable recording (eid × brain_region) produces one row."""
         group = _make_group_for_response_lmm()
         result = group.get_persession_ols_features(
-            self._formula(), event_name='stimOn_times')
+            self._formula(), event_name='stimOnTrigger_times')
         # fixture has 6 recordings (3 subjects × 2 targets)
         assert len(result) == 6
 
@@ -7367,7 +7367,7 @@ class TestGetGLMResponseFeatures:
         """Output has 19 columns (6 mains + 12 interactions + intercept)."""
         group = _make_group_for_response_lmm()
         result = group.get_persession_ols_features(
-            self._formula(), event_name='stimOn_times')
+            self._formula(), event_name='stimOnTrigger_times')
         assert result.shape[1] == 19
 
     def test_excludes_false_start_trials(self):
@@ -7375,7 +7375,7 @@ class TestGetGLMResponseFeatures:
         group = _make_group_for_response_lmm()
         group.trial_regressors['response_time'] = 0.01
         result = group.get_persession_ols_features(
-            self._formula(), event_name='stimOn_times')
+            self._formula(), event_name='stimOnTrigger_times')
         assert len(result) == 0
 
     def test_excludes_nogo_trials(self):
@@ -7384,7 +7384,7 @@ class TestGetGLMResponseFeatures:
         group.trial_regressors = group.trial_regressors.copy()
         group.trial_regressors['choice'] = 0
         result = group.get_persession_ols_features(
-            self._formula(), event_name='stimOn_times')
+            self._formula(), event_name='stimOnTrigger_times')
         assert len(result) == 0
 
 
@@ -7396,7 +7396,7 @@ class TestGLMFeaturesCCA:
         from iblnm.config import LMM_FORMULAS
         group = _make_group_for_response_lmm()
         group.get_persession_ols_features(
-            LMM_FORMULAS['persession']['full'], event_name='stimOn_times')
+            LMM_FORMULAS['persession']['full'], event_name='stimOnTrigger_times')
         group.response_features = group.persession_ols_features
         perf = _make_mock_performance(group)
         with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
@@ -7499,7 +7499,7 @@ class TestLoadResponseTraces:
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
         group.load_response_traces()
         events = {k[2] for k in group.response_traces.keys()}
-        assert events == {'stimOn_times', 'feedback_times'}
+        assert events == {'stimOnTrigger_times', 'feedback_times'}
 
 
 class TestGetResponseMagnitudesFromCache:
@@ -7825,7 +7825,7 @@ def _write_trial_regressor_h5(path, with_wheel=True):
     with h5py.File(path, 'w') as f:
         grp = f.create_group('trials/table')
         grp.create_dataset('trial', data=np.arange(3))
-        grp.create_dataset('stimOn_times', data=stim_on)
+        grp.create_dataset('stimOnTrigger_times', data=stim_on)
         grp.create_dataset('firstMovement_times', data=first_move)
         grp.create_dataset('feedback_times', data=feedback)
         grp.create_dataset('signed_contrast', data=np.array([-0.25, 0.0, 1.0]))
@@ -7841,7 +7841,7 @@ def _write_trial_regressor_h5(path, with_wheel=True):
             velocity = np.array([[0.0, 1.0, -3.0],
                                  [np.nan, np.nan, np.nan],
                                  [2.0, -5.0, 1.0]])
-            wheel_grp.create_dataset('stimOn_times', data=velocity)
+            wheel_grp.create_dataset('stimOnTrigger_times', data=velocity)
             wheel_grp.create_dataset('trials', data=np.arange(3))
             wheel_grp.create_dataset('times', data=np.arange(3) / 100)
     return stim_on, first_move, feedback
@@ -8489,7 +8489,7 @@ class TestResponseOlsDroponePermutation:
             ('e1', 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': ['e1']})),
             ('e2', 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': ['e2']})),
             ('e3', 'DR-5HT', 'feedback_times', pd.DataFrame({'tag': ['e3']})),
-            ('e4', 'VTA-DA', 'stimOn_times', pd.DataFrame({'tag': ['e4']})),
+            ('e4', 'VTA-DA', 'stimOnTrigger_times', pd.DataFrame({'tag': ['e4']})),
         ]
         monkeypatch.setattr(group, '_gather_coded_frames',
                             lambda *a, **k: scorable)
@@ -8506,7 +8506,7 @@ class TestResponseOlsDroponePermutation:
                             fake_null)
 
         group.response_ols_dropone_permutation(
-            self._FORMULAS, events=['feedback_times', 'stimOn_times'])
+            self._FORMULAS, events=['feedback_times', 'stimOnTrigger_times'])
 
         donors_for_e1 = next(d for f, d, _ in calls if f == 'e1')
         assert donors_for_e1 == {'e2', 'e3'}   # cross-cohort, same event

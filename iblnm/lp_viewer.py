@@ -30,6 +30,7 @@ from iblnm.config import (
     LP_QC_LABELS,
     POSE_MEASURES,
     QC_VALUE_ORDER,
+    STIM_ONSET_EVENT,
     SESSIONTYPE2COLOR,
     VIDEO_QC_COLS,
 )
@@ -950,7 +951,7 @@ class LPViewer(QtWidgets.QMainWindow):
         draw_trial_schematic(self.schematic_ax, **trial_schematic_values(trial))
         self.schematic_canvas.draw_idle()
         low, high = trial_frame_window(
-            trial['stimOn_times'], trial['feedback_times'])
+            trial[STIM_ONSET_EVENT], trial['feedback_times'])
         self.trial_frames = frames_in_trial(
             self.frame_source.camera_times, low, high)
         self.frame_pos = 0
@@ -995,7 +996,7 @@ class LPViewer(QtWidgets.QMainWindow):
         trial = self.trials.iloc[self.current_trial_idx]
         frame_time = self.frame_source.camera_times[frame_idx]
         timings = format_event_timings(
-            frame_time, trial['stimOn_times'], trial['firstMovement_times'],
+            frame_time, trial[STIM_ONSET_EVENT], trial['firstMovement_times'],
             trial['feedback_times'])
         for label, text in zip(self.event_labels, timings):
             label.setText(text)

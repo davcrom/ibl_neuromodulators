@@ -1658,7 +1658,7 @@ def _peak_velocity(wheel_vel, n_trials):
 
 
 def build_trial_regressors(
-    trials: pd.DataFrame, wheel_velocity: np.ndarray | None
+    trials: pd.DataFrame, wheel_velocity: np.ndarray | None, onset_event: str
 ) -> pd.DataFrame:
     """Assemble one session's one-row-per-trial regressor frame.
 
@@ -1671,7 +1671,7 @@ def build_trial_regressors(
     trials : pd.DataFrame
         One session's trials table. Must carry ``trial, signed_contrast,
         contrast, stim_side, choice, feedbackType, probabilityLeft``; the
-        event-time columns (``stimOn_times, firstMovement_times,
+        event-time columns (``onset_event, firstMovement_times,
         feedback_times``) are optional and yield NaN timing columns when
         absent. ``trial`` is the stored ONE trial index, which need not be
         contiguous — it is copied through, not regenerated, so the frame stays
@@ -1679,6 +1679,9 @@ def build_trial_regressors(
     wheel_velocity : np.ndarray or None
         ``(n_trials, n_samples)`` wheel velocity, or ``None`` when the wheel
         group is missing. ``None`` yields all-NaN ``peak_velocity``.
+    onset_event : str
+        Trials column the two onset-referenced timings are measured from, the
+        caller's choice of stimulus-onset clock (``config.STIM_ONSET_EVENT``).
 
     Returns
     -------
@@ -1686,9 +1689,9 @@ def build_trial_regressors(
         Columns: ``trial, signed_contrast, contrast, stim_side, choice,
         feedbackType, probabilityLeft, reaction_time, movement_time,
         response_time, peak_velocity``. ``reaction_time`` is
-        ``firstMovement_times - stimOn_times``, ``movement_time`` is
+        ``firstMovement_times - onset_event``, ``movement_time`` is
         ``feedback_times - firstMovement_times``, ``response_time`` is
-        ``feedback_times - stimOn_times`` (seconds).
+        ``feedback_times - onset_event`` (seconds).
     """
     copy_cols = ['trial', 'signed_contrast', 'contrast', 'stim_side', 'choice',
                  'feedbackType', 'probabilityLeft']
@@ -1697,11 +1700,11 @@ def build_trial_regressors(
     for col in copy_cols:
         df[col] = trials[col].values
     df['reaction_time'] = _event_diff(
-        trials, 'firstMovement_times', 'stimOn_times')
+        trials, 'firstMovement_times', onset_event)
     df['movement_time'] = _event_diff(
         trials, 'feedback_times', 'firstMovement_times')
     df['response_time'] = _event_diff(
-        trials, 'feedback_times', 'stimOn_times')
+        trials, 'feedback_times', onset_event)
     df['peak_velocity'] = _peak_velocity(wheel_velocity, n_trials)
     return df
 

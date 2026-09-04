@@ -16,7 +16,8 @@ import pandas as pd
 import statsmodels.formula.api as smf
 from tqdm import tqdm
 
-from iblnm.config import SESSIONS_FPATH, SESSION_SCHEMA, PROJECT_ROOT, FIGURE_DPI
+from iblnm.config import (SESSIONS_FPATH, SESSION_SCHEMA, PROJECT_ROOT,
+                          FIGURE_DPI, STIM_ONSET_EVENT)
 from iblnm.io import _get_default_connection
 from iblnm.util import enforce_schema
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
@@ -80,9 +81,10 @@ def prepare_session(ps):
     ps.load_photometry()
     ps.trials = ps.trials[
         (ps.trials['choice'] != 0)
-        & ((ps.trials['firstMovement_times'] - ps.trials['stimOn_times']) >= 0.05)
+        & ((ps.trials['firstMovement_times']
+            - ps.trials[STIM_ONSET_EVENT]) >= 0.05)
         ].copy()
-    ps.trials['rt'] = ps.trials['feedback_times'] - ps.trials['stimOn_times']
+    ps.trials['rt'] = ps.trials['feedback_times'] - ps.trials[STIM_ONSET_EVENT]
     ps.trials['log_rt'] = ps.trials['rt'].apply(lambda x: np.log(x) if x > 0 else np.nan)
     ps.correct = ps.trials['feedbackType'].apply(lambda x: 1 if x > 0 else 0).to_numpy()
     ps.log_rt = ps.trials['log_rt'].to_numpy()
@@ -94,9 +96,10 @@ def prepare_session(ps):
     ps.signed_contrast = ps.trials['signed_contrast'].to_numpy()
     responses = ps.extract_responses(
         ps.photometry['GCaMP_preprocessed'],
-        events=['stimOn_times'], window=[-0.4, -0.1],
+        events=[STIM_ONSET_EVENT], window=[-0.4, -0.1],
     )
-    baseline = responses[ps.brain_region[0]].sel(event='stimOn_times').mean(axis=1).to_numpy()
+    baseline = responses[ps.brain_region[0]].sel(
+        event=STIM_ONSET_EVENT).mean(axis=1).to_numpy()
     # z-score within session so the slope is comparable across recordings and
     # the donor-swap null injects no cross-session scale differences
     ps.baseline = (baseline - np.nanmean(baseline)) / np.nanstd(baseline)

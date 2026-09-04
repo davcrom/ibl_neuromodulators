@@ -16,7 +16,7 @@ Output:
 Usage:
     python scripts/task_encoding.py
     python scripts/task_encoding.py --n-permutations 5000
-    python scripts/task_encoding.py --events stimOn_times feedback_times
+    python scripts/task_encoding.py --events stimOnTrigger_times feedback_times
     python scripts/task_encoding.py --plot-only
 """
 import argparse
@@ -68,7 +68,7 @@ def _block_label(event_name, block):
     Parameters
     ----------
     event_name : str
-        Event name with the ``_times`` suffix (e.g. ``'stimOn_times'``).
+        Event name with the ``_times`` suffix (e.g. ``'stimOnTrigger_times'``).
     block : str
         Block tag, ``'task'`` or ``'movement'``.
 
@@ -418,7 +418,7 @@ def _run_cca_block(group, event, block, feature_cols, cca_kwargs,
     ----------
     group : PhotometrySessionGroup
     event : str
-        Event name (e.g. ``'stimOn_times'``).
+        Event name (e.g. ``'stimOnTrigger_times'``).
     block : str
         Block tag (``'task'`` or ``'movement'``).
     feature_cols : list[str]
@@ -464,7 +464,7 @@ def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
     ----------
     group : PhotometrySessionGroup
     event : str
-        Event name (e.g. 'stimOn_times').
+        Event name (e.g. 'stimOnTrigger_times').
     args : argparse.Namespace
         Must have: weight_by_se, contrast_coding, n_permutations, seed,
         sparse, unit_norm, params.

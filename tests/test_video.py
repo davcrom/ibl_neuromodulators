@@ -542,7 +542,7 @@ def _make_trials():
     """Three trials whose events all fall inside the synthetic camera window."""
     return pd.DataFrame({
         'trial': [0, 1, 2],
-        'stimOn_times':        [2.0, 4.0, 6.0],
+        'stimOnTrigger_times':        [2.0, 4.0, 6.0],
         'firstMovement_times': [2.2, 4.2, 6.2],
         'feedback_times':      [2.5, 4.5, 6.5],
     })

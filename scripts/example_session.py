@@ -22,7 +22,7 @@ from matplotlib import pyplot as plt
 from matplotlib.transforms import blended_transform_factory
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
+    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
     WHEEL_FS, POSE_FS, FIGURE_DPI, TARGETNM_COLORS, ANALYSIS_QC_BLOCKERS,
 )
 from iblnm.analysis import resample_pose, movement_trace
@@ -190,7 +190,7 @@ def find_snippet_window(trials, duration=DEFAULT_DURATION, min_trials=8):
     tuple of float
         (t_start, t_end)
     """
-    stim_times = trials['stimOn_times'].dropna().values
+    stim_times = trials[STIM_ONSET_EVENT].dropna().values
     fb_times = trials['feedback_times'].dropna().values
     if len(stim_times) < min_trials:
         raise ValueError("Too few trials to find a good snippet")
@@ -322,7 +322,7 @@ def plot_example_session(traces, trials, t_start, t_end):
     traces : list of dict
         Ordered ``{'times', 'values', 'color'}`` entries from ``build_traces``.
     trials : pd.DataFrame
-        Trial table with ``stimOn_times``, ``feedback_times`` (seconds),
+        Trial table with ``STIM_ONSET_EVENT``, ``feedback_times`` (seconds),
         ``contrast`` (absolute), and ``feedbackType`` (1 = correct, −1 = wrong).
     t_start, t_end : float
         Snippet window bounds (seconds).
@@ -346,7 +346,7 @@ def plot_example_session(traces, trials, t_start, t_end):
                 ha='right', va='center', color=trace['color'])
 
     event_times = np.concatenate([
-        trials['stimOn_times'].values, trials['feedback_times'].values])
+        trials[STIM_ONSET_EVENT].values, trials['feedback_times'].values])
     event_times = event_times[(event_times >= t_start) & (event_times <= t_end)]
     for t in event_times:
         ax.axvline(t, color=EVENT_LINE_COLOR, linewidth=EVENT_LW, zorder=0)
@@ -354,7 +354,7 @@ def plot_example_session(traces, trials, t_start, t_end):
     # Marker strip on a single shared y just above the top (photometry) band.
     marker_y = (n - 1) * step + 1 + MARKER_GAP
 
-    stim = trials['stimOn_times'].values
+    stim = trials[STIM_ONSET_EVENT].values
     stim_mask = (stim >= t_start) & (stim <= t_end)
     levels = np.unique(np.abs(trials['contrast'].values))
     grays = contrast_rank_grays(trials['contrast'].values[stim_mask], levels)
@@ -462,8 +462,8 @@ if __name__ == '__main__':
     # Find snippet window
     # -----------------------------------------------------------------
     t_start, t_end = find_snippet_window(trials, duration=args.duration)
-    n_trials_in = ((trials['stimOn_times'] >= t_start)
-                   & (trials['stimOn_times'] <= t_end)).sum()
+    n_trials_in = ((trials[STIM_ONSET_EVENT] >= t_start)
+                   & (trials[STIM_ONSET_EVENT] <= t_end)).sum()
     print(f"Snippet: {t_start:.1f}s – {t_end:.1f}s ({n_trials_in} trials)")
 
     # -----------------------------------------------------------------

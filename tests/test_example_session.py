@@ -27,7 +27,7 @@ def trials():
     stim_times = np.cumsum(rng.uniform(3, 8, n)) + 100.0
     fb_times = stim_times + rng.uniform(0.5, 3.0, n)
     return pd.DataFrame({
-        'stimOn_times': stim_times,
+        'stimOnTrigger_times': stim_times,
         'feedback_times': fb_times,
         'feedbackType': rng.choice([1, -1], n),
         'choice': rng.choice([-1, 1], n),
@@ -73,7 +73,7 @@ def snippet_data():
     stim = np.array([105, 112, 120, 128, 135, 142, 150, 155], dtype=float)
     fb = stim + 2.0
     trials = pd.DataFrame({
-        'stimOn_times': stim,
+        'stimOnTrigger_times': stim,
         'feedback_times': fb,
         'feedbackType': [1, -1, 1, 1, -1, 1, 1, -1],
         'choice': [1, -1, 1, 1, -1, 1, 1, -1],
@@ -192,22 +192,22 @@ class TestFindSnippetWindow:
 
     def test_window_within_session_bounds(self, trials):
         t_start, t_end = find_snippet_window(trials, duration=30)
-        session_start = trials['stimOn_times'].min()
-        session_end = trials['stimOn_times'].max() + 30
+        session_start = trials['stimOnTrigger_times'].min()
+        session_end = trials['stimOnTrigger_times'].max() + 30
         assert t_start >= session_start - 1
         assert t_end <= session_end + 31
 
     def test_finds_window_with_enough_trials(self, trials):
         t_start, t_end = find_snippet_window(trials, duration=60, min_trials=3)
         mask = (
-            (trials['stimOn_times'] >= t_start)
-            & (trials['stimOn_times'] <= t_end)
+            (trials['stimOnTrigger_times'] >= t_start)
+            & (trials['stimOnTrigger_times'] <= t_end)
         )
         assert mask.sum() >= 3
 
     def test_raises_on_insufficient_trials(self):
         tiny = pd.DataFrame({
-            'stimOn_times': [1.0, 2.0],
+            'stimOnTrigger_times': [1.0, 2.0],
             'feedback_times': [1.5, 2.5],
         })
         with pytest.raises(ValueError, match="Too few trials"):
@@ -354,7 +354,7 @@ class TestPlotExampleSession:
 
     def test_event_line_per_in_window_event(self, snippet_data):
         *_, trials, t0, t1 = snippet_data
-        n_stim = int(trials['stimOn_times'].between(t0, t1).sum())
+        n_stim = int(trials['stimOnTrigger_times'].between(t0, t1).sum())
         n_fb = int(trials['feedback_times'].between(t0, t1).sum())
         fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
         ax = fig.axes[0]

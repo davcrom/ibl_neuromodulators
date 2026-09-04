@@ -74,7 +74,7 @@ def _trials(n=MIN_NTRIALS):
         'choice': np.where(left, -1, 1),
         'feedbackType': np.ones(n),
         'probabilityLeft': np.full(n, 0.5),
-        'stimOn_times': stim_on,
+        'stimOnTrigger_times': stim_on,
         'firstMovement_times': stim_on + 0.1,
         'feedback_times': stim_on + 0.4,
     })
@@ -318,7 +318,7 @@ class TestNonFatalSteps:
         download.build_session(session)
 
         events = session.photometry_responses['VTA'].coords['event']
-        assert events.values.tolist() == ['stimOn_times']
+        assert events.values.tolist() == ['stimOnTrigger_times']
 
     def test_a_block_structure_bug_is_fixed_and_the_block_runs_on(
             self, session, monkeypatch):

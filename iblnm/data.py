@@ -32,7 +32,7 @@ from iblnm.config import (
     RESPONSE_EVENTS, RESPONSE_OLS_COEFS_COLUMNS,
     RESPONSE_VARCOMP_SUMMARY_COLUMNS, RESPONSE_VARCOMP_VIOLIN_COLUMNS,
     RESPONSE_WINDOW,
-    RESPONSE_WINDOWS, SESSIONS_H5_DIR,
+    RESPONSE_WINDOWS, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS, VIDEO_QC_PROBLEM_COLS,
     WHEEL_FS, WHEEL_RESPONSE_EVENTS, WHEEL_RESPONSE_WINDOW, POSE_FS,
@@ -1130,13 +1130,14 @@ def _add_trace_deltas(row: dict, movement_responses: dict) -> None:
 
     Both terms are read-time slices of the channel's response grid: the mean
     over ``MOVEMENT_RESPONSE_WINDOW`` of its own event cell (``LABEL2EVENT``)
-    minus the mean over ``BASELINE_WINDOW`` of its stimOn-locked cell. The
-    ``motion_energy`` channel flows through this loop like any other label.
+    minus the mean over ``BASELINE_WINDOW`` of its onset-locked cell
+    (``STIM_ONSET_EVENT``). The ``motion_energy`` channel flows through this
+    loop like any other label.
     """
     for label, responses in movement_responses.items():
         row[label] = movement_delta(
             responses.sel(event=LABEL2EVENT[label]).values,
-            responses.sel(event='stimOn_times').values,
+            responses.sel(event=STIM_ONSET_EVENT).values,
             responses.coords['time'].values,
             MOVEMENT_RESPONSE_WINDOW, BASELINE_WINDOW,
         )
@@ -1160,16 +1161,16 @@ def _add_xcorr_scalars(row: dict, xcorr) -> None:
 def _read_mean_rt(h5_file) -> float:
     """Mean reaction time from the H5 ``trials/table`` group, NaN when unavailable.
 
-    Reaction time is ``feedback_times - stimOn_times`` per trial, averaged with
-    ``nanmean``. Returns NaN if the ``trials/table`` group or either dataset is
-    absent.
+    Reaction time is ``feedback_times - STIM_ONSET_EVENT`` per trial, averaged
+    with ``nanmean``. Returns NaN if the ``trials/table`` group or either
+    dataset is absent.
     """
     if 'trials/table' not in h5_file:
         return np.nan
     trials = h5_file['trials/table']
-    if 'stimOn_times' not in trials or 'feedback_times' not in trials:
+    if STIM_ONSET_EVENT not in trials or 'feedback_times' not in trials:
         return np.nan
-    return np.nanmean(trials['feedback_times'][:] - trials['stimOn_times'][:])
+    return np.nanmean(trials['feedback_times'][:] - trials[STIM_ONSET_EVENT][:])
 
 
 def _pose_row(video: h5py.Group, video_qc: dict, error_types: set[str]) -> dict:
@@ -1285,6 +1286,12 @@ def _align_posteriors_to_trials(
     ``trial_in_dataset``, ``trials`` by ``stimOn_times`` — matching each block
     ``rt`` to the next trial whose ``response_times - stimOn_times`` equals it.
     Order preservation makes RT collisions harmless.
+
+    ``stimOn_times`` here is not the pipeline's onset clock
+    (``config.STIM_ONSET_EVENT``, the Bpod trigger) but the column the
+    collaborator's fit measured its RTs from. It is a matching key against a
+    foreign file, so it tracks that file's definition; the two clocks differ by
+    ~60 ms, far more than ``atol``, and nothing would match if this drifted.
 
     Parameters
     ----------
@@ -1998,7 +2005,7 @@ class PhotometrySession(PhotometrySessionLoader):
         if band is None:
             band = 'GCaMP_preprocessed' if 'GCaMP_preprocessed' in self.photometry else 'GCaMP'
         phot_times = self.photometry[band].index
-        trial_start = self.trials['stimOn_times'].min()
+        trial_start = self.trials[STIM_ONSET_EVENT].min()
         trial_stop = self.trials['feedback_times'].max()
         if not (trial_start >= phot_times.min() and trial_stop <= phot_times.max()):
             raise TrialsNotInPhotometryTime(
@@ -3131,7 +3138,7 @@ class PhotometrySession(PhotometrySessionLoader):
     # Response Vector
     # =========================================================================
 
-    _DEFAULT_FEATURE_EVENTS = ('stimOn_times', 'feedback_times')
+    _DEFAULT_FEATURE_EVENTS = (STIM_ONSET_EVENT, 'feedback_times')
 
     def get_response_vector(self, brain_region, hemisphere,
                             min_trials=5, normalize=None, events=None):
@@ -3146,7 +3153,7 @@ class PhotometrySession(PhotometrySessionLoader):
         hemisphere : str or None
             'l', 'r', or None (midline). Used to lateralize contrasts.
         events : sequence of str, optional
-            Event names to include. Defaults to stimOn_times and
+            Event names to include. Defaults to `config.STIM_ONSET_EVENT` and
             feedback_times.
         min_trials : int
             Minimum trials per condition cell; fewer → NaN.
@@ -3438,7 +3445,8 @@ class PhotometrySession(PhotometrySessionLoader):
 
         wheel = self.load_responses('wheel')[WHEEL_LABEL]
         regressors = analysis.build_trial_regressors(
-            self.trials, wheel.sel(event=_WHEEL_T0_EVENT).values)
+            self.trials, wheel.sel(event=_WHEEL_T0_EVENT).values,
+            STIM_ONSET_EVENT)
         df = long.merge(regressors, on='trial', how='left')
         df['hemisphere'] = self.hemisphere[
             self.brain_region.index(brain_region)]
@@ -5385,9 +5393,9 @@ class PhotometrySessionGroup:
 
             # Apply canonical trial filters
             if ('feedback_times' in trials.columns
-                    and 'stimOn_times' in trials.columns):
+                    and STIM_ONSET_EVENT in trials.columns):
                 response_time = (trials['feedback_times'].values
-                                 - trials['stimOn_times'].values)
+                                 - trials[STIM_ONSET_EVENT].values)
             else:
                 response_time = np.full(len(trials), np.nan)
             keep = (
@@ -5508,7 +5516,7 @@ class PhotometrySessionGroup:
         self.response_features = df
         return df
 
-    def get_persession_ols_features(self, formula, event_name='stimOn_times',
+    def get_persession_ols_features(self, formula, event_name=STIM_ONSET_EVENT,
                                   weight_by_se=False, contrast_coding='log2',
                                   min_trials=MIN_TRIALS_PERSESSION):
         """Fit a caller-supplied response model per recording, return coefficients.
@@ -5528,7 +5536,7 @@ class PhotometrySessionGroup:
             ``LMM_FORMULAS['persession']['full']``. Its coefficient names become
             the output columns.
         event_name : str
-            Event to model (default ``'stimOn_times'``).
+            Event to model (default ``config.STIM_ONSET_EVENT``).
         weight_by_se : bool
             If True, store t-statistics (``coef / SE``) instead of raw
             coefficients.
@@ -6097,7 +6105,8 @@ class PhotometrySessionGroup:
                     .sel(event=_WHEEL_T0_EVENT).values
                     if wheel_group is not None else None)
 
-            df = analysis.build_trial_regressors(trials, wheel_vel)
+            df = analysis.build_trial_regressors(trials, wheel_vel,
+                                                 STIM_ONSET_EVENT)
             df.insert(0, 'eid', eid)
             frames.append(df)
 

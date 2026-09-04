@@ -2307,7 +2307,8 @@ class TestBuildTrialRegressors:
             'choice': [-1, 1, 1],
             'feedbackType': [1, -1, 1],
             'probabilityLeft': [0.5, 0.5, 0.5],
-            'stimOn_times': [1.0, 2.0, 3.0],
+            'stimOnTrigger_times': [1.0, 2.0, 3.0],
+            'stimOn_times': [1.06, 2.21, 3.06],
             'firstMovement_times': [1.3, 2.4, 3.2],
             'feedback_times': [1.8, 2.9, 3.7],
         })
@@ -2315,7 +2316,8 @@ class TestBuildTrialRegressors:
     def test_column_set_and_derived_timings(self):
         from iblnm.analysis import build_trial_regressors
         trials = self._trials()
-        df = build_trial_regressors(trials, wheel_velocity=None)
+        df = build_trial_regressors(trials, wheel_velocity=None,
+                                    onset_event='stimOnTrigger_times')
         expected_cols = {
             'trial', 'signed_contrast', 'contrast', 'stim_side', 'choice',
             'feedbackType', 'probabilityLeft', 'reaction_time',
@@ -2325,25 +2327,27 @@ class TestBuildTrialRegressors:
         assert df['trial'].tolist() == [0, 1, 2]
         np.testing.assert_allclose(
             df['reaction_time'].values,
-            trials['firstMovement_times'] - trials['stimOn_times'])
+            trials['firstMovement_times'] - trials['stimOnTrigger_times'])
         np.testing.assert_allclose(
             df['movement_time'].values,
             trials['feedback_times'] - trials['firstMovement_times'])
         np.testing.assert_allclose(
             df['response_time'].values,
-            trials['feedback_times'] - trials['stimOn_times'])
+            trials['feedback_times'] - trials['stimOnTrigger_times'])
 
     def test_trial_column_carries_stored_identity(self):
         """A trials frame whose `trial` skips values keeps those values."""
         from iblnm.analysis import build_trial_regressors
         trials = self._trials()
         trials['trial'] = [0, 3, 7]
-        df = build_trial_regressors(trials, wheel_velocity=None)
+        df = build_trial_regressors(trials, wheel_velocity=None,
+                                    onset_event='stimOnTrigger_times')
         assert df['trial'].tolist() == [0, 3, 7]
 
     def test_peak_velocity_nan_when_no_wheel(self):
         from iblnm.analysis import build_trial_regressors
-        df = build_trial_regressors(self._trials(), wheel_velocity=None)
+        df = build_trial_regressors(self._trials(), wheel_velocity=None,
+                                    onset_event='stimOnTrigger_times')
         assert df['peak_velocity'].isna().all()
 
     def test_peak_velocity_finite_when_wheel_supplied(self):
@@ -2351,19 +2355,21 @@ class TestBuildTrialRegressors:
         velocity = np.array([[0.0, 1.0, -3.0],
                              [np.nan, np.nan, np.nan],
                              [2.0, -5.0, 1.0]])
-        df = build_trial_regressors(self._trials(), wheel_velocity=velocity)
+        df = build_trial_regressors(self._trials(), wheel_velocity=velocity,
+                                    onset_event='stimOnTrigger_times')
         np.testing.assert_array_equal(
             df['peak_velocity'].values, np.array([3.0, np.nan, 5.0]))
 
     def test_missing_event_columns_give_nan_timings(self):
         from iblnm.analysis import build_trial_regressors
         trials = self._trials().drop(columns=['firstMovement_times'])
-        df = build_trial_regressors(trials, wheel_velocity=None)
+        df = build_trial_regressors(trials, wheel_velocity=None,
+                                    onset_event='stimOnTrigger_times')
         assert df['reaction_time'].isna().all()
         assert df['movement_time'].isna().all()
         np.testing.assert_allclose(
             df['response_time'].values,
-            trials['feedback_times'] - trials['stimOn_times'])
+            trials['feedback_times'] - trials['stimOnTrigger_times'])
 
 
 class TestSelectModelingTrials:
@@ -3205,14 +3211,14 @@ class TestBuildEventBlocks:
         contrast = np.array([0.25, -0.75])  # already mean-centered by the caller
         blocks = build_event_blocks(
             event_times, tvec, self._identity_expander(),
-            modulators={'contrast': contrast}, name='stimOn_times',
+            modulators={'contrast': contrast}, name='stimOnTrigger_times',
         )
-        assert set(blocks) == {'stimOn_times|baseline', 'stimOn_times|contrast'}
-        baseline = blocks['stimOn_times|baseline'][:, 0]
+        assert set(blocks) == {'stimOnTrigger_times|baseline', 'stimOnTrigger_times|contrast'}
+        baseline = blocks['stimOnTrigger_times|baseline'][:, 0]
         # unit height at each event bin (0.2 -> 2, 0.5 -> 5), zero elsewhere
         assert baseline[2] == 1.0 and baseline[5] == 1.0
         assert baseline.sum() == 2.0
-        mod = blocks['stimOn_times|contrast'][:, 0]
+        mod = blocks['stimOnTrigger_times|contrast'][:, 0]
         assert mod[2] == 0.25 and mod[5] == -0.75
 
     def test_interaction_block_is_product_of_modulators(self):
@@ -3224,10 +3230,10 @@ class TestBuildEventBlocks:
         blocks = build_event_blocks(
             event_times, tvec, self._identity_expander(),
             modulators={'side': side, 'contrast': contrast},
-            interactions=[('side', 'contrast')], name='stimOn_times',
+            interactions=[('side', 'contrast')], name='stimOnTrigger_times',
         )
-        assert 'stimOn_times|side:contrast' in blocks
-        inter = blocks['stimOn_times|side:contrast'][:, 0]
+        assert 'stimOnTrigger_times|side:contrast' in blocks
+        inter = blocks['stimOnTrigger_times|side:contrast'][:, 0]
         # height at each event bin equals the product of the two modulators
         assert inter[2] == 0.5 * 0.25
         assert inter[5] == -0.5 * -0.75
@@ -3296,14 +3302,14 @@ class TestFitEncodingModel:
         design = np.concatenate([event, cont], axis=1)
         b_true = np.array([1.0, -0.5, 2.0, 0.7])
         target = pd.Series(design @ b_true, index=np.arange(n) * dt)
-        slices = {'stimOn_times|baseline': slice(0, 3),
+        slices = {'stimOnTrigger_times|baseline': slice(0, 3),
                   'wheel_velocity': slice(3, 4)}
         fit = fit_encoding_model(design, target, slices, alphas=[1e-6], cv=5)
         frame = fit.kernels_to_frame()
         assert list(frame.columns) == [
             'term', 'level', 'modulator', 'lag', 'time', 'coef']
         # FIR event block: one row per lag, time = lag * dt, baseline modulator
-        event_rows = frame[frame['term'] == 'stimOn_times']
+        event_rows = frame[frame['term'] == 'stimOnTrigger_times']
         assert len(event_rows) == 3
         assert event_rows['modulator'].unique().tolist() == ['baseline']
         np.testing.assert_allclose(
@@ -3328,12 +3334,12 @@ class TestEncodingConfig:
     def test_term_spec_events(self):
         from iblnm import config
         assert set(config.ENCODING_TERMS) == {
-            'stimOn_times', 'firstMovement_times', 'response_times',
+            'stimOnTrigger_times', 'firstMovement_times', 'response_times',
             'feedback_times', 'goCue_times'}
 
     def test_stimon_interaction(self):
         from iblnm import config
-        assert ('side', 'contrast') in config.ENCODING_TERMS['stimOn_times']['interactions']
+        assert ('side', 'contrast') in config.ENCODING_TERMS['stimOnTrigger_times']['interactions']
 
     def test_feedback_split_by(self):
         from iblnm import config
@@ -3341,7 +3347,7 @@ class TestEncodingConfig:
 
     def test_modulator_types(self):
         from iblnm import config
-        mods = config.ENCODING_TERMS['stimOn_times']['modulators']
+        mods = config.ENCODING_TERMS['stimOnTrigger_times']['modulators']
         assert mods['side'] == 'categorical'
         assert mods['contrast'] == 'continuous'
 
@@ -3361,7 +3367,7 @@ def _synthetic_encoding_trials(n_trials=24, isi=2.5, seed=0):
     contrast = np.tile([0.0, 0.0625, 0.25, 1.0], n_trials // 4 + 1)[:n_trials]
     sign = np.where(stim_side == 'right', 1.0, -1.0)
     return pd.DataFrame({
-        'stimOn_times': onsets,
+        'stimOnTrigger_times': onsets,
         'goCue_times': onsets + 0.1,
         'firstMovement_times': onsets + 0.3,
         'response_times': onsets + 0.5,
@@ -3409,8 +3415,8 @@ class TestBuildEncodingDesign:
         # continuous regressors.
         event_blocks = {name for name in slices if '|' in name}
         assert event_blocks == {
-            'stimOn_times|baseline', 'stimOn_times|side',
-            'stimOn_times|contrast', 'stimOn_times|side:contrast',
+            'stimOnTrigger_times|baseline', 'stimOnTrigger_times|side',
+            'stimOnTrigger_times|contrast', 'stimOnTrigger_times|side:contrast',
             'firstMovement_times|baseline', 'firstMovement_times|choice',
             'response_times|baseline', 'response_times|choice',
             'feedback_times|feedbackType=1|baseline',

@@ -17,7 +17,7 @@ from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.widgets import Button
 
-from iblnm.config import RESPONSE_WINDOWS
+from iblnm.config import RESPONSE_WINDOWS, STIM_ONSET_EVENT
 from iblnm.task import sort_trials_by_type
 
 DEMO_EID = '2025366a-c9aa-4b6c-97be-8af40eda6410'
@@ -27,11 +27,11 @@ COLOR_GCAMP = '#2ca02c'
 COLOR_ISOSBESTIC = '#7f7f7f'
 COLOR_PREPROCESSED = 'black'
 EVENT_COLORS = {
-    'stimOn_times':        '#1f77b4',   # blue
+    STIM_ONSET_EVENT:      '#1f77b4',   # blue
     'firstMovement_times': '#ff7f0e',   # orange
     'feedback_times':      '#2ca02c',   # green
 }
-EVENT_ORDER = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+EVENT_ORDER = [STIM_ONSET_EVENT, 'firstMovement_times', 'feedback_times']
 
 # GridSpec height ratios
 RATIO_SIGNAL   = 2

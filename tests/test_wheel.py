@@ -235,7 +235,7 @@ def _make_trials():
     """Two trials whose windows differ, so the shared time axis is testable."""
     return pd.DataFrame({
         'trial': [7, 9],
-        'stimOn_times':   [1.0, 3.0],
+        'stimOnTrigger_times':   [1.0, 3.0],
         'feedback_times': [1.5, 4.0],
     })
 
@@ -252,7 +252,7 @@ class TestWheelResponsesProduct:
         """One time axis spanning the longest trial; each trial masked at its own end."""
         from iblnm.config import WHEEL_FS
         responses = wheeled_session.load_responses('wheel')
-        matrix = responses['velocity'].sel(event='stimOn_times')
+        matrix = responses['velocity'].sel(event='stimOnTrigger_times')
 
         tpts = matrix.coords['time'].to_numpy()
         np.testing.assert_allclose(tpts[0], 0.0)
@@ -286,12 +286,12 @@ class TestWheelResponsesProduct:
         velocity = wheeled_session.load_wheel()
         old_matrix, _ = get_responses(
             velocity,
-            events=wheeled_session.trials['stimOn_times'].to_numpy(),
+            events=wheeled_session.trials['stimOnTrigger_times'].to_numpy(),
             t0=0.0,
             t1=wheeled_session.trials['feedback_times'].to_numpy(),
         )
         responses = wheeled_session.load_responses('wheel')
-        new_matrix = responses['velocity'].sel(event='stimOn_times').values
+        new_matrix = responses['velocity'].sel(event='stimOnTrigger_times').values
 
         np.testing.assert_allclose(_peak_velocity(new_matrix, 2),
                                    _peak_velocity(old_matrix, 2))

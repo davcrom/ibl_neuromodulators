@@ -37,7 +37,7 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_H5_DIR, DDM_HMM_PARAMS_FPATH, DDM_HMM_FIGURES_DIR,
-    RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS,
+    RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, STIM_ONSET_EVENT,
 )
 from iblnm.analysis import (
     align_traces_at_transitions, compute_response_magnitude, pca_2d,
@@ -63,15 +63,19 @@ SWITCH_WINDOW = 5  # half-window in trials around a state switch (figure 7)
 SWITCH_BASELINE = 2  # trials before a switch defining the Δ-measure baseline
 # feedbackType -> outcome label; splits the chronometric curves (figure 2).
 OUTCOMES = {'correct': 1, 'incorrect': -1}
-# Pre-stimulus NM baseline window, s relative to stimOn_times (figure 6). Not
+# Pre-stimulus NM baseline window, s relative to STIM_ONSET_EVENT (figure 6). Not
 # config.BASELINE_WINDOW, which is (-0.1, 0) and serves evoked-response
 # subtraction — a different quantity.
 NM_BASELINE_WINDOW = [-0.4, -0.1]
+# The per-event evoked-magnitude columns `_evoked_magnitudes` produces, named
+# here so the no-measures branch blanks the same columns it would have filled.
+_MAGNITUDE_COLUMNS = [f"{event.removesuffix('_times')}_response"
+                      for event in RESPONSE_EVENTS]
 # Per-trial NM measure -> y-axis label (figure 6). Iteration order fixes the
 # figure's left-to-right panel order.
 MEASURE_LABELS = {
     'baseline': 'pre-stim baseline (session SD)',
-    'stimOn_response': 'stimOn response (Δ session SD)',
+    _MAGNITUDE_COLUMNS[0]: 'stimulus response (Δ session SD)',
     'feedback_response': 'feedback response (Δ session SD)',
 }
 
@@ -93,8 +97,9 @@ def _evoked_magnitudes(
     Returns
     -------
     pandas.DataFrame
-        Columns ``stimOn_response`` and ``feedback_response``, in session-SD
-        units, indexed by ``ps.trials.index``.
+        One ``{event}_response`` column per `RESPONSE_EVENTS` entry
+        (`_MAGNITUDE_COLUMNS`), in session-SD units, indexed by
+        ``ps.trials.index``.
     """
     responses = ps.extract_responses(
         signals, events=RESPONSE_EVENTS, window=RESPONSE_WINDOW)[column]
@@ -148,7 +153,7 @@ def build_mouse_states_frame(
         session-SD units, and an ``eid`` column, one row per trial across the
         mouse's fit sessions. ``baseline`` is the mean of the session's
         preprocessed signal over :data:`NM_BASELINE_WINDOW` before
-        ``stimOn_times``; ``stimOn_response`` and ``feedback_response`` are the
+        ``STIM_ONSET_EVENT``; the ``_MAGNITUDE_COLUMNS`` are the
         baseline-subtracted evoked magnitudes from :func:`_evoked_magnitudes`.
         All three are NaN where their window runs off the recording or the
         session's fiber was ambiguous. Empty when no session was in the fit.
@@ -170,15 +175,15 @@ def build_mouse_states_frame(
         if len(signals.columns) == 1 and len(ps.brain_region) == 1:
             column = signals.columns[0]
             responses = ps.extract_responses(
-                signals, events=['stimOn_times'], window=NM_BASELINE_WINDOW,
+                signals, events=[STIM_ONSET_EVENT], window=NM_BASELINE_WINDOW,
             )
             frame['baseline'] = responses[column].sel(
-                event='stimOn_times').mean('time').to_series()
+                event=STIM_ONSET_EVENT).mean('time').to_series()
             frame = frame.join(_evoked_magnitudes(ps, signals, column))
         else:
             print(f"  {ps.eid}: {len(signals.columns)} photometry columns, "
                   f"{len(ps.brain_region)} brain regions — no measures")
-            frame[['baseline', 'stimOn_response', 'feedback_response']] = np.nan
+            frame[['baseline', *_MAGNITUDE_COLUMNS]] = np.nan
         frame['eid'] = ps.eid
         frames.append(frame)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -468,7 +473,10 @@ def _assemble_mouse_views(
         if frame.empty:
             print(f"  {subject}: no fit sessions in group — skipped")
             continue
-        frame['rt'] = frame['response_times'] - frame['stimOn_times']
+        # The chronometric curves' own RT measure, on the pipeline's onset
+        # clock. Not the RT `_align_posteriors_to_trials` matches the fit's
+        # rows by, which stays on the collaborator's `stimOn_times`.
+        frame['rt'] = frame['response_times'] - frame[STIM_ONSET_EVENT]
         posterior_cols = [c for c in frame.columns if c.startswith('state_')]
         views['states'][subject] = frame[['map_state', *posterior_cols]]
 

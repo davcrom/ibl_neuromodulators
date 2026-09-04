@@ -7,7 +7,7 @@ from scripts.task_encoding import _block_label, assemble_dispersion_frame
 
 
 @pytest.mark.parametrize('event_name, block, expected', [
-    ('stimOn_times', 'task', 'stimOn_task'),
+    ('stimOnTrigger_times', 'task', 'stimOnTrigger_task'),
     ('feedback_times', 'movement', 'feedback_movement'),
 ])
 def test_block_label(event_name, block, expected):
@@ -62,7 +62,7 @@ class TestAssembleDispersionFrame:
             'movement': ['choice_side', 'log_reaction_time', 'peak_velocity'],
         }
         return assemble_dispersion_frame(
-            {'stimOn_times': neural}, behavioral, block_mains, min_sessions=3)
+            {'stimOnTrigger_times': neural}, behavioral, block_mains, min_sessions=3)
 
     def test_drops_units_below_min_sessions(self, frame):
         # s2 has only 2 sessions (neural and behavioral) -> excluded everywhere

@@ -55,7 +55,7 @@ def test_build_mouse_states_frame_attaches_window_mean_baseline(monkeypatch):
 
         def load_h5(self, groups=None):
             self.trials = pd.DataFrame({'trial': [0, 1, 2],
-                                        'stimOn_times': stim_times,
+                                        'stimOnTrigger_times': stim_times,
                                         'feedback_times': [6.0, 11.0, 16.0],
                                         'choice': [1, -1, 1]})
             self.photometry = _step_photometry(levels, stim_times)
@@ -94,7 +94,7 @@ def test_build_mouse_states_frame_baseline_stays_aligned_to_its_trial(monkeypatc
 
         def load_h5(self, groups=None):
             self.trials = pd.DataFrame({'trial': [0, 1, 2],
-                                        'stimOn_times': stim_times,
+                                        'stimOnTrigger_times': stim_times,
                                         'feedback_times': [6.0, 11.0, 16.0],
                                         'choice': [1, -1, 1]})
             self.photometry = _step_photometry(levels, stim_times)
@@ -127,7 +127,7 @@ def _ambiguous_fiber_frame(monkeypatch, columns, brain_region):
             self.brain_region = brain_region
 
         def load_h5(self, groups=None):
-            self.trials = pd.DataFrame({'stimOn_times': stim_times,
+            self.trials = pd.DataFrame({'stimOnTrigger_times': stim_times,
                                         'choice': [1, -1, 1]})
             single = _step_photometry(levels, stim_times)['GCaMP_preprocessed']
             self.photometry = {'GCaMP_preprocessed': pd.DataFrame(
@@ -144,7 +144,7 @@ def _ambiguous_fiber_frame(monkeypatch, columns, brain_region):
     return ddm.build_mouse_states_frame(group, 'M', one=None)
 
 
-MEASURE_COLS = ['baseline', 'stimOn_response', 'feedback_response']
+MEASURE_COLS = ['baseline', 'stimOnTrigger_response', 'feedback_response']
 
 
 def test_bilateral_session_yields_nan_measures(monkeypatch):
@@ -213,7 +213,7 @@ def _evoked_frame(monkeypatch, photometry, stim_times, feedback_times):
 
         def load_h5(self, groups=None):
             self.trials = pd.DataFrame({'trial': range(n_trials),
-                                        'stimOn_times': stim_times,
+                                        'stimOnTrigger_times': stim_times,
                                         'feedback_times': feedback_times,
                                         'choice': [1] * n_trials})
             self.photometry = photometry
@@ -245,7 +245,7 @@ def test_build_mouse_states_frame_attaches_evoked_response_magnitudes(monkeypatc
         _evoked_photometry(stim_levels, feedback_levels, stim_times, feedback_times),
         stim_times, feedback_times)
 
-    assert np.allclose(frame['stimOn_response'], stim_levels)
+    assert np.allclose(frame['stimOnTrigger_response'], stim_levels)
     assert np.allclose(frame['feedback_response'], feedback_levels)
 
 
@@ -266,7 +266,7 @@ def test_evoked_magnitudes_are_baseline_subtracted(monkeypatch):
                            feedback_times, offset=7.5),
         stim_times, feedback_times)
 
-    assert np.allclose(shifted['stimOn_response'], stim_levels)
+    assert np.allclose(shifted['stimOnTrigger_response'], stim_levels)
     assert np.allclose(shifted['feedback_response'], feedback_levels)
 
 
@@ -292,8 +292,8 @@ def test_stimOn_response_uses_only_samples_before_feedback(monkeypatch):
         warnings.simplefilter('always')
         frame = _evoked_frame(monkeypatch, photometry, stim_times, feedback_times)
 
-    assert np.isclose(frame['stimOn_response'].iloc[0], 1.0)
-    assert np.isnan(frame['stimOn_response'].iloc[1])
+    assert np.isclose(frame['stimOnTrigger_response'].iloc[0], 1.0)
+    assert np.isnan(frame['stimOnTrigger_response'].iloc[1])
     assert not [w for w in caught if issubclass(w.category, RuntimeWarning)]
 
 
@@ -310,11 +310,11 @@ def test_build_mouse_states_frame_drops_unfit_and_other_subjects(monkeypatch):
 
     trials = {'e1': pd.DataFrame({'trial': [0, 1, 2],
                                   'choice': [1, -1, 1],
-                                  'stimOn_times': [5.0, 10.0, 15.0],
+                                  'stimOnTrigger_times': [5.0, 10.0, 15.0],
                                   'feedback_times': [6.0, 11.0, 16.0]}),
               'e2': pd.DataFrame({'trial': [0, 1],
                                   'choice': [1, 1],
-                                  'stimOn_times': [5.0, 10.0],
+                                  'stimOnTrigger_times': [5.0, 10.0],
                                   'feedback_times': [6.0, 11.0]})}
     states = {'e1': pd.DataFrame({'map_state': [1.0, 2.0, 1.0],
                                   'state_1': [0.9, 0.2, 0.8]}),
@@ -332,7 +332,7 @@ def test_build_mouse_states_frame_drops_unfit_and_other_subjects(monkeypatch):
         def load_h5(self, groups=None):
             self.trials = trials[self.eid]
             self.photometry = _step_photometry(
-                [1.0] * len(self.trials), self.trials['stimOn_times'])
+                [1.0] * len(self.trials), self.trials['stimOnTrigger_times'])
 
         def load_photometry(self):
             return self.photometry['GCaMP_preprocessed']
@@ -383,7 +383,7 @@ def test_build_mouse_states_frame_skips_sessions_without_trials(monkeypatch):
     trials = {'e1': pd.DataFrame(),
               'e2': pd.DataFrame({'trial': [0, 1],
                                   'choice': [1, -1],
-                                  'stimOn_times': [5.0, 10.0],
+                                  'stimOnTrigger_times': [5.0, 10.0],
                                   'feedback_times': [6.0, 11.0]})}
     states = {'e2': pd.DataFrame({'map_state': [1.0, 2.0]})}
 
@@ -399,7 +399,7 @@ def test_build_mouse_states_frame_skips_sessions_without_trials(monkeypatch):
         def load_h5(self, groups=None):
             self.trials = trials[self.eid]
             self.photometry = _step_photometry(
-                [1.0] * len(self.trials), self.trials.get('stimOn_times', []))
+                [1.0] * len(self.trials), self.trials.get('stimOnTrigger_times', []))
 
         def load_photometry(self):
             return self.photometry['GCaMP_preprocessed']
@@ -423,7 +423,7 @@ def test_build_mouse_states_frame_skips_sessions_holding_no_trials(monkeypatch):
     group = SimpleNamespace(sessions=sessions)
 
     trials = pd.DataFrame({'trial': [0, 1], 'choice': [1, -1],
-                           'stimOn_times': [5.0, 10.0],
+                           'stimOnTrigger_times': [5.0, 10.0],
                            'feedback_times': [6.0, 11.0]})
 
     class FakePS:
@@ -440,7 +440,7 @@ def test_build_mouse_states_frame_skips_sessions_holding_no_trials(monkeypatch):
                 return
             self.trials = trials
             self.photometry = _step_photometry([1.0] * len(trials),
-                                               trials['stimOn_times'])
+                                               trials['stimOnTrigger_times'])
 
         def load_photometry(self):
             return self.photometry['GCaMP_preprocessed']
@@ -742,12 +742,12 @@ def test_assemble_mouse_views_measures_view_holds_fit_trials_only(monkeypatch):
     frame = pd.DataFrame({
         'map_state': [1.0, np.nan, 2.0],
         'baseline': [0.5, 9.9, -0.5],
-        'stimOn_response': [1.0, 9.9, 2.0],
+        'stimOnTrigger_response': [1.0, 9.9, 2.0],
         'feedback_response': [-1.0, 9.9, -2.0],
         'feedbackType': [1.0, 1.0, -1.0],
         'choice': [1.0, 1.0, -1.0],
         'eid': ['e1', 'e1', 'e2'],
-        'stimOn_times': [1.0, 2.0, 3.0],
+        'stimOnTrigger_times': [1.0, 2.0, 3.0],
         'response_times': [1.5, 2.5, 3.5],
     })
     monkeypatch.setattr(ddm, 'build_mouse_states_frame',
@@ -765,11 +765,11 @@ def test_assemble_mouse_views_measures_view_holds_fit_trials_only(monkeypatch):
 
     measures = views['measures']['M']
     assert list(measures.columns) == ['state', 'eid', 'outcome', 'baseline',
-                                      'stimOn_response', 'feedback_response']
+                                      'stimOnTrigger_response', 'feedback_response']
     assert list(measures['state']) == [1, 2]
     assert pd.api.types.is_integer_dtype(measures['state'])
     assert list(measures['baseline']) == [0.5, -0.5]
-    assert list(measures['stimOn_response']) == [1.0, 2.0]
+    assert list(measures['stimOnTrigger_response']) == [1.0, 2.0]
     assert list(measures['feedback_response']) == [-1.0, -2.0]
     assert list(measures['eid']) == ['e1', 'e2']
 
@@ -785,12 +785,12 @@ def test_assemble_mouse_views_measures_label_outcome_and_drop_no_go(monkeypatch)
     frame = pd.DataFrame({
         'map_state': [1.0, 1.0, 2.0, 2.0],
         'baseline': [0.5, -0.5, 0.1, 0.2],
-        'stimOn_response': [1.0, 2.0, 3.0, 4.0],
+        'stimOnTrigger_response': [1.0, 2.0, 3.0, 4.0],
         'feedback_response': [-1.0, -2.0, -3.0, -4.0],
         'feedbackType': [1.0, -1.0, -1.0, 0.0],
         'choice': [1.0, -1.0, 0.0, 1.0],
         'eid': ['e1', 'e1', 'e1', 'e1'],
-        'stimOn_times': [1.0, 2.0, 3.0, 4.0],
+        'stimOnTrigger_times': [1.0, 2.0, 3.0, 4.0],
         'response_times': [1.5, 2.5, 3.5, 4.5],
     })
     monkeypatch.setattr(ddm, 'build_mouse_states_frame',
@@ -823,23 +823,23 @@ def test_assemble_mouse_views_measures_drop_all_nan_and_omit_empty_mouse(monkeyp
         'M1': pd.DataFrame({
             'map_state': [1.0, 2.0],
             'baseline': [0.5, np.nan],
-            'stimOn_response': [1.0, 2.0],
+            'stimOnTrigger_response': [1.0, 2.0],
             'feedback_response': [np.nan, np.nan],
             'feedbackType': [1.0, -1.0],
             'choice': [1.0, -1.0],
             'eid': ['e1', 'e2'],
-            'stimOn_times': [1.0, 2.0],
+            'stimOnTrigger_times': [1.0, 2.0],
             'response_times': [1.5, 2.5],
         }),
         'M2': pd.DataFrame({
             'map_state': [1.0, 2.0],
             'baseline': [np.nan, np.nan],
-            'stimOn_response': [np.nan, np.nan],
+            'stimOnTrigger_response': [np.nan, np.nan],
             'feedback_response': [np.nan, np.nan],
             'feedbackType': [1.0, -1.0],
             'choice': [1.0, -1.0],
             'eid': ['e3', 'e3'],
-            'stimOn_times': [1.0, 2.0],
+            'stimOnTrigger_times': [1.0, 2.0],
             'response_times': [1.5, 2.5],
         }),
     }
@@ -859,7 +859,7 @@ def test_assemble_mouse_views_measures_drop_all_nan_and_omit_empty_mouse(monkeyp
                                       one=None)
 
     measures = views['measures']['M1']
-    assert list(measures['stimOn_response']) == [1.0, 2.0]
+    assert list(measures['stimOnTrigger_response']) == [1.0, 2.0]
     assert measures['baseline'].isna().tolist() == [False, True]
     assert 'M2' not in views['measures']
     # The switch traces follow the same all-NaN rule, over the fit trials.

@@ -26,25 +26,25 @@ def df_group():
 
 class TestPlotRelativeContrast:
     def test_returns_figure(self, df_group):
-        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_has_two_axes(self, df_group):
-        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
         assert len(fig.axes) == 2
         plt.close(fig)
 
     def test_contra_axis_inverted(self, df_group):
         """Contra (left) panel x-axis is inverted: xlim[0] > xlim[1]."""
-        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
         ax_contra = fig.axes[0]
         xlim = ax_contra.get_xlim()
         assert xlim[0] > xlim[1], "Contra x-axis should be inverted"
         plt.close(fig)
 
     def test_ipsi_axis_not_inverted(self, df_group):
-        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
         ax_ipsi = fig.axes[1]
         xlim = ax_ipsi.get_xlim()
         assert xlim[0] < xlim[1], "Ipsi x-axis should not be inverted"
@@ -53,7 +53,7 @@ class TestPlotRelativeContrast:
     def test_accepts_existing_figure(self, df_group):
         fig, _ = plt.subplots(1, 2, sharey=True)
         result = plot_relative_contrast(
-            df_group, 'centered_mean', 'VTA-DA', 'stimOn_times', fig=fig
+            df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times', fig=fig
         )
         assert result is fig
         plt.close(fig)
@@ -62,7 +62,7 @@ class TestPlotRelativeContrast:
         df_empty = pd.DataFrame(
             columns=['subject', 'side', 'contrast', 'feedbackType', 'centered_mean']
         )
-        fig = plot_relative_contrast(df_empty, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df_empty, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
@@ -78,7 +78,7 @@ class TestPlotRelativeContrast:
             for _ in range(5)
         ]
         df = pd.DataFrame(rows)
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
 
         for ax in fig.axes:
             ticks = ax.get_xticks()
@@ -97,7 +97,7 @@ class TestPlotRelativeContrast:
             for _ in range(5)
         ]  # no ipsi rows at all
         df = pd.DataFrame(rows)
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
 
         for ax in fig.axes:
             np.testing.assert_array_equal(ax.get_xticks(), [0, 1, 2])
@@ -118,7 +118,7 @@ class TestPlotRelativeContrast:
                                 'centered_mean': offset + c * 0.001,
                             })
         df = pd.DataFrame(rows)
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
         ax = fig.axes[0]
         # After subject-mean removal, spread across contrasts should be tiny
         # (just the 0.001*c effect), not dominated by subject offsets
@@ -133,7 +133,7 @@ class TestPlotRelativeContrast:
     def test_window_label_in_suptitle(self, df_group):
         """window_label parameter should appear in the figure suptitle."""
         fig = plot_relative_contrast(
-            df_group, 'centered_mean', 'VTA-DA', 'stimOn_times', window_label='early'
+            df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times', window_label='early'
         )
         suptitle_text = fig.texts[0].get_text() if fig.texts else ''
         assert 'early' in suptitle_text, f"'early' not found in suptitle: {suptitle_text!r}"
@@ -160,7 +160,7 @@ class TestPlotRelativeContrast:
         ]
         df = pd.DataFrame(rows)
 
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
         ax_c = fig.axes[0]  # contra panel
 
         eb_containers = [c for c in ax_c.containers if isinstance(c, ErrorbarContainer)]
@@ -197,7 +197,7 @@ class TestPlotRelativeContrast:
             for _ in range(15)
         ]
         df = pd.DataFrame(rows)
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
 
         for ax in fig.axes:
             eb_containers = [c for c in ax.containers if isinstance(c, ErrorbarContainer)]
@@ -225,9 +225,9 @@ class TestPlotRelativeContrast:
         )
         df = pd.DataFrame(rows)
 
-        fig_pool = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times',
+        fig_pool = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOnTrigger_times',
                                           aggregation='pool')
-        fig_subj = plot_relative_contrast(df.copy(), 'response', 'VTA-DA', 'stimOn_times',
+        fig_subj = plot_relative_contrast(df.copy(), 'response', 'VTA-DA', 'stimOnTrigger_times',
                                           aggregation='subject')
         pool_mean = fig_pool.axes[0].containers[0].lines[0].get_ydata()[0]
         subj_mean = fig_subj.axes[0].containers[0].lines[0].get_ydata()[0]
@@ -250,7 +250,7 @@ class TestPlotRelativeContrast:
         )
         df = pd.DataFrame(rows)
 
-        fig = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times')
+        fig = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOnTrigger_times')
         ax_c = fig.axes[0]
         line = ax_c.containers[0].lines[0]
         plotted_mean = line.get_ydata()[0]
@@ -265,7 +265,7 @@ class TestPlotRelativeContrast:
                  'feedbackType': 1, 'response': 0.5}]
         df = pd.DataFrame(rows)
         with pytest.raises(ValueError, match='aggregation'):
-            plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOn_times',
+            plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOnTrigger_times',
                                    aggregation='invalid')
 
     def test_min_trials_filter_drops_sparse_cells(self):
@@ -290,7 +290,7 @@ class TestPlotRelativeContrast:
         df = pd.DataFrame(rows)
 
         fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA',
-                                     'stimOn_times', min_trials=10)
+                                     'stimOnTrigger_times', min_trials=10)
         ax_c = fig.axes[0]
         eb_containers = [c for c in ax_c.containers
                          if isinstance(c, ErrorbarContainer)]
@@ -414,7 +414,7 @@ class TestPlotDecodingCoefficients:
         coefs = pd.DataFrame(
             [[0.5, -0.3, 0.1], [0.0, 0.8, -0.2]],
             index=['DA', '5HT'],
-            columns=['stimOn_c0_correct', 'stimOn_c25_correct', 'feedback_c100_correct'],
+            columns=['stimOnTrigger_c0_correct', 'stimOnTrigger_c25_correct', 'feedback_c100_correct'],
         )
         fig = plot_decoding_coefficients(coefs)
         assert isinstance(fig, plt.Figure)
@@ -457,30 +457,30 @@ class TestFeatureSortKey:
     def test_sort_order_side_event_feedback_contrast(self):
         from iblnm.vis import feature_sort_key
         features = [
-            'stimOn_c0_ipsi_correct',
+            'stimOnTrigger_c0_ipsi_correct',
             'feedback_c1_contra_incorrect',
-            'stimOn_c1_contra_correct',
-            'stimOn_c0_contra_incorrect',
-            'stimOn_c0_contra_correct',
+            'stimOnTrigger_c1_contra_correct',
+            'stimOnTrigger_c0_contra_incorrect',
+            'stimOnTrigger_c0_contra_correct',
             'feedback_c0_contra_correct',
         ]
         sorted_features = sorted(features, key=feature_sort_key)
         # contra before ipsi, stimOn before feedback, correct before incorrect,
         # then ascending contrast
         assert sorted_features == [
-            'stimOn_c0_contra_correct',
-            'stimOn_c1_contra_correct',
-            'stimOn_c0_contra_incorrect',
+            'stimOnTrigger_c0_contra_correct',
+            'stimOnTrigger_c1_contra_correct',
+            'stimOnTrigger_c0_contra_incorrect',
             'feedback_c0_contra_correct',
             'feedback_c1_contra_incorrect',
-            'stimOn_c0_ipsi_correct',
+            'stimOnTrigger_c0_ipsi_correct',
         ]
 
     def test_unparseable_labels_sort_last(self):
         from iblnm.vis import feature_sort_key
-        features = ['stimOn_c0_contra_correct', 'unknown_feature']
+        features = ['stimOnTrigger_c0_contra_correct', 'unknown_feature']
         sorted_features = sorted(features, key=feature_sort_key)
-        assert sorted_features[0] == 'stimOn_c0_contra_correct'
+        assert sorted_features[0] == 'stimOnTrigger_c0_contra_correct'
         assert sorted_features[1] == 'unknown_feature'
 
 
@@ -488,7 +488,7 @@ class TestPlotMeanResponseVectors:
 
     def _make_matrix_with_labels(self):
         features = [
-            'stimOn_c0_contra_correct', 'stimOn_c0_contra_incorrect',
+            'stimOnTrigger_c0_contra_correct', 'stimOnTrigger_c0_contra_incorrect',
             'feedback_c1_contra_correct', 'feedback_c1_contra_incorrect',
         ]
         index = pd.MultiIndex.from_tuples(
@@ -541,9 +541,9 @@ class TestPlotMeanResponseVectors:
         # Columns in wrong order — should be sorted in the plot
         features = [
             'feedback_c1_ipsi_correct',
-            'stimOn_c0_contra_correct',
-            'stimOn_c1_contra_incorrect',
-            'stimOn_c0_ipsi_correct',
+            'stimOnTrigger_c0_contra_correct',
+            'stimOnTrigger_c1_contra_incorrect',
+            'stimOnTrigger_c0_ipsi_correct',
         ]
         index = pd.MultiIndex.from_tuples(
             [('e0', 'VTA-DA'), ('e1', 'DR-5HT')],
@@ -555,9 +555,9 @@ class TestPlotMeanResponseVectors:
         ax = fig.axes[-1]  # bottom axis has tick labels
         tick_labels = [t.get_text() for t in ax.get_xticklabels()]
         assert tick_labels == [
-            'stimOn_c0_contra_correct',
-            'stimOn_c1_contra_incorrect',
-            'stimOn_c0_ipsi_correct',
+            'stimOnTrigger_c0_contra_correct',
+            'stimOnTrigger_c1_contra_incorrect',
+            'stimOnTrigger_c0_ipsi_correct',
             'feedback_c1_ipsi_correct',
         ]
         plt.close(fig)
@@ -596,8 +596,8 @@ class TestPlotDecodingSummary:
 
     def _make_data(self):
         features = [
-            'stimOn_c1_contra_correct',
-            'stimOn_c0_contra_correct',
+            'stimOnTrigger_c1_contra_correct',
+            'stimOnTrigger_c0_contra_correct',
             'feedback_c0_ipsi_incorrect',
         ]
         coefs = pd.DataFrame(
@@ -635,8 +635,8 @@ class TestPlotDecodingSummary:
         tick_labels = [t.get_text() for t in ax_contrib.get_xticklabels()]
         # side>event>fb>contrast: contra stimOn c0 first, then c1, then ipsi feedback
         assert tick_labels == [
-            'stimOn_c0_contra_correct',
-            'stimOn_c1_contra_correct',
+            'stimOnTrigger_c0_contra_correct',
+            'stimOnTrigger_c1_contra_correct',
             'feedback_c0_ipsi_incorrect',
         ]
         plt.close(fig)
@@ -977,15 +977,15 @@ class TestSortEvents:
         """Events sort stimOn → feedback regardless of input order, not
         alphabetically. Operates on the real ``_times`` event names."""
         from iblnm.vis import _sort_events
-        shuffled = ['feedback_times', 'stimOn_times']
-        assert _sort_events(shuffled) == ['stimOn_times', 'feedback_times']
+        shuffled = ['feedback_times', 'stimOnTrigger_times']
+        assert _sort_events(shuffled) == ['stimOnTrigger_times', 'feedback_times']
 
     def test_unknown_events_sort_last_alphabetically(self):
         """Events outside the chronology fall after known ones, in name order.
         firstMovement is no longer in RESPONSE_EVENTS, so it sorts as unknown."""
         from iblnm.vis import _sort_events
-        assert _sort_events(['firstMovement_times', 'stimOn_times', 'aaa']) == [
-            'stimOn_times', 'aaa', 'firstMovement_times']
+        assert _sort_events(['firstMovement_times', 'stimOnTrigger_times', 'aaa']) == [
+            'stimOnTrigger_times', 'aaa', 'firstMovement_times']
 
 
 # =============================================================================
@@ -1067,7 +1067,7 @@ class TestPlotLmmReliability:
     """Grid of target-NM (rows) × event (cols), x = predictor terms."""
 
     def _rel(self, targets=('VTA-DA', 'DR-5HT'),
-             events=('feedback_times', 'stimOn_times'),
+             events=('feedback_times', 'stimOnTrigger_times'),
              predictors=('contrast', 'side', 'reward', 'interactions')):
         rows = []
         for tnm in targets:
@@ -1081,7 +1081,7 @@ class TestPlotLmmReliability:
         return pd.DataFrame(rows)
 
     def _full_r2(self, targets=('VTA-DA', 'DR-5HT'),
-                 events=('feedback_times', 'stimOn_times'), marginal=0.1):
+                 events=('feedback_times', 'stimOnTrigger_times'), marginal=0.1):
         """Full-model marginal R² per (target_NM, event) panel."""
         return pd.DataFrame([
             {'target_NM': tnm, 'event': event, 'marginal_r2': marginal}
@@ -1100,7 +1100,7 @@ class TestPlotLmmReliability:
         fig = plot_lmm_reliability(self._rel(), self._full_r2(),
                                    'Task reliability')
         assert [ax.get_title() for ax in fig.axes[:2]] == [
-            'stimOn_times', 'feedback_times']
+            'stimOnTrigger_times', 'feedback_times']
         plt.close(fig)
 
     def test_xticklabels_are_terms_in_order(self):
@@ -1200,7 +1200,7 @@ class TestPlotLmmReliability:
         # share.
         rows = []
         for tnm, delta in [('VTA-DA', 0.02), ('DR-5HT', 0.5)]:
-            for event in ('feedback_times', 'stimOn_times'):
+            for event in ('feedback_times', 'stimOnTrigger_times'):
                 for fold in ['s0', 'aggregate']:
                     rows.append({'target_NM': tnm, 'event': event,
                                  'predictor': 'contrast', 'fold': fold,
@@ -1221,10 +1221,10 @@ class TestPlotOlsDropone:
     # rows against drift from the canonical drop-one regressor list.
     _PREDICTORS = tuple(_PERSESSION_REGRESSORS)
     # Per-event delta_r2 base so a point's value identifies its event row.
-    _EVENT_BASE = {'stimOn_times': 0.1, 'feedback_times': 0.5}
+    _EVENT_BASE = {'stimOnTrigger_times': 0.1, 'feedback_times': 0.5}
 
     def _df(self, targets=('VTA-DA', 'DR-5HT'),
-            events=('feedback_times', 'stimOn_times')):
+            events=('feedback_times', 'stimOnTrigger_times')):
         """Long-form per-session fits: 2 mice per target-NM, 3 sessions each.
 
         ``delta_r2`` is ``_EVENT_BASE[event] + 0.001 * predictor_index`` so a
@@ -1260,7 +1260,7 @@ class TestPlotOlsDropone:
         assert len(fig.axes) == 6 * 2
         # fig.axes is row-major: col 0 = stimOn (sorts first), col 1 = feedback.
         assert [ax.get_title() for ax in fig.axes[:2]] == [
-            'stimOn_times', 'feedback_times']
+            'stimOnTrigger_times', 'feedback_times']
         col0 = [fig.axes[r * 2].get_ylabel() for r in range(6)]
         assert col0 == list(self._PREDICTORS)
         plt.close(fig)
@@ -1282,7 +1282,7 @@ class TestPlotOlsDropone:
         """
         from iblnm.vis import plot_ols_total_r2
         rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
              'predictor': pred, 'r2': r2, 'delta_r2': 0.05}
             for pred in ('contrast', 'side')   # r2 repeats across predictors
             for r2 in (0.4, 0.6)               # two sessions
@@ -1321,7 +1321,7 @@ class TestPlotOlsDropone:
         # Name order ('hi' < 'lo') is the opposite of mean order, so a pass
         # proves ordering is by name, not mean.
         rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': subj,
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': subj,
              'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
             for subj, vals in [('hi', [0.3, 0.5]), ('lo', [0.0, 0.2])]
             for v in vals
@@ -1344,7 +1344,7 @@ class TestPlotOlsDropone:
         from matplotlib.collections import PathCollection
         import matplotlib.colors as mcolors
         rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': subj,
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': subj,
              'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
             for subj, vals in [('m_a', [0.1, 0.3]), ('m_b', [0.4, 0.6])]
             for v in vals
@@ -1378,7 +1378,7 @@ class TestPlotOlsDropone:
         from iblnm.vis import plot_ols_dropone
         from matplotlib.collections import PathCollection
         rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
              'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
             for v in (0.0, 0.0, 0.3)
         ]
@@ -1429,15 +1429,15 @@ class TestPlotOlsDropone:
         from iblnm.config import TARGETNM_COLORS
         import matplotlib.colors as mcolors
         rows = [
-            {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+            {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
              'subject': 'm_a', 'predictor': 'contrast', 'r2': 0.5,
              'delta_r2': v}
             for eid, v in [('e_sig', 0.1), ('e_ns', 0.3)]
         ]
         session_pvalues = pd.DataFrame([
-            {'eid': 'e_sig', 'event': 'stimOn_times', 'predictor': 'contrast',
+            {'eid': 'e_sig', 'event': 'stimOnTrigger_times', 'predictor': 'contrast',
              'q_value': 0.01},
-            {'eid': 'e_ns', 'event': 'stimOn_times', 'predictor': 'contrast',
+            {'eid': 'e_ns', 'event': 'stimOnTrigger_times', 'predictor': 'contrast',
              'q_value': 0.5},
         ])
         fig = plot_ols_dropone(pd.DataFrame(rows), 't', alpha=0.05,
@@ -1452,7 +1452,7 @@ class TestPlotOlsDropone:
     def _two_session_rows():
         """One mouse, two sessions ('e_1' at 0.1, 'e_2' at 0.3) in one cell."""
         return pd.DataFrame([
-            {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+            {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
              'subject': 'm_a', 'predictor': 'contrast', 'r2': 0.5,
              'delta_r2': v}
             for eid, v in [('e_1', 0.1), ('e_2', 0.3)]
@@ -1462,7 +1462,7 @@ class TestPlotOlsDropone:
     def _pvalue_frame(q_by_key, key_col):
         """Significance table for the one cell, keyed by ``eid`` or ``subject``."""
         return pd.DataFrame([
-            {key_col: key, 'event': 'stimOn_times', 'predictor': 'contrast',
+            {key_col: key, 'event': 'stimOnTrigger_times', 'predictor': 'contrast',
              'q_value': q}
             for key, q in q_by_key.items()
         ])
@@ -1537,15 +1537,15 @@ class TestPlotOlsDropone:
         from iblnm.config import TARGETNM_COLORS
         import matplotlib.colors as mcolors
         rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': subj,
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': subj,
              'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
             for subj, vals in [('m_sig', [0.1, 0.3]), ('m_ns', [0.4, 0.6])]
             for v in vals
         ]
         pvalues = pd.DataFrame([
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'subject': 'm_sig', 'q_value': 0.01},
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'subject': 'm_ns', 'q_value': 0.5},
         ])
         fig = plot_ols_dropone(pd.DataFrame(rows), 't', pvalues=pvalues,
@@ -1574,7 +1574,7 @@ class TestPlotOlsDroponeSubjectMode:
         from iblnm.vis import plot_ols_dropone_subject
         from matplotlib.container import ErrorbarContainer
         rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
              'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
             for v in (0.0, 0.0, 0.3)
         ]
@@ -1617,7 +1617,7 @@ class TestPlotOlsDroponeTargetMode:
                           ('DR-5HT', {'m_c': [0.2, 0.4]})]:
             for subj, vals in subs.items():
                 for v in vals:
-                    rows.append({'target_NM': tnm, 'event': 'stimOn_times',
+                    rows.append({'target_NM': tnm, 'event': 'stimOnTrigger_times',
                                  'subject': subj, 'predictor': 'contrast',
                                  'r2': 0.55, 'delta_r2': v})
         return pd.DataFrame(rows)
@@ -1662,7 +1662,7 @@ class TestPlotOlsDroponeTargetMode:
         from iblnm.vis import plot_ols_total_r2_violin
         from matplotlib.collections import PolyCollection
         rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOn_times', 'subject': 'm_a',
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
              'predictor': pred, 'r2': r2, 'delta_r2': 0.05}
             for pred in ('contrast', 'side')  # r2 repeats across predictors
             for r2 in (0.4, 0.6)
@@ -1764,7 +1764,7 @@ def _make_decoding_summary_data():
     from iblnm.config import TARGETNM_COLORS
     targets = sorted(list(TARGETNM_COLORS.keys()))[:3]
     features = [
-        'stimOn_c0_contra_correct', 'stimOn_c1_contra_correct',
+        'stimOnTrigger_c0_contra_correct', 'stimOnTrigger_c1_contra_correct',
         'feedback_c0_ipsi_incorrect',
     ]
     rng = np.random.default_rng(42)
@@ -1904,7 +1904,7 @@ def _make_traces_df(n_targets=2, n_subjects=3, n_recs_per=2,
     from iblnm.config import TARGETNM_COLORS
     targets = sorted(list(TARGETNM_COLORS.keys()))[:n_targets]
     if events is None:
-        events = ['stimOn_times', 'firstMovement_times', 'feedback_times']
+        events = ['stimOnTrigger_times', 'firstMovement_times', 'feedback_times']
     contrasts = [0.0, 25.0, 100.0]
     feedback_types = [1, -1]
     rng = np.random.default_rng(42)
@@ -1949,7 +1949,7 @@ class TestPlotMeanResponseTraces:
 
     def test_layout_2_rows_n_event_cols(self):
         from iblnm.vis import plot_mean_response_traces
-        traces = _make_traces_df(n_targets=1, events=['stimOn_times', 'feedback_times'])
+        traces = _make_traces_df(n_targets=1, events=['stimOnTrigger_times', 'feedback_times'])
         target = traces['target_NM'].iloc[0]
         fig = plot_mean_response_traces(traces, target)
         # 2 rows (reward, omission) × 2 event columns = 4 axes
@@ -1979,7 +1979,7 @@ class TestPlotMeanResponseTraces:
 
     def test_baseline_normalized(self):
         from iblnm.vis import plot_mean_response_traces
-        traces = _make_traces_df(n_targets=1, events=['stimOn_times'])
+        traces = _make_traces_df(n_targets=1, events=['stimOnTrigger_times'])
         target = traces['target_NM'].iloc[0]
         fig = plot_mean_response_traces(traces, target)
         ax = fig.axes[0]
@@ -1993,7 +1993,7 @@ class TestPlotMeanResponseTraces:
     def test_filters_low_trial_counts(self):
         from iblnm.vis import plot_mean_response_traces
         # Make traces where one contrast has < 5 trials per subject
-        traces = _make_traces_df(n_targets=1, events=['stimOn_times'])
+        traces = _make_traces_df(n_targets=1, events=['stimOnTrigger_times'])
         target = traces['target_NM'].iloc[0]
         # Set n_trials=3 for contrast=0.0 → should be excluded
         mask = traces['contrast'] == 0.0
@@ -2017,13 +2017,13 @@ class TestPlotMeanResponseTraces:
         from iblnm.vis import plot_mean_response_traces
         traces = _make_traces_df(
             n_targets=1,
-            events=['feedback_times', 'stimOn_times'],
+            events=['feedback_times', 'stimOnTrigger_times'],
         )
         target = traces['target_NM'].iloc[0]
         fig = plot_mean_response_traces(traces, target)
         # Top row: col 0, 1 → axes[0], axes[1]
         titles = [fig.axes[col].get_title() for col in range(2)]
-        assert titles == ['stimOn', 'feedback']
+        assert titles == ['stimOnTrigger', 'feedback']
         plt.close(fig)
 
     def test_response_window_shading(self):
@@ -2032,7 +2032,7 @@ class TestPlotMeanResponseTraces:
         from iblnm.config import RESPONSE_WINDOWS
         traces = _make_traces_df(
             n_targets=1,
-            events=['stimOn_times', 'feedback_times'],
+            events=['stimOnTrigger_times', 'feedback_times'],
         )
         target = traces['target_NM'].iloc[0]
         fig = plot_mean_response_traces(traces, target)
@@ -2459,7 +2459,7 @@ def _make_mock_group_with_performance_and_rt():
                 'subject': f'subj-{i % 3}',
                 'target_NM': tnm,
                 'trial': t,
-                'event': 'stimOn_times',
+                'event': 'stimOnTrigger_times',
             })
             regressor_rows.append({
                 'eid': f'eid-{i}',
@@ -2666,7 +2666,7 @@ def _make_claim_slopes(with_event=True):
     rows = []
     for tnm in ['VTA-DA', 'DR-5HT']:
         for tc in ['log_reaction_time', 'log_movement_time']:
-            events = ['baseline', 'stimOn_times'] if with_event else [None]
+            events = ['baseline', 'stimOnTrigger_times'] if with_event else [None]
             for ev in events:
                 row = {
                     'target_NM': tnm, 'term': tc, 'coef': 0.2,
@@ -3029,10 +3029,10 @@ class TestPlotBaselineSlope:
 
 class TestPlotDispersionScatter:
     def _df(self):
-        # One point per panel; only the (task, stimOn_times) VTA-DA point is
+        # One point per panel; only the (task, stimOnTrigger_times) VTA-DA point is
         # checked for encoding mapping below.
         return pd.DataFrame([
-            {'subject': 's1', 'target_NM': 'VTA-DA', 'event': 'stimOn_times',
+            {'subject': 's1', 'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
              'block': 'task', 'behavioral_dispersion': 0.7,
              'neural_dispersion': 0.3},
             {'subject': 's2', 'target_NM': 'SNc-DA', 'event': 'feedback_times',
@@ -3045,7 +3045,7 @@ class TestPlotDispersionScatter:
         from iblnm.config import TARGETNM_COLORS
         from iblnm.vis import plot_dispersion_scatter
 
-        events = ['stimOn_times', 'feedback_times']
+        events = ['stimOnTrigger_times', 'feedback_times']
         blocks = ['task', 'movement']
         fig = plot_dispersion_scatter(self._df(), events, blocks)
 
@@ -3065,7 +3065,7 @@ class TestPlotVarcompViolins:
         density = np.array([0.1, 0.5, 1.0, 0.5, 0.1])
         rows = []
         for tnm in ['VTA-DA', 'DR-5HT']:
-            for event in ['stimOn_times', 'feedback_times']:
+            for event in ['stimOnTrigger_times', 'feedback_times']:
                 for reg in ['contrast', 'side']:
                     for comp in ['V_mouse', 'V_session']:
                         rows.append(pd.DataFrame({
@@ -3078,7 +3078,7 @@ class TestPlotVarcompViolins:
         fig = plot_varcomp_violins(self._violin_df(), 'vc')
         axs = fig.axes
         assert len(axs) == 4  # 2 regressors x 2 events
-        assert axs[0].get_title() == 'stimOn_times'
+        assert axs[0].get_title() == 'stimOnTrigger_times'
         assert axs[1].get_title() == 'feedback_times'
         assert axs[0].get_ylabel() == 'contrast'
         assert axs[2].get_ylabel() == 'side'
@@ -3118,7 +3118,7 @@ def _make_encoding_fit(dt=0.1, n_lags=3):
         prediction=np.zeros((tvec.size, 1)),
         coefficients=coefficients,
         intercept=np.zeros(1),
-        slices={'stimOn_times|baseline': slice(0, n_lags)},
+        slices={'stimOnTrigger_times|baseline': slice(0, n_lags)},
         scaler=SimpleNamespace(scale_=np.ones(n_lags)),
         r2=0.5,
         alpha=1.0,
@@ -3132,7 +3132,7 @@ class TestPlotEncodingKernels:
         dt = 0.1
         fit = _make_encoding_fit(dt=dt, n_lags=3)
         lags = np.array([-1, 0, 1])
-        fig = plot_encoding_kernels(fit, ['stimOn_times|baseline'], lags)
+        fig = plot_encoding_kernels(fit, ['stimOnTrigger_times|baseline'], lags)
         ax = np.atleast_1d(fig.axes)[0]
         line = ax.lines[0]
         np.testing.assert_allclose(line.get_xdata(), lags * dt)
@@ -3318,7 +3318,7 @@ class TestPlotOlsDroponeCounts:
         ]
         return pd.DataFrame([
             {'eid': eid, 'subject': subj, 'target_NM': tnm,
-             'event': 'stimOn_times', 'predictor': 'contrast', 'delta_r2': 0.01}
+             'event': 'stimOnTrigger_times', 'predictor': 'contrast', 'delta_r2': 0.01}
             for eid, subj, tnm in rows
         ])
 
