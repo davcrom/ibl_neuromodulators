@@ -122,10 +122,14 @@ def build_export(trials: pd.DataFrame, session: pd.Series) -> pd.DataFrame | Non
 def write_per_subject(df: pd.DataFrame, out_dir: Path) -> list[Path]:
     """Write one mouse per CSV, named for the mouse, into `out_dir`.
 
+    Each file is ordered as the mouse experienced it — `session_n` ascending,
+    and `trial_n` ascending within a session — so a sequential model reads the
+    rows in the order they happened without sorting them itself.
+
     Parameters
     ----------
     df : pandas.DataFrame
-        The pooled export, carrying `subject`.
+        The pooled export, carrying `subject`, `session_n` and `trial_n`.
     out_dir : pathlib.Path
         Destination directory, created if absent. Files already in it are left
         alone, so a mouse dropped from the scope keeps its last export until it
@@ -140,7 +144,7 @@ def write_per_subject(df: pd.DataFrame, out_dir: Path) -> list[Path]:
     written = []
     for subject, trials in df.groupby('subject', sort=True):
         fpath = out_dir / f'{subject}.csv'
-        trials.to_csv(fpath, index=False)
+        trials.sort_values(['session_n', 'trial_n']).to_csv(fpath, index=False)
         written.append(fpath)
     return written
 

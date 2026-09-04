@@ -97,11 +97,29 @@ def mock_export(subjects_eids, **flags):
 
     ``subjects_eids`` is a list of ``(subject, eid)`` pairs, one per trial, in
     order. Every flag is False unless ``flags`` names it with a full column.
+    ``session_n`` and ``trial_n`` count the rows as given, so the frame is
+    already in the order `write_per_subject` sorts to.
     """
     export = pd.DataFrame(subjects_eids, columns=['subject', 'eid'])
+    export['session_n'] = export.groupby('subject')['eid'].transform(
+        lambda eids: eids.astype('category').cat.codes + 1)
+    export['trial_n'] = export.groupby('eid').cumcount()
     for flag in ct.FLAGS:
         export[flag] = np.asarray(flags.get(flag, np.zeros(len(export))), dtype=bool)
     return export
+
+
+def test_write_per_subject_sorts_by_session_then_trial(tmp_path):
+    """Rows come out in the mouse's own order: session, then trial within it."""
+    df = mock_export([('A', 'e2')] * 2 + [('A', 'e1')] * 2)
+    df['session_n'] = [2, 2, 1, 1]
+    df['trial_n'] = [5, 4, 3, 2]
+
+    ct.write_per_subject(df, tmp_path)
+
+    out = pd.read_csv(tmp_path / 'A.csv')
+    assert out['session_n'].tolist() == [1, 1, 2, 2]
+    assert out['trial_n'].tolist() == [2, 3, 4, 5]
 
 
 def test_flag_report_pools_over_trials_not_over_mice():
