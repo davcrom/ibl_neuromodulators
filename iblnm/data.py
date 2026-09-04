@@ -1706,18 +1706,6 @@ class PhotometrySession(PhotometrySessionLoader):
         # The ONE index is trial identity; persist it as a column, since the H5
         # round-trip rebuilds a fresh RangeIndex and would lose it otherwise.
         self.trials['trial'] = self.trials.index.to_numpy()
-        # Stimulus onset comes off the Bpod state clock, not the photodiode.
-        # ONE's `stimOn_times` is the photodiode's report of the screen flip,
-        # and on the mainenlab rigs from 2025-06 onward that photodiode misses
-        # about half the flips; IBL's extractor then takes the next pulse it
-        # sees, a wheel-driven redraw ~150 ms late, on 39% of those sessions'
-        # trials with nothing marking them. `stimOnTrigger_times` never sees
-        # the photodiode, is present on every trial, and is early by the
-        # monitor's own latency -- a constant that shifts every trial alike.
-        # Every consumer of the column reads the repair, reaction times and
-        # response cuts included. `config.RESPONSE_EVENTS` carries the
-        # per-session latency correction worth making on top of this.
-        self.trials['stimOn_times'] = self.trials['stimOnTrigger_times']
         contrasts = compute_trial_contrasts(self.trials)
         self.trials['stim_side'] = contrasts['stim_side']
         self.trials['signed_contrast'] = contrasts['signed_contrast']
