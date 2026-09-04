@@ -47,25 +47,35 @@ RAW_COLUMNS = [
     'probabilityLeft', 'rewardVolume', 'quiescencePeriod',
 ]
 
-# The columns whose NaNs mean a trial is incomplete. The five excluded ones are
-# NaN by construction rather than by failure: exactly one of the two contrast
-# columns holds a value on any trial, and `stimOn_times` and
-# `firstMovement_times` are routinely absent on no-choice trials, which
-# `no_choice` already flags.
+# The columns whose NaNs mean a trial is incomplete. What remains is the Bpod
+# state machine's own clock, which is complete on every trial of every session
+# in scope; every column excluded here is either NaN by construction or comes
+# off a sensor that drops out while the trial itself runs normally.
 #
-# `stimOff_times` is excluded on a rig fault rather than by construction, and
-# comes back to the scan once that fault is fixed. On the mainenlab behavior
-# rigs from 2025-06 onward the frame2ttl photodiode misses roughly half of the
-# screen flips, so the Bpod `hide_stim` state times out with no front to
-# extract and IBL writes NaN. Nothing else about those trials is affected: the
-# stimulus was shown, the choice was made and the feedback was delivered. So
-# scanning the column flagged 18% of all trials, and half the trials of some
-# mice, for an unrecorded screen blanking. Alyx flags the same sessions itself,
-# with `_task_stimOff_delays` around 0.49 and a session QC of FAIL.
+# By construction: exactly one of the two contrast columns holds a value on any
+# trial, and `stimOn_times` and `firstMovement_times` are routinely absent on
+# no-choice trials, which `no_choice` already flags.
+#
+# By sensor dropout, all three of which are documented in EXTRACTION_NOTES.md:
+#
+# - `stimOff_times` and `stimOn_times` come off the frame2ttl photodiode, which
+#   misses roughly half the screen flips on the mainenlab rigs from 2025-06
+#   onward. Scanning `stimOff_times` flagged 18% of all trials, and half the
+#   trials of some mice, for an unrecorded screen blanking.
+# - `goCue_times` and `feedback_times` are the sound card's TTL. It goes silent
+#   for the first dozen trials of some sessions, and error feedback (the noise
+#   burst, where correct feedback is the valve) is missed whenever the mouse
+#   answers inside the go-cue tone.
+#
+# Their Bpod-clock counterparts stay scanned — `stimOnTrigger_times`,
+# `stimOffTrigger_times`, `goCueTrigger_times`, `response_times` — so a trial
+# the state machine never completed is still flagged, and `reaction_time` is
+# measured from those columns rather than from a sensor.
 SCANNED_COLUMNS = [
     column for column in RAW_COLUMNS
     if column not in ('contrastLeft', 'contrastRight', 'stimOn_times',
-                      'firstMovement_times', 'stimOff_times')
+                      'firstMovement_times', 'stimOff_times',
+                      'goCue_times', 'feedback_times')
 ]
 
 # Session identity, copied onto every one of that session's trials. `NM` is the

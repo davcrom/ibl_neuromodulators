@@ -251,7 +251,8 @@ def test_build_export_incomplete_scans_only_the_scanned_columns():
     """A NaN flags a trial incomplete unless its column is off the scan."""
     trials = mock_trials(n_trials=3)
     trials.loc[0, 'rewardVolume'] = np.nan
-    trials.loc[1, ['stimOn_times', 'firstMovement_times', 'stimOff_times']] = np.nan
+    trials.loc[1, ['stimOn_times', 'firstMovement_times', 'stimOff_times',
+                   'goCue_times', 'feedback_times']] = np.nan
 
     export = ct.build_export(trials, mock_session())
 
