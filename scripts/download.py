@@ -165,13 +165,18 @@ def build_photometry(ps: PhotometrySession) -> None:
 
 
 def build_wheel(ps: PhotometrySession) -> None:
-    """Fetch the encoder samples, differentiate them, and cut the responses."""
+    """Fetch the encoder samples, differentiate them, cut and reduce them.
+
+    The peak velocity is the response matrix reduced to one speed per trial, so
+    it comes last: the cut above it is its input.
+    """
     try:
         ps.fetch_wheel()
         ps.extract_wheel_velocity()
         ps.wheel_responses = ps.extract_responses(
             {WHEEL_LABEL: ps.wheel_velocity},
             events=WHEEL_RESPONSE_EVENTS, window=WHEEL_RESPONSE_WINDOW)
+        ps.extract_peak_velocity()
     except Exception as error:
         ps.log_error(error, product='wheel')
 

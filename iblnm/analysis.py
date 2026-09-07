@@ -1681,7 +1681,7 @@ def _event_diff(trials, end_col, start_col):
     return np.full(len(trials), np.nan)
 
 
-def _peak_velocity(wheel_vel, n_trials):
+def peak_velocity(wheel_vel, n_trials):
     """Per-trial max |velocity| over finite samples; NaN where unavailable."""
     if wheel_vel is None:
         return np.full(n_trials, np.nan)
@@ -1741,7 +1741,7 @@ def build_trial_regressors(
         trials, 'response_times', 'firstMovement_times')
     df['response_time'] = _event_diff(
         trials, 'response_times', onset_event)
-    df['peak_velocity'] = _peak_velocity(wheel_velocity, n_trials)
+    df['peak_velocity'] = peak_velocity(wheel_velocity, n_trials)
     return df
 
 

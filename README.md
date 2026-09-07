@@ -207,7 +207,7 @@ ps = PhotometrySession(session_row, one=one)
 ps.load_h5(SESSIONS_H5_DIR / f'{ps.eid}.h5')
 # → ps.photometry['GCaMP_preprocessed'], ps.trials, ps.photometry_responses,
 #   ps.movement_responses, ps.wheel_position, ps.wheel_velocity,
-#   ps.wheel_responses
+#   ps.wheel_responses, ps.wheel_peak_velocity
 ```
 
 ### Validation
@@ -308,7 +308,15 @@ ps.load_responses('wheel')   # events=['stimOn_times'],
                              # window=(0.0, 'response_times')
 # → {'velocity': DataArray}; trials share one time axis spanning to the
 #   longest trial, each NaN-padded from its own choice onward
+
+ps.load_peak_velocity()
+# → np.ndarray, one maximum absolute speed per trial, reduced from that
+#   matrix and stored beside it; NaN where a trial has no wheel samples
 ```
+
+`peak_velocity` is the only regressor the store holds. It is a property of the
+wheel signal, whereas coding, log transforms and trial selection follow a model
+design and would go stale when the design changes.
 
 Every channel carries the full event axis. A channel's own response event is
 `config.LABEL2EVENT[label]`; its baseline is the `stimOn_times` cell over
@@ -676,10 +684,14 @@ movement channel.
 │       ├── preprocessed/
 │       │   ├── times     float64 (V,)   uniform grid at WHEEL_FS
 │       │   └── signal    float64 (V,)   velocity, radians per second
-│       └── responses/
-│           ├── times          float64 (Wf,)  0 → longest trial's feedback
-│           ├── trials         int64   (T,)
-│           └── stimOn_times   float64 (T, Wf)  NaN past each trial's feedback
+│       ├── responses/
+│       │   ├── times          float64 (Wf,)  0 → longest trial's feedback
+│       │   ├── trials         int64   (T,)
+│       │   └── stimOn_times   float64 (T, Wf)  NaN past each trial's feedback
+│       └── peak_velocity/
+│           └── values   float64 (T,)   max abs velocity per trial, reduced
+│                                       from the responses matrix; NaN where
+│                                       the trial has no wheel samples
 │
 └── video/
     ├── manual_qc/                   verdicts set by hand, one set per session

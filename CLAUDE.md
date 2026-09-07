@@ -314,6 +314,7 @@ ps.load_neurophotometrics_qc()    # ps.neurophotometrics_qc, from H5 or scored
 ps.load_raw_wheel()       # ps.wheel_position, the irregular encoder samples
 ps.load_wheel()           # ps.wheel_velocity at WHEEL_FS, from H5 or built
 ps.load_responses('wheel')        # ps.wheel_responses, from H5 or cut
+ps.load_peak_velocity()   # ps.wheel_peak_velocity per trial, from H5 or reduced
 ps.load_camera_times()    # ps.pose_times, from H5 or Alyx
 ps.load_pose()            # ps.pose, from H5 or Alyx
 ps.load_motion_energy()   # ps.motion_energy, from H5 or Alyx
@@ -337,6 +338,7 @@ products — `trials/table` and the raw groups — have none:
 | `trials/performance` | `extract_performance` |
 | `photometry/preprocessed` | `extract_preprocessed_photometry` |
 | `wheel/preprocessed` | `extract_wheel_velocity` |
+| `wheel/peak_velocity` | `extract_peak_velocity` |
 | `video/preprocessed` | `extract_movement_signals` |
 | `photometry/responses`, `wheel/responses`, `video/responses` | `extract_responses` |
 | `photometry/neurophotometrics/qc` | `run_neurophotometrics_qc` |
@@ -423,6 +425,12 @@ them to `analysis.differentiate(series, fs)`, which interpolates onto the
 `WHEEL_FS` grid before differentiating, matching
 `brainbox.behavior.wheel.velocity_filtered` at its default corner frequency and
 order. Only the velocity is gridded; the position stays raw.
+`extract_peak_velocity` is the wheel's fourth product: `analysis.peak_velocity`
+reducing the stimulus-onset response matrix to one maximum absolute speed per
+trial, stored under `wheel/velocity/peak_velocity` through the frame-data
+handler pair because it carries no index of its own. It is the one regressor
+the store holds, since it is a property of the wheel signal rather than of a
+model design; `build_wheel` computes it after the cut it reduces.
 
 The video modality carries three raw products rather than one, because its three
 datasets are fetched by separate ONE calls and fail separately:
@@ -486,7 +494,7 @@ labels, handing each pair one group and one payload.
 | `_save_time_series` / `_load_time_series` | time-indexed `pd.Series` (one signal, dataset `signal`) or `pd.DataFrame` (one dataset per column) | preprocessed photometry, raw wheel position, preprocessed wheel velocity |
 | `_save_peri_event_matrix` / `_load_peri_event_matrix` | `xr.DataArray(event, trial, time)` | responses, whether the label is a brain region (`photometry/`), the wheel (`wheel/`) or a movement channel (`video/`) |
 | `_save_scalars` / `_load_scalars` | flat `dict[str, float]` stored as group attrs | QC metrics, preprocessing diagnostics |
-| `_save_frame_data` / `_load_frame_data` | per-camera-frame `np.ndarray` (dataset `values`) or `pd.DataFrame` (one dataset per column), with no time index | the three raw video datasets |
+| `_save_frame_data` / `_load_frame_data` | index-free `np.ndarray` (dataset `values`) or `pd.DataFrame` (one dataset per column) | the three raw video datasets, the wheel's per-trial `peak_velocity` |
 | `_save_manual_qc` / `_load_manual_qc` | flat `dict[str, str]` of verdicts stored as group attrs | `photometry/{region}/manual_qc`, `video/manual_qc` |
 
 `_save_frame_data` replaces only the group's datasets, not the group, because

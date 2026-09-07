@@ -1070,11 +1070,13 @@ def _load_photometry(session, h5_file):
 
 
 def _save_wheel(session, h5_file):
-    """Write the wheel's three products under `wheel/{WHEEL_LABEL}/`.
+    """Write the wheel's four products under `wheel/{WHEEL_LABEL}/`.
 
     Raw position and preprocessed velocity sit on different time bases, so each
     is its own time-series group; the responses matrix is written by the same
-    peri-event pair every modality uses.
+    peri-event pair every modality uses. The peak velocity is one value per
+    trial with no time axis of its own, which is the shape the frame-data pair
+    carries.
     """
     wheel_group = h5_file.require_group('wheel')
     label_group = wheel_group.require_group(WHEEL_LABEL)
@@ -1084,6 +1086,9 @@ def _save_wheel(session, h5_file):
     if hasattr(session, 'wheel_velocity'):
         _save_time_series(_replace_group(label_group, 'preprocessed'),
                           session.wheel_velocity)
+    if hasattr(session, 'wheel_peak_velocity'):
+        _save_frame_data(_replace_group(label_group, 'peak_velocity'),
+                         session.wheel_peak_velocity)
     for label, responses in getattr(session, 'wheel_responses', {}).items():
         _save_peri_event_matrix(
             _replace_group(wheel_group.require_group(label), 'responses'),
@@ -1102,6 +1107,9 @@ def _load_wheel(session, h5_file):
         if 'preprocessed' in label_group:
             session.wheel_velocity = _load_time_series(
                 label_group['preprocessed'])
+        if 'peak_velocity' in label_group:
+            session.wheel_peak_velocity = _load_frame_data(
+                label_group['peak_velocity'])
     _set_if_read(session, 'wheel_responses', _read_label_responses(wheel_group))
 
 
@@ -1114,13 +1122,14 @@ LP_QC_PASS = 'PASS'
 def _save_frame_data(
     group: h5py.Group, data: np.ndarray | pd.DataFrame,
 ) -> None:
-    """Write per-camera-frame data into `group`.
+    """Write per-frame or per-trial data into `group`.
 
-    Video's three raw datasets are fetched independently, so each is stored on
-    the camera's own frame axis with no time index of its own — that is what
-    keeps `video/pose` and `video/motion_energy` free of `video/times` as an
-    input. A 1-D array becomes the single dataset `values`; a DataFrame becomes
-    one dataset per column.
+    The pair carries values indexed by something other than time, with no index
+    of their own: video's three raw datasets, each stored on the camera's own
+    frame axis — that is what keeps `video/pose` and `video/motion_energy` free
+    of `video/times` as an input — and the wheel's `peak_velocity`, one value
+    per trial. A 1-D array becomes the single dataset `values`; a DataFrame
+    becomes one dataset per column.
 
     Only the group's datasets are replaced, not the group itself: the
     `motion_energy` group holds this product's frames alongside the
@@ -1144,7 +1153,7 @@ def _save_frame_data(
 
 
 def _load_frame_data(group: h5py.Group) -> np.ndarray | pd.DataFrame | None:
-    """Read per-frame data written by `_save_frame_data`.
+    """Read the index-free data written by `_save_frame_data`.
 
     Returns an array when the group holds the single `values` dataset, a
     DataFrame when it holds one dataset per column, and None when it holds no
@@ -2911,6 +2920,51 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         self.wheel_velocity = analysis.differentiate(self.wheel_position, fs=fs)
         return self.wheel_velocity
+
+    def load_peak_velocity(self) -> np.ndarray:
+        """Return the per-trial peak wheel speed, building it if absent.
+
+        Reads `wheel/{WHEEL_LABEL}/peak_velocity` when it is stored; otherwise
+        cuts the wheel responses — fetching the encoder samples if those are
+        missing too — reduces them, and writes the product on the way out.
+
+        Returns
+        -------
+        numpy.ndarray
+            Maximum absolute velocity (radians per second) per trial, also
+            assigned to ``self.wheel_peak_velocity``.
+        """
+        if hasattr(self, 'wheel_peak_velocity'):
+            return self.wheel_peak_velocity
+        if self.stored_product_exists('wheel/peak_velocity'):
+            with h5py.File(self.filepath, 'r') as h5:
+                self.wheel_peak_velocity = _load_frame_data(
+                    h5[f'wheel/{WHEEL_LABEL}/peak_velocity'])
+            return self.wheel_peak_velocity
+        self.load_responses('wheel')
+        self.extract_peak_velocity()
+        self.save_h5(groups=['wheel'])
+        return self.wheel_peak_velocity
+
+    def extract_peak_velocity(self) -> np.ndarray:
+        """Reduce `self.wheel_responses` to one peak speed per trial.
+
+        The response matrix is cut from stimulus onset to the choice, so its
+        per-trial maximum is how fast the mouse turned the wheel on that trial.
+        Writes nothing; :meth:`load_peak_velocity` saves.
+
+        Returns
+        -------
+        numpy.ndarray
+            Maximum absolute velocity (radians per second) per trial, aligned
+            to the `trial` coordinate of the response matrix. A trial whose row
+            is entirely NaN — no wheel samples in its window — scores NaN. Also
+            assigned to ``self.wheel_peak_velocity``.
+        """
+        matrix = self.wheel_responses[WHEEL_LABEL].sel(event=_WHEEL_T0_EVENT)
+        self.wheel_peak_velocity = analysis.peak_velocity(
+            matrix.values, matrix.sizes['trial'])
+        return self.wheel_peak_velocity
 
     def _wheel_signals(self) -> dict[str, pd.Series]:
         """The wheel's preprocessed velocity keyed by its H5 label.

@@ -286,8 +286,8 @@ class TestWheelResponsesProduct:
         xr.testing.assert_allclose(reloaded['velocity'], built['velocity'])
 
     def test_peak_velocity_matches_the_old_matrix(self, wheeled_session):
-        """`_peak_velocity` on the responses product reproduces the old values."""
-        from iblnm.analysis import _peak_velocity, get_responses
+        """`peak_velocity` on the responses product reproduces the old values."""
+        from iblnm.analysis import peak_velocity, get_responses
         velocity = wheeled_session.load_wheel()
         old_matrix, _ = get_responses(
             velocity,
@@ -298,5 +298,104 @@ class TestWheelResponsesProduct:
         responses = wheeled_session.load_responses('wheel')
         new_matrix = responses['velocity'].sel(event='stimOnTrigger_times').values
 
-        np.testing.assert_allclose(_peak_velocity(new_matrix, 2),
-                                   _peak_velocity(old_matrix, 2))
+        np.testing.assert_allclose(peak_velocity(new_matrix, 2),
+                                   peak_velocity(old_matrix, 2))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# wheel/peak_velocity — the per-trial reduction of the response matrix
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPeakVelocityProduct:
+
+    @pytest.fixture
+    def wheeled_session(self, mock_session_series, tmp_path):
+        ps = _make_session(mock_session_series, tmp_path)
+        ps.trials = _make_trials()
+        return ps
+
+    def test_reduces_each_trial_of_the_response_matrix(self, wheeled_session):
+        """One value per trial: the max |velocity| over that trial's window."""
+        matrix = (wheeled_session.load_responses('wheel')['velocity']
+                  .sel(event='stimOnTrigger_times').values)
+        peak = wheeled_session.extract_peak_velocity()
+
+        assert peak.shape == (len(wheeled_session.trials),)
+        np.testing.assert_allclose(
+            peak, [np.nanmax(np.abs(row)) for row in matrix])
+        np.testing.assert_allclose(wheeled_session.wheel_peak_velocity, peak)
+
+    def test_roundtrips_through_h5(self, wheeled_session, mock_session_series,
+                                   tmp_path):
+        """Saved with the wheel group and read back by a fresh session."""
+        wheeled_session.load_responses('wheel')
+        built = wheeled_session.extract_peak_velocity()
+        wheeled_session.save_h5(groups=['wheel'])
+
+        fresh = _make_session(mock_session_series, tmp_path)
+        fresh.load_h5(groups=['wheel'])
+        np.testing.assert_allclose(fresh.wheel_peak_velocity, built,
+                                   equal_nan=True)
+
+    def test_trial_without_wheel_samples_scores_nan(self, wheeled_session):
+        """A trial whose window falls outside the recording scores NaN, not 0."""
+        wheeled_session.trials = pd.DataFrame({
+            'trial': [7, 9],
+            'stimOnTrigger_times': [1.0, 500.0],
+            'response_times': [1.5, 500.5],
+            'feedback_times': [2.2, 501.2],
+        })
+        wheeled_session.load_responses('wheel')
+        peak = wheeled_session.extract_peak_velocity()
+
+        assert np.isfinite(peak[0])
+        assert np.isnan(peak[1])
+
+    def test_the_build_stores_it_with_the_other_wheel_products(
+            self, wheeled_session):
+        """`build_wheel` computes it every run, like every other product."""
+        import scripts.download as download
+        download.build_wheel(wheeled_session)
+
+        assert wheeled_session.errors == []
+        np.testing.assert_allclose(
+            wheeled_session.wheel_peak_velocity,
+            [np.nanmax(np.abs(row)) for row in
+             wheeled_session.wheel_responses['velocity']
+             .sel(event='stimOnTrigger_times').values])
+
+    def test_load_reads_the_stored_vector_without_fetching(
+            self, wheeled_session, mock_session_series, tmp_path):
+        """A second session over the same file reads it and never fetches."""
+        import scripts.download as download
+        download.build_wheel(wheeled_session)
+        wheeled_session.save_h5(groups=['wheel'])
+
+        fresh = _make_session(mock_session_series, tmp_path)
+        peak = fresh.load_peak_velocity()
+
+        fresh.one.load_object.assert_not_called()
+        np.testing.assert_allclose(peak, wheeled_session.wheel_peak_velocity,
+                                   equal_nan=True)
+
+    def test_load_builds_and_writes_when_nothing_is_stored(self, wheeled_session):
+        """With an empty store the load cuts the responses and saves the vector."""
+        import h5py
+        peak = wheeled_session.load_peak_velocity()
+
+        with h5py.File(wheeled_session.filepath, 'r') as h5:
+            stored = h5['wheel/velocity/peak_velocity/values'][:]
+        np.testing.assert_allclose(stored, peak, equal_nan=True)
+
+    def test_a_failed_wheel_leaves_no_peak_velocity(self, wheeled_session):
+        """The block is one `try`: a missing wheel logs once and stores nothing."""
+        import scripts.download as download
+        from one.alf.exceptions import ALFObjectNotFound
+        wheeled_session.one.load_object.side_effect = ALFObjectNotFound('wheel')
+        wheeled_session.one.load_dataset.side_effect = ALFObjectNotFound('enc')
+
+        download.build_wheel(wheeled_session)
+
+        assert [(e['product'], e['error_type'])
+                for e in wheeled_session.errors] == [('wheel', 'MissingRawData')]
+        assert not hasattr(wheeled_session, 'wheel_peak_velocity')
