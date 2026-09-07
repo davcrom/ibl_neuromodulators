@@ -27,7 +27,8 @@ from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
     RESPONSES_DIR, RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH,
     OLS_PERSESSION_FPATH, OLS_PERSESSION_COLUMNS,
-    RESPONSE_OLS_MOUSE_PVAL_FPATH, PERSESSION_FDR_GROUP_COLS,
+    RESPONSE_OLS_MOUSE_PVAL_FPATH, RESPONSE_OLS_COEFS_COLUMNS,
+    PERSESSION_FDR_GROUP_COLS,
     RESPONSE_VARCOMP_SUMMARY_FPATH, RESPONSE_VARCOMP_VIOLIN_FPATH,
     VARCOMP_MCMC, VARCOMP_TAU_PRIOR, VARCOMP_MIN_MICE,
     VARCOMP_MIN_SESSIONS_PER_MOUSE, VARCOMP_KDE_GRID, VARCOMP_HDI_PROB,
@@ -452,6 +453,30 @@ def assemble_ols_persession(dropone, coefficients, session_pvalues):
     return merged[OLS_PERSESSION_COLUMNS]
 
 
+def varcomp_coefficients(ols_persession: pd.DataFrame) -> pd.DataFrame:
+    """Per-session coefficients view of the merged per-recording OLS frame.
+
+    The variance-components stage models one weight per session, which the
+    merged frame already carries: the drop-one grain is one row per dropped
+    predictor, and the reference model's weight for that same regressor sits on
+    it. So the view is a rename and a column subset, no aggregation — the
+    dropped ``predictor`` is the ``regressor`` whose weight the row holds.
+
+    Parameters
+    ----------
+    ols_persession : pandas.DataFrame
+        The merged per-recording OLS results, ``config.OLS_PERSESSION_COLUMNS``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``config.RESPONSE_OLS_COEFS_COLUMNS``, the grain and schema
+        :meth:`PhotometrySessionGroup.response_varcomp` consumes.
+    """
+    return (ols_persession.rename(columns={'predictor': 'regressor'})
+            [RESPONSE_OLS_COEFS_COLUMNS])
+
+
 # display mode → (drop-one figure fn, full-model R² figure fn)
 _PERSESSION_DISPLAY_FNS = {
     'session': (plot_ols_dropone, plot_ols_total_r2),
@@ -626,7 +651,7 @@ if __name__ == '__main__':
         print("Fitting per-cell variance-components model (PyMC sampling)...")
         group.response_varcomp_summary, group.response_varcomp_violin = (
             group.response_varcomp(
-                coefs_df,
+                varcomp_coefficients(group.ols_persession),
                 mcmc=VARCOMP_MCMC, tau_prior=VARCOMP_TAU_PRIOR,
                 min_mice=VARCOMP_MIN_MICE,
                 min_sessions_per_mouse=VARCOMP_MIN_SESSIONS_PER_MOUSE,

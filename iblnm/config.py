@@ -50,8 +50,8 @@ RESPONSE_OLS_COEFS_COLUMNS = ['eid', 'subject', 'target_NM', 'brain_region',
                               'event', 'regressor', 'coef', 'coef_se',
                               'n_trials']
 # Variance-components stage-2 outputs (keyed by cell, no eid column).
-RESPONSE_VARCOMP_SUMMARY_FPATH = RESPONSES_DIR / 'response_varcomp_summary.parquet'
-RESPONSE_VARCOMP_VIOLIN_FPATH = RESPONSES_DIR / 'response_varcomp_violin.parquet'
+RESPONSE_VARCOMP_SUMMARY_FPATH = RESPONSES_DIR / 'varcomp_summary.parquet'
+RESPONSE_VARCOMP_VIOLIN_FPATH = RESPONSES_DIR / 'varcomp_violin.parquet'
 RESPONSE_VARCOMP_SUMMARY_COLUMNS = ['target_NM', 'event', 'regressor',
                                     'component', 'mean', 'hdi_low', 'hdi_high',
                                     'n_mice', 'n_sessions']

@@ -293,6 +293,48 @@ class TestAssembleOlsPersession:
         assert frame.loc[('e1', 'side'), 'delta_r2'] == pytest.approx(0.03)
 
 
+class TestVarcompCoefficients:
+    """The variance-components stage takes its per-session coefficients out of
+    the merged per-recording OLS frame, rather than a coefficients frame of its
+    own."""
+
+    _REGRESSORS = ['contrast', 'side']
+
+    def _coefficients(self):
+        """The coefficients frame the varcomp stage used to be fed directly."""
+        return pd.DataFrame([
+            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
+             'brain_region': region, 'event': 'feedback_times',
+             'regressor': regressor, 'coef': coef, 'coef_se': 0.1,
+             'n_trials': 200}
+            for eid, region in [('e1', 'VTA'), ('e2', 'SNc')]
+            for coef, regressor in zip([0.3, -0.4], self._REGRESSORS)
+        ])
+
+    def _ols_persession(self):
+        """The same weights as ticket-12's merged frame carries them: keyed by
+        ``predictor``, with the drop-one and significance columns alongside."""
+        return pd.DataFrame([
+            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
+             'brain_region': region, 'event': 'feedback_times',
+             'predictor': regressor, 'n_trials': 200, 'r2_full': 0.4,
+             'r2_full_adj': 0.35, 'delta_r2': 0.05, 'delta_r2_adj': 0.03,
+             'delta_r2_null_median': 0.01, 'coef': coef, 'coef_se': 0.1,
+             'p_value': 0.01, 'q_value': 0.02, 'n_donors': 700}
+            for eid, region in [('e1', 'VTA'), ('e2', 'SNc')]
+            for coef, regressor in zip([0.3, -0.4], self._REGRESSORS)
+        ])
+
+    def test_view_matches_the_standalone_coefficients_frame(self):
+        """The view is the coefficients frame the stage used to read: same
+        columns, same grain, same weights — so the posteriors it feeds are
+        unchanged."""
+        from scripts.responses import varcomp_coefficients
+        pd.testing.assert_frame_equal(
+            varcomp_coefficients(self._ols_persession()),
+            self._coefficients())
+
+
 class TestPlotPersessionFigures:
     """The persession figure step plots from the in-scope merged OLS frame
     (``ols_persession``) without recomputing or writing data."""
@@ -423,6 +465,9 @@ class TestVarcompWiring:
     def test_reprocess_fits_and_caches_varcomp(self):
         reprocess, _ = _reprocess_and_default_branches()
         assert 'response_varcomp(' in reprocess
+        # Its coefficients come out of the merged per-recording OLS frame, not
+        # a coefficients frame of its own.
+        assert 'varcomp_coefficients(group.ols_persession)' in reprocess
         assert 'RESPONSE_VARCOMP_SUMMARY_FPATH' in reprocess
         assert 'RESPONSE_VARCOMP_VIOLIN_FPATH' in reprocess
         assert reprocess.count('.to_parquet(') >= 2
