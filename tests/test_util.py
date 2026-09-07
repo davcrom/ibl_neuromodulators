@@ -14,7 +14,6 @@ from iblnm.util import (
     get_session_type,
     get_targetNM,
     fill_brain_region_from_fibers,
-    count_population_by_target_event,
     LOG_COLUMNS,
 )
 from iblnm.validation import (
@@ -1101,27 +1100,6 @@ def _write_session_h5(h5_dir, eid, subject, session_type='biased',
                 ps.log_error(e)
     fpath = h5_dir / f'{eid}.h5'
     ps.save_h5(fpath, groups=['metadata', 'errors'])
-
-
-class TestCountPopulationByTargetEvent:
-    """count_population_by_target_event — recordings and mice per target x event."""
-
-    def test_counts_dedupe_predictors_and_split_by_event(self):
-        # eid A appears under two predictors at stimOn: one recording, not two.
-        df = pd.DataFrame({
-            'eid':       ['A', 'A', 'B', 'C', 'A'],
-            'subject':   ['m1', 'm1', 'm1', 'm2', 'm1'],
-            'target_NM': ['VTA-DA'] * 5,
-            'event':     ['stimOn', 'stimOn', 'stimOn', 'stimOn', 'feedback'],
-            'predictor': ['contrast', 'choice', 'contrast', 'contrast', 'contrast'],
-        })
-        out = count_population_by_target_event(df)
-        stimon = out[(out['target_NM'] == 'VTA-DA') & (out['event'] == 'stimOn')]
-        feedback = out[(out['target_NM'] == 'VTA-DA') & (out['event'] == 'feedback')]
-        assert stimon['n_recordings'].item() == 3   # eids A, B, C
-        assert stimon['n_mice'].item() == 2         # mice m1, m2
-        assert feedback['n_recordings'].item() == 1
-        assert feedback['n_mice'].item() == 1
 
 
 class TestFillQCLabels:

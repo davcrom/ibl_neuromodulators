@@ -83,7 +83,7 @@ RESPONSE_OLS_MOUSE_PVAL_COLUMNS = [
 # predictor), scoring that recording's observed ΔR² against its own donor null.
 RESPONSE_OLS_SESSION_PVAL_COLUMNS = [
     'eid', 'subject', 'target_NM', 'brain_region', 'event', 'predictor',
-    'delta_r2', 'p_value', 'q_value', 'n_donors',
+    'delta_r2', 'delta_r2_null_median', 'p_value', 'q_value', 'n_donors',
 ]
 
 
@@ -312,7 +312,9 @@ def assemble_session_pvalue_table(
         One row per scorable observed row, in
         ``RESPONSE_OLS_SESSION_PVAL_COLUMNS`` order. ``p_value`` is add-one
         corrected and then floored at ``1 / (n_donors + 1)``; ``n_donors``
-        carries the count it was floored on. ``q_value`` is present but NaN —
+        carries the count it was floored on. ``delta_r2_null_median`` is the
+        median of that row's null vector — the parameter-count bias the
+        adjusted ΔR² is read against. ``q_value`` is present but NaN —
         the caller fills it with :func:`iblnm.analysis.add_fdr_qvalues`, which
         chooses the correction families.
     """
@@ -328,6 +330,7 @@ def assemble_session_pvalue_table(
              'target_NM': row['target_NM'],
              'brain_region': row['brain_region'], 'event': row['event'],
              'predictor': row['predictor'], 'delta_r2': row['delta_r2'],
+             'delta_r2_null_median': float(np.median(null_vectors[key])),
              'p_value': _floor_pvalue(p_value, n_donors[key]),
              'n_donors': n_donors[key]})
     return pd.DataFrame(rows, columns=RESPONSE_OLS_SESSION_PVAL_COLUMNS)
@@ -3633,9 +3636,8 @@ class PhotometrySessionGroup:
         self._sessions = {}  # eid → PhotometrySession cache
         self.response_magnitudes = None
         self.response_ols_dropone_results = None
-        self.response_ols_session_pvalues = None
-        self.response_ols_mouse_pvalues = None
-        self.response_ols_coefficients = None
+        self.ols_persession = None
+        self.ols_persession_mouse = None
         self.response_varcomp_summary = None
         self.response_varcomp_violin = None
         self.trial_regressors = None
@@ -4898,31 +4900,24 @@ class PhotometrySessionGroup:
         """Load response magnitudes from parquet, filtered to current recordings."""
         self.response_magnitudes = self._load_parquet(path)
 
-    def load_response_ols_dropone(self, path):
-        """Load per-session drop-one results from parquet, filtered to current recordings."""
-        self.response_ols_dropone_results = self._load_parquet(path)
+    def load_ols_persession(self, path):
+        """Load the per-recording OLS frame from parquet.
 
-    def load_response_ols_coefficients(self, path):
-        """Load per-session coefficients from parquet, filtered to current recordings."""
-        self.response_ols_coefficients = self._load_parquet(path)
-
-    def load_response_ols_session_pvalues(self, path):
-        """Load the per-recording drop-one p-value table from parquet.
-
-        Keyed by ``(eid, event, predictor)``, so unlike
-        :meth:`load_response_ols_mouse_pvalues` it goes through the
-        eid-filtered :meth:`_load_parquet` and keeps only rows for the group's
-        current recordings.
+        One row per recording x event x dropped predictor
+        (``config.OLS_PERSESSION_COLUMNS``): the drop-one fits, the reference
+        model's coefficients and the per-recording permutation significance.
+        Keyed by ``eid``, so it goes through the eid-filtered
+        :meth:`_load_parquet` and keeps only the group's current recordings.
         """
-        self.response_ols_session_pvalues = self._load_parquet(path)
+        self.ols_persession = self._load_parquet(path)
 
-    def load_response_ols_mouse_pvalues(self, path):
+    def load_ols_persession_mouse(self, path):
         """Load the per-mouse drop-one permutation p-value table from parquet.
 
         Keyed by ``(target_NM, event, predictor, subject)`` with no ``eid``
         column, so it is a plain read — not the eid-filtered ``_load_parquet``.
         """
-        self.response_ols_mouse_pvalues = self._read_parquet(path)
+        self.ols_persession_mouse = self._read_parquet(path)
 
     @staticmethod
     def _read_parquet(path):

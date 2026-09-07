@@ -3109,9 +3109,9 @@ def _significance_color(base_color, pvalues, keys, alpha):
     match = np.logical_and.reduce([(pvalues[col] == value).to_numpy()
                                    for col, value in keys.items()])
     row = pvalues[match]
-    if len(row) and row['q_value'].iloc[0] < alpha:
-        return base_color
-    return 'gray'
+    if not len(row):
+        return 'gray'
+    return _qvalue_color(base_color, row['q_value'].iloc[0], alpha)
 
 
 def _dropone_rows():
@@ -3137,10 +3137,11 @@ def _total_r2_rows():
     -------
     rows : list[tuple[str, str, str]]
         A single ``(row_label, value_column, predictor)`` reading full-model
-        ``r2`` off one predictor (it repeats across predictors per session).
+        ``r2_full`` off one predictor (it repeats across predictors per
+        session).
     supylabel : str
     """
-    return ([('full model R²', 'r2', PERSESSION_REGRESSORS[0])],
+    return ([('full model R²', 'r2_full', PERSESSION_REGRESSORS[0])],
             'R² (per-session, in-sample)')
 
 
@@ -3171,6 +3172,43 @@ def _pool_by_target(df_cell, value_col, targets):
     return {tnm: vals for tnm, vals in pooled.items() if len(vals)}
 
 
+def _qvalue_color(base_color, q_value, alpha):
+    """Resolve a mark color from one row's own permutation q-value.
+
+    The per-recording grain of :func:`_significance_color`, for a frame that
+    carries its own ``q_value`` column rather than a separate table. A row the
+    permutation could not score carries NaN, which fails the comparison and so
+    grays like a non-significant one.
+    """
+    return base_color if q_value < alpha else 'gray'
+
+
+def _population_counts(df):
+    """Recordings and mice behind each ``(target_NM, event)`` of a plotted frame.
+
+    A recording is a distinct ``(eid, brain_region)`` pair, not a distinct
+    ``eid``: a bilateral session fits one model per region and contributes both.
+    Predictor rows repeat a recording, so they are deduplicated first.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-form per-recording frame with ``eid``, ``brain_region``,
+        ``subject``, ``target_NM`` and ``event``.
+
+    Returns
+    -------
+    dict[tuple[str, str], tuple[int, int]]
+        ``(target_NM, event) -> (n_recordings, n_mice)``.
+    """
+    counts = (df.drop_duplicates(['eid', 'brain_region', 'target_NM', 'event'])
+              .groupby(['target_NM', 'event'])
+              .agg(n_recordings=('eid', 'size'),
+                   n_mice=('subject', 'nunique')))
+    return {key: (row['n_recordings'], row['n_mice'])
+            for key, row in counts.iterrows()}
+
+
 def _target_tick_label(tnm, event, counts_lookup):
     """Target-NM x-tick label, with a ``n=<rec>, m=<mice>`` line if counts given.
 
@@ -3185,7 +3223,7 @@ def _target_tick_label(tnm, event, counts_lookup):
 
 def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
                              pvalues=None, alpha=PERSESSION_SIGNIFICANCE_ALPHA,
-                             counts=None, session_pvalues=None):
+                             annotate_counts=False, color_by_qvalue=False):
     """Per-subject-slot grid: ``rows`` by event columns, sharing one y-axis.
 
     Shared layout for the per-session figures that use a subject-slot x-axis.
@@ -3195,11 +3233,11 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
     (see ``_group_xslots``); subjects are placed left to right in the
     alphanumeric order ``_group_xslots`` returns. Each subject's cell values are
     drawn by ``draw_mark`` in the subject's target-NM color, grayed at whichever
-    grain a significance table marks non-significant for that cell: ``pvalues``
-    grays the subject's summary mark, ``session_pvalues`` grays individual
-    session marks. One x-tick per target-NM is centred on its subjects. All
-    panels share one y-axis; the figure size scales with the total subject count
-    and the number of rows.
+    grain is marked non-significant for that cell: ``pvalues`` grays the
+    subject's summary mark, ``color_by_qvalue`` grays individual recording marks
+    from the frame's own ``q_value``. One x-tick per target-NM is centred on its
+    subjects. All panels share one y-axis; the figure size scales with the total
+    subject count and the number of rows.
 
     Parameters
     ----------
@@ -3225,24 +3263,20 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
     alpha : float
         False-discovery-rate threshold; a mark keeps its color when
         ``q_value < alpha``.
-    counts : pd.DataFrame or None
-        Donor-pool sizes per ``(target_NM, event)`` (columns ``n_recordings``,
-        ``n_mice``). When given, each target's x-tick label gains a
-        ``n=<recordings>, m=<mice>`` line (see ``_target_tick_label``).
-    session_pvalues : pd.DataFrame or None
-        Per-session permutation results, matched on ``eid``, ``event``,
-        ``predictor``; requires an ``eid`` column on ``df``. When given, each
-        session's mark is colored by its own ``q_value``. ``None`` leaves every
-        session mark in the subject's summary color and never reads ``eid``.
+    annotate_counts : bool
+        Append a ``n=<recordings>, m=<mice>`` line to each target's x-tick
+        label, counted off ``df`` (``_population_counts``, which needs ``eid``
+        and ``brain_region``).
+    color_by_qvalue : bool
+        Color each recording's mark by its own row's ``q_value`` rather than
+        leaving it in the subject's summary color; requires a ``q_value``
+        column on ``df``.
 
     Returns
     -------
     plt.Figure
     """
-    counts_lookup = None if counts is None else {
-        (row['target_NM'], row['event']): (row['n_recordings'], row['n_mice'])
-        for _, row in counts.iterrows()
-    }
+    counts_lookup = _population_counts(df) if annotate_counts else None
     has_data = len(df) > 0
     events = _sort_events(df['event'].unique()) if has_data else []
     n_rows, n_cols = len(rows), max(len(events), 1)
@@ -3280,15 +3314,10 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
                             base_color, pvalues,
                             {'event': event, 'predictor': predictor,
                              'subject': subject}, alpha)
-                        # Reading 'eid' is guarded: frames plotted without a
-                        # session table need not carry the column at all.
                         point_colors = (
-                            [_significance_color(
-                                base_color, session_pvalues,
-                                {'eid': eid, 'event': event,
-                                 'predictor': predictor}, alpha)
-                             for eid in subject_rows['eid']]
-                            if session_pvalues is not None
+                            [_qvalue_color(base_color, q, alpha)
+                             for q in subject_rows['q_value']]
+                            if color_by_qvalue
                             else [summary_color] * len(vals))
                         draw_mark(ax, x, vals, point_colors, summary_color)
             ax.axhline(0, ls='--', color='gray', lw=0.5)
@@ -3305,43 +3334,38 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
     return fig
 
 
-def plot_ols_dropone(df, title, pvalues=None,
-                     alpha=PERSESSION_SIGNIFICANCE_ALPHA, counts=None,
-                     session_pvalues=None):
+def plot_ols_dropone(df, title, mouse_pvalues=None,
+                     alpha=PERSESSION_SIGNIFICANCE_ALPHA):
     """Per-session drop-one ΔR² — dropped-regressor rows × event columns.
 
     One row per dropped regressor (``PERSESSION_REGRESSORS`` order),
-    each plotting that regressor's ``delta_r2`` as translucent per-session dots
-    plus a per-subject mean dash. See ``_persession_subject_grid``.
+    each plotting that regressor's ``delta_r2_adj`` as translucent
+    per-recording dots plus a per-subject mean dash. See
+    ``_persession_subject_grid``.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Long-form per-session drop-one fits.
+        The per-recording OLS frame (``config.OLS_PERSESSION_COLUMNS``): one row
+        per recording × event × dropped predictor, carrying the fit, that
+        recording's own ``q_value`` — which colors its dot — and the identity
+        columns the x-tick population counts are taken from.
     title : str
         Figure suptitle.
-    pvalues : pd.DataFrame or None
-        Per-mouse permutation results. When given, a subject non-significant for
-        a cell (``q_value >= alpha`` or no row) has its mean dash grayed instead
-        of drawn in its target-NM color (see ``_significance_color``).
+    mouse_pvalues : pd.DataFrame or None
+        Per-mouse permutation results, the coarser grain that lives in its own
+        frame. When given, a subject non-significant for a cell
+        (``q_value >= alpha`` or no row) has its mean dash grayed instead of
+        drawn in its target-NM color (see ``_significance_color``).
     alpha : float
         False-discovery-rate threshold; a mark keeps its color when
         ``q_value < alpha``.
-    counts : pd.DataFrame or None
-        Donor-pool sizes per ``(target_NM, event)`` (columns ``n_recordings``,
-        ``n_mice``, e.g. from ``count_population_by_target_event``). When given,
-        each target's x-tick label gains a ``n=<recordings>, m=<mice>`` line.
-    session_pvalues : pd.DataFrame or None
-        Per-session permutation results (matched on ``eid``, ``event``,
-        ``predictor``). When given, each session dot is colored by its own
-        ``q_value`` instead of following its mouse; ``df`` then needs an ``eid``
-        column.
     """
     rows, supylabel = _dropone_rows()
     return _persession_subject_grid(df, title, rows, supylabel,
                                     draw_mark=_scatter_subject,
-                                    pvalues=pvalues, alpha=alpha, counts=counts,
-                                    session_pvalues=session_pvalues)
+                                    pvalues=mouse_pvalues, alpha=alpha,
+                                    annotate_counts=True, color_by_qvalue=True)
 
 
 def plot_ols_total_r2(df, title):

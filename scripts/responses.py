@@ -26,10 +26,8 @@ from matplotlib import pyplot as plt
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
     RESPONSES_DIR, RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH,
-    RESPONSE_OLS_PERSESSION_FPATH, RESPONSE_OLS_MOUSE_PVAL_FPATH,
-    RESPONSE_OLS_SESSION_PVAL_FPATH, PERSESSION_FDR_GROUP_COLS,
-    RESPONSE_OLS_PERSESSION_POPULATION_FPATH,
-    RESPONSE_OLS_COEFS_FPATH,
+    OLS_PERSESSION_FPATH, OLS_PERSESSION_COLUMNS,
+    RESPONSE_OLS_MOUSE_PVAL_FPATH, PERSESSION_FDR_GROUP_COLS,
     RESPONSE_VARCOMP_SUMMARY_FPATH, RESPONSE_VARCOMP_VIOLIN_FPATH,
     VARCOMP_MCMC, VARCOMP_TAU_PRIOR, VARCOMP_MIN_MICE,
     VARCOMP_MIN_SESSIONS_PER_MOUSE, VARCOMP_KDE_GRID, VARCOMP_HDI_PROB,
@@ -57,7 +55,6 @@ from iblnm.analysis import (
     add_fdr_qvalues,
     split_features_by_event,
 )
-from iblnm.util import count_population_by_target_event
 
 
 # =========================================================================
@@ -407,6 +404,54 @@ def plot_movement_figures(group, fig_dirs, data_dir):
 # Per-recording OLS drop-one
 # =========================================================================
 
+# Recording-event-predictor key the three per-recording OLS results join on.
+# brain_region is part of it: a bilateral session records two regions under one
+# eid, and each is fitted separately.
+_OLS_PERSESSION_KEYS = ['eid', 'brain_region', 'event', 'predictor']
+
+
+def assemble_ols_persession(dropone, coefficients, session_pvalues):
+    """Merge the per-recording OLS results into one frame, one row per fit.
+
+    The drop-one fits set the grain and the row count; the coefficients and the
+    permutation significance are joined onto them on
+    ``(eid, brain_region, event, predictor)``, matching the coefficient table's
+    ``regressor`` to the dropped ``predictor`` — the drop-one keys are the six
+    regressor names. A recording-event-predictor with no scorable donor null
+    keeps its fit and carries NaN significance rather than dropping out.
+
+    Parameters
+    ----------
+    dropone : pandas.DataFrame
+        Drop-one fits (``data.RESPONSE_OLS_DROPONE_COLUMNS``), whose ``r2`` and
+        ``r2_adj`` are the reference model's and repeat across a
+        recording-event's predictor rows; renamed ``r2_full`` / ``r2_full_adj``
+        here to say so.
+    coefficients : pandas.DataFrame
+        Reference-model main-effect weights
+        (``config.RESPONSE_OLS_COEFS_COLUMNS``), keyed by ``regressor``.
+    session_pvalues : pandas.DataFrame
+        Per-recording permutation significance
+        (``data.RESPONSE_OLS_SESSION_PVAL_COLUMNS``) with ``q_value`` filled.
+        Its own ``delta_r2`` copy is dropped in favour of the fitted one.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``config.OLS_PERSESSION_COLUMNS``, in that order.
+    """
+    coefs = (coefficients.rename(columns={'regressor': 'predictor'})
+             [_OLS_PERSESSION_KEYS + ['coef', 'coef_se']])
+    pvalues = session_pvalues[
+        _OLS_PERSESSION_KEYS
+        + ['delta_r2_null_median', 'p_value', 'q_value', 'n_donors']]
+    merged = (dropone
+              .rename(columns={'r2': 'r2_full', 'r2_adj': 'r2_full_adj'})
+              .merge(coefs, on=_OLS_PERSESSION_KEYS, how='left')
+              .merge(pvalues, on=_OLS_PERSESSION_KEYS, how='left'))
+    return merged[OLS_PERSESSION_COLUMNS]
+
+
 # display mode → (drop-one figure fn, full-model R² figure fn)
 _PERSESSION_DISPLAY_FNS = {
     'session': (plot_ols_dropone, plot_ols_total_r2),
@@ -418,29 +463,25 @@ _PERSESSION_DISPLAY_FNS = {
 def plot_persession_figures(group, figures_dir, display='session'):
     """Save the per-session drop-one ΔR² and full-model R² figures.
 
-    Reads ``group.response_ols_dropone_results`` (computed under ``--reprocess``
-    or loaded from cache in the default run), scopes it to ``RESPONSE_EVENTS``
-    (a cached frame may carry events since dropped from the analysis), and saves
-    two figures from it: a drop-one ΔR² grid (dropped-regressor rows × event
+    Reads ``group.ols_persession`` (assembled under ``--reprocess`` or loaded
+    from cache in the default run), scopes it to ``RESPONSE_EVENTS`` (a cached
+    frame may carry events since dropped from the analysis), and saves two
+    figures from it: a drop-one ΔR² grid (dropped-regressor rows × event
     columns) and a full-model R² figure (its own y-axis). ``display`` selects
     how each session's values are drawn — per-session dots (``session``),
     per-subject median+IQR (``subject``), or a per-target violin (``target``) —
     via ``_PERSESSION_DISPLAY_FNS``; the SVG filenames are the same in every
-    mode. Both permutation q-value tables — ``pvalues``
-    (``group.response_ols_mouse_pvalues``, per mouse) and ``session_pvalues``
-    (``group.response_ols_session_pvalues``, per session) — are threaded into
-    the ``session`` drop-one figure only, where they color the subject mean
-    dashes and the individual session dots respectively.
+    mode.
 
-    Also writes the donor-pool sizes (recordings and mice per
-    ``(target_NM, event)``) to ``RESPONSE_OLS_PERSESSION_POPULATION_FPATH`` and,
-    in ``session`` mode, annotates the drop-one figure's x-ticks with them.
+    The frame carries each recording's own q-value, so the ``session`` mode
+    figure colors its dots from it directly; ``group.ols_persession_mouse``, the
+    coarser per-mouse grain, is threaded in beside it to color the subject mean
+    dashes.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have ``response_ols_dropone_results`` populated, and both
-        ``response_ols_mouse_pvalues`` and ``response_ols_session_pvalues``
+        Must have ``ols_persession`` populated, and ``ols_persession_mouse``
         when ``display='session'``.
     figures_dir : Path
         Output directory for the SVG figures.
@@ -448,18 +489,10 @@ def plot_persession_figures(group, figures_dir, display='session'):
         Per-session value display mode.
     """
     dropone_fn, total_r2_fn = _PERSESSION_DISPLAY_FNS[display]
-    results = group.response_ols_dropone_results
+    results = group.ols_persession
     results = results[results['event'].isin(RESPONSE_EVENTS)]
 
-    counts = count_population_by_target_event(results)
-    counts.to_csv(RESPONSE_OLS_PERSESSION_POPULATION_FPATH, index=False)
-    print("\n  Donor-pool size per target-NM x event (recordings, mice):")
-    print(counts.to_string(index=False))
-    print(f"  Saved to {RESPONSE_OLS_PERSESSION_POPULATION_FPATH}")
-
-    dropone_kwargs = ({'pvalues': group.response_ols_mouse_pvalues,
-                       'session_pvalues': group.response_ols_session_pvalues,
-                       'counts': counts}
+    dropone_kwargs = ({'mouse_pvalues': group.ols_persession_mouse}
                       if display == 'session' else {})
     fig = dropone_fn(
         results,
@@ -567,13 +600,6 @@ if __name__ == '__main__':
         group.response_ols_dropone_results, coefs_df = (
             group.response_ols_dropone(model_frames,
                                        LMM_FORMULAS['persession']))
-        group.response_ols_dropone_results.to_parquet(
-            RESPONSE_OLS_PERSESSION_FPATH, index=False)
-        print(f"Saved per-session drop-one fits to "
-              f"{RESPONSE_OLS_PERSESSION_FPATH}")
-        coefs_df.to_parquet(RESPONSE_OLS_COEFS_FPATH, index=False)
-        print(f"Saved per-session coefficients to {RESPONSE_OLS_COEFS_FPATH}")
-        group.response_ols_coefficients = coefs_df
 
         # --- Drop-one permutation significance, per session and per mouse ---
         print("Computing drop-one permutation p-values...")
@@ -582,22 +608,25 @@ if __name__ == '__main__':
             n_bootstrap=PERSESSION_PVAL_N_BOOTSTRAP,
             random_state=PERSESSION_PVAL_SEED)
         # Correct each grain within (event, predictor): one family per grid cell.
-        group.response_ols_session_pvalues = add_fdr_qvalues(
-            session_pvalues, group_cols=PERSESSION_FDR_GROUP_COLS)
-        group.response_ols_mouse_pvalues = add_fdr_qvalues(
+        # The per-recording grain then merges into the fits and the coefficients
+        # it shares a grain with; the per-mouse grain is coarser and stays apart.
+        group.ols_persession = assemble_ols_persession(
+            group.response_ols_dropone_results, coefs_df,
+            add_fdr_qvalues(session_pvalues,
+                            group_cols=PERSESSION_FDR_GROUP_COLS))
+        group.ols_persession_mouse = add_fdr_qvalues(
             mouse_pvalues, group_cols=PERSESSION_FDR_GROUP_COLS)
-        group.response_ols_session_pvalues.to_parquet(
-            RESPONSE_OLS_SESSION_PVAL_FPATH, index=False)
-        group.response_ols_mouse_pvalues.to_parquet(
+        group.ols_persession.to_parquet(OLS_PERSESSION_FPATH, index=False)
+        group.ols_persession_mouse.to_parquet(
             RESPONSE_OLS_MOUSE_PVAL_FPATH, index=False)
-        print(f"Saved drop-one p-values to {RESPONSE_OLS_SESSION_PVAL_FPATH} "
-              f"and {RESPONSE_OLS_MOUSE_PVAL_FPATH}")
+        print(f"Saved per-recording OLS results to {OLS_PERSESSION_FPATH} "
+              f"and per-mouse p-values to {RESPONSE_OLS_MOUSE_PVAL_FPATH}")
 
         # --- Per-cell variance components (mouse vs session) ---
         print("Fitting per-cell variance-components model (PyMC sampling)...")
         group.response_varcomp_summary, group.response_varcomp_violin = (
             group.response_varcomp(
-                group.response_ols_coefficients,
+                coefs_df,
                 mcmc=VARCOMP_MCMC, tau_prior=VARCOMP_TAU_PRIOR,
                 min_mice=VARCOMP_MIN_MICE,
                 min_sessions_per_mouse=VARCOMP_MIN_SESSIONS_PER_MOUSE,
@@ -614,9 +643,8 @@ if __name__ == '__main__':
         # Default: load pre-existing parquet files
         # =================================================================
         for fpath in (RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH,
-                      RESPONSE_OLS_PERSESSION_FPATH,
+                      OLS_PERSESSION_FPATH,
                       RESPONSE_OLS_MOUSE_PVAL_FPATH,
-                      RESPONSE_OLS_SESSION_PVAL_FPATH,
                       RESPONSE_VARCOMP_SUMMARY_FPATH,
                       RESPONSE_VARCOMP_VIOLIN_FPATH):
             if not fpath.exists():
@@ -625,12 +653,8 @@ if __name__ == '__main__':
 
         group.load_response_magnitudes(RESPONSE_MAGNITUDES_FPATH)
         group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
-        group.load_response_ols_dropone(RESPONSE_OLS_PERSESSION_FPATH)
-        group.load_response_ols_mouse_pvalues(
-            RESPONSE_OLS_MOUSE_PVAL_FPATH)
-        group.load_response_ols_session_pvalues(
-            RESPONSE_OLS_SESSION_PVAL_FPATH)
-        group.load_response_ols_coefficients(RESPONSE_OLS_COEFS_FPATH)
+        group.load_ols_persession(OLS_PERSESSION_FPATH)
+        group.load_ols_persession_mouse(RESPONSE_OLS_MOUSE_PVAL_FPATH)
         group.load_response_varcomp_summary(RESPONSE_VARCOMP_SUMMARY_FPATH)
         group.load_response_varcomp_violin(RESPONSE_VARCOMP_VIOLIN_FPATH)
 

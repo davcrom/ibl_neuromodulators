@@ -5817,62 +5817,29 @@ class TestLoaderMethods:
         assert len(group.response_magnitudes) == 3
         assert 'eid-99' not in group.response_magnitudes['eid'].values
 
-    def test_load_response_ols_dropone(self, tmp_path):
-        from iblnm.data import RESPONSE_OLS_DROPONE_COLUMNS
+    def test_load_ols_persession(self, tmp_path):
+        """The merged per-recording OLS frame is eid-filtered to the group."""
+        from iblnm.config import OLS_PERSESSION_COLUMNS
         group = self._make_group()
         rows = [
-            {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
+            {'eid': eid, 'subject': subject, 'target_NM': 'target-0',
              'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
-             'predictor': 'contrast', 'r2': 0.5, 'r2_adj': 0.45,
-             'delta_r2': 0.1, 'delta_r2_adj': 0.08, 'n_trials': 80},
-            {'eid': 'eid-1', 'subject': 'subj-1', 'target_NM': 'target-0',
-             'brain_region': 'region-0', 'event': 'feedback_times',
-             'predictor': 'reward', 'r2': 0.4, 'r2_adj': 0.35,
-             'delta_r2': 0.2, 'delta_r2_adj': 0.18, 'n_trials': 70},
-            {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
-             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
-             'predictor': 'side', 'r2': 0.3, 'r2_adj': 0.25,
-             'delta_r2': 0.05, 'delta_r2_adj': 0.02, 'n_trials': 60},
+             'predictor': 'contrast', 'n_trials': 80, 'r2_full': 0.5,
+             'r2_full_adj': 0.45, 'delta_r2': 0.1, 'delta_r2_adj': 0.08,
+             'delta_r2_null_median': 0.02, 'coef': 0.3, 'coef_se': 0.05,
+             'p_value': 0.01, 'q_value': 0.03, 'n_donors': 700}
+            for eid, subject in [('eid-0', 'subj-0'), ('eid-1', 'subj-1'),
+                                 ('eid-99', 'subj-9')]  # eid-99 not in group
         ]
-        df = pd.DataFrame(rows)[RESPONSE_OLS_DROPONE_COLUMNS]
-        path = tmp_path / 'response_ols_persession_dropone.parquet'
+        df = pd.DataFrame(rows)[OLS_PERSESSION_COLUMNS]
+        path = tmp_path / 'ols_persession.parquet'
         df.to_parquet(path, index=False)
 
-        group.load_response_ols_dropone(path)
-        assert set(group.response_ols_dropone_results['eid'].values) == {'eid-0', 'eid-1'}
-        assert 'eid-99' not in group.response_ols_dropone_results['eid'].values
+        group.load_ols_persession(path)
+        assert set(group.ols_persession['eid']) == {'eid-0', 'eid-1'}
 
-        group.load_response_ols_dropone(tmp_path / 'nonexistent.parquet')
-        assert group.response_ols_dropone_results is None
-
-    def test_load_response_ols_coefficients(self, tmp_path):
-        from iblnm.config import RESPONSE_OLS_COEFS_COLUMNS
-        group = self._make_group()
-        rows = [
-            {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
-             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
-             'regressor': 'contrast', 'coef': 0.5, 'coef_se': 0.1,
-             'n_trials': 80},
-            {'eid': 'eid-1', 'subject': 'subj-1', 'target_NM': 'target-0',
-             'brain_region': 'region-0', 'event': 'feedback_times',
-             'regressor': 'reward', 'coef': 0.4, 'coef_se': 0.2,
-             'n_trials': 70},
-            {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
-             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
-             'regressor': 'side', 'coef': 0.3, 'coef_se': 0.05,
-             'n_trials': 60},
-        ]
-        df = pd.DataFrame(rows)[RESPONSE_OLS_COEFS_COLUMNS]
-        path = tmp_path / 'response_ols_persession_coefs.parquet'
-        df.to_parquet(path, index=False)
-
-        group.load_response_ols_coefficients(path)
-        assert set(group.response_ols_coefficients['eid'].values) == {
-            'eid-0', 'eid-1'}
-        assert 'eid-99' not in group.response_ols_coefficients['eid'].values
-
-        group.load_response_ols_coefficients(tmp_path / 'nonexistent.parquet')
-        assert group.response_ols_coefficients is None
+        group.load_ols_persession(tmp_path / 'nonexistent.parquet')
+        assert group.ols_persession is None
 
     def test_load_response_varcomp_summary(self, tmp_path):
         from iblnm.config import RESPONSE_VARCOMP_SUMMARY_COLUMNS
@@ -5895,7 +5862,8 @@ class TestLoaderMethods:
         group.load_response_varcomp_summary(tmp_path / 'nonexistent.parquet')
         assert group.response_varcomp_summary is None
 
-    def test_load_response_ols_mouse_pvalues(self, tmp_path):
+    def test_load_ols_persession_mouse(self, tmp_path):
+        """The per-mouse table has no eid column, so it is read verbatim."""
         from iblnm.data import RESPONSE_OLS_MOUSE_PVAL_COLUMNS
         group = self._make_group()
         df = pd.DataFrame([
@@ -5908,42 +5876,14 @@ class TestLoaderMethods:
              'mean_delta_r2': 0.08, 'p_value': 0.30, 'q_value': 0.45,
              'n_sessions': 2},
         ])[RESPONSE_OLS_MOUSE_PVAL_COLUMNS]
-        path = tmp_path / 'response_ols_persession_dropone_mouse_pvalues.parquet'
+        path = tmp_path / 'ols_persession_mouse.parquet'
         df.to_parquet(path, index=False)
 
-        group.load_response_ols_mouse_pvalues(path)
-        # No eid column: the loader reads and assigns the frame verbatim.
-        pd.testing.assert_frame_equal(group.response_ols_mouse_pvalues, df)
+        group.load_ols_persession_mouse(path)
+        pd.testing.assert_frame_equal(group.ols_persession_mouse, df)
 
-        group.load_response_ols_mouse_pvalues(
-            tmp_path / 'nonexistent.parquet')
-        assert group.response_ols_mouse_pvalues is None
-
-    def test_load_response_ols_session_pvalues(self, tmp_path):
-        """Unlike the per-mouse loader, this table has an eid column, so rows
-        outside the group's recordings are filtered out."""
-        from iblnm.data import RESPONSE_OLS_SESSION_PVAL_COLUMNS
-        group = self._make_group()
-        assert group.response_ols_session_pvalues is None
-        df = pd.DataFrame([
-            {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
-             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
-             'predictor': 'contrast', 'delta_r2': 0.1, 'p_value': 0.01,
-             'q_value': 0.03, 'n_donors': 700},
-            {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
-             'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
-             'predictor': 'contrast', 'delta_r2': 0.2, 'p_value': 0.02,
-             'q_value': 0.04, 'n_donors': 700},  # not in group
-        ])[RESPONSE_OLS_SESSION_PVAL_COLUMNS]
-        path = tmp_path / 'response_ols_persession_dropone_session_pvalues.parquet'
-        df.to_parquet(path, index=False)
-
-        group.load_response_ols_session_pvalues(path)
-        assert list(group.response_ols_session_pvalues['eid']) == ['eid-0']
-
-        group.load_response_ols_session_pvalues(
-            tmp_path / 'nonexistent.parquet')
-        assert group.response_ols_session_pvalues is None
+        group.load_ols_persession_mouse(tmp_path / 'nonexistent.parquet')
+        assert group.ols_persession_mouse is None
 
     def test_load_response_varcomp_violin(self, tmp_path):
         from iblnm.config import RESPONSE_VARCOMP_VIOLIN_COLUMNS
@@ -7975,6 +7915,23 @@ class TestAssembleSessionPvalueTable:
         assert list(table['event']) == ['feedback', 'feedback']
         assert list(table['predictor']) == ['reward', 'reward']
         assert table['delta_r2'].tolist() == pytest.approx([0.10, 0.06])
+
+    def test_null_median_is_that_rows_null_vector_median(self):
+        """Each row carries the median of its own null vector, the reference
+        line the drop-one figure draws the adjusted ΔR² against."""
+        from iblnm.data import assemble_session_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)])
+        null_vectors = {
+            ('e1', 'feedback', 'reward'): np.array([0.0, 0.02, 0.04, 0.30]),
+            ('e2', 'feedback', 'reward'): np.full(4, 0.01),
+        }
+
+        table = assemble_session_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors))
+
+        assert table['delta_r2_null_median'].tolist() == pytest.approx(
+            [0.03, 0.01])
 
     def test_row_without_null_vector_is_skipped(self):
         """An unscorable recording — no entry in null_vectors — contributes no

@@ -195,9 +195,107 @@ class TestPlotMovementFigures:
                 / 'response_lmm_movement_ceiling.svg').exists()
 
 
+class TestAssembleOlsPersession:
+    """assemble_ols_persession merges the drop-one fits, the reference model's
+    coefficients and the per-recording permutation significance into one frame
+    at recording x event x dropped-predictor grain."""
+
+    _PREDICTORS = ['contrast', 'side']
+
+    def _dropone(self):
+        """Two recordings of one mouse, one event, two dropped predictors."""
+        return pd.DataFrame([
+            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
+             'brain_region': region, 'event': 'feedback_times',
+             'predictor': predictor, 'r2': r2, 'r2_adj': r2 - 0.05,
+             'delta_r2': 0.02 + i / 100, 'delta_r2_adj': 0.01 + i / 100,
+             'n_trials': 200}
+            for eid, region, r2 in [('e1', 'VTA', 0.4), ('e2', 'SNc', 0.6)]
+            for i, predictor in enumerate(self._PREDICTORS)
+        ])
+
+    def _coefficients(self):
+        """Reference-model weights, keyed by ``regressor`` rather than ``predictor``."""
+        return pd.DataFrame([
+            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
+             'brain_region': region, 'event': 'feedback_times',
+             'regressor': predictor, 'coef': coef, 'coef_se': 0.1,
+             'n_trials': 200}
+            for eid, region in [('e1', 'VTA'), ('e2', 'SNc')]
+            for coef, predictor in zip([0.3, -0.4], self._PREDICTORS)
+        ])
+
+    def _session_pvalues(self):
+        """Significance for every row but ``e2`` x ``side`` (unscorable)."""
+        return pd.DataFrame([
+            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
+             'brain_region': region, 'event': 'feedback_times',
+             'predictor': predictor, 'delta_r2': 0.02,
+             'delta_r2_null_median': 0.005, 'p_value': 0.01, 'q_value': 0.03,
+             'n_donors': 42}
+            for eid, region in [('e1', 'VTA'), ('e2', 'SNc')]
+            for predictor in self._PREDICTORS
+            if not (eid == 'e2' and predictor == 'side')
+        ])
+
+    def _assembled(self):
+        from scripts.responses import assemble_ols_persession
+        return assemble_ols_persession(
+            self._dropone(), self._coefficients(), self._session_pvalues())
+
+    def test_columns_and_grain(self):
+        """Exactly the schema columns in order, one row per (recording, event,
+        dropped predictor) — the drop-one frame's grain, unchanged by the joins."""
+        from iblnm.config import OLS_PERSESSION_COLUMNS
+        frame = self._assembled()
+        assert list(frame.columns) == OLS_PERSESSION_COLUMNS
+        assert len(frame) == 4
+        assert set(map(tuple, frame[['eid', 'predictor']].to_numpy())) == {
+            ('e1', 'contrast'), ('e1', 'side'),
+            ('e2', 'contrast'), ('e2', 'side')}
+
+    def test_reference_quantities_repeat_across_predictors(self):
+        """``r2_full`` is the drop-one frame's ``r2`` and is identical across a
+        recording-event's predictor rows."""
+        frame = self._assembled()
+        for eid, r2 in [('e1', 0.4), ('e2', 0.6)]:
+            rows = frame[frame['eid'] == eid]
+            assert rows['r2_full'].tolist() == pytest.approx([r2] * 2)
+            assert rows['r2_full_adj'].tolist() == pytest.approx([r2 - 0.05] * 2)
+
+    def test_coefficients_join_on_predictor_and_region(self):
+        """The coefficient rows join on (eid, brain_region, event, predictor),
+        matching ``regressor`` to ``predictor``."""
+        frame = self._assembled().set_index(['eid', 'predictor'])
+        assert frame.loc[('e1', 'contrast'), 'coef'] == pytest.approx(0.3)
+        assert frame.loc[('e2', 'side'), 'coef'] == pytest.approx(-0.4)
+        assert frame.loc[('e1', 'side'), 'coef_se'] == pytest.approx(0.1)
+
+    def test_significance_joins_and_missing_rows_are_null(self):
+        """Scorable rows carry their q-value, null median and donor count; an
+        unscorable row keeps its fit and carries NaN significance."""
+        frame = self._assembled().set_index(['eid', 'predictor'])
+        scored = frame.loc[('e1', 'contrast')]
+        assert scored['q_value'] == pytest.approx(0.03)
+        assert scored['p_value'] == pytest.approx(0.01)
+        assert scored['delta_r2_null_median'] == pytest.approx(0.005)
+        assert scored['n_donors'] == 42
+        unscored = frame.loc[('e2', 'side')]
+        assert np.isnan(unscored['q_value'])
+        assert np.isnan(unscored['n_donors'])
+        assert unscored['delta_r2_adj'] == pytest.approx(0.02)
+
+    def test_delta_r2_comes_from_the_fits_not_the_pvalue_table(self):
+        """``delta_r2`` is the fitted value: the p-value table carries its own
+        copy, and the merge must not overwrite or duplicate the column."""
+        frame = self._assembled().set_index(['eid', 'predictor'])
+        assert frame.loc[('e1', 'contrast'), 'delta_r2'] == pytest.approx(0.02)
+        assert frame.loc[('e1', 'side'), 'delta_r2'] == pytest.approx(0.03)
+
+
 class TestPlotPersessionFigures:
-    """The persession figure step plots from the in-scope drop-one frame
-    (``response_ols_dropone_results``) without recomputing or writing data."""
+    """The persession figure step plots from the in-scope merged OLS frame
+    (``ols_persession``) without recomputing or writing data."""
 
     def _stub_frame(self):
         predictors = ['contrast', 'side', 'reward', 'choice_side',
@@ -208,19 +306,20 @@ class TestPlotPersessionFigures:
                 rows.append({
                     'eid': f'e{s}', 'subject': f's{s}', 'target_NM': 'VTA-DA',
                     'brain_region': 'VTA', 'event': 'stimOnTrigger_times',
-                    'predictor': p, 'r2': 0.5, 'r2_adj': 0.45,
-                    'delta_r2': 0.05, 'delta_r2_adj': 0.03,
-                    'n_trials': 100})
+                    'predictor': p, 'n_trials': 100, 'r2_full': 0.5,
+                    'r2_full_adj': 0.45, 'delta_r2': 0.05,
+                    'delta_r2_adj': 0.03, 'delta_r2_null_median': 0.01,
+                    'coef': 0.2, 'coef_se': 0.05, 'p_value': 0.01,
+                    'q_value': 0.02, 'n_donors': 700})
         return pd.DataFrame(rows)
 
     def test_plots_from_loaded_frame_without_recompute(self, tmp_path):
         from scripts import responses
         group = MagicMock()
-        group.response_ols_dropone_results = self._stub_frame()
-        # Both grains' q-value tables are absent here: this test exercises the
-        # real drop-one figure, which reads them as frames, not as mocks.
-        group.response_ols_mouse_pvalues = None
-        group.response_ols_session_pvalues = None
+        group.ols_persession = self._stub_frame()
+        # The per-mouse table is absent here: this test exercises the real
+        # drop-one figure, which reads it as a frame, not as a mock.
+        group.ols_persession_mouse = None
 
         fig_dir = tmp_path / 'persession'
         fig_dir.mkdir()
@@ -246,13 +345,13 @@ class TestPlotPersessionFigures:
         assert total_r2_fn is getattr(vis, total_r2_name)
 
     def test_invokes_mapped_pair_and_threads_pvalues(self, tmp_path):
-        """Each mode calls the pair from the dispatch table; both p-value tables
-        (``pvalues`` per mouse, ``session_pvalues`` per session) reach the
-        drop-one call only in ``session`` mode (subject/violin take neither)."""
+        """Each mode calls the pair from the dispatch table; the per-mouse
+        p-value table reaches the drop-one call only in ``session`` mode
+        (subject/violin take none)."""
         import matplotlib.pyplot as plt
         from scripts import responses
         group = MagicMock()
-        group.response_ols_dropone_results = self._stub_frame()
+        group.ols_persession = self._stub_frame()
 
         fig_dir = tmp_path / 'persession'
         fig_dir.mkdir()
@@ -269,13 +368,9 @@ class TestPlotPersessionFigures:
             dropone_mock.assert_called_once()
             total_r2_mock.assert_called_once()
         session_kwargs = mocks['session'][0].call_args.kwargs
-        assert session_kwargs['pvalues'] is group.response_ols_mouse_pvalues
-        assert (session_kwargs['session_pvalues']
-                is group.response_ols_session_pvalues)
+        assert session_kwargs['mouse_pvalues'] is group.ols_persession_mouse
         for mode in ('subject', 'target'):
-            kwargs = mocks[mode][0].call_args.kwargs
-            assert 'pvalues' not in kwargs
-            assert 'session_pvalues' not in kwargs
+            assert 'mouse_pvalues' not in mocks[mode][0].call_args.kwargs
 
 
 def _responses_source():
@@ -319,24 +414,6 @@ def _reprocess_and_default_branches():
     _, main_block = _responses_source()
     reprocess, default = main_block.split('\n    else:', 1)
     return reprocess, default
-
-
-class TestPersessionPvalueWiring:
-    """Source-level wiring: --reprocess FDR-corrects and caches both drop-one
-    p-value tables, and the default branch loads both back."""
-
-    def test_reprocess_corrects_and_caches_both_grains(self):
-        reprocess, _ = _reprocess_and_default_branches()
-        assert reprocess.count('add_fdr_qvalues(') == 2
-        assert reprocess.count('PERSESSION_FDR_GROUP_COLS') == 2
-        assert 'RESPONSE_OLS_MOUSE_PVAL_FPATH' in reprocess
-        assert 'RESPONSE_OLS_SESSION_PVAL_FPATH' in reprocess
-
-    def test_default_loads_both_grains(self):
-        _, default = _reprocess_and_default_branches()
-        assert 'load_response_ols_mouse_pvalues(' in default
-        assert 'load_response_ols_session_pvalues(' in default
-        assert 'RESPONSE_OLS_SESSION_PVAL_FPATH' in default
 
 
 class TestVarcompWiring:

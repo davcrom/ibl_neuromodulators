@@ -31,12 +31,19 @@ TRIAL_REGRESSOR_COLUMNS = ['eid', 'trial', 'signed_contrast', 'contrast',
                            'response_time', 'peak_velocity']
 RESPONSE_MATRIX_FPATH = RESPONSES_DIR / 'response_matrix.pqt'
 RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
-RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.parquet'
-RESPONSE_OLS_MOUSE_PVAL_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone_mouse_pvalues.parquet'
-RESPONSE_OLS_SESSION_PVAL_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone_session_pvalues.parquet'
-# Donor-pool sizes (recordings, mice) per (target_NM, event) backing the null.
-RESPONSE_OLS_PERSESSION_POPULATION_FPATH = RESPONSES_DIR / 'response_ols_persession_population.csv'
-RESPONSE_OLS_COEFS_FPATH = RESPONSES_DIR / 'response_ols_persession_coefs.parquet'
+# Per-recording OLS results at one grain: recording x event x dropped
+# predictor. The drop-one fits, the reference model's coefficients, the
+# permutation significance and the donor-pool size all key on that grain, so
+# they are one frame. The reference-model quantities (n_trials, r2_full,
+# r2_full_adj) repeat across a recording-event's predictor rows.
+OLS_PERSESSION_FPATH = RESPONSES_DIR / 'ols_persession.parquet'
+OLS_PERSESSION_COLUMNS = ['eid', 'subject', 'target_NM', 'brain_region',
+                          'event', 'predictor', 'n_trials', 'r2_full',
+                          'r2_full_adj', 'delta_r2', 'delta_r2_adj',
+                          'delta_r2_null_median', 'coef', 'coef_se', 'p_value',
+                          'q_value', 'n_donors']
+# Per-mouse permutation significance — a coarser grain, so its own frame.
+RESPONSE_OLS_MOUSE_PVAL_FPATH = RESPONSES_DIR / 'ols_persession_mouse.parquet'
 # Group-level per-session coefficients frame: one row per (session, event,
 # regressor) carrying the full model's main-effect weight and its SE.
 RESPONSE_OLS_COEFS_COLUMNS = ['eid', 'subject', 'target_NM', 'brain_region',

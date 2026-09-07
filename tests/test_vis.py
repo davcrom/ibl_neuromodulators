@@ -1077,25 +1077,46 @@ class TestPlotOlsDropone:
 
     def _df(self, targets=('VTA-DA', 'DR-5HT'),
             events=('feedback_times', 'stimOnTrigger_times')):
-        """Long-form per-session fits: 2 mice per target-NM, 3 sessions each.
+        """Long-form per-recording fits: 2 mice per target-NM, 3 sessions each.
 
         ``delta_r2_adj`` is ``_EVENT_BASE[event] + 0.001 * predictor_index`` so
         a point's value pins down the (event, predictor) panel it belongs in;
-        ``r2`` (full-model) is constant per event, repeated across predictors.
+        ``r2_full`` is constant per event, repeated across predictors. Every
+        recording is significant, so a color assertion elsewhere isolates the
+        table it varies.
         """
         rows = []
         for tnm in targets:
             for event in events:
                 for pi, pred in enumerate(self._PREDICTORS):
                     for subject in (f'{tnm}_a', f'{tnm}_b'):
-                        for _ in range(3):
+                        for session in range(3):
                             rows.append({
+                                'eid': f'{subject}_{session}',
+                                'brain_region': tnm.split('-')[0],
                                 'target_NM': tnm, 'event': event,
                                 'subject': subject, 'predictor': pred,
-                                'r2': self._EVENT_BASE[event] + 0.3,
+                                'r2_full': self._EVENT_BASE[event] + 0.3,
                                 'delta_r2_adj':
-                                    self._EVENT_BASE[event] + 0.001 * pi})
+                                    self._EVENT_BASE[event] + 0.001 * pi,
+                                'q_value': 0.001})
         return pd.DataFrame(rows)
+
+    @staticmethod
+    def _cell_rows(values_by_subject, target_NM='VTA-DA', q_value=0.001):
+        """One (event, predictor) cell from per-subject lists of ΔR² values.
+
+        Each value is one recording, with its own ``eid``; every recording is
+        significant unless ``q_value`` says otherwise.
+        """
+        return pd.DataFrame([
+            {'eid': f'{subject}_{i}', 'brain_region': target_NM.split('-')[0],
+             'target_NM': target_NM, 'event': 'stimOnTrigger_times',
+             'subject': subject, 'predictor': 'contrast', 'r2_full': 0.5,
+             'delta_r2_adj': value, 'q_value': q_value}
+            for subject, values in values_by_subject
+            for i, value in enumerate(values)
+        ])
 
     @staticmethod
     def _points(ax):
@@ -1143,13 +1164,14 @@ class TestPlotOlsDropone:
 
     def test_total_r2_figure_one_row_of_full_model_r2(self):
         """plot_ols_total_r2 is a separate single-row figure plotting the
-        full-model R² (column ``r2``), read once per session (not per predictor).
+        full-model R² (column ``r2_full``), read once per session (not per
+        predictor).
         """
         from iblnm.vis import plot_ols_total_r2
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
-             'predictor': pred, 'r2': r2, 'delta_r2': 0.05}
-            for pred in ('contrast', 'side')   # r2 repeats across predictors
+             'predictor': pred, 'r2_full': r2, 'delta_r2': 0.05}
+            for pred in ('contrast', 'side')  # r2_full repeats across predictors
             for r2 in (0.4, 0.6)               # two sessions
         ]
         fig = plot_ols_total_r2(pd.DataFrame(rows), 't')
@@ -1174,8 +1196,8 @@ class TestPlotOlsDropone:
         bottom_left = fig.axes[(6 - 1) * 2]  # last row, stimOn column
         assert np.allclose(bottom_left.get_xticks(),
                            [(xs[0] + xs[1]) / 2, (xs[2] + xs[3]) / 2])
-        assert [t.get_text() for t in bottom_left.get_xticklabels()] == [
-            'VTA-DA', 'DR-5HT']
+        assert [t.get_text().split('\n')[0]
+                for t in bottom_left.get_xticklabels()] == ['VTA-DA', 'DR-5HT']
         plt.close(fig)
 
     def test_subjects_ordered_alphanumerically_within_group(self):
@@ -1185,13 +1207,8 @@ class TestPlotOlsDropone:
         from matplotlib.collections import PathCollection
         # Name order ('hi' < 'lo') is the opposite of mean order, so a pass
         # proves ordering is by name, not mean.
-        rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': subj,
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
-            for subj, vals in [('hi', [0.3, 0.5]), ('lo', [0.0, 0.2])]
-            for v in vals
-        ]
-        fig = plot_ols_dropone(pd.DataFrame(rows), 't')
+        fig = plot_ols_dropone(
+            self._cell_rows([('hi', [0.3, 0.5]), ('lo', [0.0, 0.2])]), 't')
         ax = fig.axes[0]  # contrast ΔR² row, one event
         means = sorted((c.get_offsets()[0][0], c.get_offsets()[0][1])
                        for c in ax.collections
@@ -1208,13 +1225,8 @@ class TestPlotOlsDropone:
         from iblnm.config import TARGETNM_COLORS
         from matplotlib.collections import PathCollection
         import matplotlib.colors as mcolors
-        rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': subj,
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
-            for subj, vals in [('m_a', [0.1, 0.3]), ('m_b', [0.4, 0.6])]
-            for v in vals
-        ]
-        fig = plot_ols_dropone(pd.DataFrame(rows), 't')
+        fig = plot_ols_dropone(
+            self._cell_rows([('m_a', [0.1, 0.3]), ('m_b', [0.4, 0.6])]), 't')
         ax = fig.axes[0]  # one event → 1 column; contrast ΔR² row (row 0)
         # Mean markers carry a single point (sessions come in 2s here).
         means = [c for c in ax.collections
@@ -1242,12 +1254,7 @@ class TestPlotOlsDropone:
         """
         from iblnm.vis import plot_ols_dropone
         from matplotlib.collections import PathCollection
-        rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
-            for v in (0.0, 0.0, 0.3)
-        ]
-        fig = plot_ols_dropone(pd.DataFrame(rows), 't')
+        fig = plot_ols_dropone(self._cell_rows([('m_a', [0.0, 0.0, 0.3])]), 't')
         ax = fig.axes[0]  # contrast ΔR² row, one event
         marker = [c for c in ax.collections
                   if isinstance(c, PathCollection) and len(c.get_offsets()) == 1]
@@ -1286,27 +1293,21 @@ class TestPlotOlsDropone:
                 colors[round(float(y), 6)] = tuple(edge[:3])
         return colors
 
-    def test_session_pvalues_color_dots_per_session(self):
-        """With ``session_pvalues``, each dot takes its color from its own
-        session's ``q_value`` — significant sessions keep the target-NM color,
-        non-significant ones gray — while the dash follows the mouse."""
+    def test_row_qvalue_colors_its_own_dot(self):
+        """Each dot takes its color from its own row's ``q_value`` — the merged
+        frame carries the per-recording significance — while the dash follows
+        the mouse frame."""
         from iblnm.vis import plot_ols_dropone
         from iblnm.config import TARGETNM_COLORS
         import matplotlib.colors as mcolors
         rows = [
-            {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
-             'subject': 'm_a', 'predictor': 'contrast', 'r2': 0.5,
-             'delta_r2_adj': v}
-            for eid, v in [('e_sig', 0.1), ('e_ns', 0.3)]
+            {'eid': eid, 'brain_region': 'VTA', 'target_NM': 'VTA-DA',
+             'event': 'stimOnTrigger_times', 'subject': 'm_a',
+             'predictor': 'contrast', 'r2_full': 0.5, 'delta_r2_adj': v,
+             'q_value': q}
+            for eid, v, q in [('e_sig', 0.1, 0.01), ('e_ns', 0.3, 0.5)]
         ]
-        session_pvalues = pd.DataFrame([
-            {'eid': 'e_sig', 'event': 'stimOnTrigger_times', 'predictor': 'contrast',
-             'q_value': 0.01},
-            {'eid': 'e_ns', 'event': 'stimOnTrigger_times', 'predictor': 'contrast',
-             'q_value': 0.5},
-        ])
-        fig = plot_ols_dropone(pd.DataFrame(rows), 't', alpha=0.05,
-                               session_pvalues=session_pvalues)
+        fig = plot_ols_dropone(pd.DataFrame(rows), 't', alpha=0.05)
         colors = self._dot_color_by_y(fig.axes[0])
         assert np.allclose(colors[0.1],
                            mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))
@@ -1314,13 +1315,14 @@ class TestPlotOlsDropone:
         plt.close(fig)
 
     @staticmethod
-    def _two_session_rows():
+    def _two_session_rows(q_values=(np.nan, np.nan)):
         """One mouse, two sessions ('e_1' at 0.1, 'e_2' at 0.3) in one cell."""
         return pd.DataFrame([
-            {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
-             'subject': 'm_a', 'predictor': 'contrast', 'r2': 0.5,
-             'delta_r2_adj': v}
-            for eid, v in [('e_1', 0.1), ('e_2', 0.3)]
+            {'eid': eid, 'brain_region': 'VTA', 'target_NM': 'VTA-DA',
+             'event': 'stimOnTrigger_times', 'subject': 'm_a',
+             'predictor': 'contrast', 'r2_full': 0.5, 'delta_r2_adj': v,
+             'q_value': q}
+            for (eid, v), q in zip([('e_1', 0.1), ('e_2', 0.3)], q_values)
         ])
 
     @staticmethod
@@ -1333,67 +1335,46 @@ class TestPlotOlsDropone:
         ])
 
     def test_dot_and_dash_grains_are_independent(self):
-        """Session dots follow the session table and the mean dash follows the
-        mouse table, each way round: all-significant sessions under a
-        non-significant mouse, and the reverse."""
+        """Session dots follow the frame's own ``q_value`` and the mean dash
+        follows the mouse table, each way round: all-significant sessions under
+        a non-significant mouse, and the reverse."""
         from iblnm.vis import plot_ols_dropone
         from iblnm.config import TARGETNM_COLORS
         import matplotlib.colors as mcolors
         vta = mcolors.to_rgb(TARGETNM_COLORS['VTA-DA'])
         gray = mcolors.to_rgb('gray')
-        df = self._two_session_rows()
-        sig_sessions = self._pvalue_frame({'e_1': 0.01, 'e_2': 0.01}, 'eid')
-        ns_sessions = self._pvalue_frame({'e_1': 0.5, 'e_2': 0.5}, 'eid')
 
         # Sessions significant, mouse not: dots colored, dash gray.
-        fig = plot_ols_dropone(df, 't', pvalues=self._pvalue_frame(
-            {'m_a': 0.5}, 'subject'), alpha=0.05,
-            session_pvalues=sig_sessions)
+        fig = plot_ols_dropone(
+            self._two_session_rows(q_values=(0.01, 0.01)), 't', alpha=0.05,
+            mouse_pvalues=self._pvalue_frame({'m_a': 0.5}, 'subject'))
         dots = self._dot_color_by_y(fig.axes[0])
         assert np.allclose(dots[0.1], vta) and np.allclose(dots[0.3], vta)
         assert np.allclose(self._marker_color_by_y(fig.axes[0])[0.2], gray)
         plt.close(fig)
 
         # Mouse significant, sessions not: dots gray, dash colored.
-        fig = plot_ols_dropone(df, 't', pvalues=self._pvalue_frame(
-            {'m_a': 0.01}, 'subject'), alpha=0.05,
-            session_pvalues=ns_sessions)
+        fig = plot_ols_dropone(
+            self._two_session_rows(q_values=(0.5, 0.5)), 't', alpha=0.05,
+            mouse_pvalues=self._pvalue_frame({'m_a': 0.01}, 'subject'))
         dots = self._dot_color_by_y(fig.axes[0])
         assert np.allclose(dots[0.1], gray) and np.allclose(dots[0.3], gray)
         assert np.allclose(self._marker_color_by_y(fig.axes[0])[0.2], vta)
         plt.close(fig)
 
-    def test_session_missing_from_table_is_gray(self):
-        """A session with no row in ``session_pvalues`` is grayed."""
+    def test_unscored_session_is_gray(self):
+        """A recording the permutation could not score carries a NaN
+        ``q_value`` and is grayed, while its scored neighbour keeps its color."""
         from iblnm.vis import plot_ols_dropone
         from iblnm.config import TARGETNM_COLORS
         import matplotlib.colors as mcolors
         fig = plot_ols_dropone(
-            self._two_session_rows(), 't', alpha=0.05,
-            session_pvalues=self._pvalue_frame({'e_1': 0.01}, 'eid'))
+            self._two_session_rows(q_values=(0.01, np.nan)), 't', alpha=0.05)
         dots = self._dot_color_by_y(fig.axes[0])
         assert np.allclose(dots[0.1],
                            mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))
-        assert np.allclose(dots[0.3], mcolors.to_rgb('gray'))  # 'e_2' absent
+        assert np.allclose(dots[0.3], mcolors.to_rgb('gray'))
         plt.close(fig)
-
-    def test_no_session_table_gives_dots_the_dash_color(self):
-        """Without ``session_pvalues`` every dot takes the mouse's color — the
-        target-NM color when the mouse is significant, gray when it is not."""
-        from iblnm.vis import plot_ols_dropone
-        from iblnm.config import TARGETNM_COLORS
-        import matplotlib.colors as mcolors
-        df = self._two_session_rows()
-        for q, expected in [(0.01, TARGETNM_COLORS['VTA-DA']), (0.5, 'gray')]:
-            fig = plot_ols_dropone(
-                df, 't', pvalues=self._pvalue_frame({'m_a': q}, 'subject'),
-                alpha=0.05)
-            ax = fig.axes[0]
-            dash = self._marker_color_by_y(ax)[0.2]
-            assert np.allclose(dash, mcolors.to_rgb(expected))
-            assert all(np.allclose(dot, dash)
-                       for dot in self._dot_color_by_y(ax).values())
-            plt.close(fig)
 
     def test_pvalues_gray_nonsignificant_subjects(self):
         """A per-mouse table grays subjects whose cell ``q_value >= alpha`` while
@@ -1401,20 +1382,15 @@ class TestPlotOlsDropone:
         from iblnm.vis import plot_ols_dropone
         from iblnm.config import TARGETNM_COLORS
         import matplotlib.colors as mcolors
-        rows = [
-            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': subj,
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
-            for subj, vals in [('m_sig', [0.1, 0.3]), ('m_ns', [0.4, 0.6])]
-            for v in vals
-        ]
-        pvalues = pd.DataFrame([
+        mouse_pvalues = pd.DataFrame([
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'subject': 'm_sig', 'q_value': 0.01},
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'subject': 'm_ns', 'q_value': 0.5},
         ])
-        fig = plot_ols_dropone(pd.DataFrame(rows), 't', pvalues=pvalues,
-                               alpha=0.05)
+        fig = plot_ols_dropone(
+            self._cell_rows([('m_sig', [0.1, 0.3]), ('m_ns', [0.4, 0.6])]),
+            't', mouse_pvalues=mouse_pvalues, alpha=0.05)
         colors = self._marker_color_by_y(fig.axes[0])
         assert np.allclose(colors[0.2],
                            mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))  # m_sig
@@ -1528,8 +1504,8 @@ class TestPlotOlsDroponeTargetMode:
         from matplotlib.collections import PolyCollection
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
-             'predictor': pred, 'r2': r2, 'delta_r2': 0.05}
-            for pred in ('contrast', 'side')  # r2 repeats across predictors
+             'predictor': pred, 'r2_full': r2, 'delta_r2': 0.05}
+            for pred in ('contrast', 'side')  # repeats across predictors
             for r2 in (0.4, 0.6)
         ]
         fig = plot_ols_total_r2_violin(pd.DataFrame(rows), 't')
@@ -3144,43 +3120,48 @@ class TestPlotBaselineTercileDifference:
 
 
 class TestPlotOlsDroponeCounts:
-    """plot_ols_dropone counts annotation — donor-pool size on x-tick labels."""
+    """plot_ols_dropone counts annotation — the population behind each x-tick,
+    counted off the plotted frame."""
 
     def _df(self):
-        # Two targets at one event; VTA-DA has 3 recordings / 2 mice,
-        # DR-5HT has 1 recording / 1 mouse.
+        # Two targets at one event. VTA-DA: eid 'A' is bilateral (two regions,
+        # so two recordings) plus 'B', over two mice. DR-5HT: one recording.
         rows = [
-            ('A', 'm1', 'VTA-DA'), ('B', 'm1', 'VTA-DA'), ('C', 'm2', 'VTA-DA'),
-            ('D', 'm3', 'DR-5HT'),
+            ('A', 'VTA', 'm1', 'VTA-DA'), ('A', 'SNc', 'm1', 'VTA-DA'),
+            ('B', 'VTA', 'm2', 'VTA-DA'), ('D', 'DR', 'm3', 'DR-5HT'),
         ]
         return pd.DataFrame([
-            {'eid': eid, 'subject': subj, 'target_NM': tnm,
-             'event': 'stimOnTrigger_times', 'predictor': 'contrast',
-             'delta_r2_adj': 0.01}
-            for eid, subj, tnm in rows
+            {'eid': eid, 'brain_region': region, 'subject': subj,
+             'target_NM': tnm, 'event': 'stimOnTrigger_times',
+             'predictor': 'contrast', 'delta_r2_adj': 0.01, 'q_value': 0.01}
+            for eid, region, subj, tnm in rows
         ])
 
     def test_counts_appended_to_xticklabels(self):
+        """Recordings are distinct ``(eid, brain_region)`` pairs, so a bilateral
+        session counts twice; mice are distinct subjects."""
         from iblnm.vis import plot_ols_dropone
-        from iblnm.util import count_population_by_target_event
-        df = self._df()
-        counts = count_population_by_target_event(df)
-        fig = plot_ols_dropone(df, 'title', counts=counts)
+        fig = plot_ols_dropone(self._df(), 'title')
         # Bottom-row panel of the single event column carries the target ticks.
         labels = [t.get_text() for t in fig.axes[-1].get_xticklabels()]
-        vta = next(l for l in labels if l.startswith('VTA-DA'))
-        dr = next(l for l in labels if l.startswith('DR-5HT'))
+        vta = next(text for text in labels if text.startswith('VTA-DA'))
+        dr = next(text for text in labels if text.startswith('DR-5HT'))
         assert 'n=3' in vta and 'm=2' in vta
         assert 'n=1' in dr and 'm=1' in dr
         plt.close(fig)
 
-    def test_no_counts_leaves_labels_bare(self):
+    def test_counts_are_per_event(self):
+        """A recording present at one event only is counted at that event."""
         from iblnm.vis import plot_ols_dropone
         df = self._df()
-        fig = plot_ols_dropone(df, 'title')
-        labels = [t.get_text() for t in fig.axes[-1].get_xticklabels()]
-        assert 'VTA-DA' in labels   # bare target name, no 'n='
-        assert all('n=' not in l for l in labels)
+        extra = df.iloc[[0]].assign(event='feedback_times', eid='E')
+        fig = plot_ols_dropone(pd.concat([df, extra], ignore_index=True),
+                               'title')
+        # Two event columns; the bottom row's last panel is feedback_times.
+        stimon = [t.get_text() for t in fig.axes[-2].get_xticklabels()]
+        feedback = [t.get_text() for t in fig.axes[-1].get_xticklabels()]
+        assert any('n=3' in text for text in stimon)
+        assert feedback == ['VTA-DA\nn=1, m=1']
         plt.close(fig)
 
 
