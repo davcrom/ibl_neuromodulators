@@ -4814,17 +4814,17 @@ class PhotometrySessionGroup:
         Neither table carries q-values: the caller applies
         :func:`iblnm.analysis.add_fdr_qvalues` with its own choice of families.
         """
-        predictors = [name for name in formulas if name != reference]
+        reduced_formulas = {name: formula for name, formula in formulas.items()
+                            if name != reference}
         rng = np.random.default_rng(random_state)
         null_vectors, donor_counts = {}, {}
         for focal in tqdm(frames,
                           desc="Permutation null (per recording-event)"):
             donors = select_donor_frames(focal, frames, donor_scope)
-            for predictor in predictors:
-                null = analysis.permutation_null_delta_r2(
-                    focal.frame, donors, formulas[reference],
-                    formulas[predictor], predictor, response_col, rng=rng,
-                    n_bootstrap=n_bootstrap)
+            nulls = analysis.permutation_null_delta_r2(
+                focal.frame, donors, formulas[reference], reduced_formulas,
+                response_col, rng=rng, n_bootstrap=n_bootstrap)
+            for predictor, null in nulls.items():
                 if null.size:
                     null_vectors[(focal.eid, focal.event, predictor)] = null
                     donor_counts[(focal.eid, focal.event,

@@ -6825,9 +6825,11 @@ class TestModellingPass:
             fitted.append(df)
             return real_fit_ols(formula, df)
 
-        def null_spy(focal_df, donor_dfs, *args, n_bootstrap=1000, **kwargs):
+        def null_spy(focal_df, donor_dfs, full_formula, reduced_formulas,
+                     *args, n_bootstrap=1000, **kwargs):
             permuted.append(focal_df)
-            return np.full(n_bootstrap, 0.01)
+            return {predictor: np.full(n_bootstrap, 0.01)
+                    for predictor in reduced_formulas}
 
         monkeypatch.setattr('iblnm.analysis.fit_ols', fit_spy)
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
@@ -8203,18 +8205,20 @@ class TestResponseOlsDroponePermutation:
     @staticmethod
     def _patch_null(monkeypatch, empty_for=()):
         """Stub the null primitive so statsmodels is never invoked. Returns the
-        list each call records: ``(focal_tag, donor_tags, predictor)``; a focal
-        eid in ``empty_for`` gets an empty null vector back."""
+        list each call records: ``(focal_tag, donor_tags, predictors)``; a focal
+        eid in ``empty_for`` gets empty null vectors back."""
         calls = []
 
-        def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
-                      predictor, response_col='response', *, rng,
-                      n_bootstrap=1000):
+        def fake_null(focal_df, donor_dfs, full_formula, reduced_formulas,
+                      response_col='response', *, rng, n_bootstrap=1000):
             calls.append((focal_df['tag'].iloc[0],
-                          {d['tag'].iloc[0] for d in donor_dfs}, predictor))
+                          {d['tag'].iloc[0] for d in donor_dfs},
+                          tuple(reduced_formulas)))
             if focal_df['tag'].iloc[0] in empty_for:
-                return np.array([])
-            return np.full(n_bootstrap, 0.01)
+                return {predictor: np.array([])
+                        for predictor in reduced_formulas}
+            return {predictor: np.full(n_bootstrap, 0.01)
+                    for predictor in reduced_formulas}
 
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
                             fake_null)
@@ -8378,12 +8382,12 @@ class TestResponseOlsDroponePermutation:
         group.response_ols_dropone_results = self._observed()
         draws = {}
 
-        def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
-                      predictor, response_col='response', *, rng,
-                      n_bootstrap=1000):
-            vector = rng.random(n_bootstrap)
-            draws.setdefault(focal_df['tag'].iloc[0], []).append(vector)
-            return vector
+        def fake_null(focal_df, donor_dfs, full_formula, reduced_formulas,
+                      response_col='response', *, rng, n_bootstrap=1000):
+            nulls = {predictor: rng.random(n_bootstrap)
+                     for predictor in reduced_formulas}
+            draws.setdefault(focal_df['tag'].iloc[0], []).extend(nulls.values())
+            return nulls
 
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
                             fake_null)

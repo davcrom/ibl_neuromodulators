@@ -2247,24 +2247,26 @@ def permutation_null_delta_r2(
     focal_df: pd.DataFrame,
     donor_dfs: list[pd.DataFrame],
     full_formula: str,
-    reduced_formula: str,
-    predictor: str,
+    reduced_formulas: dict[str, str],
     response_col: str = 'response',
     *,
     rng: np.random.Generator,
     n_bootstrap: int = 1000,
-) -> np.ndarray:
+) -> dict[str, np.ndarray]:
     """Cross-session swap null drop-one ΔR² for one focal recording-event.
 
-    Variable-agnostic permutation primitive. For each donor session, the focal
-    frame's ``predictor`` column is swapped for that donor's same-named coded
-    column (truncating both to the shorter length), and the full and reduced
-    models are refit via a shared ``SubstitutableOLS`` engine built once from the
-    focal frame. The dropped predictor's null unique contribution is
+    Variable-agnostic permutation primitive. For each donor session and each
+    dropped predictor, the focal frame's predictor column is swapped for that
+    donor's same-named coded column (truncating both to the shorter length), and
+    the full and reduced models are refit via ``SubstitutableOLS`` engines built
+    once from the focal frame — one full engine shared by every predictor, one
+    reduced engine each. The dropped predictor's null unique contribution is
     ΔR²* = R²_full* − R²_reduced* on those rows. Substituting only the raw column
     makes the engine recompute the predictor's interaction columns from the
     swapped values while every other column stays at its real focal value, so
-    the reduced model remains the real baseline.
+    the reduced model remains the real baseline. The reduced fit ignores the
+    donor entirely, so it is computed once per ``(predictor, row count)`` and
+    reused across donors of equal length.
 
     Parameters
     ----------
@@ -2275,48 +2277,61 @@ def permutation_null_delta_r2(
         first ``L`` rows.
     donor_dfs : list[pd.DataFrame]
         Donor coded frames for the same event, one per donor session. Only the
-        ``predictor`` column of each is read.
-    full_formula, reduced_formula : str
-        Wilkinson formula templates with a ``{response}`` placeholder; the
-        reduced formula drops ``predictor`` and all its interactions.
-    predictor : str
-        Name of the raw predictor column swapped in from each donor.
+        ``reduced_formulas`` key columns of each are read.
+    full_formula : str
+        Wilkinson formula template with a ``{response}`` placeholder for the
+        full model, shared by every dropped predictor.
+    reduced_formulas : dict[str, str]
+        Maps the name of each raw predictor column swapped in from the donors to
+        the reduced formula template dropping that predictor and all its
+        interactions.
     response_col : str
-        Response column substituted into both formula templates.
+        Response column substituted into every formula template.
     rng : np.random.Generator
-        Source of the donor-pool bootstrap draws; the caller owns the seed.
+        Source of the donor-pool bootstrap draws, drawn from once per predictor;
+        the caller owns the seed.
     n_bootstrap : int
-        Length of the returned bootstrap vector. The scorable-donor ΔR² set is
+        Length of each returned bootstrap vector. The scorable-donor ΔR² set is
         resampled with replacement to this fixed length so every session's null
         has a uniform length; resampling adds no donor information.
 
     Returns
     -------
-    np.ndarray
-        A length-``n_bootstrap`` bootstrap resample (with replacement) of the
-        scorable-donor ΔR² set, giving every session a uniform-length,
-        smoothed null. A donor whose swapped full or reduced fit is degenerate
-        (``SubstitutableOLS.r2`` returns ``None``) is skipped before resampling.
-        When no donor is scorable the set is empty and an empty array is
-        returned (the caller drops such a session).
+    dict[str, np.ndarray]
+        One length-``n_bootstrap`` bootstrap resample (with replacement) of the
+        scorable-donor ΔR² set per ``reduced_formulas`` key, giving every
+        session a uniform-length, smoothed null. A donor whose swapped full or
+        reduced fit is degenerate (``SubstitutableOLS.r2`` returns ``None``) is
+        skipped for that predictor alone. A predictor with no scorable donor
+        gets an empty array (the caller drops such a session).
     """
-    full_formula = full_formula.format(response=response_col)
-    reduced_formula = reduced_formula.format(response=response_col)
-    full = SubstitutableOLS(full_formula, focal_df)
-    reduced = SubstitutableOLS(reduced_formula, focal_df)
+    full = SubstitutableOLS(full_formula.format(response=response_col),
+                            focal_df)
+    reduced = {
+        predictor: SubstitutableOLS(formula.format(response=response_col),
+                                    focal_df)
+        for predictor, formula in reduced_formulas.items()
+    }
 
-    null_deltas = []
+    null_deltas = {predictor: [] for predictor in reduced}
+    reduced_r2 = {}
     for donor_df in donor_dfs:
         length = min(len(focal_df), len(donor_df))
-        swap = {predictor: donor_df[predictor].iloc[:length].to_numpy()}
-        full_r2 = full.r2(substitution=swap, n_rows=length)
-        reduced_r2 = reduced.r2(n_rows=length)
-        if full_r2 is None or reduced_r2 is None:
-            continue
-        null_deltas.append(full_r2 - reduced_r2)
-    if not null_deltas:
-        return np.array([])
-    return rng.choice(np.asarray(null_deltas), size=n_bootstrap, replace=True)
+        for predictor, engine in reduced.items():
+            key = (predictor, length)
+            if key not in reduced_r2:
+                reduced_r2[key] = engine.r2(n_rows=length)
+            swap = {predictor: donor_df[predictor].iloc[:length].to_numpy()}
+            full_r2 = full.r2(substitution=swap, n_rows=length)
+            if full_r2 is None or reduced_r2[key] is None:
+                continue
+            null_deltas[predictor].append(full_r2 - reduced_r2[key])
+    return {
+        predictor: (rng.choice(np.asarray(deltas), size=n_bootstrap,
+                               replace=True)
+                    if deltas else np.array([]))
+        for predictor, deltas in null_deltas.items()
+    }
 
 
 def compute_feature_dispersion(
