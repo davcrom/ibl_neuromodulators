@@ -2355,7 +2355,7 @@ class TestBuildTrialRegressors:
     def test_column_set_and_derived_timings(self):
         from iblnm.analysis import build_trial_regressors
         trials = self._trials()
-        df = build_trial_regressors(trials, wheel_velocity=None,
+        df = build_trial_regressors(trials, peak_velocity=None,
                                     onset_event='stimOnTrigger_times')
         expected_cols = {
             'trial', 'signed_contrast', 'contrast', 'stim_side', 'choice',
@@ -2386,30 +2386,28 @@ class TestBuildTrialRegressors:
         from iblnm.analysis import build_trial_regressors
         trials = self._trials()
         trials['trial'] = [0, 3, 7]
-        df = build_trial_regressors(trials, wheel_velocity=None,
+        df = build_trial_regressors(trials, peak_velocity=None,
                                     onset_event='stimOnTrigger_times')
         assert df['trial'].tolist() == [0, 3, 7]
 
     def test_peak_velocity_nan_when_no_wheel(self):
         from iblnm.analysis import build_trial_regressors
-        df = build_trial_regressors(self._trials(), wheel_velocity=None,
+        df = build_trial_regressors(self._trials(), peak_velocity=None,
                                     onset_event='stimOnTrigger_times')
         assert df['peak_velocity'].isna().all()
 
-    def test_peak_velocity_finite_when_wheel_supplied(self):
+    def test_peak_velocity_carries_the_reduced_vector(self):
         from iblnm.analysis import build_trial_regressors
-        velocity = np.array([[0.0, 1.0, -3.0],
-                             [np.nan, np.nan, np.nan],
-                             [2.0, -5.0, 1.0]])
-        df = build_trial_regressors(self._trials(), wheel_velocity=velocity,
-                                    onset_event='stimOnTrigger_times')
+        df = build_trial_regressors(
+            self._trials(), peak_velocity=np.array([3.0, np.nan, 5.0]),
+            onset_event='stimOnTrigger_times')
         np.testing.assert_array_equal(
             df['peak_velocity'].values, np.array([3.0, np.nan, 5.0]))
 
     def test_missing_event_columns_give_nan_timings(self):
         from iblnm.analysis import build_trial_regressors
         trials = self._trials().drop(columns=['firstMovement_times'])
-        df = build_trial_regressors(trials, wheel_velocity=None,
+        df = build_trial_regressors(trials, peak_velocity=None,
                                     onset_event='stimOnTrigger_times')
         assert df['reaction_time'].isna().all()
         assert df['movement_time'].isna().all()

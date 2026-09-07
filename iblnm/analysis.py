@@ -1691,13 +1691,13 @@ def peak_velocity(wheel_vel, n_trials):
 
 
 def build_trial_regressors(
-    trials: pd.DataFrame, wheel_velocity: np.ndarray | None, onset_event: str
+    trials: pd.DataFrame, peak_velocity: np.ndarray | None, onset_event: str
 ) -> pd.DataFrame:
     """Assemble one session's one-row-per-trial regressor frame.
 
     Copies the categorical/behavioral trial columns, derives the three
-    event-timing differences, and reduces the wheel velocity matrix to a
-    per-trial peak. Does not set ``eid`` — the caller tags it.
+    event-timing differences, and carries the per-trial wheel peak through.
+    Does not set ``eid`` — the caller tags it.
 
     Parameters
     ----------
@@ -1709,9 +1709,10 @@ def build_trial_regressors(
         absent. ``trial`` is the stored ONE trial index, which need not be
         contiguous — it is copied through, not regenerated, so the frame stays
         joinable against per-trial responses.
-    wheel_velocity : np.ndarray or None
-        ``(n_trials, n_samples)`` wheel velocity, or ``None`` when the wheel
-        group is missing. ``None`` yields all-NaN ``peak_velocity``.
+    peak_velocity : np.ndarray or None
+        Length ``n_trials`` maximum absolute wheel velocity per trial — the
+        reduced product, not the response matrix — or ``None`` when the session
+        holds no wheel data. ``None`` yields an all-NaN ``peak_velocity``.
     onset_event : str
         Trials column the two onset-referenced timings are measured from, the
         caller's choice of stimulus-onset clock (``config.STIM_ONSET_EVENT``).
@@ -1731,8 +1732,7 @@ def build_trial_regressors(
     """
     copy_cols = ['trial', 'signed_contrast', 'contrast', 'stim_side', 'choice',
                  'feedbackType', 'probabilityLeft']
-    n_trials = len(trials)
-    df = pd.DataFrame(index=range(n_trials))
+    df = pd.DataFrame(index=range(len(trials)))
     for col in copy_cols:
         df[col] = trials[col].values
     df['reaction_time'] = _event_diff(
@@ -1741,7 +1741,7 @@ def build_trial_regressors(
         trials, 'response_times', 'firstMovement_times')
     df['response_time'] = _event_diff(
         trials, 'response_times', onset_event)
-    df['peak_velocity'] = peak_velocity(wheel_velocity, n_trials)
+    df['peak_velocity'] = np.nan if peak_velocity is None else peak_velocity
     return df
 
 

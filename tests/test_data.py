@@ -6275,21 +6275,102 @@ def _make_group_with_planted_trials():
     return group
 
 
+def _session_with_planted_trials(n_regions=1, fast_response=False):
+    """Session whose four trials each exercise one modeling filter.
+
+    Trials 0 and 3 pass; trial 1 breaks ``response_time > 0.05`` (false start)
+    and trial 2 breaks ``choice != 0`` (no-go). Trial 3 sits in a biased block
+    (``probabilityLeft == 0.8``), which the selection keeps. The response is a
+    flat 1.0 after every event, so each magnitude is 1.0. ``fast_response``
+    moves every choice to 10 ms after stimulus onset, so feedback lands before
+    the response window opens and the stimulus-locked window is masked away
+    end to end.
+    """
+    from iblnm.data import PhotometrySession
+
+    regions = ['VTA-r', 'DR-l'][:n_regions]
+    series = pd.Series({
+        'eid': 'eid-0', 'subject': 's0',
+        'start_time': '2024-01-01T10:00:00', 'number': 1,
+        'task_protocol': 'biased', 'session_type': 'biased', 'NM': 'DA',
+        'brain_region': regions, 'hemisphere': ['r', 'l'][:n_regions],
+        'target_NM': ['VTA-DA', 'DR-5HT'][:n_regions],
+    })
+    ps = PhotometrySession(series, one=MagicMock(), load_data=False)
+
+    n_trials, n_time = 4, 61
+    tpts = np.linspace(-1, 1, n_time)
+    events = ['stimOnTrigger_times', 'firstMovement_times', 'feedback_times']
+    data = np.zeros((len(events), n_trials, n_time))
+    data[:, :, tpts >= 0] = 1.0
+    ps.photometry_responses = {
+        region: xr.DataArray(
+            data, dims=['event', 'trial', 'time'],
+            coords={'event': events, 'trial': np.arange(n_trials),
+                    'time': tpts})
+        for region in regions
+    }
+
+    stim_on = np.array([10.0, 20.0, 30.0, 40.0])
+    # Trial 1 is a false start unless every trial is one.
+    response = stim_on + (0.01 if fast_response
+                          else np.array([1.0, 0.01, 1.0, 1.0]))
+    ps.trials = pd.DataFrame({
+        'trial': np.arange(n_trials),
+        'stimOnTrigger_times': stim_on,
+        'firstMovement_times': stim_on + 0.2,
+        'response_times': response,
+        'feedback_times': response + 0.0005,
+        'signed_contrast': [0.25, 0.25, 0.25, 0.25],
+        'contrast': [25.0, 25.0, 25.0, 25.0],
+        'stim_side': ['right', 'right', 'right', 'right'],
+        'feedbackType': [1, 1, 1, 1],
+        'choice': [1, 1, 0, 1],                    # trial 2: no-go
+        'probabilityLeft': [0.5, 0.5, 0.5, 0.8],   # trial 3: biased block
+    })
+    ps.wheel_peak_velocity = np.array([1.0, 2.0, 3.0, 4.0])
+    return ps
+
+
 class TestModelingFrame:
+    """The uncoded, unselected frame a session merges before it codes."""
 
-    def test_excludes_filtered_trials(self):
-        # Trial 1 (false start) and trial 2 (no-go) are dropped. Trial 3
-        # (biased block) is kept: _modeling_frame includes all blocks by
-        # default, filtering only on response_time and choice.
-        group = _make_group_with_planted_trials()
-        df = group._modeling_frame()
-        assert df['trial'].tolist() == [0, 3]
+    @property
+    def formulas(self):
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']
 
-    def test_includes_derived_columns(self):
-        group = _make_group_with_planted_trials()
-        df = group._modeling_frame()
-        for col in ('relative_contrast', 'contrast', 'side'):
+    def test_carries_every_recorded_trial_uncoded(self):
+        from iblnm.config import RESPONSE_EVENTS
+        ps = _session_with_planted_trials()
+        ps._prepare_model_frames(self.formulas, min_trials=1)
+        df = ps.response_magnitudes
+        # No-go and false-start rows included, one row per event x trial.
+        assert len(df) == len(RESPONSE_EVENTS) * 4
+        assert sorted(df['trial'].unique()) == [0, 1, 2, 3]
+        # Untransformed contrast and the original stimulus-side labels.
+        assert set(df['contrast']) == {25.0}
+        assert set(df['stim_side']) == {'right'}
+
+    def test_carries_identity_and_derived_columns(self):
+        ps = _session_with_planted_trials()
+        ps._prepare_model_frames(self.formulas, min_trials=1)
+        df = ps.response_magnitudes
+        assert set(df['eid']) == {'eid-0'}
+        assert set(df['brain_region']) == {'VTA-r'}
+        assert set(df['target_NM']) == {'VTA-DA'}
+        for col in ('relative_contrast', 'contrast', 'side', 'peak_velocity',
+                    'response', 'masked_fraction'):
             assert col in df.columns
+
+    def test_excludes_filtered_trials_from_the_coded_cells(self):
+        # Trial 1 (false start) and trial 2 (no-go) are dropped. Trial 3
+        # (biased block) is kept: the selection includes all blocks by default,
+        # filtering only on response_time and choice.
+        from iblnm.config import STIM_ONSET_EVENT
+        ps = _session_with_planted_trials()
+        frames = ps._prepare_model_frames(self.formulas, min_trials=1)
+        assert frames[('VTA-r', STIM_ONSET_EVENT)]['trial'].tolist() == [0, 3]
 
 
 class TestCodeLmmPredictors:
@@ -6566,6 +6647,8 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
                     'time': np.arange(50) / 100},
         )
     }
+    # The stored regressor, reduced from that cut as the download build does.
+    ps.extract_peak_velocity()
     return ps
 
 
@@ -6620,60 +6703,86 @@ def _collected_group(h5_dir, rows, n_trials=120):
     return group
 
 
+def _add_second_recording(ps, n_missing=0, region='DR-l', hemisphere='l',
+                          target_nm='DR-5HT'):
+    """Give ``ps`` a second recording, optionally one the store lacks a cut for.
+
+    ``n_missing`` leading trials of the new region carry no signal, so that
+    region's cells retain fewer trials than the first region's — the case that
+    tells per-cell centring apart from per-session centring. Passing
+    ``n_missing=None`` adds the region to the catalog columns alone, leaving
+    the store without a cut for it.
+    """
+    ps.brain_region.append(region)
+    ps.hemisphere.append(hemisphere)
+    ps.target_NM.append(target_nm)
+    if n_missing is None:
+        return ps
+    responses = ps.photometry_responses[ps.brain_region[0]].copy()
+    responses[:, :n_missing, :] = np.nan
+    ps.photometry_responses[region] = responses
+    return ps
+
+
 class TestCodeModelFrames:
-    """The coding step of the modelling pass (PhotometrySessionGroup)."""
+    """The coding step of the modelling pass (PhotometrySession)."""
 
     @property
     def formulas(self):
         from iblnm.config import LMM_FORMULAS
         return LMM_FORMULAS['persession']
 
-    def test_one_coded_frame_per_recording_event(self, tmp_path):
+    def test_one_coded_frame_per_region_event(self):
         from iblnm.analysis import formula_union_columns
         from iblnm.config import RESPONSE_EVENTS
-        group = _collected_group(
-            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA')])
-        frames = group.code_model_frames(self.formulas)
+        ps = _make_session_for_persession()
+        frames = ps._prepare_model_frames(self.formulas)
 
-        assert {(cf.eid, cf.brain_region, cf.event) for cf in frames} == {
-            ('eid-0', 'VTA-r', event) for event in RESPONSE_EVENTS}
-        for cf in frames:
-            assert (cf.subject, cf.target_NM) == ('subj-0', 'VTA-DA')
+        assert set(frames) == {('VTA-r', event) for event in RESPONSE_EVENTS}
+        for coded in frames.values():
             # Deviation-coded, and complete over every column the family uses.
-            assert set(np.unique(cf.frame['side'])) <= {-0.5, 0.5}
+            assert set(np.unique(coded['side'])) <= {-0.5, 0.5}
             union = formula_union_columns(self.formulas.values(),
-                                          cf.frame.columns)
-            assert cf.frame[union].notna().all().all()
+                                          coded.columns)
+            assert coded[union].notna().all().all()
 
-    def test_recording_event_below_min_trials_is_omitted(self, tmp_path):
-        group = _collected_group(
-            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
-                       ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')],
-            n_trials=[120, 20])
-        frames = group.code_model_frames(self.formulas)
-        assert {cf.eid for cf in frames} == {'eid-0'}
+    def test_cell_below_min_trials_is_omitted_but_its_rows_remain(self):
+        from iblnm.config import RESPONSE_EVENTS
+        ps = _make_session_for_persession(n_trials=20)
+        frames = ps._prepare_model_frames(self.formulas)
+        assert frames == {}
+        # The uncoded frame is unfiltered by the fit's trial floor.
+        assert len(ps.response_magnitudes) == len(RESPONSE_EVENTS) * 20
 
-    def test_event_absent_from_event_keyed_family_raises(self, tmp_path):
+    def test_event_absent_from_event_keyed_family_raises(self):
         from iblnm.validation import MissingFormula
-        group = _collected_group(
-            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA')])
+        ps = _make_session_for_persession()
         with pytest.raises(MissingFormula) as excinfo:
-            group.code_model_frames({'feedback_times': self.formulas},
-                                    events=['stimOnTrigger_times'])
+            ps._prepare_model_frames({'feedback_times': self.formulas},
+                                     events=['stimOnTrigger_times'])
         assert 'stimOnTrigger_times' in str(excinfo.value)
         assert 'feedback_times' in str(excinfo.value)
 
-    def test_predictors_are_centered_within_recording_event(self, tmp_path):
-        """Two recordings with different reaction-time distributions each
-        center on their own mean, so neither carries the other's offset."""
-        group = _collected_group(
-            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
-                       ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')])
-        frames = group.code_model_frames(self.formulas)
+    def test_predictors_are_centered_within_each_cell(self):
+        """Two regions retaining different trials each center on their own
+        mean, so neither carries the other's offset."""
+        ps = _add_second_recording(_make_session_for_persession(),
+                                   n_missing=30)
+        frames = ps._prepare_model_frames(self.formulas)
         assert len(frames) == 4
-        for cf in frames:
-            assert cf.frame['log_reaction_time'].mean() == pytest.approx(0.0)
-            assert cf.frame['peak_velocity'].mean() == pytest.approx(0.0)
+        sizes = {region: len(coded) for (region, _), coded in frames.items()}
+        assert sizes['VTA-r'] > sizes['DR-l']
+        for coded in frames.values():
+            assert coded['log_reaction_time'].mean() == pytest.approx(0.0)
+            assert coded['peak_velocity'].mean() == pytest.approx(0.0)
+
+    def test_region_with_no_stored_cut_contributes_no_cell(self):
+        """The catalog claims two regions; the store holds one."""
+        ps = _add_second_recording(_make_session_for_persession(),
+                                   n_missing=None)
+        frames = ps._prepare_model_frames(self.formulas)
+        assert {region for region, _ in frames} == {'VTA-r'}
+        assert set(ps.response_magnitudes['brain_region']) == {'VTA-r'}
 
 
 class TestResponseOlsDropone:
@@ -8520,145 +8629,105 @@ class TestLoadStates:
 
 
 # =============================================================================
-# collect_responses Tests
+# Response magnitude merge tests
 # =============================================================================
 
 class TestCollectResponses:
-    """The single pass producing response magnitudes and trial regressors."""
+    """The merge producing one session's uncoded response magnitudes."""
 
-    def test_magnitude_is_masked_baseline_subtracted_window_mean(self, tmp_path):
+    @property
+    def formulas(self):
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']
+
+    def test_magnitude_is_masked_baseline_subtracted_window_mean(self):
         """Post-event signal is 1.0 and baseline 0, so every magnitude is 1.0."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=50)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        magnitudes, _ = group.collect_responses()
+        ps = _session_with_planted_trials()
+        ps._prepare_model_frames(self.formulas, min_trials=1)
         np.testing.assert_allclose(
-            magnitudes['response'].dropna().values, 1.0, atol=1e-9)
+            ps.response_magnitudes['response'].dropna().values, 1.0, atol=1e-9)
 
-    def test_one_regressor_row_per_trial_per_session(self, tmp_path):
-        """Two sessions, two regions each: regressors are per session, not per
-        recording, so the same trials table is not counted twice."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=2)
-        n_trials = 40
-        for i in range(2):
-            _write_h5(tmp_path / f'eid-{i}.h5', n_trials=n_trials,
-                      regions=('VTA-r', 'DR-l'), seed=i)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        _, regressors = group.collect_responses()
-        assert len(regressors) == 2 * n_trials
-        assert regressors.groupby('eid').size().to_dict() == {
-            'eid-0': n_trials, 'eid-1': n_trials}
+    def test_trial_columns_repeat_across_recordings(self):
+        """The trial regressors are per session: two regions carry the same
+        four trials, not eight."""
+        ps = _session_with_planted_trials(n_regions=2)
+        ps._prepare_model_frames(self.formulas, min_trials=1)
+        df = ps.response_magnitudes
+        counts = df.groupby(['brain_region', 'event']).size()
+        assert set(counts) == {4}
+        for _, rows in df.groupby(['brain_region', 'event']):
+            np.testing.assert_array_equal(rows['trial'].values, np.arange(4))
+            np.testing.assert_allclose(rows['peak_velocity'].values,
+                                       [1.0, 2.0, 3.0, 4.0])
 
-    def test_opens_each_h5_once(self, tmp_path):
-        """A session with two regions is read once, not once per recording."""
-        from iblnm.data import PhotometrySession, PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=2)
-        for i in range(2):
-            _write_h5(tmp_path / f'eid-{i}.h5', n_trials=30,
-                      regions=('VTA-r', 'DR-l'), seed=i)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        opened = []
-        real_load_h5 = PhotometrySession.load_h5
+    def test_session_with_no_responses_yields_an_empty_typed_frame(self):
+        ps = _session_with_planted_trials()
+        ps.photometry_responses = {}
+        frames = ps._prepare_model_frames(self.formulas, min_trials=1)
+        assert frames == {}
+        assert ps.response_magnitudes.empty
+        for col in ('eid', 'brain_region', 'event', 'response', 'contrast'):
+            assert col in ps.response_magnitudes.columns
 
-        def spy(self, fpath=None, groups=None):
-            opened.append(str(fpath))
-            return real_load_h5(self, fpath, groups=groups)
+    def test_session_with_no_photometry_raises(self):
+        """A missing input raises for the caller to log, rather than scoring
+        a session with no signal in it."""
+        ps = _session_with_planted_trials()
+        del ps.photometry_responses
+        with pytest.raises(AttributeError):
+            ps._prepare_model_frames(self.formulas, min_trials=1)
 
-        with patch.object(PhotometrySession, 'load_h5', spy):
-            group.collect_responses()
-        assert len(opened) == len(set(opened)) == 2
+    def test_no_stored_peak_velocity_scores_nan(self):
+        ps = _session_with_planted_trials()
+        del ps.wheel_peak_velocity
+        ps._prepare_model_frames(self.formulas, min_trials=1)
+        assert ps.response_magnitudes['peak_velocity'].isna().all()
 
-    def test_recording_whose_region_has_no_cut_contributes_no_rows(self, tmp_path):
-        """The catalog claims two regions; the store holds one."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=2)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=30, regions=('VTA-r',))
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        magnitudes, regressors = group.collect_responses()
-        assert set(magnitudes['brain_region']) == {'VTA-r'}
-        assert len(regressors) == 30
-
-    def test_missing_h5_contributes_no_rows(self, tmp_path):
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=2, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=30)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        magnitudes, regressors = group.collect_responses()
-        assert set(magnitudes['eid']) == {'eid-0'}
-        assert set(regressors['eid']) == {'eid-0'}
-
-    def test_no_store_yields_empty_typed_frames(self, tmp_path):
-        from iblnm.data import PhotometrySessionGroup
-        from iblnm.config import (RESPONSE_MAGNITUDE_COLUMNS,
-                                  TRIAL_REGRESSOR_COLUMNS)
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        magnitudes, regressors = group.collect_responses()
-        assert list(magnitudes.columns) == RESPONSE_MAGNITUDE_COLUMNS
-        assert list(regressors.columns) == TRIAL_REGRESSOR_COLUMNS
-        assert magnitudes.empty and regressors.empty
-
-    def test_fully_masked_window_is_nan_and_dropped(self, tmp_path):
+    def test_fully_masked_window_is_nan_and_dropped(self):
         """Feedback lands before the window opens, so every sample of the
         stimulus-locked window is masked away."""
-        from iblnm.data import PhotometrySessionGroup
-        from iblnm.analysis import select_modeling_trials
         from iblnm.config import STIM_ONSET_EVENT
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=30, fast_response=True)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        magnitudes, regressors = group.collect_responses()
-        stim = magnitudes[magnitudes['event'] == STIM_ONSET_EVENT]
+        ps = _session_with_planted_trials(fast_response=True)
+        frames = ps._prepare_model_frames(self.formulas, min_trials=1)
+        df = ps.response_magnitudes
+        stim = df[df['event'] == STIM_ONSET_EVENT]
         assert stim['response'].isna().all()
-        merged = magnitudes.merge(regressors, on=['eid', 'trial'], how='left')
-        assert select_modeling_trials(merged, 'response').empty
+        assert (STIM_ONSET_EVENT not in {event for _, event in frames})
 
-    def test_magnitudes_carry_the_masked_fraction(self, tmp_path):
-        """Feedback lands a second after stimulus onset, so the response window
-        keeps every sample and the pass reports no masking."""
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=30)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        magnitudes, _ = group.collect_responses()
-        np.testing.assert_allclose(magnitudes['masked_fraction'].values, 0.0)
+    def test_magnitudes_carry_the_masked_fraction(self):
+        """Feedback lands a second after stimulus onset on every trial but the
+        planted false start, so the window keeps every sample there and the
+        merge reports no masking."""
+        ps = _session_with_planted_trials()
+        ps._prepare_model_frames(self.formulas, min_trials=1)
+        df = ps.response_magnitudes
+        np.testing.assert_allclose(
+            df[df['trial'] != 1]['masked_fraction'].values, 0.0)
 
-    def test_fully_masked_window_scores_one(self, tmp_path):
+    def test_fully_masked_window_scores_one(self):
         """The trial whose magnitude is NaN because feedback preceded the
         window carries a masked fraction of 1, not a null."""
-        from iblnm.data import PhotometrySessionGroup
         from iblnm.config import STIM_ONSET_EVENT
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=30, fast_response=True)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        magnitudes, _ = group.collect_responses()
-        stim = magnitudes[magnitudes['event'] == STIM_ONSET_EVENT]
+        ps = _session_with_planted_trials(fast_response=True)
+        ps._prepare_model_frames(self.formulas, min_trials=1)
+        df = ps.response_magnitudes
+        stim = df[df['event'] == STIM_ONSET_EVENT]
         np.testing.assert_allclose(stim['masked_fraction'].values, 1.0)
         assert stim['response'].isna().all()
 
-    def test_only_response_events_are_cut(self, tmp_path):
-        """The store holds a firstMovement cut too; it is not a response event."""
-        from iblnm.data import PhotometrySessionGroup
+    def test_only_response_events_are_cut(self):
+        """The session holds a firstMovement cut too; it is not a response
+        event."""
         from iblnm.config import RESPONSE_EVENTS
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        _write_h5(tmp_path / 'eid-0.h5', n_trials=30)
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        magnitudes, _ = group.collect_responses()
-        assert set(magnitudes['event']) == set(RESPONSE_EVENTS)
+        ps = _session_with_planted_trials()
+        ps._prepare_model_frames(self.formulas, min_trials=1)
+        assert set(ps.response_magnitudes['event']) == set(RESPONSE_EVENTS)
 
-    def test_region_carrying_no_response_event_contributes_no_rows(self, tmp_path):
+    def test_region_carrying_no_response_event_contributes_no_rows(self):
         """A region whose only stored cut is not a response event."""
-        import h5py
-        from iblnm.data import PhotometrySessionGroup
-        recs = _make_recordings_df(n_eids=1, regions_per=1)
-        path = tmp_path / 'eid-0.h5'
-        _write_h5(path, n_trials=30)
-        with h5py.File(path, 'a') as f:
-            for event in ('stimOnTrigger_times', 'feedback_times'):
-                del f[f'photometry/VTA-r/responses/{event}']
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        magnitudes, regressors = group.collect_responses()
-        assert magnitudes.empty
-        assert len(regressors) == 30
+        ps = _session_with_planted_trials()
+        region = ps.brain_region[0]
+        ps.photometry_responses[region] = ps.photometry_responses[region].sel(
+            event=['firstMovement_times'])
+        ps._prepare_model_frames(self.formulas, min_trials=1)
+        assert ps.response_magnitudes.empty

@@ -30,7 +30,7 @@ from iblnm.config import (
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_AGG, QC_SLIDING_KWARGS, QC_SLIDING_METRICS,
     QC_UNDETRENDED_METRICS, REQUIRED_CONTRASTS,
-    RESPONSE_EVENTS, RESPONSE_MAGNITUDE_COLUMNS,
+    RESPONSE_EVENTS,
     RESPONSE_OLS_COEFS_COLUMNS, TRIAL_REGRESSOR_COLUMNS,
     RESPONSE_VARCOMP_SUMMARY_COLUMNS, RESPONSE_VARCOMP_VIOLIN_COLUMNS,
     RESPONSE_WINDOW,
@@ -85,6 +85,15 @@ RESPONSE_OLS_MOUSE_PVAL_COLUMNS = [
 RESPONSE_OLS_SESSION_PVAL_COLUMNS = [
     'eid', 'subject', 'target_NM', 'brain_region', 'event', 'predictor',
     'delta_r2', 'delta_r2_null_median', 'p_value', 'q_value', 'n_donors',
+]
+
+
+# One recording's magnitude rows, before the trial regressors are merged onto
+# them: the `config.RESPONSE_MAGNITUDE_COLUMNS` entries that come from the
+# response cut and the recording's identity rather than from the trials table.
+_RECORDING_MAGNITUDE_COLUMNS = [
+    'eid', 'subject', 'session_type', 'NM', 'target_NM', 'brain_region',
+    'hemisphere', 'event', 'trial', 'response', 'masked_fraction',
 ]
 
 
@@ -3464,6 +3473,157 @@ class PhotometrySession(PhotometrySessionLoader):
         return vec
 
 
+    def _recording_magnitudes(self, region: str, hemisphere: str,
+                              target_nm: str,
+                              events: Sequence[str]) -> pd.DataFrame:
+        """One region's per-trial response magnitudes, one row per event x trial.
+
+        The stored cut is masked at the next event and baseline-subtracted
+        before the `config.RESPONSE_WINDOWS['early']` mean is taken, so the
+        magnitude carries the evoked component alone. Empty when the region's
+        cut holds none of ``events``, so a region the analysis does not model
+        drops out of the concatenation rather than raising.
+
+        Parameters
+        ----------
+        region, hemisphere, target_nm : str
+            The recording's entries in the session's parallel list columns.
+            ``region`` also keys ``self.photometry_responses``.
+        events : Sequence[str]
+            Events to cut, in the order the rows are emitted. Events the stored
+            cut does not carry are skipped.
+
+        Returns
+        -------
+        pandas.DataFrame
+            `_RECORDING_MAGNITUDE_COLUMNS`, one row per event x trial. `trial`
+            is the trials table's own trial number, not the row position, so it
+            joins to the trial regressors.
+        """
+        responses = self.subtract_baseline(
+            self.mask_subsequent_events(self.photometry_responses[region]))
+        tpts = responses.coords['time'].values
+        trials = responses.coords['trial'].values
+        cut_events = [event for event in events
+                      if event in responses.coords['event'].values]
+        if not cut_events:
+            return pd.DataFrame(columns=_RECORDING_MAGNITUDE_COLUMNS)
+        with warnings.catch_warnings():
+            # A trial whose window is masked end to end averages an empty
+            # slice. NaN is the intended magnitude there, and the null filter
+            # downstream drops it; the warning would fire once per recording.
+            warnings.simplefilter('ignore', RuntimeWarning)
+            return pd.concat([
+                pd.DataFrame({
+                    'eid': self.eid,
+                    'subject': self.subject,
+                    'session_type': self.session_type,
+                    'NM': self.NM,
+                    'target_NM': target_nm,
+                    'brain_region': region,
+                    'hemisphere': hemisphere,
+                    'event': event,
+                    'trial': trials,
+                    'response': compute_response_magnitude(
+                        responses.sel(event=event).values, tpts,
+                        RESPONSE_WINDOWS['early']),
+                    'masked_fraction': compute_masked_fraction(
+                        responses.sel(event=event).values, tpts,
+                        RESPONSE_WINDOWS['early']),
+                })
+                for event in cut_events
+            ], ignore_index=True)
+
+    def _merge_response_magnitudes(self, events: Sequence[str]) -> pd.DataFrame:
+        """Every recording's magnitudes with this session's trial regressors.
+
+        The uncoded, unselected frame the modelling and plotting branches share:
+        one row per recording x event x trial, carrying the trial-level columns
+        beside the magnitude measured on that trial. A region the catalog names
+        but the store holds no cut for contributes no rows.
+
+        Parameters
+        ----------
+        events : Sequence[str]
+            Events to cut, `config.RESPONSE_EVENTS` by default.
+
+        Returns
+        -------
+        pandas.DataFrame
+            `config.RESPONSE_MAGNITUDE_COLUMNS` plus the columns
+            :func:`iblnm.task.add_relative_contrast` derives (``side``,
+            ``choice_side``, ``relative_contrast``) and the two regressors no
+            persession formula reads (``signed_contrast``, ``movement_time``).
+            Also assigned to ``self.response_magnitudes``.
+        """
+        regressors = analysis.build_trial_regressors(
+            self.trials, getattr(self, 'wheel_peak_velocity', None),
+            STIM_ONSET_EVENT)
+        magnitudes = _concat_frames(
+            [self._recording_magnitudes(region, hemisphere, target_nm, events)
+             for region, hemisphere, target_nm
+             in zip(self.brain_region, self.hemisphere, self.target_NM)
+             if region in self.photometry_responses],
+            _RECORDING_MAGNITUDE_COLUMNS)
+        merged = magnitudes.merge(regressors, on='trial', how='left')
+        self.response_magnitudes = task.add_relative_contrast(merged)
+        return self.response_magnitudes
+
+    def _prepare_model_frames(self, formulas: dict,
+                              events: Sequence[str] = RESPONSE_EVENTS,
+                              response_col: str = 'response',
+                              min_trials: int = MIN_TRIALS_PERSESSION,
+                              contrast_coding: str = 'log2',
+                              ) -> dict[tuple[str, str], pd.DataFrame]:
+        """Build this session's fit-ready frames, one per (region, event) cell.
+
+        Four steps: merge the trial regressors with each region's magnitudes
+        (:meth:`_merge_response_magnitudes`, whose uncoded result is left on
+        ``self.response_magnitudes``), apply the response-independent trial
+        exclusions to the whole session, then code and centre each cell on its
+        own surviving rows. Coding runs per cell rather than per session
+        because a cell's row set is not final until its null responses are
+        dropped, and centring computed earlier would not be centring on the
+        fitted rows.
+
+        Parameters
+        ----------
+        formulas : dict
+            Drop-one family, flat or event-keyed
+            (:func:`resolve_event_family`); every event in ``events`` must have
+            a family, which is resolved up front so a missing one raises
+            ``MissingFormula`` before any coding work.
+        events : Sequence[str]
+            Events to cut and code. An event the stored responses do not carry
+            yields no cell.
+        response_col : str
+            Per-trial response magnitude column the formulas model.
+        min_trials : int
+            A cell with fewer complete-case rows is not scorable and is omitted.
+        contrast_coding : str
+            Passed to :func:`iblnm.analysis.code_predictors`.
+
+        Returns
+        -------
+        dict[tuple[str, str], pandas.DataFrame]
+            ``(brain_region, event)`` -> that cell's coded, complete-case trial
+            frame. Also assigned to ``self.model_frames``.
+        """
+        families = {event: resolve_event_family(formulas, event)
+                    for event in events}
+        selected = analysis.select_modeling_trials(
+            self._merge_response_magnitudes(events), response_col)
+
+        self.model_frames = {}
+        for (region, event), rows in selected.groupby(
+                ['brain_region', 'event'], sort=False):
+            coded = analysis.code_predictors(rows, contrast_coding)
+            coded = coded.dropna(subset=analysis.formula_union_columns(
+                families[event].values(), coded.columns))
+            if len(coded) >= min_trials:
+                self.model_frames[(region, event)] = coded
+        return self.model_frames
+
     @staticmethod
     def fit_response_model(df: pd.DataFrame, formula: str,
                            response_col: str = 'response'):
@@ -4314,7 +4474,8 @@ class PhotometrySessionGroup:
                     self._session_regressors(rec['eid'], ps))
             magnitude_frames.append(self._recording_magnitudes(rec, ps))
 
-        return (_concat_frames(magnitude_frames, RESPONSE_MAGNITUDE_COLUMNS),
+        return (_concat_frames(magnitude_frames,
+                               _RECORDING_MAGNITUDE_COLUMNS),
                 _concat_frames(regressor_frames, TRIAL_REGRESSOR_COLUMNS))
 
     @staticmethod
@@ -4328,7 +4489,8 @@ class PhotometrySessionGroup:
         velocity = (wheel.sel(event=_WHEEL_T0_EVENT).values
                     if wheel is not None else None)
         regressors = analysis.build_trial_regressors(
-            ps.trials, velocity, STIM_ONSET_EVENT)
+            ps.trials, analysis.peak_velocity(velocity, len(ps.trials)),
+            STIM_ONSET_EVENT)
         regressors.insert(0, 'eid', eid)
         return regressors
 
@@ -4342,7 +4504,7 @@ class PhotometrySessionGroup:
         """
         region = rec['brain_region']
         if region not in getattr(ps, 'photometry_responses', {}):
-            return pd.DataFrame(columns=RESPONSE_MAGNITUDE_COLUMNS)
+            return pd.DataFrame(columns=_RECORDING_MAGNITUDE_COLUMNS)
         responses = ps.subtract_baseline(ps.mask_subsequent_events(
             ps.photometry_responses[region]))
         tpts = responses.coords['time'].values
@@ -4352,7 +4514,7 @@ class PhotometrySessionGroup:
         events = [event for event in RESPONSE_EVENTS
                   if event in responses.coords['event'].values]
         if not events:
-            return pd.DataFrame(columns=RESPONSE_MAGNITUDE_COLUMNS)
+            return pd.DataFrame(columns=_RECORDING_MAGNITUDE_COLUMNS)
         keys = {key: rec.get(key) for key in
                 ('eid', 'subject', 'session_type', 'NM', 'target_NM')}
         with warnings.catch_warnings():

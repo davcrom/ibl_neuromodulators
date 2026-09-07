@@ -25,9 +25,18 @@ TRIAL_REGRESSORS_FPATH = RESPONSES_DIR / 'trial_regressors.parquet'
 # `mask_subsequent_events` removed before the mean was taken — the masking
 # diagnostic's per-trial quantity, carried here because it describes exactly
 # the samples `response` was averaged over.
+# The trial-level columns follow the magnitude they were measured beside, so
+# there is no second table and no join at read time: the grouping variables the
+# response figures split on, the columns the trial selection reads, and the one
+# stored regressor. Trial-level values repeat across a session's recordings and
+# events. `signed_contrast` and `movement_time` are not carried — no persession
+# formula and no plot reads either.
 RESPONSE_MAGNITUDE_COLUMNS = ['eid', 'subject', 'session_type', 'NM',
                               'target_NM', 'brain_region', 'hemisphere',
-                              'event', 'trial', 'response', 'masked_fraction']
+                              'event', 'trial', 'response', 'masked_fraction',
+                              'contrast', 'stim_side', 'feedbackType',
+                              'choice', 'response_time', 'reaction_time',
+                              'probabilityLeft', 'peak_velocity']
 # One row per session x trial, as `analysis.build_trial_regressors` emits them.
 TRIAL_REGRESSOR_COLUMNS = ['eid', 'trial', 'signed_contrast', 'contrast',
                            'stim_side', 'choice', 'feedbackType',
