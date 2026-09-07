@@ -27,7 +27,7 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
-    RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH, TASK_ENCODING_DIR,
+    RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH, TASK_ENCODING_DIR,
     DISPERSION_FIGURES_DIR, MIN_SESSIONS_DISPERSION,
     RESPONSE_EVENTS, FIGURE_DPI, TARGETNM_COLORS,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
@@ -590,11 +590,11 @@ if __name__ == '__main__':
     print(f"  {len(group)} recordings after filtering")
 
     # Load pre-computed response magnitudes and trial regressors
-    if not RESPONSES_FPATH.exists():
-        print(f"Error: {RESPONSES_FPATH} not found. "
+    if not RESPONSE_MAGNITUDES_FPATH.exists():
+        print(f"Error: {RESPONSE_MAGNITUDES_FPATH} not found. "
               "Run scripts/responses.py first.")
         raise SystemExit(1)
-    group.load_response_magnitudes(RESPONSES_FPATH)
+    group.load_response_magnitudes(RESPONSE_MAGNITUDES_FPATH)
     group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
 
     # =====================================================================

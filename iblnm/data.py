@@ -29,7 +29,8 @@ from iblnm.config import (
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
     QC_SLIDING_AGG, QC_SLIDING_KWARGS, QC_SLIDING_METRICS,
     QC_UNDETRENDED_METRICS, REQUIRED_CONTRASTS,
-    RESPONSE_EVENTS, RESPONSE_OLS_COEFS_COLUMNS,
+    RESPONSE_EVENTS, RESPONSE_MAGNITUDE_COLUMNS,
+    RESPONSE_OLS_COEFS_COLUMNS, TRIAL_REGRESSOR_COLUMNS,
     RESPONSE_VARCOMP_SUMMARY_COLUMNS, RESPONSE_VARCOMP_VIOLIN_COLUMNS,
     RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
@@ -44,6 +45,8 @@ from iblnm.analysis import (
     per_third_crosscorr, resample_pose, resample_signal,
     fit_measurement_error_varcomp, summarize_posterior,
 )
+from tqdm import tqdm
+
 from iblnm import analysis
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
@@ -263,6 +266,20 @@ def assemble_session_pvalue_table(
 # group and a payload, with no coupling to PhotometrySession. Creating the
 # group, looping over regions or labels, and extracting the payload from the
 # session are the orchestrators' job (_save_photometry, _save_video, ...).
+
+
+def _concat_frames(frames: list[pd.DataFrame], columns: list[str]) -> pd.DataFrame:
+    """Concatenate collected frames, falling back to an empty typed frame.
+
+    Empty frames are dropped first: a recording that matched nothing carries no
+    dtypes for pandas to reconcile, and concatenating it would widen the result
+    to object. A walk that matched nothing anywhere still returns the named
+    columns, so a caller's column access works either way.
+    """
+    populated = [frame for frame in frames if not frame.empty]
+    if not populated:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(populated, ignore_index=True)[columns]
 
 
 def _replace_group(parent, name):
@@ -3709,9 +3726,6 @@ class PhotometrySessionGroup:
         self.one = one
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
         self._sessions = {}  # eid → PhotometrySession cache
-        self.response_traces = None
-        self.response_traces_tpts = None
-        self.mean_traces = None
         self.response_magnitudes = None
         self.response_ols_dropone_results = None
         self.response_ols_session_pvalues = None
@@ -4294,6 +4308,106 @@ class PhotometrySessionGroup:
         """
         self.complete_catalog()
         return self._catalog[['eid', 'logged_errors']].copy()
+
+    def collect_responses(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Response magnitudes and trial regressors, in one pass over the store.
+
+        Walks the filtered recordings, opening each session's H5 once for its
+        `trials`, `photometry` and `wheel` groups. Per recording the stored
+        peri-event cuts are masked at the next event and baseline-subtracted
+        before the window mean is taken, so the magnitude carries the evoked
+        component alone; per session the trial regressors are built from the
+        same trials table. Per-trial traces are discarded as the loop advances.
+
+        A recording whose H5 is absent, whose region carries no cut, or whose
+        session holds no trials contributes no rows and does not abort the pass.
+        A session with no stored wheel responses scores NaN `peak_velocity`
+        rather than reaching Alyx for them.
+
+        Returns
+        -------
+        magnitudes : pandas.DataFrame
+            One row per recording x event x trial, columns `eid, subject,
+            session_type, NM, target_NM, brain_region, hemisphere, event,
+            trial, response`. `trial` is the trials table's own trial number,
+            not the row position, so it joins to `regressors`.
+        regressors : pandas.DataFrame
+            One row per session x trial, `eid` plus the
+            `analysis.build_trial_regressors` columns.
+        """
+        magnitude_frames, regressor_frames = [], []
+        for rec, ps in tqdm(self, total=len(self),
+                            desc="Collecting responses"):
+            h5_path = Path(self.h5_dir) / f"{rec['eid']}.h5"
+            if not h5_path.exists():
+                continue
+            # __iter__ caches one session per eid, so a second region reuses
+            # the file this branch already read.
+            if not hasattr(ps, 'trials'):
+                ps.load_h5(h5_path, groups=['trials', 'photometry', 'wheel'])
+                regressor_frames.append(
+                    self._session_regressors(rec['eid'], ps))
+            magnitude_frames.append(self._recording_magnitudes(rec, ps))
+
+        return (_concat_frames(magnitude_frames, RESPONSE_MAGNITUDE_COLUMNS),
+                _concat_frames(regressor_frames, TRIAL_REGRESSOR_COLUMNS))
+
+    @staticmethod
+    def _session_regressors(eid: str, ps: PhotometrySession) -> pd.DataFrame:
+        """One session's trial regressors, tagged with its eid.
+
+        A session whose wheel responses were never stored passes no velocity,
+        scoring NaN `peak_velocity` rather than reaching Alyx for the samples.
+        """
+        wheel = getattr(ps, 'wheel_responses', {}).get(WHEEL_LABEL)
+        velocity = (wheel.sel(event=_WHEEL_T0_EVENT).values
+                    if wheel is not None else None)
+        regressors = analysis.build_trial_regressors(
+            ps.trials, velocity, STIM_ONSET_EVENT)
+        regressors.insert(0, 'eid', eid)
+        return regressors
+
+    @staticmethod
+    def _recording_magnitudes(rec: pd.Series,
+                              ps: PhotometrySession) -> pd.DataFrame:
+        """One recording's per-trial magnitudes, one row per event x trial.
+
+        Empty when the region carries no stored cut, so an absent recording
+        drops out of the concatenation rather than raising.
+        """
+        region = rec['brain_region']
+        if region not in getattr(ps, 'photometry_responses', {}):
+            return pd.DataFrame(columns=RESPONSE_MAGNITUDE_COLUMNS)
+        responses = ps.subtract_baseline(ps.mask_subsequent_events(
+            ps.photometry_responses[region]))
+        tpts = responses.coords['time'].values
+        trials = responses.coords['trial'].values
+        # The store may carry cuts this analysis does not model, so the event
+        # axis is `RESPONSE_EVENTS` rather than whatever was written.
+        events = [event for event in RESPONSE_EVENTS
+                  if event in responses.coords['event'].values]
+        if not events:
+            return pd.DataFrame(columns=RESPONSE_MAGNITUDE_COLUMNS)
+        keys = {key: rec.get(key) for key in
+                ('eid', 'subject', 'session_type', 'NM', 'target_NM')}
+        with warnings.catch_warnings():
+            # A trial whose window is masked end to end averages an empty
+            # slice. NaN is the intended magnitude there, and the null filter
+            # downstream drops it; the warning would fire once per recording.
+            warnings.simplefilter('ignore', RuntimeWarning)
+            return pd.concat([
+                pd.DataFrame({
+                    **keys,
+                    'brain_region': region,
+                    'hemisphere': rec['hemisphere'],
+                    'event': event,
+                    'trial': trials,
+                    'response': compute_response_magnitude(
+                        responses.sel(event=event).values, tpts,
+                        RESPONSE_WINDOWS['early']),
+                })
+                for event in events
+            ], ignore_index=True)
 
     def __getitem__(self, idx):
         rec = self.recordings.iloc[idx]
@@ -4924,9 +5038,6 @@ class PhotometrySessionGroup:
         """Load trial regressors from parquet, filtered to current recordings."""
         self.trial_regressors = self._load_parquet(path)
 
-    def load_mean_traces(self, path):
-        """Load mean traces from parquet, filtered to current recordings."""
-        self.mean_traces = self._load_parquet(path)
 
     def load_response_features(self, path):
         """Load response features from parquet, filtered to current recordings."""
@@ -4946,127 +5057,8 @@ class PhotometrySessionGroup:
     # Trace loading and extraction
     # -----------------------------------------------------------------
 
-    def load_response_traces(self):
-        """Load and cache per-trial response traces from H5 files.
 
-        For each recording and event, loads the response xarray from H5,
-        applies ``mask_subsequent_events`` and ``subtract_baseline``, and
-        stores the per-trial traces in ``self.response_traces``.
 
-        The cache is keyed by ``(eid, brain_region, event)`` with values
-        containing ``traces``, ``tpts``, ``meta``, and ``trials``.
-
-        Returns
-        -------
-        self
-        """
-
-        from tqdm import tqdm
-
-        cache = {}
-
-        for rec, ps in tqdm(self, total=len(self),
-                            desc="Loading response traces"):
-            eid = rec['eid']
-            brain_region = rec['brain_region']
-            hemisphere = rec['hemisphere']
-            h5_path = Path(self.h5_dir) / f'{eid}.h5'
-
-            if not h5_path.exists():
-                continue
-
-            ps.load_h5(h5_path, groups=['trials', 'photometry'])
-
-            if (getattr(ps, 'photometry_responses', None) is None
-                    or getattr(ps, 'trials', None) is None):
-                continue
-
-            if brain_region not in ps.photometry_responses:
-                continue
-
-            masked = ps.mask_subsequent_events(ps.photometry_responses[brain_region])
-            responses = ps.subtract_baseline(masked)
-
-            sample_times = responses.coords['time'].values
-            if self.response_traces_tpts is None:
-                self.response_traces_tpts = sample_times
-
-            meta = {
-                'eid': eid,
-                'subject': rec['subject'],
-                'session_type': rec.get('session_type'),
-                'NM': rec.get('NM'),
-                'target_NM': rec['target_NM'],
-                'brain_region': brain_region,
-                'hemisphere': hemisphere,
-                'fiber_idx': int(rec['fiber_idx']) if 'fiber_idx' in rec.index else 0,
-            }
-
-            for event in RESPONSE_EVENTS:
-                if event not in responses.coords['event'].values:
-                    continue
-                resp = responses.sel(event=event).values  # (n_trials, n_time)
-                cache[(eid, brain_region, event)] = {
-                    'traces': resp,
-                    'tpts': sample_times,
-                    'meta': {**meta, 'event': event},
-                    'trials': ps.trials.copy(),
-                }
-
-        self.response_traces = cache
-        return self
-
-    def flush_response_traces(self):
-        """Free the per-trial trace cache to reclaim memory."""
-        self.response_traces = None
-        self.response_traces_tpts = None
-
-    def get_response_magnitudes(self):
-        """Compute trial-level response magnitudes from the trace cache.
-
-        Calls :meth:`load_response_traces` if traces are not yet cached.
-        For each cached (recording × event), computes the scalar magnitude
-        in the early response window. Trial-level task/movement predictors
-        are not included here — they live in ``trial_regressors`` (populated
-        by :meth:`get_trial_regressors`).
-
-        Returns
-        -------
-        pd.DataFrame
-            One row per (recording × event × trial) with columns
-            ``eid, subject, session_type, NM, target_NM, brain_region,
-            hemisphere, event, trial, response``.
-        """
-        from tqdm import tqdm
-
-        if self.response_traces is None:
-            self.load_response_traces()
-
-        frames = []
-        for (eid, brain_region, event), entry in tqdm(
-                self.response_traces.items(),
-                desc="Computing response magnitudes"):
-            meta = entry['meta']
-            magnitude = compute_response_magnitude(
-                entry['traces'], entry['tpts'], RESPONSE_WINDOWS['early'],
-            )
-            frames.append(pd.DataFrame({
-                'eid': meta['eid'],
-                'subject': meta['subject'],
-                'session_type': meta.get('session_type'),
-                'NM': meta.get('NM'),
-                'target_NM': meta['target_NM'],
-                'brain_region': meta['brain_region'],
-                'hemisphere': meta['hemisphere'],
-                'event': event,
-                'trial': range(len(magnitude)),
-                'response': magnitude,
-            }))
-
-        self.response_magnitudes = (
-            pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-        )
-        return self.response_magnitudes
 
     def _merge_trial_regressors(self) -> pd.DataFrame:
         """Join ``response_magnitudes`` with ``trial_regressors`` on (eid, trial).
@@ -5079,12 +5071,12 @@ class PhotometrySessionGroup:
         if self.response_magnitudes is None:
             raise ValueError(
                 "response_magnitudes not populated. "
-                "Call get_response_magnitudes() first."
+                "Call collect_responses() first."
             )
         if self.trial_regressors is None:
             raise ValueError(
                 "trial_regressors not populated. "
-                "Call get_trial_regressors() first."
+                "Call collect_responses() first."
             )
         return self.response_magnitudes.merge(
             self.trial_regressors, on=['eid', 'trial'], how='left',
@@ -5435,70 +5427,6 @@ class PhotometrySessionGroup:
         raise ValueError(
             f"kind must be 'emm' or 'coefficients', got {kind!r}")
 
-    def get_mean_traces(self):
-        """Compute trial-averaged traces from the trace cache.
-
-        Calls :meth:`load_response_traces` if traces are not yet cached.
-        For each cached (recording × event), groups trials by
-        ``(contrast, feedbackType)`` and computes the mean trace per group.
-
-        Returns
-        -------
-        pd.DataFrame
-            Long-form DataFrame with columns: eid, subject, target_NM,
-            brain_region, event, contrast, feedbackType, time, response.
-        """
-        if self.response_traces is None:
-            self.load_response_traces()
-
-        rows = []
-        for (_eid, _region, _event), entry in self.response_traces.items():
-            traces = entry['traces']  # (n_trials, n_time)
-            tpts = entry['tpts']
-            meta = entry['meta']
-            trials = entry['trials']
-
-            # Apply canonical trial filters
-            if ('feedback_times' in trials.columns
-                    and STIM_ONSET_EVENT in trials.columns):
-                response_time = (trials['feedback_times'].values
-                                 - trials[STIM_ONSET_EVENT].values)
-            else:
-                response_time = np.full(len(trials), np.nan)
-            keep = (
-                (trials['probabilityLeft'] == 0.5)
-                & (trials['choice'] != 0)
-                & (response_time > 0.05)
-            )
-            trials = trials[keep]
-
-            for (contrast, fb), idx in trials.groupby(
-                    ['contrast', 'feedbackType']).groups.items():
-                trial_mask = idx.values
-                if len(trial_mask) == 0:
-                    continue
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore', RuntimeWarning)
-                    mean_trace = np.nanmean(traces[trial_mask], axis=0)
-                n_trials = int(np.sum(~np.isnan(traces[trial_mask, 0])))
-
-                for i, t in enumerate(tpts):
-                    rows.append({
-                        'eid': meta['eid'],
-                        'subject': meta['subject'],
-                        'target_NM': meta['target_NM'],
-                        'brain_region': meta['brain_region'],
-                        'fiber_idx': meta['fiber_idx'],
-                        'event': meta['event'],
-                        'contrast': contrast,
-                        'feedbackType': fb,
-                        'time': t,
-                        'response': mean_trace[i],
-                        'n_trials': n_trials,
-                    })
-
-        self.mean_traces = pd.DataFrame(rows)
-        return self.mean_traces
 
     def get_response_features(self, nan_handling='drop_sessions',
                               nan_threshold=0.3, **kwargs):
@@ -6141,42 +6069,4 @@ class PhotometrySessionGroup:
         self.anova_results = results
         return results
 
-    def get_trial_regressors(self) -> pd.DataFrame:
-        """Collect per-trial predictors for every in-scope session.
-
-        Reads each session's H5 file directly (group ``trials`` and, when
-        present, ``wheel/{WHEEL_LABEL}/responses``) and assembles one row per
-        ``eid × trial``. Derived timing columns are NaN for a session when
-        the underlying event-time columns are absent; ``peak_velocity`` is
-        NaN when the wheel group is missing or holds no finite samples.
-
-        Returns
-        -------
-        pd.DataFrame
-            Columns: ``eid, trial, signed_contrast, contrast, stim_side,
-            choice, feedbackType, probabilityLeft, reaction_time,
-            movement_time, response_time, peak_velocity``. Stored on
-            ``self.trial_regressors``.
-        """
-        from tqdm import tqdm
-
-        frames = []
-        for eid in tqdm(self.recordings['eid'].unique(),
-                        desc="Collecting trial regressors"):
-            h5_path = Path(self.h5_dir) / f'{eid}.h5'
-            with h5py.File(h5_path, 'r') as f:
-                trials = _read_dataframe(f['trials/table'])
-                wheel_group = f.get(f'wheel/{WHEEL_LABEL}/responses')
-                wheel_vel = (
-                    _load_peri_event_matrix(wheel_group)
-                    .sel(event=_WHEEL_T0_EVENT).values
-                    if wheel_group is not None else None)
-
-            df = analysis.build_trial_regressors(trials, wheel_vel,
-                                                 STIM_ONSET_EVENT)
-            df.insert(0, 'eid', eid)
-            frames.append(df)
-
-        self.trial_regressors = pd.concat(frames, ignore_index=True)
-        return self.trial_regressors
 

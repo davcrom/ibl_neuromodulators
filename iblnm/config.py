@@ -17,11 +17,20 @@ PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
 TRIALS_DIR = PROJECT_ROOT / 'data/trials'  # one {subject}.csv per mouse
 RESULTS_DIR = PROJECT_ROOT / 'results'
 RESPONSES_DIR = RESULTS_DIR / 'responses'
-RESPONSES_FPATH = RESPONSES_DIR / 'responses.pqt'
-TRIAL_REGRESSORS_FPATH = RESPONSES_DIR / 'trial_regressors.pqt'
+RESPONSE_MAGNITUDES_FPATH = RESPONSES_DIR / 'response_magnitudes.parquet'
+TRIAL_REGRESSORS_FPATH = RESPONSES_DIR / 'trial_regressors.parquet'
+# One row per recording x event x trial. `trial` is the trials table's own
+# trial number, which is what joins to TRIAL_REGRESSOR_COLUMNS.
+RESPONSE_MAGNITUDE_COLUMNS = ['eid', 'subject', 'session_type', 'NM',
+                              'target_NM', 'brain_region', 'hemisphere',
+                              'event', 'trial', 'response']
+# One row per session x trial, as `analysis.build_trial_regressors` emits them.
+TRIAL_REGRESSOR_COLUMNS = ['eid', 'trial', 'signed_contrast', 'contrast',
+                           'stim_side', 'choice', 'feedbackType',
+                           'probabilityLeft', 'reaction_time', 'movement_time',
+                           'response_time', 'peak_velocity']
 RESPONSE_MATRIX_FPATH = RESPONSES_DIR / 'response_matrix.pqt'
 RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
-MEAN_TRACES_FPATH = RESPONSES_DIR / 'mean_traces.pqt'
 RESPONSE_OLS_PERSESSION_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone.parquet'
 RESPONSE_OLS_MOUSE_PVAL_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone_mouse_pvalues.parquet'
 RESPONSE_OLS_SESSION_PVAL_FPATH = RESPONSES_DIR / 'response_ols_persession_dropone_session_pvalues.parquet'

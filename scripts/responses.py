@@ -25,8 +25,7 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
-    RESPONSES_DIR, RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
-    MEAN_TRACES_FPATH,
+    RESPONSES_DIR, RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH,
     RESPONSE_OLS_PERSESSION_FPATH, RESPONSE_OLS_MOUSE_PVAL_FPATH,
     RESPONSE_OLS_SESSION_PVAL_FPATH, PERSESSION_FDR_GROUP_COLS,
     RESPONSE_OLS_PERSESSION_POPULATION_FPATH,
@@ -45,7 +44,6 @@ from iblnm.vis import (
     plot_mean_response_vectors, plot_lmm_summary,
     plot_lmm_ceiling,
     plot_lmm_reliability,
-    plot_mean_response_traces,
     plot_movement_r2_bars,
     plot_ols_dropone,
     plot_ols_dropone_subject,
@@ -531,39 +529,32 @@ if __name__ == '__main__':
     )
     dup_log = group.deduplicate()
     print(f"  Deduplicated ({len(dup_log)} true-duplicate groups resolved)")
-    print(f"  Recordings (session x region): {len(group)}")
+    recordings = group.recordings
+    print(f"  Recordings (session x region): {len(recordings)}")
+    print(f"  Sessions: {recordings['eid'].nunique()}, "
+          f"mice: {recordings['subject'].nunique()}")
+    print("  Recordings per target-NM:")
+    print(recordings['target_NM'].value_counts().to_string())
 
     if args.reprocess:
         # =================================================================
         # Full pipeline: extract from H5 files and re-fit per-session models
         # =================================================================
 
-        # --- Load traces cache ---
-        print("\nLoading response traces...")
-        group.load_response_traces()
-
-        # --- Response magnitudes ---
-        print("Computing trial-level response magnitudes...")
-        group.get_response_magnitudes()
+        # --- Magnitudes and regressors, one pass over the store ---
+        print("\nCollecting responses...")
+        group.response_magnitudes, group.trial_regressors = (
+            group.collect_responses())
 
         if len(group.response_magnitudes) == 0:
             print("No response magnitudes extracted. Check H5 files exist.")
             raise SystemExit(1)
 
-        group.response_magnitudes.to_parquet(RESPONSES_FPATH, index=False)
-        print(f"Saved response magnitudes to {RESPONSES_FPATH}")
-
-        # --- Trial regressors ---
-        print("Collecting trial regressors...")
-        group.get_trial_regressors()
+        group.response_magnitudes.to_parquet(
+            RESPONSE_MAGNITUDES_FPATH, index=False)
         group.trial_regressors.to_parquet(TRIAL_REGRESSORS_FPATH, index=False)
+        print(f"Saved response magnitudes to {RESPONSE_MAGNITUDES_FPATH}")
         print(f"Saved trial regressors to {TRIAL_REGRESSORS_FPATH}")
-
-        # --- Mean traces ---
-        print("Computing mean traces...")
-        group.get_mean_traces()
-        group.mean_traces.to_parquet(MEAN_TRACES_FPATH, index=False)
-        print(f"Saved mean traces to {MEAN_TRACES_FPATH}")
 
         # --- Per-session drop-one fits and full-model coefficients ---
         print("Fitting per-session drop-one OLS models...")
@@ -615,7 +606,7 @@ if __name__ == '__main__':
         # =================================================================
         # Default: load pre-existing parquet files
         # =================================================================
-        for fpath in (RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
+        for fpath in (RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH,
                       RESPONSE_OLS_PERSESSION_FPATH,
                       RESPONSE_OLS_MOUSE_PVAL_FPATH,
                       RESPONSE_OLS_SESSION_PVAL_FPATH,
@@ -625,9 +616,8 @@ if __name__ == '__main__':
                 print(f"Error: {fpath} not found. Run with --reprocess first.")
                 raise SystemExit(1)
 
-        group.load_response_magnitudes(RESPONSES_FPATH)
+        group.load_response_magnitudes(RESPONSE_MAGNITUDES_FPATH)
         group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
-        group.load_mean_traces(MEAN_TRACES_FPATH)
         group.load_response_ols_dropone(RESPONSE_OLS_PERSESSION_FPATH)
         group.load_response_ols_mouse_pvalues(
             RESPONSE_OLS_MOUSE_PVAL_FPATH)
@@ -636,23 +626,6 @@ if __name__ == '__main__':
         group.load_response_ols_coefficients(RESPONSE_OLS_COEFS_FPATH)
         group.load_response_varcomp_summary(RESPONSE_VARCOMP_SUMMARY_FPATH)
         group.load_response_varcomp_violin(RESPONSE_VARCOMP_VIOLIN_FPATH)
-
-    # =====================================================================
-    # Mean response traces per target-NM (first figures)
-    # =====================================================================
-    if group.mean_traces is not None and len(group.mean_traces) > 0:
-        print("\nGenerating mean response trace plots...")
-        traces_df = group.mean_traces
-        targets = sorted(traces_df['target_NM'].unique())
-        for target in targets:
-            fig = plot_mean_response_traces(traces_df, target)
-            fname = f'mean_traces_{target.replace("-", "_")}.svg'
-            fig.savefig(fig_dirs['traces'] / fname,
-                        dpi=FIGURE_DPI, bbox_inches='tight')
-        print(f"Trace figures saved to {fig_dirs['traces']}")
-
-    # Free trace cache
-    group.flush_response_traces()
 
     # =====================================================================
     # Response magnitude plots

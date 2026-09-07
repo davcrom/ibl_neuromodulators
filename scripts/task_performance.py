@@ -17,7 +17,7 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, FIGURE_DPI,
-    RESPONSES_FPATH, TRIAL_REGRESSORS_FPATH,
+    RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH,
     ANALYSIS_QC_BLOCKERS, TARGETNMS_TO_ANALYZE,
 )
 from iblnm.data import PhotometrySessionGroup
@@ -59,8 +59,8 @@ if __name__ == '__main__':
     # =====================================================================
     # Load data onto group
     # =====================================================================
-    if RESPONSES_FPATH.exists() and TRIAL_REGRESSORS_FPATH.exists():
-        group.load_response_magnitudes(RESPONSES_FPATH)
+    if RESPONSE_MAGNITUDES_FPATH.exists() and TRIAL_REGRESSORS_FPATH.exists():
+        group.load_response_magnitudes(RESPONSE_MAGNITUDES_FPATH)
         group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
 
     # =====================================================================
