@@ -557,9 +557,16 @@ if __name__ == '__main__':
         print(f"Saved trial regressors to {TRIAL_REGRESSORS_FPATH}")
 
         # --- Per-session drop-one fits and full-model coefficients ---
+        # One set of coded frames serves the fits and the permutation null, so
+        # both score the same rows and neither reopens the store.
+        print("Coding per-session model frames...")
+        model_frames = group.code_model_frames(LMM_FORMULAS['persession'])
+        print(f"  Scorable recording-events: {len(model_frames)}")
+
         print("Fitting per-session drop-one OLS models...")
         group.response_ols_dropone_results, coefs_df = (
-            group.response_ols_dropone(LMM_FORMULAS['persession']))
+            group.response_ols_dropone(model_frames,
+                                       LMM_FORMULAS['persession']))
         group.response_ols_dropone_results.to_parquet(
             RESPONSE_OLS_PERSESSION_FPATH, index=False)
         print(f"Saved per-session drop-one fits to "
@@ -571,7 +578,7 @@ if __name__ == '__main__':
         # --- Drop-one permutation significance, per session and per mouse ---
         print("Computing drop-one permutation p-values...")
         session_pvalues, mouse_pvalues = group.response_ols_dropone_permutation(
-            LMM_FORMULAS['persession'],
+            model_frames, LMM_FORMULAS['persession'],
             n_bootstrap=PERSESSION_PVAL_N_BOOTSTRAP,
             random_state=PERSESSION_PVAL_SEED)
         # Correct each grain within (event, predictor): one family per grid cell.

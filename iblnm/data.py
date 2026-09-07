@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import h5py
 import numpy as np
@@ -63,13 +64,6 @@ from iblnm.validation import (
     VideoLengthError,
 )
 
-# Long-form schema returned by per-recording drop-one OLS ΔR² (one row per
-# event × dropped predictor for a single recording).
-PERSESSION_DROPONE_COLUMNS = [
-    'brain_region', 'target_NM', 'event', 'predictor', 'r2', 'delta_r2',
-    'n_trials',
-]
-
 # Group-level long-form drop-one frame: per-recording rows tagged with their
 # eid/subject. target_NM precedes brain_region (the recording identity order).
 RESPONSE_OLS_DROPONE_COLUMNS = [
@@ -92,13 +86,22 @@ RESPONSE_OLS_SESSION_PVAL_COLUMNS = [
     'delta_r2', 'p_value', 'q_value',
 ]
 
-# Per-recording full-model main-effect coefficients (one row per event ×
-# regressor for a single recording). The group method tags these with
-# eid/subject to reach RESPONSE_OLS_COEFS_COLUMNS.
-PERSESSION_COEFS_COLUMNS = [
-    'brain_region', 'target_NM', 'event', 'regressor', 'coef', 'coef_se',
-    'n_trials',
-]
+
+class CodedFrame(NamedTuple):
+    """One recording-event's coded, complete-case trial frame.
+
+    What the modelling pass hands to the fits and to the permutation null, so
+    both score the same rows without either reopening the store. The identity
+    fields are the recording's; ``frame`` is the coded frame itself, one row
+    per surviving trial.
+    """
+
+    eid: str
+    subject: str
+    target_NM: str
+    brain_region: str
+    event: str
+    frame: pd.DataFrame
 
 
 def resolve_event_family(formulas: dict, event: str) -> dict[str, str]:
@@ -280,6 +283,31 @@ def _concat_frames(frames: list[pd.DataFrame], columns: list[str]) -> pd.DataFra
     if not populated:
         return pd.DataFrame(columns=columns)
     return pd.concat(populated, ignore_index=True)[columns]
+
+
+def _tag_recording(rows: pd.DataFrame, coded: CodedFrame) -> pd.DataFrame:
+    """Stamp one recording-event's identity onto its result rows."""
+    return rows.assign(eid=coded.eid, subject=coded.subject,
+                       target_NM=coded.target_NM,
+                       brain_region=coded.brain_region, event=coded.event)
+
+
+def _coefficient_rows(fit, n_trials: int) -> pd.DataFrame:
+    """Main-effect weight and SE per regressor from one fitted model.
+
+    Reads ``fit.params`` / ``fit.bse`` for each bare regressor name in
+    ``config.PERSESSION_REGRESSORS`` present in the design (a regressor absent
+    from this event's model contributes no row). No refit — ``fit`` is the
+    already-fitted reference model.
+    """
+    present = [name for name in PERSESSION_REGRESSORS
+               if name in fit.params.index]
+    return pd.DataFrame({
+        'regressor': present,
+        'coef': fit.params[present].values,
+        'coef_se': fit.bse[present].values,
+        'n_trials': n_trials,
+    })
 
 
 def _replace_group(parent, name):
@@ -3300,16 +3328,17 @@ class PhotometrySession(PhotometrySessionLoader):
         return vec
 
 
-    def fit_response_model(self, df: pd.DataFrame, formula: str,
+    @staticmethod
+    def fit_response_model(df: pd.DataFrame, formula: str,
                            response_col: str = 'response'):
         """Fit one OLS response model on a prepared trial frame.
 
         Thin, event/region-agnostic wrapper over ``analysis.fit_ols``: the
         ``{response}`` placeholder in ``formula`` is filled with ``response_col``
         before fitting, so the caller owns which magnitude column is the
-        response. This method does not touch ``self.ols_fits`` — the comparison
-        caller keys that cache by ``(name, event)``, context this single fit
-        does not have.
+        response. Static because it reads nothing off the session — the
+        group-level drop-one calls it once per formula on a frame it already
+        holds.
 
         Parameters
         ----------
@@ -3330,208 +3359,6 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         formula = formula.format(response=response_col)
         return analysis.fit_ols(formula, df)
-
-    def compare_response_models(self, brain_region, formulas,
-                                response_col='response', reference='full',
-                                events=RESPONSE_EVENTS,
-                                min_trials=MIN_TRIALS_PERSESSION,
-                                contrast_coding='log2'):
-        """Fit a drop-one OLS family per event for one recording, return ΔR².
-
-        Builds this recording's per-trial response frame for ``brain_region``,
-        then for each event fits every formula in that event's family on the
-        event's complete-case trials and differences each reduced model against the
-        ``reference`` model. Every model in an event is fit on the same rows
-        (complete cases over the family's column union), so their R² are
-        directly comparable. Each fit is cached in ``self.ols_fits`` keyed by
-        ``(name, event)``.
-
-        Parameters
-        ----------
-        brain_region : str
-            Recording region; must be a key of ``self.photometry_responses``.
-        formulas : dict
-            Drop-one family ``{name: formula_template}``, shared by every
-            event, or ``{event: {name: template}}`` for a family whose members
-            differ by event (:func:`resolve_event_family`, which raises
-            ``MissingFormula`` for a requested event the family omits).
-            ``{response}`` is filled with ``response_col``; one name equals
-            ``reference``.
-        response_col : str
-            Name of the per-trial response magnitude column.
-        reference : str
-            Key of the full model each reduced model's ΔR² is measured against.
-        min_trials : int
-            An event with fewer complete-case rows is omitted.
-        contrast_coding : str
-            Passed to :func:`iblnm.analysis.code_predictors`.
-
-        Returns
-        -------
-        dropone : pd.DataFrame
-            Long-form rows ``brain_region, target_NM, event, predictor, r2,
-            delta_r2, n_trials``. Empty (those columns) if ``brain_region`` is
-            absent or no event is scorable.
-        coefs : pd.DataFrame
-            The ``reference`` model's main-effect weights, one row per (event,
-            regressor) for each regressor in ``PERSESSION_REGRESSORS`` present
-            in that event's fitted design: ``brain_region, target_NM, event,
-            regressor, coef, coef_se, n_trials``. Read from the same fits — no
-            refit. Empty (``PERSESSION_COEFS_COLUMNS``) when ``dropone`` is.
-        """
-        empty = (pd.DataFrame(columns=PERSESSION_DROPONE_COLUMNS),
-                 pd.DataFrame(columns=PERSESSION_COEFS_COLUMNS))
-        if brain_region not in self.photometry_responses:
-            return empty
-
-        target_NM = self.target_NM[self.brain_region.index(brain_region)]
-        coded = self.coded_event_frames(brain_region, formulas, events,
-                                        response_col, min_trials,
-                                        contrast_coding)
-
-        dropone_frames, coef_frames = [], []
-        for event, df_event in coded.items():
-            family = resolve_event_family(formulas, event)
-            fits = {name: self.fit_response_model(df_event, formula,
-                                                  response_col)
-                    for name, formula in family.items()}
-            if any(fit is None for fit in fits.values()):
-                continue
-            for name, fit in fits.items():
-                self.ols_fits[(name, event)] = fit
-            r2_by_name = {name: fit.rsquared for name, fit in fits.items()}
-            rows = analysis.dropone_delta_r2(r2_by_name, reference)
-            rows.insert(0, 'brain_region', brain_region)
-            rows.insert(1, 'target_NM', target_NM)
-            rows.insert(2, 'event', event)
-            rows['n_trials'] = len(df_event)
-            dropone_frames.append(rows)
-            coef_frames.append(self._coefficient_rows(
-                fits[reference], brain_region, target_NM, event,
-                len(df_event)))
-
-        if not dropone_frames:
-            return empty
-        dropone = pd.concat(dropone_frames,
-                            ignore_index=True)[PERSESSION_DROPONE_COLUMNS]
-        coefs = pd.concat(coef_frames,
-                          ignore_index=True)[PERSESSION_COEFS_COLUMNS]
-        return dropone, coefs
-
-    def coded_event_frames(self, brain_region: str, formulas: dict,
-                           events=RESPONSE_EVENTS, response_col: str = 'response',
-                           min_trials: int = MIN_TRIALS_PERSESSION,
-                           contrast_coding: str = 'log2') -> dict:
-        """Coded complete-case per-event trial frames for one recording.
-
-        Builds the recording's per-trial response frame for ``brain_region``
-        (:meth:`_response_modeling_frame`), then per event codes the predictors
-        and drops trials missing any column the ``formulas`` reference. An event
-        with fewer than ``min_trials`` complete-case rows is omitted. This is the
-        shared frame path behind :meth:`compare_response_models` and the
-        group-level permutation null.
-
-        Parameters
-        ----------
-        brain_region : str
-            Recording region; ``{}`` is returned if it is absent from
-            ``self.photometry_responses``.
-        formulas : dict
-            Drop-one family, flat or event-keyed
-            (:func:`resolve_event_family`); the column union of the event's
-            family defines that event's complete-case trials.
-        events : sequence of str
-            Events to build a frame for.
-        response_col : str
-            Per-trial response magnitude column the formulas model.
-        min_trials : int
-            An event with fewer complete-case rows is omitted.
-        contrast_coding : str
-            Passed to :func:`iblnm.analysis.code_predictors`.
-
-        Returns
-        -------
-        dict[str, pd.DataFrame]
-            Maps each scorable event to its coded complete-case frame (post
-            :func:`iblnm.analysis.code_predictors`), carrying ``response_col``
-            and the coded predictor columns the formulas reference.
-        """
-        if brain_region not in self.photometry_responses:
-            return {}
-        df = self._response_modeling_frame(brain_region, response_col)
-        coded = {}
-        for event in events:
-            family = resolve_event_family(formulas, event)
-            df_event = analysis.code_predictors(df[df['event'] == event],
-                                                contrast_coding)
-            union_cols = analysis.formula_union_columns(
-                family.values(), df_event.columns)
-            df_event = df_event.dropna(subset=union_cols)
-            if len(df_event) >= min_trials:
-                coded[event] = df_event
-        return coded
-
-    @staticmethod
-    def _coefficient_rows(fit, brain_region: str, target_NM: str, event: str,
-                          n_trials: int) -> pd.DataFrame:
-        """Main-effect weight and SE per regressor from one fitted model.
-
-        Reads ``fit.params[r]`` / ``fit.bse[r]`` for each bare regressor name
-        ``r`` in ``PERSESSION_REGRESSORS`` present in ``fit.params`` (a
-        regressor absent from this event's design contributes no row). No
-        refit — ``fit`` is the already-fitted reference model.
-        """
-        present = [r for r in PERSESSION_REGRESSORS if r in fit.params.index]
-        return pd.DataFrame({
-            'brain_region': brain_region,
-            'target_NM': target_NM,
-            'event': event,
-            'regressor': present,
-            'coef': [fit.params[r] for r in present],
-            'coef_se': [fit.bse[r] for r in present],
-            'n_trials': n_trials,
-        })
-
-    def _response_modeling_frame(self, brain_region: str,
-                                 response_col: str) -> pd.DataFrame:
-        """Per-trial response magnitudes for one region merged with regressors.
-
-        For each event in ``self.photometry_responses[brain_region]`` computes the
-        early-window magnitude per trial (named ``response_col``), stacks the
-        events into one long frame, and merges on ``trial`` with this session's
-        :func:`iblnm.analysis.build_trial_regressors`. Adds the recording's
-        ``hemisphere`` so :func:`iblnm.task.add_relative_contrast` can resolve
-        contra/ipsi, then selects the modeling trials.
-
-        Returns
-        -------
-        pd.DataFrame
-            Long-form ``event, trial, response_col`` plus the coded-ready
-            regressor columns, restricted to unbiased-block go trials.
-        """
-        responses = self.photometry_responses[brain_region]
-        tpts = responses.coords['time'].values
-        magnitude_frames = [
-            pd.DataFrame({
-                'event': event,
-                'trial': responses.coords['trial'].values,
-                response_col: compute_response_magnitude(
-                    responses.sel(event=event).values, tpts,
-                    RESPONSE_WINDOWS['early']),
-            })
-            for event in responses.coords['event'].values
-        ]
-        long = pd.concat(magnitude_frames, ignore_index=True)
-
-        wheel = self.load_responses('wheel')[WHEEL_LABEL]
-        regressors = analysis.build_trial_regressors(
-            self.trials, wheel.sel(event=_WHEEL_T0_EVENT).values,
-            STIM_ONSET_EVENT)
-        df = long.merge(regressors, on='trial', how='left')
-        df['hemisphere'] = self.hemisphere[
-            self.brain_region.index(brain_region)]
-        df = task.add_relative_contrast(df)
-        return analysis.select_modeling_trials(df, response_col)
 
     def delta_r_squared(self, fit, cv: int = None) -> pd.Series:
         """Leave-one-regressor-out drop in R² for each block of an encoding fit.
@@ -4409,6 +4236,62 @@ class PhotometrySessionGroup:
                 for event in events
             ], ignore_index=True)
 
+    def code_model_frames(self, formulas, events=RESPONSE_EVENTS,
+                          response_col='response',
+                          min_trials=MIN_TRIALS_PERSESSION,
+                          contrast_coding='log2') -> list[CodedFrame]:
+        """Coded complete-case model frames, one per recording-event.
+
+        The coding half of the modelling pass, reading the magnitudes and
+        regressors :meth:`collect_responses` left on the group rather than the
+        store. Selects the modeling trials over the whole population
+        (:meth:`_modeling_frame`), then codes each recording-event on its own —
+        centering is within the frame handed to
+        :func:`iblnm.analysis.code_predictors`, so it must not see two
+        recordings at once — and drops rows missing any column the event's
+        family references. The frames returned are the ones both
+        :meth:`response_ols_dropone` and
+        :meth:`response_ols_dropone_permutation` score, so neither reopens the
+        store.
+
+        Parameters
+        ----------
+        formulas : dict
+            Drop-one family, flat or event-keyed
+            (:func:`resolve_event_family`); every event in ``events`` must have
+            a family, which is resolved up front so a missing one raises
+            ``MissingFormula`` here rather than after the coding work.
+        events : sequence of str
+            Events to code. An event the magnitudes do not carry yields no
+            frames.
+        response_col : str
+            Per-trial response magnitude column the formulas model.
+        min_trials : int
+            A recording-event with fewer complete-case rows is omitted.
+        contrast_coding : str
+            Passed to :func:`iblnm.analysis.code_predictors`.
+
+        Returns
+        -------
+        list[CodedFrame]
+            One entry per scorable recording-event, in recording order.
+        """
+        families = {event: resolve_event_family(formulas, event)
+                    for event in events}
+        df = self._modeling_frame(response_col)
+        df = df[df['event'].isin(events)]
+
+        frames = []
+        keys = ['eid', 'subject', 'target_NM', 'brain_region', 'event']
+        for identity, recording_event in df.groupby(keys, sort=False):
+            event = identity[-1]
+            coded = analysis.code_predictors(recording_event, contrast_coding)
+            coded = coded.dropna(subset=analysis.formula_union_columns(
+                families[event].values(), coded.columns))
+            if len(coded) >= min_trials:
+                frames.append(CodedFrame(*identity, coded))
+        return frames
+
     def __getitem__(self, idx):
         rec = self.recordings.iloc[idx]
         return rec, self._get_session(rec)
@@ -4673,119 +4556,70 @@ class PhotometrySessionGroup:
             rows.append(row)
         return pd.DataFrame(rows)
 
-    def response_ols_dropone(self, formulas, events=RESPONSE_EVENTS, response_col='response',
-                             reference='full', min_trials=MIN_TRIALS_PERSESSION,
-                             contrast_coding='log2'):
-        """Per-recording drop-one OLS ΔR² over the whole group.
+    def response_ols_dropone(self, frames, formulas, reference='full',
+                             response_col='response'):
+        """Per-recording drop-one OLS ΔR² over the coded frames of one pass.
 
-        Loops ``self.recordings``; for each row instantiates its
-        ``PhotometrySession`` from H5 and runs
-        :meth:`PhotometrySession.compare_response_models` for that recording's
-        ``brain_region``. Each recording's long-form rows are tagged with the
-        row's ``eid`` and ``subject`` (``target_NM`` already comes back from the
-        PS method) and concatenated. A recording whose region is absent or whose
-        events are all below ``min_trials`` contributes no rows. No disk write.
+        Fits every formula in each frame's family on that recording-event's
+        rows and differences the reduced models off ``reference``
+        (:func:`iblnm.analysis.dropone_delta_r2`). Every model of an event is
+        fit on the same complete-case rows, which is what makes their R²
+        comparable, and the reference model's main-effect weights are read off
+        the same fits rather than refit. A recording-event whose design is
+        degenerate for any member of its family contributes no rows. Touches
+        neither the store nor Alyx: :meth:`code_model_frames` did the reading.
 
         Parameters
         ----------
+        frames : list[CodedFrame]
+            Coded recording-event frames from :meth:`code_model_frames`.
         formulas : dict
-            Drop-one family, flat or event-keyed, passed through to
-            ``compare_response_models``; one name equals ``reference``.
-        response_col : str
-            Per-trial response magnitude column the formulas model.
+            Drop-one family, flat or event-keyed
+            (:func:`resolve_event_family`); one name equals ``reference`` and
+            every other key is a dropped predictor.
         reference : str
             Full-model key each reduced model's ΔR² is measured against.
-        min_trials : int
-            An event with fewer complete-case rows is omitted (per recording).
-        contrast_coding : str
-            Passed to :func:`iblnm.analysis.code_predictors`.
+        response_col : str
+            Per-trial response magnitude column the formulas model.
 
         Returns
         -------
         dropone : pandas.DataFrame
-            Long-form ``eid, subject, target_NM, brain_region, event,
-            predictor, r2, delta_r2, n_trials``; empty (those columns) when no
-            recording is scorable.
+            Long-form ``RESPONSE_OLS_DROPONE_COLUMNS``, one row per
+            recording-event x dropped predictor; empty (those columns) when no
+            recording-event is scorable.
         coefs : pandas.DataFrame
-            The full model's main-effect weights from the same fits, columns
-            ``RESPONSE_OLS_COEFS_COLUMNS``; empty (those columns) likewise.
+            The reference model's main-effect weights from the same fits,
+            columns ``RESPONSE_OLS_COEFS_COLUMNS``; empty likewise.
         """
-        from tqdm import tqdm
-
         dropone_frames, coef_frames = [], []
-        for _, row in tqdm(self.recordings.iterrows(),
-                           total=len(self.recordings),
-                           desc="Per-recording OLS drop-one"):
-            # Build the session from the authoritative recordings row, not the
-            # H5 /metadata: query_database fills brain_region/hemisphere/
-            # target_NM at the catalog level (TEMPFIX) but never writes them
-            # back to the H5, so the per-session /metadata can be empty. Load
-            # only the data groups compare_response_models needs.
-            ps = PhotometrySession(row, one=self.one, load_data=False)
-            ps.load_h5(Path(self.h5_dir) / f"{row['eid']}.h5",
-                       groups=['photometry', 'trials', 'wheel'])
-            rows, coefs = ps.compare_response_models(
-                events=events, brain_region=row['brain_region'], formulas=formulas,
-                response_col=response_col, reference=reference,
-                min_trials=min_trials, contrast_coding=contrast_coding)
-            if rows.empty:
+        for coded in tqdm(frames, desc="Per-recording OLS drop-one"):
+            family = resolve_event_family(formulas, coded.event)
+            fits = {name: PhotometrySession.fit_response_model(
+                        coded.frame, formula, response_col)
+                    for name, formula in family.items()}
+            if any(fit is None for fit in fits.values()):
                 continue
-            for frame in (rows, coefs):
-                frame.insert(0, 'eid', row['eid'])
-                frame.insert(1, 'subject', row['subject'])
-            dropone_frames.append(rows)
-            coef_frames.append(coefs)
+            n_trials = len(coded.frame)
+            rows = analysis.dropone_delta_r2(
+                {name: fit.rsquared for name, fit in fits.items()}, reference)
+            dropone_frames.append(
+                _tag_recording(rows.assign(n_trials=n_trials), coded))
+            coef_frames.append(_tag_recording(
+                _coefficient_rows(fits[reference], n_trials), coded))
 
-        if not dropone_frames:
-            return (pd.DataFrame(columns=RESPONSE_OLS_DROPONE_COLUMNS),
-                    pd.DataFrame(columns=RESPONSE_OLS_COEFS_COLUMNS))
-        dropone = pd.concat(dropone_frames,
-                            ignore_index=True)[RESPONSE_OLS_DROPONE_COLUMNS]
-        coefs = pd.concat(coef_frames,
-                          ignore_index=True)[RESPONSE_OLS_COEFS_COLUMNS]
-        return dropone, coefs
+        return (_concat_frames(dropone_frames, RESPONSE_OLS_DROPONE_COLUMNS),
+                _concat_frames(coef_frames, RESPONSE_OLS_COEFS_COLUMNS))
 
-    def _gather_coded_frames(self, formulas, events, response_col, min_trials,
-                             contrast_coding):
-        """Load each recording's coded per-event frames for the permutation null.
-
-        Loops ``self.recordings``, instantiating each recording's
-        :class:`PhotometrySession` from H5 (photometry/trials/wheel) and calling
-        :meth:`PhotometrySession.coded_event_frames`. Isolates all H5 I/O for
-        :meth:`response_ols_dropone_permutation`.
-
-        Returns
-        -------
-        list[tuple[str, str, str, pandas.DataFrame]]
-            One ``(eid, target_NM, event, frame)`` per scorable recording-event.
-        """
-        from tqdm import tqdm
-
-        scorable = []
-        for _, row in tqdm(self.recordings.iterrows(),
-                           total=len(self.recordings),
-                           desc="Gathering coded frames"):
-            ps = PhotometrySession(row, one=self.one, load_data=False)
-            ps.load_h5(Path(self.h5_dir) / f"{row['eid']}.h5",
-                       groups=['photometry', 'trials', 'wheel'])
-            frames = ps.coded_event_frames(row['brain_region'], formulas, events,
-                                           response_col, min_trials,
-                                           contrast_coding)
-            scorable.extend((row['eid'], row['target_NM'], event, frame)
-                            for event, frame in frames.items())
-        return scorable
-
-    def response_ols_dropone_permutation(self, formulas, events=RESPONSE_EVENTS,
-                                         response_col='response',
+    def response_ols_dropone_permutation(self, frames, formulas,
                                          reference='full',
-                                         min_trials=MIN_TRIALS_PERSESSION,
-                                         contrast_coding='log2',
+                                         response_col='response',
                                          n_bootstrap=1000, random_state=0):
         """Per-mouse permutation p-values for the per-session drop-one ΔR² grid.
 
-        For each event the donor pool is every scorable recording at that event,
-        across all cohorts (target_NMs) — the IBL task is standardized and
-        interleaved across cohorts on the same rigs, so any session's trial
+        For each event the donor pool is every coded recording-event at that
+        event, across all cohorts (target_NMs) — the IBL task is standardized
+        and interleaved across cohorts on the same rigs, so any session's trial
         sequence is a valid stand-in. For each focal recording-event and each
         dropped predictor (the non-``reference`` ``formulas`` keys), the
         cross-session swap null
@@ -4796,23 +4630,22 @@ class PhotometrySessionGroup:
         (:func:`assemble_session_pvalue_table`), and each mouse's sessions
         pooled (:func:`assemble_mouse_pvalue_table`).
 
+        The frames are the ones :meth:`response_ols_dropone` fitted, so the
+        null scores the rows the observed ΔR² came from and nothing here
+        reopens the store.
+
         Parameters
         ----------
+        frames : list[CodedFrame]
+            Coded recording-event frames from :meth:`code_model_frames`.
         formulas : dict[str, str]
             Drop-one family ``{name: formula_template}``; ``reference`` is the
             full model and every other key is a dropped predictor (and its
             swapped column name).
-        events : sequence of str
-            Events whose coded frames are built per recording.
-        response_col : str
-            Per-trial response magnitude column the formulas model.
         reference : str
             Full-model key; the remaining keys are the dropped predictors.
-        min_trials : int
-            A recording-event with fewer complete-case trials is excluded as
-            both focal and donor.
-        contrast_coding : str
-            Passed to :func:`iblnm.analysis.code_predictors`.
+        response_col : str
+            Per-trial response magnitude column the formulas model.
         n_bootstrap : int
             Pooled-null bootstrap draws per mouse cell; sets the p-value floor
             1 / (n_bootstrap+1).
@@ -4831,25 +4664,22 @@ class PhotometrySessionGroup:
         Neither table carries q-values: the caller applies
         :func:`iblnm.analysis.add_fdr_qvalues` with its own choice of families.
         """
-        from tqdm import tqdm
-
         predictors = [name for name in formulas if name != reference]
-        scorable = self._gather_coded_frames(formulas, events, response_col,
-                                             min_trials, contrast_coding)
         rng = np.random.default_rng(random_state)
         null_vectors = {}
-        for eid, target_NM, event, focal in tqdm(
-                scorable, desc="Permutation null (per recording-event)"):
-            # Cohort (target_NM, the ignored field) is deliberately not filtered
-            # on: the task is standardized and interleaved across cohorts.
-            donors = [frame for d_eid, _, d_event, frame in scorable
-                      if d_event == event and d_eid != eid]
+        for focal in tqdm(frames,
+                          desc="Permutation null (per recording-event)"):
+            # Cohort (target_NM) is deliberately not filtered on: the task is
+            # standardized and interleaved across cohorts.
+            donors = [donor.frame for donor in frames
+                      if donor.event == focal.event and donor.eid != focal.eid]
             for predictor in predictors:
                 null = analysis.permutation_null_delta_r2(
-                    focal, donors, formulas[reference], formulas[predictor],
-                    predictor, response_col, rng=rng, n_bootstrap=n_bootstrap)
+                    focal.frame, donors, formulas[reference],
+                    formulas[predictor], predictor, response_col, rng=rng,
+                    n_bootstrap=n_bootstrap)
                 if null.size:
-                    null_vectors[(eid, event, predictor)] = null
+                    null_vectors[(focal.eid, focal.event, predictor)] = null
         session_pvalues = assemble_session_pvalue_table(
             self.response_ols_dropone_results, null_vectors)
         mouse_pvalues = assemble_mouse_pvalue_table(

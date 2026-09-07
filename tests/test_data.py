@@ -1,5 +1,4 @@
 """Tests for iblnm.data module."""
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -11,12 +10,6 @@ from unittest.mock import MagicMock, patch
 from iblnm.config import REQUIRED_CONTRASTS
 from iblnm.data import WHEEL_LABEL
 from iblnm.util import LOG_COLUMNS, contrast_transform
-
-# Session-lifetime scratch directory for the helpers that must write a real H5
-# (a load method reads its own stored product back, so an in-memory attribute
-# is not enough). Cleaned up when the interpreter exits.
-_SCRATCH_H5_DIR = tempfile.TemporaryDirectory()
-
 
 # =============================================================================
 # Exception Tests
@@ -6620,11 +6613,8 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
         'choice': rng.choice([-1, 1], n_trials),
         'probabilityLeft': np.full(n_trials, 0.5),
     })
-    # `_response_modeling_frame` reads the wheel through `load_responses`, so
-    # the matrix has to be stored, not just assigned. Each session gets its own
-    # H5 under a directory that lives as long as the test session.
-    ps.filepath = Path(_SCRATCH_H5_DIR.name) / f'{eid}.h5'
-    ps.filepath.unlink(missing_ok=True)
+    # The wheel cut is what `peak_velocity` is built from; the caller writes it
+    # to the store alongside the photometry.
     ps.wheel_responses = {
         WHEEL_LABEL: xr.DataArray(
             rng.normal(0, 1, (1, n_trials, 50)),
@@ -6633,194 +6623,253 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
                     'time': np.arange(50) / 100},
         )
     }
-    ps.save_h5(groups=['wheel'])
     return ps
 
 
-class TestCompareResponseModels:
-    """Tests for PhotometrySession.compare_response_models (drop-one family)."""
+def _persession_recordings(rows):
+    """Recordings DataFrame from (eid, subject, region, hemi, target_NM) tuples.
 
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
-
-    def test_absent_region_returns_empty_frame(self):
-        ps = _make_session_for_persession()
-        out, _ = ps.compare_response_models('NOT-A-REGION', self.formulas)
-        assert out.empty
-        assert list(out.columns) == [
-            'brain_region', 'target_NM', 'event', 'predictor', 'r2',
-            'delta_r2', 'n_trials',
-        ]
-
-    def test_informative_contrast_has_positive_delta_r2(self):
-        ps = _make_session_for_persession()
-        out, _ = ps.compare_response_models('VTA-r', self.formulas)
-        contrast_rows = out[out['predictor'] == 'contrast']
-        assert not contrast_rows.empty
-        assert (contrast_rows['delta_r2'] > 0).all()
-
-    def test_rows_tagged_with_region_and_target_nm(self):
-        ps = _make_session_for_persession()
-        out, _ = ps.compare_response_models('VTA-r', self.formulas)
-        assert (out['brain_region'] == 'VTA-r').all()
-        assert (out['target_NM'] == 'VTA-DA').all()
-        # No `full` reference row; one row per dropped predictor per event.
-        assert 'full' not in set(out['predictor'])
-
-    def test_identical_trial_count_across_models_per_event(self):
-        ps = _make_session_for_persession()
-        ps.compare_response_models('VTA-r', self.formulas)
-        events = {event for _, event in ps.ols_fits}
-        assert events
-        for event in events:
-            nobs = {len(ps.ols_fits[(name, event)].model.endog)
-                    for name in self.formulas}
-            assert len(nobs) == 1
-
-    def test_ols_fits_cached_per_name_event(self):
-        ps = _make_session_for_persession()
-        out, _ = ps.compare_response_models('VTA-r', self.formulas)
-        for event in set(out['event']):
-            for name in self.formulas:
-                assert (name, event) in ps.ols_fits
-
-    def test_event_below_min_trials_is_skipped(self):
-        ps = _make_session_for_persession(n_trials=120)
-        _, coefs = ps.compare_response_models(
-            'VTA-r', self.formulas, min_trials=200)
-        dropone, _ = ps.compare_response_models(
-            'VTA-r', self.formulas, min_trials=200)
-        assert dropone.empty
-        assert coefs.empty
-
-    def test_coefficients_frame_columns_and_grain(self):
-        from iblnm.data import PERSESSION_COEFS_COLUMNS
-        from iblnm.config import PERSESSION_REGRESSORS
-        ps = _make_session_for_persession()
-        _, coefs = ps.compare_response_models('VTA-r', self.formulas)
-        assert list(coefs.columns) == PERSESSION_COEFS_COLUMNS
-        # One row per (event, regressor) present in that event's full fit.
-        regressors = set(PERSESSION_REGRESSORS)
-        assert set(coefs['regressor']) <= regressors
-        per_event = coefs.groupby('event')['regressor'].agg(set)
-        for event, present in per_event.items():
-            full_params = set(ps.ols_fits[('full', event)].params.index)
-            assert present == regressors & full_params
-
-    def test_event_absent_from_event_keyed_family_raises(self):
-        from iblnm.validation import MissingFormula
-        ps = _make_session_for_persession()
-        with pytest.raises(MissingFormula) as excinfo:
-            ps.compare_response_models('VTA-r', {'feedback_times': self.formulas},
-                                       events=['stimOnTrigger_times'])
-        assert 'stimOnTrigger_times' in str(excinfo.value)
-        assert 'feedback_times' in str(excinfo.value)
-
-    def test_event_keyed_family_covering_every_event_fits(self):
-        from iblnm.config import RESPONSE_EVENTS
-        ps = _make_session_for_persession()
-        event_keyed = {event: self.formulas for event in RESPONSE_EVENTS}
-        out, _ = ps.compare_response_models('VTA-r', event_keyed)
-        assert set(out['event']) == set(RESPONSE_EVENTS)
-
-    def test_coefficients_read_full_fit_params_and_bse(self):
-        ps = _make_session_for_persession()
-        _, coefs = ps.compare_response_models('VTA-r', self.formulas)
-        for _, row in coefs.iterrows():
-            fit = ps.ols_fits[('full', row['event'])]
-            assert row['coef'] == fit.params[row['regressor']]
-            assert row['coef_se'] == fit.bse[row['regressor']]
-            assert row['brain_region'] == 'VTA-r'
-            assert row['target_NM'] == 'VTA-DA'
+    ``target_NM`` is filled in at query time and is the authoritative source —
+    the modelling pass tags its rows from here, not from the H5 ``/metadata``
+    (where the field may be missing).
+    """
+    return pd.DataFrame([
+        {'eid': eid, 'subject': subject, 'brain_region': region,
+         'hemisphere': hemi, 'target_NM': target_nm, 'NM': target_nm[-2:],
+         'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
+         'number': 1, 'task_protocol': 'biased'}
+        for eid, subject, region, hemi, target_nm in rows
+    ])
 
 
-class TestResponseOlsDropone:
-    """Tests for PhotometrySessionGroup.response_ols_dropone (orchestration)."""
+def _persession_group(h5_dir, rows, n_trials=120):
+    """Group over ``rows`` with its store written and nothing collected yet.
 
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
+    Each row gets its own H5 (:func:`_make_session_for_persession`, whose
+    responses are contrast-driven and whose wheel is stored so
+    ``peak_velocity`` survives the complete-case filter). ``n_trials`` is one
+    count for every recording or one per row.
+    """
+    from iblnm.data import PhotometrySessionGroup
 
-    def _write_recording(self, h5_dir, eid, subject, region, hemisphere,
-                         target_nm, n_trials=120, seed=0):
-        """Save a persession PhotometrySession to ``h5_dir/{eid}.h5``."""
+    counts = ([n_trials] * len(rows) if isinstance(n_trials, int)
+              else list(n_trials))
+    for seed, (row, count) in enumerate(zip(rows, counts)):
+        eid, subject, region, hemisphere, target_nm = row
         ps = _make_session_for_persession(
-            n_trials=n_trials, seed=seed, eid=eid, subject=subject,
+            n_trials=count, seed=seed, eid=eid, subject=subject,
             region=region, hemisphere=hemisphere, target_nm=target_nm)
         ps.save_h5(h5_dir / f'{eid}.h5',
                    groups=['metadata', 'trials', 'photometry', 'wheel'])
+    return PhotometrySessionGroup(_persession_recordings(rows),
+                                  one=MagicMock(), h5_dir=h5_dir)
 
-    def _recordings(self, rows):
-        """Build a recordings DataFrame from (eid, subject, region, hemi,
-        target_nm) tuples. ``target_NM`` is filled in at query time and is the
-        authoritative source — ``response_ols_dropone`` builds each session from
-        this row, not the H5 ``/metadata`` (where the field may be missing)."""
-        return pd.DataFrame([
-            {'eid': eid, 'subject': subject, 'brain_region': region,
-             'hemisphere': hemi, 'target_NM': target_nm,
-             'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
-             'number': 1, 'task_protocol': 'biased'}
-            for eid, subject, region, hemi, target_nm in rows
-        ])
 
-    def test_concatenates_per_recording_rows_with_tags(self, tmp_path):
-        from iblnm.data import PhotometrySessionGroup
-        self._write_recording(tmp_path, 'eid-0', 'subj-0', 'VTA-r', 'r',
-                              'VTA-DA', seed=0)
-        self._write_recording(tmp_path, 'eid-1', 'subj-1', 'DR-l', 'l',
-                              'DR-5HT', seed=1)
-        recs = self._recordings([
-            ('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
-            ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT'),
-        ])
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        out, coefs = group.response_ols_dropone(self.formulas)
+def _collected_group(h5_dir, rows, n_trials=120):
+    """:func:`_persession_group` with its responses collected.
 
-        assert list(out.columns) == [
-            'eid', 'subject', 'target_NM', 'brain_region', 'event',
-            'predictor', 'r2', 'delta_r2', 'n_trials',
-        ]
-        # Both recordings contribute; eid/subject tags come from the row.
-        assert set(out['eid']) == {'eid-0', 'eid-1'}
-        assert dict(out.groupby('eid')['subject'].first()) == {
-            'eid-0': 'subj-0', 'eid-1': 'subj-1'}
-        # target_NM comes from the recordings row (query-time fill-in), not the
-        # H5 /metadata, which the per-recording session no longer loads.
-        assert dict(out.groupby('eid')['target_NM'].first()) == {
-            'eid-0': 'VTA-DA', 'eid-1': 'DR-5HT'}
-        # One row per dropped regressor per (recording, event); no reference row.
-        assert 'full' not in set(out['predictor'])
-        dropped = set(self.formulas) - {'full'}
-        per_event = out.groupby(['eid', 'event'])['predictor'].agg(set)
-        assert (per_event == dropped).all()
+    The returned group carries ``response_magnitudes`` and
+    ``trial_regressors``, the inputs the model frames are coded from.
+    """
+    group = _persession_group(h5_dir, rows, n_trials)
+    group.response_magnitudes, group.trial_regressors = (
+        group.collect_responses())
+    return group
 
-        # The coefficients frame is tagged with the same eid/subject pairs.
-        from iblnm.config import RESPONSE_OLS_COEFS_COLUMNS
+
+class TestCodeModelFrames:
+    """The coding step of the modelling pass (PhotometrySessionGroup)."""
+
+    @property
+    def formulas(self):
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']
+
+    def test_one_coded_frame_per_recording_event(self, tmp_path):
+        from iblnm.analysis import formula_union_columns
+        from iblnm.config import RESPONSE_EVENTS
+        group = _collected_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA')])
+        frames = group.code_model_frames(self.formulas)
+
+        assert {(cf.eid, cf.brain_region, cf.event) for cf in frames} == {
+            ('eid-0', 'VTA-r', event) for event in RESPONSE_EVENTS}
+        for cf in frames:
+            assert (cf.subject, cf.target_NM) == ('subj-0', 'VTA-DA')
+            # Deviation-coded, and complete over every column the family uses.
+            assert set(np.unique(cf.frame['side'])) <= {-0.5, 0.5}
+            union = formula_union_columns(self.formulas.values(),
+                                          cf.frame.columns)
+            assert cf.frame[union].notna().all().all()
+
+    def test_recording_event_below_min_trials_is_omitted(self, tmp_path):
+        group = _collected_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
+                       ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')],
+            n_trials=[120, 20])
+        frames = group.code_model_frames(self.formulas)
+        assert {cf.eid for cf in frames} == {'eid-0'}
+
+    def test_event_absent_from_event_keyed_family_raises(self, tmp_path):
+        from iblnm.validation import MissingFormula
+        group = _collected_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA')])
+        with pytest.raises(MissingFormula) as excinfo:
+            group.code_model_frames({'feedback_times': self.formulas},
+                                    events=['stimOnTrigger_times'])
+        assert 'stimOnTrigger_times' in str(excinfo.value)
+        assert 'feedback_times' in str(excinfo.value)
+
+    def test_predictors_are_centered_within_recording_event(self, tmp_path):
+        """Two recordings with different reaction-time distributions each
+        center on their own mean, so neither carries the other's offset."""
+        group = _collected_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
+                       ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')])
+        frames = group.code_model_frames(self.formulas)
+        assert len(frames) == 4
+        for cf in frames:
+            assert cf.frame['log_reaction_time'].mean() == pytest.approx(0.0)
+            assert cf.frame['peak_velocity'].mean() == pytest.approx(0.0)
+
+
+class TestResponseOlsDropone:
+    """The drop-one fits, run over the coded frames the pass already built."""
+
+    # Pinned from a direct statsmodels fit of the family on the same coded
+    # frames (`_collected_group` is seeded, so both are fixed data).
+    _R2_FULL = 0.7312438196366979
+    _DELTA_R2 = {
+        'contrast': 0.6516379061955654,
+        'side': 0.018819038906860763,
+        'reward': 0.0013684054717006955,
+        'choice_side': 0.0076388810928114115,
+        'log_reaction_time': 0.011283836392135704,
+        'peak_velocity': 0.006439588728395562,
+    }
+    _COEFS = {
+        'contrast': (0.27865316264859885, 0.0189256949702073),
+        'side': (-0.05350821276594487, 0.07993740084354073),
+        'reward': (-0.01580457757900211, 0.07895164830312108),
+        'choice_side': (0.04330504643298431, 0.07845530557576474),
+        'log_reaction_time': (0.22812126130251947, 0.2229829656629778),
+        'peak_velocity': (0.13924412869844843, 0.11846606132164994),
+    }
+
+    @property
+    def formulas(self):
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']
+
+    def test_delta_r2_and_coefficients_match_the_fitted_family(self, tmp_path):
+        group = _collected_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA')])
+        frames = group.code_model_frames(self.formulas)
+        dropone, coefs = group.response_ols_dropone(frames, self.formulas)
+
+        for event in {cf.event for cf in frames}:
+            rows = dropone[dropone['event'] == event].set_index('predictor')
+            assert set(rows.index) == set(self._DELTA_R2)
+            assert (rows['n_trials'] == 120).all()
+            for predictor, delta in self._DELTA_R2.items():
+                assert rows.loc[predictor, 'r2'] == pytest.approx(
+                    self._R2_FULL)
+                assert rows.loc[predictor, 'delta_r2'] == pytest.approx(delta)
+
+            weights = coefs[coefs['event'] == event].set_index('regressor')
+            assert set(weights.index) == set(self._COEFS)
+            for regressor, (coef, se) in self._COEFS.items():
+                assert weights.loc[regressor, 'coef'] == pytest.approx(coef)
+                assert weights.loc[regressor, 'coef_se'] == pytest.approx(se)
+
+    def test_rows_carry_the_recording_identity(self, tmp_path):
+        from iblnm.config import (RESPONSE_EVENTS, RESPONSE_OLS_COEFS_COLUMNS)
+        from iblnm.data import RESPONSE_OLS_DROPONE_COLUMNS
+        group = _collected_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
+                       ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')])
+        frames = group.code_model_frames(self.formulas)
+        dropone, coefs = group.response_ols_dropone(frames, self.formulas)
+
+        assert list(dropone.columns) == RESPONSE_OLS_DROPONE_COLUMNS
         assert list(coefs.columns) == RESPONSE_OLS_COEFS_COLUMNS
-        assert set(coefs['eid']) == {'eid-0', 'eid-1'}
-        assert dict(coefs.groupby('eid')['subject'].first()) == {
-            'eid-0': 'subj-0', 'eid-1': 'subj-1'}
+        for frame in (dropone, coefs):
+            assert dict(frame.groupby('eid')['subject'].first()) == {
+                'eid-0': 'subj-0', 'eid-1': 'subj-1'}
+            assert dict(frame.groupby('eid')['target_NM'].first()) == {
+                'eid-0': 'VTA-DA', 'eid-1': 'DR-5HT'}
+            assert dict(frame.groupby('eid')['brain_region'].first()) == {
+                'eid-0': 'VTA-r', 'eid-1': 'DR-l'}
+            assert set(frame['event']) == set(RESPONSE_EVENTS)
+        # One row per dropped regressor per (recording, event); no reference.
+        assert 'full' not in set(dropone['predictor'])
+        per_event = dropone.groupby(['eid', 'event'])['predictor'].agg(set)
+        assert (per_event == set(self.formulas) - {'full'}).all()
 
-    def test_insufficient_recording_is_absent(self, tmp_path):
-        from iblnm.data import PhotometrySessionGroup
-        self._write_recording(tmp_path, 'eid-0', 'subj-0', 'VTA-r', 'r',
-                              'VTA-DA', n_trials=120, seed=0)
-        # Too few trials to score any event -> contributes no rows.
-        self._write_recording(tmp_path, 'eid-1', 'subj-1', 'DR-l', 'l',
-                              'DR-5HT', n_trials=20, seed=1)
-        recs = self._recordings([
-            ('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
-            ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT'),
-        ])
-        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
-        out, coefs = group.response_ols_dropone(self.formulas)
+    def test_no_frames_yields_empty_typed_frames(self, tmp_path):
+        from iblnm.config import RESPONSE_OLS_COEFS_COLUMNS
+        from iblnm.data import RESPONSE_OLS_DROPONE_COLUMNS
+        group = _collected_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA')])
+        dropone, coefs = group.response_ols_dropone([], self.formulas)
+        assert list(dropone.columns) == RESPONSE_OLS_DROPONE_COLUMNS
+        assert list(coefs.columns) == RESPONSE_OLS_COEFS_COLUMNS
+        assert dropone.empty and coefs.empty
 
-        assert set(out['eid']) == {'eid-0'}
-        assert 'eid-1' not in set(out['eid'])
-        assert set(coefs['eid']) == {'eid-0'}
+
+class TestModellingPass:
+    """Collect, code, fit and permute as one pass over the store."""
+
+    @property
+    def formulas(self):
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']
+
+    def test_one_store_read_and_frames_shared_by_fits_and_null(
+            self, tmp_path, monkeypatch):
+        """Every stage after the collection works off the coded frames the
+        pass already holds: each session's H5 is opened once, and the frames
+        the fits and the permutation null see are the same objects."""
+        from iblnm import analysis
+        from iblnm.data import PhotometrySession
+        group = _persession_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
+                       ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')])
+
+        opened, fitted, permuted = [], [], []
+        real_load_h5 = PhotometrySession.load_h5
+        real_fit_ols = analysis.fit_ols
+
+        def load_spy(self, fpath=None, groups=None):
+            opened.append(str(fpath))
+            return real_load_h5(self, fpath, groups=groups)
+
+        def fit_spy(formula, df):
+            fitted.append(df)
+            return real_fit_ols(formula, df)
+
+        def null_spy(focal_df, donor_dfs, *args, n_bootstrap=1000, **kwargs):
+            permuted.append(focal_df)
+            return np.full(n_bootstrap, 0.01)
+
+        monkeypatch.setattr('iblnm.analysis.fit_ols', fit_spy)
+        monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
+                            null_spy)
+
+        with patch.object(PhotometrySession, 'load_h5', load_spy):
+            group.response_magnitudes, group.trial_regressors = (
+                group.collect_responses())
+            frames = group.code_model_frames(self.formulas)
+            group.response_ols_dropone_results, _ = group.response_ols_dropone(
+                frames, self.formulas)
+            group.response_ols_dropone_permutation(
+                frames, self.formulas, n_bootstrap=10)
+
+        assert len(opened) == len(set(opened)) == 2
+        coded = {id(cf.frame) for cf in frames}
+        assert len(coded) == 4
+        assert {id(df) for df in fitted} == coded
+        assert {id(df) for df in permuted} == coded
 
 
 class TestResponseLMMEffects:
@@ -8079,15 +8128,22 @@ class TestResponseOlsDroponePermutation:
     _FORMULAS = {'full': '{response} ~ reward + contrast',
                  'reward': '{response} ~ contrast'}
 
-    def _patch(self, group, monkeypatch):
-        """Stub the H5-loading coded-frame gather and the null primitive so
-        neither H5 nor statsmodels is invoked. Each canned frame carries a
-        ``tag`` column equal to its eid. Returns the list each call records:
-        ``(focal_tag, donor_tags, predictor)``."""
-        scorable = [(eid, 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': [eid]}))
-                    for eid in ['e1', 'e2', 'e3']]
-        monkeypatch.setattr(group, '_gather_coded_frames',
-                            lambda *a, **k: scorable)
+    @staticmethod
+    def _frames(rows=(('e1', 'VTA-DA', 'feedback_times'),
+                      ('e2', 'VTA-DA', 'feedback_times'),
+                      ('e3', 'VTA-DA', 'feedback_times'))):
+        """Coded frames from (eid, target_NM, event) tuples, each frame
+        carrying a ``tag`` column equal to its eid."""
+        from iblnm.data import CodedFrame
+        return [CodedFrame(eid, 'm1', target_nm, 'VTA', event,
+                           pd.DataFrame({'tag': [eid]}))
+                for eid, target_nm, event in rows]
+
+    @staticmethod
+    def _patch_null(monkeypatch, empty_for=()):
+        """Stub the null primitive so statsmodels is never invoked. Returns the
+        list each call records: ``(focal_tag, donor_tags, predictor)``; a focal
+        eid in ``empty_for`` gets an empty null vector back."""
         calls = []
 
         def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
@@ -8095,6 +8151,8 @@ class TestResponseOlsDroponePermutation:
                       n_bootstrap=1000):
             calls.append((focal_df['tag'].iloc[0],
                           {d['tag'].iloc[0] for d in donor_dfs}, predictor))
+            if focal_df['tag'].iloc[0] in empty_for:
+                return np.array([])
             return np.full(n_bootstrap, 0.01)
 
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
@@ -8108,28 +8166,15 @@ class TestResponseOlsDroponePermutation:
         group = self._group()
         group.response_ols_dropone_results = self._observed()
         # e1/e2 VTA-DA and e3 DR-5HT all at feedback; e4 VTA-DA at stimOn.
-        scorable = [
-            ('e1', 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': ['e1']})),
-            ('e2', 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': ['e2']})),
-            ('e3', 'DR-5HT', 'feedback_times', pd.DataFrame({'tag': ['e3']})),
-            ('e4', 'VTA-DA', 'stimOnTrigger_times', pd.DataFrame({'tag': ['e4']})),
-        ]
-        monkeypatch.setattr(group, '_gather_coded_frames',
-                            lambda *a, **k: scorable)
-        calls = []
+        frames = self._frames([
+            ('e1', 'VTA-DA', 'feedback_times'),
+            ('e2', 'VTA-DA', 'feedback_times'),
+            ('e3', 'DR-5HT', 'feedback_times'),
+            ('e4', 'VTA-DA', 'stimOnTrigger_times'),
+        ])
+        calls = self._patch_null(monkeypatch)
 
-        def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
-                      predictor, response_col='response', *, rng,
-                      n_bootstrap=1000):
-            calls.append((focal_df['tag'].iloc[0],
-                          {d['tag'].iloc[0] for d in donor_dfs}, predictor))
-            return np.full(n_bootstrap, 0.01)
-
-        monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
-                            fake_null)
-
-        group.response_ols_dropone_permutation(
-            self._FORMULAS, events=['feedback_times', 'stimOnTrigger_times'])
+        group.response_ols_dropone_permutation(frames, self._FORMULAS)
 
         donors_for_e1 = next(d for f, d, _ in calls if f == 'e1')
         assert donors_for_e1 == {'e2', 'e3'}   # cross-cohort, same event
@@ -8142,10 +8187,10 @@ class TestResponseOlsDroponePermutation:
                                 RESPONSE_OLS_SESSION_PVAL_COLUMNS)
         group = self._group()
         group.response_ols_dropone_results = self._observed()
-        self._patch(group, monkeypatch)
+        self._patch_null(monkeypatch)
 
         session_table, table = group.response_ols_dropone_permutation(
-            self._FORMULAS, events=['feedback_times'])
+            self._frames(), self._FORMULAS)
 
         assert list(session_table.columns) == RESPONSE_OLS_SESSION_PVAL_COLUMNS
         assert list(session_table['eid']) == ['e1', 'e2', 'e3']
@@ -8162,23 +8207,10 @@ class TestResponseOlsDroponePermutation:
         toward its mouse's ``n_sessions``."""
         group = self._group()
         group.response_ols_dropone_results = self._observed()
-        scorable = [(eid, 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': [eid]}))
-                    for eid in ['e1', 'e2', 'e3']]
-        monkeypatch.setattr(group, '_gather_coded_frames',
-                            lambda *a, **k: scorable)
-
-        def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
-                      predictor, response_col='response', *, rng,
-                      n_bootstrap=1000):
-            if focal_df['tag'].iloc[0] == 'e2':
-                return np.array([])
-            return np.full(n_bootstrap, 0.01)
-
-        monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
-                            fake_null)
+        self._patch_null(monkeypatch, empty_for=('e2',))
 
         session_table, table = group.response_ols_dropone_permutation(
-            self._FORMULAS, events=['feedback_times'], n_bootstrap=50)
+            self._frames(), self._FORMULAS, n_bootstrap=50)
 
         assert list(session_table['eid']) == ['e1', 'e3']
         m1_sessions = table.loc[table['subject'] == 'm1', 'n_sessions']
@@ -8189,10 +8221,6 @@ class TestResponseOlsDroponePermutation:
         draws differ — and reruns with the same seed reproduce the table."""
         group = self._group()
         group.response_ols_dropone_results = self._observed()
-        scorable = [(eid, 'VTA-DA', 'feedback_times', pd.DataFrame({'tag': [eid]}))
-                    for eid in ['e1', 'e2', 'e3']]
-        monkeypatch.setattr(group, '_gather_coded_frames',
-                            lambda *a, **k: scorable)
         draws = {}
 
         def fake_null(focal_df, donor_dfs, full_formula, reduced_formula,
@@ -8206,13 +8234,11 @@ class TestResponseOlsDroponePermutation:
                             fake_null)
 
         session1, table1 = group.response_ols_dropone_permutation(
-            self._FORMULAS, events=['feedback_times'], n_bootstrap=32,
-            random_state=7)
+            self._frames(), self._FORMULAS, n_bootstrap=32, random_state=7)
         first_draws = {eid: v[0] for eid, v in draws.items()}
         draws.clear()
         session2, table2 = group.response_ols_dropone_permutation(
-            self._FORMULAS, events=['feedback_times'], n_bootstrap=32,
-            random_state=7)
+            self._frames(), self._FORMULAS, n_bootstrap=32, random_state=7)
 
         # One advancing rng: the three per-recording draws are all distinct.
         stacked = np.vstack(list(first_draws.values()))
