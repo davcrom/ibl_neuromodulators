@@ -2149,37 +2149,67 @@ class SubstitutableOLS:
         return 1 - resid @ resid / ((ym - ym.mean()) ** 2).sum()
 
 
-def dropone_delta_r2(r2_by_name, reference: str = 'full') -> pd.DataFrame:
+def adjusted_r2(r2: float, n_obs: int, n_params: int) -> float:
+    """R² penalized for the parameters spent reaching it.
+
+    ``1 − (1−R²)(n−1)/(n−p−1)``, with ``p`` the regressors excluding the
+    intercept (statsmodels' ``df_model``). Raises ``ZeroDivisionError`` when the
+    model has as many parameters as it has rows.
+    """
+    return 1 - (1 - r2) * (n_obs - 1) / (n_obs - n_params - 1)
+
+
+def dropone_delta_r2(r2_by_name, n_obs: int,
+                     reference: str = 'full') -> pd.DataFrame:
     """Drop-one ΔR² for one unit, differencing each reduced model off a baseline.
 
     Pure, in-sample, single-unit counterpart to ``crossval_lmm``'s differencing:
-    ``r2_by_name`` maps model name → R² for one recording×event, where one key is
-    the full ``reference`` model and each other key is a reduced model with one
-    regressor dropped. Each reduced model's ΔR² is the R² the reference gains over
-    it — the dropped regressor's unique in-sample contribution.
+    ``r2_by_name`` maps model name → (R², parameter count) for one
+    recording×event, where one key is the full ``reference`` model and each other
+    key is a reduced model with one regressor dropped. Each reduced model's ΔR²
+    is the R² the reference gains over it — the dropped regressor's unique
+    in-sample contribution.
+
+    Raw ΔR² is biased upward by the parameters the reference spends and the
+    reduced model does not: a regressor that explains nothing still raises the
+    reference's in-sample R². Differencing the two adjusted R² values instead
+    (:func:`adjusted_r2`) charges each model for its own parameter count, so
+    ``delta_r2_adj`` is negative where the regressor buys less than its degrees
+    of freedom cost.
 
     Parameters
     ----------
     r2_by_name : dict or pd.Series
-        Mapping of model name → R² for one unit. Must contain ``reference``.
+        Mapping of model name → ``(r2, n_params)`` for one unit, where
+        ``n_params`` counts regressors excluding the intercept. Must contain
+        ``reference``.
+    n_obs : int
+        Rows every model in ``r2_by_name`` was fit on — they share one
+        complete-case design, which is what makes their R² comparable.
     reference : str
         Key naming the full model each reduced model's ΔR² is measured against.
 
     Returns
     -------
     pd.DataFrame
-        One row per non-``reference`` name, columns ``predictor, r2, delta_r2``
-        where ``r2`` is the reference R² (same on every row) and ``delta_r2`` is
-        ``r2[reference] − r2[name]``. Empty frame with those columns if only the
-        reference is present.
+        One row per non-``reference`` name, columns
+        ``predictor, r2, r2_adj, delta_r2, delta_r2_adj``. ``r2`` and ``r2_adj``
+        carry the reference model's values (the same on every row); the two
+        deltas are the reference's value less that row's reduced model. Empty
+        frame with those columns if only the reference is present.
     """
-    r2_ref = r2_by_name[reference]
+    r2_ref, n_params_ref = r2_by_name[reference]
+    r2_adj_ref = adjusted_r2(r2_ref, n_obs, n_params_ref)
     rows = [
-        {'predictor': name, 'r2': r2_ref, 'delta_r2': r2_ref - r2}
-        for name, r2 in r2_by_name.items()
+        {'predictor': name, 'r2': r2_ref, 'r2_adj': r2_adj_ref,
+         'delta_r2': r2_ref - r2,
+         'delta_r2_adj': r2_adj_ref - adjusted_r2(r2, n_obs, n_params)}
+        for name, (r2, n_params) in r2_by_name.items()
         if name != reference
     ]
-    return pd.DataFrame(rows, columns=['predictor', 'r2', 'delta_r2'])
+    return pd.DataFrame(
+        rows,
+        columns=['predictor', 'r2', 'r2_adj', 'delta_r2', 'delta_r2_adj'])
 
 
 def permutation_null_delta_r2(

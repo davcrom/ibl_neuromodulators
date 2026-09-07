@@ -5823,13 +5823,16 @@ class TestLoaderMethods:
         rows = [
             {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
              'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': 0.1, 'n_trials': 80},
+             'predictor': 'contrast', 'r2': 0.5, 'r2_adj': 0.45,
+             'delta_r2': 0.1, 'delta_r2_adj': 0.08, 'n_trials': 80},
             {'eid': 'eid-1', 'subject': 'subj-1', 'target_NM': 'target-0',
              'brain_region': 'region-0', 'event': 'feedback_times',
-             'predictor': 'reward', 'r2': 0.4, 'delta_r2': 0.2, 'n_trials': 70},
+             'predictor': 'reward', 'r2': 0.4, 'r2_adj': 0.35,
+             'delta_r2': 0.2, 'delta_r2_adj': 0.18, 'n_trials': 70},
             {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
              'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
-             'predictor': 'side', 'r2': 0.3, 'delta_r2': 0.05, 'n_trials': 60},
+             'predictor': 'side', 'r2': 0.3, 'r2_adj': 0.25,
+             'delta_r2': 0.05, 'delta_r2_adj': 0.02, 'n_trials': 60},
         ]
         df = pd.DataFrame(rows)[RESPONSE_OLS_DROPONE_COLUMNS]
         path = tmp_path / 'response_ols_persession_dropone.parquet'
@@ -6747,6 +6750,14 @@ class TestResponseOlsDropone:
         'log_reaction_time': 0.011283836392135704,
         'peak_velocity': 0.006439588728395562,
     }
+    # Regressors excluding the intercept, per model: the reference spends 6
+    # main effects + 12 interactions, and dropping a predictor takes its
+    # interactions with it (6 terms for contrast/log_reaction_time/
+    # peak_velocity, 4 for side/reward/choice_side).
+    _N_PARAMS = {
+        'full': 18, 'contrast': 12, 'side': 14, 'reward': 14,
+        'choice_side': 14, 'log_reaction_time': 12, 'peak_velocity': 12,
+    }
     _COEFS = {
         'contrast': (0.27865316264859885, 0.0189256949702073),
         'side': (-0.05350821276594487, 0.07993740084354073),
@@ -6781,6 +6792,32 @@ class TestResponseOlsDropone:
             for regressor, (coef, se) in self._COEFS.items():
                 assert weights.loc[regressor, 'coef'] == pytest.approx(coef)
                 assert weights.loc[regressor, 'coef_se'] == pytest.approx(se)
+
+    def test_adjusted_delta_penalizes_the_reference_parameters(self, tmp_path):
+        """Each row's delta_r2_adj differences the two models' adjusted R²,
+        each penalized by that model's own parameter count over the 120 trials
+        the family shares."""
+        from iblnm.analysis import adjusted_r2
+        group = _collected_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA')])
+        frames = group.code_model_frames(self.formulas)
+        dropone, _ = group.response_ols_dropone(frames, self.formulas)
+
+        n_trials = 120
+        r2_adj_full = adjusted_r2(self._R2_FULL, n_trials,
+                                  self._N_PARAMS['full'])
+        for event in {cf.event for cf in frames}:
+            rows = dropone[dropone['event'] == event].set_index('predictor')
+            for predictor, delta in self._DELTA_R2.items():
+                r2_adj_reduced = adjusted_r2(self._R2_FULL - delta, n_trials,
+                                             self._N_PARAMS[predictor])
+                assert rows.loc[predictor, 'r2_adj'] == pytest.approx(
+                    r2_adj_full)
+                assert rows.loc[predictor, 'delta_r2_adj'] == pytest.approx(
+                    r2_adj_full - r2_adj_reduced)
+            # 'reward' explains almost nothing raw (ΔR² = 0.0014) but costs the
+            # reference four terms, so the correction takes it below zero.
+            assert rows.loc['reward', 'delta_r2_adj'] < 0
 
     def test_rows_carry_the_recording_identity(self, tmp_path):
         from iblnm.config import (RESPONSE_EVENTS, RESPONSE_OLS_COEFS_COLUMNS)

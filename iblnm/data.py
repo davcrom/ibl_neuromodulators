@@ -68,7 +68,7 @@ from iblnm.validation import (
 # eid/subject. target_NM precedes brain_region (the recording identity order).
 RESPONSE_OLS_DROPONE_COLUMNS = [
     'eid', 'subject', 'target_NM', 'brain_region', 'event', 'predictor', 'r2',
-    'delta_r2', 'n_trials',
+    'r2_adj', 'delta_r2', 'delta_r2_adj', 'n_trials',
 ]
 
 # Per-mouse drop-one significance table: one row per (target_NM, event,
@@ -4561,8 +4561,9 @@ class PhotometrySessionGroup:
         """Per-recording drop-one OLS ΔR² over the coded frames of one pass.
 
         Fits every formula in each frame's family on that recording-event's
-        rows and differences the reduced models off ``reference``
-        (:func:`iblnm.analysis.dropone_delta_r2`). Every model of an event is
+        rows and differences the reduced models off ``reference``, raw and
+        parameter-adjusted (:func:`iblnm.analysis.dropone_delta_r2`, which takes
+        each fit's ``df_model`` from these same fits). Every model of an event is
         fit on the same complete-case rows, which is what makes their R²
         comparable, and the reference model's main-effect weights are read off
         the same fits rather than refit. A recording-event whose design is
@@ -4602,7 +4603,9 @@ class PhotometrySessionGroup:
                 continue
             n_trials = len(coded.frame)
             rows = analysis.dropone_delta_r2(
-                {name: fit.rsquared for name, fit in fits.items()}, reference)
+                {name: (fit.rsquared, fit.df_model)
+                 for name, fit in fits.items()},
+                n_trials, reference)
             dropone_frames.append(
                 _tag_recording(rows.assign(n_trials=n_trials), coded))
             coef_frames.append(_tag_recording(

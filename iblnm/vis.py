@@ -3121,11 +3121,13 @@ def _dropone_rows():
     -------
     rows : list[tuple[str, str, str]]
         One ``(row_label, value_column, predictor)`` per dropped regressor
-        (``PERSESSION_REGRESSORS`` order), each reading ``delta_r2``.
+        (``PERSESSION_REGRESSORS`` order), each reading ``delta_r2_adj`` — the
+        adjusted difference, which charges each model for its own parameter
+        count and so is not inflated by the reference model's extra terms.
     supylabel : str
     """
-    return ([(p, 'delta_r2', p) for p in PERSESSION_REGRESSORS],
-            'ΔR² (per-session, in-sample)')
+    return ([(p, 'delta_r2_adj', p) for p in PERSESSION_REGRESSORS],
+            'adjusted ΔR² (per-session, in-sample)')
 
 
 def _total_r2_rows():

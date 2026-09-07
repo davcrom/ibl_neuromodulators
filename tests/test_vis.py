@@ -1072,15 +1072,15 @@ class TestPlotOlsDropone:
     # Sourced from config so the row-label assertion below guards vis's figure
     # rows against drift from the canonical drop-one regressor list.
     _PREDICTORS = tuple(PERSESSION_REGRESSORS)
-    # Per-event delta_r2 base so a point's value identifies its event row.
+    # Per-event delta_r2_adj base so a point's value identifies its event row.
     _EVENT_BASE = {'stimOnTrigger_times': 0.1, 'feedback_times': 0.5}
 
     def _df(self, targets=('VTA-DA', 'DR-5HT'),
             events=('feedback_times', 'stimOnTrigger_times')):
         """Long-form per-session fits: 2 mice per target-NM, 3 sessions each.
 
-        ``delta_r2`` is ``_EVENT_BASE[event] + 0.001 * predictor_index`` so a
-        point's value pins down the (event, predictor) panel it belongs in;
+        ``delta_r2_adj`` is ``_EVENT_BASE[event] + 0.001 * predictor_index`` so
+        a point's value pins down the (event, predictor) panel it belongs in;
         ``r2`` (full-model) is constant per event, repeated across predictors.
         """
         rows = []
@@ -1093,7 +1093,8 @@ class TestPlotOlsDropone:
                                 'target_NM': tnm, 'event': event,
                                 'subject': subject, 'predictor': pred,
                                 'r2': self._EVENT_BASE[event] + 0.3,
-                                'delta_r2': self._EVENT_BASE[event] + 0.001 * pi})
+                                'delta_r2_adj':
+                                    self._EVENT_BASE[event] + 0.001 * pi})
         return pd.DataFrame(rows)
 
     @staticmethod
@@ -1115,6 +1116,18 @@ class TestPlotOlsDropone:
             'stimOnTrigger_times', 'feedback_times']
         col0 = [fig.axes[r * 2].get_ylabel() for r in range(6)]
         assert col0 == list(self._PREDICTORS)
+        plt.close(fig)
+
+    def test_points_read_the_adjusted_delta_not_the_raw_one(self):
+        """The figure plots ``delta_r2_adj``: with both columns present and
+        differing, the drawn y follows the adjusted one."""
+        from iblnm.vis import plot_ols_dropone
+        df = self._df()
+        df['delta_r2'] = df['delta_r2_adj'] + 0.5
+        fig = plot_ols_dropone(df, 't')
+        ax = fig.axes[2 * 2 + 1]  # 'reward' row × feedback column
+        expected = self._EVENT_BASE['feedback_times'] + 0.001 * 2
+        assert np.allclose(self._points(ax)[:, 1], expected)
         plt.close(fig)
 
     def test_point_y_is_delta_r2_in_matching_cell(self):
@@ -1174,7 +1187,7 @@ class TestPlotOlsDropone:
         # proves ordering is by name, not mean.
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': subj,
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
             for subj, vals in [('hi', [0.3, 0.5]), ('lo', [0.0, 0.2])]
             for v in vals
         ]
@@ -1197,7 +1210,7 @@ class TestPlotOlsDropone:
         import matplotlib.colors as mcolors
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': subj,
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
             for subj, vals in [('m_a', [0.1, 0.3]), ('m_b', [0.4, 0.6])]
             for v in vals
         ]
@@ -1231,7 +1244,7 @@ class TestPlotOlsDropone:
         from matplotlib.collections import PathCollection
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
             for v in (0.0, 0.0, 0.3)
         ]
         fig = plot_ols_dropone(pd.DataFrame(rows), 't')
@@ -1283,7 +1296,7 @@ class TestPlotOlsDropone:
         rows = [
             {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
              'subject': 'm_a', 'predictor': 'contrast', 'r2': 0.5,
-             'delta_r2': v}
+             'delta_r2_adj': v}
             for eid, v in [('e_sig', 0.1), ('e_ns', 0.3)]
         ]
         session_pvalues = pd.DataFrame([
@@ -1306,7 +1319,7 @@ class TestPlotOlsDropone:
         return pd.DataFrame([
             {'eid': eid, 'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
              'subject': 'm_a', 'predictor': 'contrast', 'r2': 0.5,
-             'delta_r2': v}
+             'delta_r2_adj': v}
             for eid, v in [('e_1', 0.1), ('e_2', 0.3)]
         ])
 
@@ -1390,7 +1403,7 @@ class TestPlotOlsDropone:
         import matplotlib.colors as mcolors
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': subj,
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
             for subj, vals in [('m_sig', [0.1, 0.3]), ('m_ns', [0.4, 0.6])]
             for v in vals
         ]
@@ -1427,7 +1440,7 @@ class TestPlotOlsDroponeSubjectMode:
         from matplotlib.container import ErrorbarContainer
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
-             'predictor': 'contrast', 'r2': 0.5, 'delta_r2': v}
+             'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
             for v in (0.0, 0.0, 0.3)
         ]
         fig = plot_ols_dropone_subject(pd.DataFrame(rows), 't')
@@ -1471,7 +1484,7 @@ class TestPlotOlsDroponeTargetMode:
                 for v in vals:
                     rows.append({'target_NM': tnm, 'event': 'stimOnTrigger_times',
                                  'subject': subj, 'predictor': 'contrast',
-                                 'r2': 0.55, 'delta_r2': v})
+                                 'r2': 0.55, 'delta_r2_adj': v})
         return pd.DataFrame(rows)
 
     def test_violin_mode_one_body_per_target_colored_by_targetnm(self):
@@ -3142,7 +3155,8 @@ class TestPlotOlsDroponeCounts:
         ]
         return pd.DataFrame([
             {'eid': eid, 'subject': subj, 'target_NM': tnm,
-             'event': 'stimOnTrigger_times', 'predictor': 'contrast', 'delta_r2': 0.01}
+             'event': 'stimOnTrigger_times', 'predictor': 'contrast',
+             'delta_r2_adj': 0.01}
             for eid, subj, tnm in rows
         ])
 

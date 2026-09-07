@@ -208,7 +208,8 @@ class TestPlotPersessionFigures:
                 rows.append({
                     'eid': f'e{s}', 'subject': f's{s}', 'target_NM': 'VTA-DA',
                     'brain_region': 'VTA', 'event': 'stimOnTrigger_times',
-                    'predictor': p, 'r2': 0.5, 'delta_r2': 0.05,
+                    'predictor': p, 'r2': 0.5, 'r2_adj': 0.45,
+                    'delta_r2': 0.05, 'delta_r2_adj': 0.03,
                     'n_trials': 100})
         return pd.DataFrame(rows)
 

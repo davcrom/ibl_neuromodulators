@@ -2832,12 +2832,16 @@ class TestFitOls:
 
 
 class TestDroponeDeltaR2:
+    _COLUMNS = ['predictor', 'r2', 'r2_adj', 'delta_r2', 'delta_r2_adj']
+
     def test_difference_against_reference(self):
         """One row per non-reference name; delta_r2 = ref − reduced; the r2
         column carries the reference R² on every row."""
         from iblnm.analysis import dropone_delta_r2
-        out = dropone_delta_r2({'full': 0.5, 'contrast': 0.3, 'side': 0.45})
-        assert list(out.columns) == ['predictor', 'r2', 'delta_r2']
+        out = dropone_delta_r2(
+            {'full': (0.5, 8), 'contrast': (0.3, 4), 'side': (0.45, 6)},
+            n_obs=100)
+        assert list(out.columns) == self._COLUMNS
         assert set(out['predictor']) == {'contrast', 'side'}
         assert 'full' not in out['predictor'].values
         out = out.set_index('predictor')
@@ -2845,12 +2849,47 @@ class TestDroponeDeltaR2:
         assert out.loc['side', 'delta_r2'] == pytest.approx(0.05)
         assert (out['r2'] == 0.5).all()
 
+    def test_adjusted_delta_matches_hand_computed_difference(self):
+        """delta_r2_adj differences the two models' adjusted R², each penalized
+        by its own parameter count: 1 − (1−R²)(n−1)/(n−p−1)."""
+        from iblnm.analysis import dropone_delta_r2
+        n = 100
+        out = dropone_delta_r2(
+            {'full': (0.5, 8), 'contrast': (0.3, 4)}, n_obs=n
+        ).set_index('predictor')
+        adj_full = 1 - (1 - 0.5) * (n - 1) / (n - 8 - 1)
+        adj_reduced = 1 - (1 - 0.3) * (n - 1) / (n - 4 - 1)
+        assert out.loc['contrast', 'r2_adj'] == pytest.approx(adj_full)
+        assert out.loc['contrast', 'delta_r2_adj'] == pytest.approx(
+            adj_full - adj_reduced)
+
+    def test_no_parameters_leaves_raw_and_adjusted_equal(self):
+        """With p = 0 the penalty term is 1, so the adjusted values collapse
+        onto the raw ones."""
+        from iblnm.analysis import dropone_delta_r2
+        out = dropone_delta_r2(
+            {'full': (0.5, 0), 'contrast': (0.3, 0)}, n_obs=100
+        ).set_index('predictor')
+        assert out.loc['contrast', 'r2_adj'] == pytest.approx(0.5)
+        assert out.loc['contrast', 'delta_r2_adj'] == pytest.approx(
+            out.loc['contrast', 'delta_r2'])
+
+    def test_extra_parameters_are_penalized_at_zero_raw_delta(self):
+        """A reduced model with fewer parameters and the same R² is the pure
+        bias case: the raw delta is 0 but the adjusted delta is negative."""
+        from iblnm.analysis import dropone_delta_r2
+        out = dropone_delta_r2(
+            {'full': (0.3, 18), 'contrast': (0.3, 12)}, n_obs=200
+        ).set_index('predictor')
+        assert out.loc['contrast', 'delta_r2'] == pytest.approx(0.0)
+        assert out.loc['contrast', 'delta_r2_adj'] < 0
+
     def test_reference_only_gives_empty_frame(self):
         """No reduced models → an empty frame that still carries the columns."""
         from iblnm.analysis import dropone_delta_r2
-        out = dropone_delta_r2({'full': 0.4})
+        out = dropone_delta_r2({'full': (0.4, 8)}, n_obs=100)
         assert len(out) == 0
-        assert list(out.columns) == ['predictor', 'r2', 'delta_r2']
+        assert list(out.columns) == self._COLUMNS
 
     def test_nested_ols_fits_give_nonnegative_delta(self):
         """For genuinely nested OLS fits, the reduced model's R² cannot exceed
@@ -2862,10 +2901,12 @@ class TestDroponeDeltaR2:
         df = pd.DataFrame(
             {'x1': x1, 'x2': x2,
              'y': 0.7 * x1 + 0.4 * x2 + rng.normal(0, 0.5, 200)})
-        r2 = {'full': fit_ols('y ~ x1 + x2', df).rsquared,
-              'x1': fit_ols('y ~ x2', df).rsquared,
-              'x2': fit_ols('y ~ x1', df).rsquared}
-        out = dropone_delta_r2(r2)
+        fits = {'full': fit_ols('y ~ x1 + x2', df),
+                'x1': fit_ols('y ~ x2', df),
+                'x2': fit_ols('y ~ x1', df)}
+        out = dropone_delta_r2(
+            {name: (fit.rsquared, fit.df_model) for name, fit in fits.items()},
+            n_obs=len(df))
         assert (out['delta_r2'] >= 0).all()
 
 
