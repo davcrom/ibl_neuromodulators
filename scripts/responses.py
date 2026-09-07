@@ -34,7 +34,7 @@ from iblnm.config import (
     VARCOMP_MIN_SESSIONS_PER_MOUSE, VARCOMP_KDE_GRID, VARCOMP_HDI_PROB,
     MASKING_DIAGNOSTICS_FPATH, MASKING_DIAGNOSTIC_GROUP_COLS,
     MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_WINDOWS,
-    RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
+    RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS, TRACE_INSET_TARGETNMS,
     MOVEMENT_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
     PERSESSION_PVAL_N_BOOTSTRAP, PERSESSION_PVAL_SEED,
 )
@@ -42,6 +42,7 @@ from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.vis import (
     plot_masking_diagnostics,
+    plot_mean_response_traces,
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
     plot_lmm_ceiling,
@@ -61,6 +62,178 @@ from iblnm.analysis import (
     select_modeling_trials,
     split_features_by_event,
 )
+
+
+# =========================================================================
+# Condition aggregation
+# =========================================================================
+
+# The spec's three aggregation modes as `analysis.aggregate_conditions`
+# arguments: what each mean is taken over, and whether the between-subject
+# offset is removed first. `pool` weights trials, `subject` weights mice, and
+# `subject_centered` weights recordings with each subject's offset removed.
+AGGREGATION_MODES = {
+    'pool': {'unit_cols': None, 'center_by': None},
+    'subject': {'unit_cols': ['subject'], 'center_by': None},
+    'subject_centered': {'unit_cols': ['eid', 'brain_region'],
+                         'center_by': 'subject'},
+}
+
+# Condition keys of the event-triggered averages. No stimulus-side split: the
+# traces are grouped by contrast and outcome alone.
+TRACE_GROUP_COLS = ['target_NM', 'event', 'contrast', 'feedbackType', 'time']
+
+# Condition keys of the contrast curves, which do split by stimulus side: the
+# two panels are the contra and ipsi halves of the curve.
+CONTRAST_GROUP_COLS = ['target_NM', 'event', 'side', 'contrast', 'feedbackType']
+
+# Columns identifying the recording a trace sample came from, carried through
+# the long frame so the aggregation can average over recordings or subjects.
+_TRACE_KEYS = ['eid', 'subject', 'target_NM', 'brain_region']
+
+
+def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
+                      correct: bool = True) -> pd.DataFrame:
+    """One recording's per-trial trace samples, long, restricted to ``trials``.
+
+    Parameters
+    ----------
+    rec : pandas.Series
+        Recording row, supplying the ``_TRACE_KEYS`` identity and the region
+        whose cut is read.
+    ps : PhotometrySession
+        Session with ``photometry_responses`` and ``trials`` loaded.
+    trials : pandas.DataFrame
+        The already-selected trials, one row per recording x event x trial,
+        carrying the condition columns the aggregation groups on.
+    correct : bool
+        Apply the response definition's two corrections — mask the samples
+        past the next event, then subtract the ``config.BASELINE_WINDOW``
+        baseline — before flattening. False leaves the stored cut as it is.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per event x trial x time sample, columns ``_TRACE_KEYS`` plus
+        ``event``, ``time``, ``value`` and the condition columns ``trials``
+        carries. The join is an inner one on (event, trial), so a trial the
+        selection dropped contributes no samples.
+    """
+    responses = ps.photometry_responses[rec['brain_region']]
+    if correct:
+        responses = ps.subtract_baseline(ps.mask_subsequent_events(responses))
+    samples = (responses.to_dataframe(name='value').reset_index()
+               .astype({'value': 'float32'}))
+    keys = trials[trials['eid'] == rec['eid']]
+    keys = keys[keys['brain_region'] == rec['brain_region']]
+    return samples.merge(keys.drop(columns=_TRACE_KEYS), on=['event', 'trial'],
+                         how='inner').assign(**{key: rec[key]
+                                                for key in _TRACE_KEYS})
+
+
+def condition_traces(recordings, trials: pd.DataFrame,
+                     mode: str = 'subject_centered', correct: bool = True,
+                     group_cols=TRACE_GROUP_COLS,
+                     response_col: str = 'response') -> pd.DataFrame:
+    """Correct, select and condition-average per-trial traces.
+
+    The plotting pass's whole computation: each recording's stored peri-event
+    cut is corrected, restricted to the trials the models are fitted on, and
+    reduced to one mean and SEM per condition. No trace frame is written and
+    nothing is retained per trial — the caller hands the result straight to
+    ``iblnm.vis``.
+
+    Parameters
+    ----------
+    recordings : iterable of (pandas.Series, PhotometrySession)
+        The recordings to average over, as ``PhotometrySessionGroup`` yields
+        them, each session carrying its loaded trials and photometry.
+    trials : pandas.DataFrame
+        Merged magnitude-and-regressor frame
+        (:meth:`PhotometrySessionGroup._merge_trial_regressors`), one row per
+        recording x event x trial. :func:`iblnm.analysis.select_modeling_trials`
+        runs on it here, so the traces average the same trials the models fit —
+        every block included, no ``probabilityLeft`` restriction.
+    mode : {'pool', 'subject', 'subject_centered'}
+        Averaging unit, via ``AGGREGATION_MODES``.
+    correct : bool
+        Apply the masking and baseline subtraction (see
+        :func:`_recording_traces`). False plots the uncorrected trace.
+    group_cols : sequence of str
+        Condition keys the means are taken within; ``time`` is one of them, so
+        each condition comes back as a trace.
+    response_col : str
+        Magnitude column whose null rows the trial selection drops.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``group_cols`` plus ``mean``, ``sem`` and ``n``, the
+        :func:`iblnm.analysis.aggregate_conditions` output shape.
+    """
+    selected = select_modeling_trials(trials, response_col)
+    traces = pd.concat([_recording_traces(rec, ps, selected, correct)
+                        for rec, ps in recordings], ignore_index=True)
+    return aggregate_conditions(traces, 'value', group_cols,
+                                **AGGREGATION_MODES[mode])
+
+
+def _cohort_recordings(group, cohort: pd.DataFrame):
+    """Yield ``(recording row, session)`` for one cohort, reading each file once.
+
+    A session's stored trials and photometry are loaded when its first
+    recording comes up and dropped from the group's session cache once its last
+    one has been yielded, so the pass holds one session's signals at a time
+    rather than the whole cohort's. A session with no file in the store, and a
+    region carrying no stored cut, contribute nothing — the same tolerance the
+    modelling pass has, so one unbuilt recording costs its own traces and not
+    the cohort's figure.
+    """
+    for eid, rows in cohort.groupby('eid'):
+        session = group._get_session(rows.iloc[0])
+        if not session.filepath.exists():
+            continue
+        session.load_h5(session.filepath, groups=['trials', 'photometry'])
+        cuts = getattr(session, 'photometry_responses', {})
+        yield from ((rec, session) for _, rec in rows.iterrows()
+                    if rec['brain_region'] in cuts)
+        group._sessions.pop(eid, None)
+
+
+def plot_trace_figures(group, figures_dir, mode='subject_centered',
+                       correct=True):
+    """Save one event-triggered average figure per cohort, from the store.
+
+    The plotting pass: one cohort at a time, each recording's stored peri-event
+    cut is read, corrected, condition-averaged (:func:`condition_traces`) and
+    handed to the drawer. Nothing is written but the figures — the per-trial
+    traces are discarded with the cohort that produced them.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        Filtered to the recordings in scope, with ``response_magnitudes`` and
+        ``trial_regressors`` populated; the trials averaged are its modeling
+        selection.
+    figures_dir : Path
+        Output directory for the SVG figures.
+    mode : {'pool', 'subject', 'subject_centered'}
+        Averaging unit, via ``AGGREGATION_MODES``.
+    correct : bool
+        Mask each trace past the next event and subtract its baseline. False
+        plots the uncorrected average.
+    """
+    trials = group._merge_trial_regressors()
+    for target_nm, cohort in group.recordings.groupby('target_NM'):
+        cells = condition_traces(_cohort_recordings(group, cohort), trials,
+                                 mode=mode, correct=correct)
+        fig = plot_mean_response_traces(
+            cells, target_nm, inset=target_nm in TRACE_INSET_TARGETNMS,
+            count_label=f"{cohort['eid'].nunique()} sessions, "
+                        f"{cohort['subject'].nunique()} mice")
+        fig.savefig(figures_dir / f'{target_nm}_traces.svg', dpi=FIGURE_DPI,
+                    bbox_inches='tight')
+        plt.close(fig)
 
 
 # =========================================================================
@@ -86,37 +259,48 @@ def print_response_summary(df_responses):
     print(summary.to_string())
 
 
-def plot_response_figures(group, figures_dir, response_col='response'):
-    """Plot response magnitude by contrast x feedback x hemisphere.
+def plot_response_figures(group, figures_dir, response_col='response',
+                          modes=('pool', 'subject')):
+    """Plot response magnitude by contrast x feedback x stimulus side.
 
-    Produces two sets of plots per (target_NM, event):
-      - ``_pool.svg``: grand mean over all trials ± SEM
-      - ``_subject.svg``: mean of subject means ± SEM of subject means
+    Produces one figure per (target_NM, event) and aggregation mode, named
+    ``{target_NM}_{event}_{response_col}_{mode}.svg``. The aggregation happens
+    here — ``vis`` receives means and SEMs and draws them as given.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have group.response_magnitudes populated.
+        Must have ``response_magnitudes`` and ``trial_regressors`` populated;
+        the trials are its canonical modeling selection.
     figures_dir : Path
         Output directory for SVG files.
     response_col : str
-        Column name for the response magnitude.
+        Column name for the response magnitude, also the window label.
+    modes : sequence of str
+        Aggregation modes to plot, keys of ``AGGREGATION_MODES``. Every mode
+        draws the same means where it weights units equally; they differ in
+        what the error bars are taken over.
     """
-    window_label = response_col
-    df = group._modeling_frame(response_col)
+    trials = group._modeling_frame(response_col)
 
-    for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
-        n_subjects = df_group['subject'].nunique()
-        if n_subjects < 2:
-            continue
-
-        event_label = event.replace('_times', '')
-        for aggregation, suffix in [('pool', '_pool'), ('subject', '_subject')]:
-            fig = plot_relative_contrast(df_group, response_col, target_nm, event,
-                                         window_label=window_label,
-                                         aggregation=aggregation)
-            fname = f'{target_nm}_{event_label}_{window_label}{suffix}.svg'
-            fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+    for mode in modes:
+        cells = aggregate_conditions(trials, response_col,
+                                     CONTRAST_GROUP_COLS,
+                                     **AGGREGATION_MODES[mode])
+        for (target_nm, event), df_group in trials.groupby(['target_NM',
+                                                            'event']):
+            if df_group['subject'].nunique() < 2:
+                continue
+            agg_df = cells[(cells['target_NM'] == target_nm)
+                           & (cells['event'] == event)]
+            fig = plot_relative_contrast(
+                agg_df, target_nm, event, window_label=response_col,
+                count_label=f"{df_group['eid'].nunique()} sessions, "
+                            f"{df_group['subject'].nunique()} subjects")
+            event_label = event.replace('_times', '')
+            fname = f'{target_nm}_{event_label}_{response_col}_{mode}.svg'
+            fig.savefig(figures_dir / fname, dpi=FIGURE_DPI,
+                        bbox_inches='tight')
             plt.close(fig)
 
 
@@ -648,10 +832,10 @@ if __name__ == '__main__':
     fig_dirs = {
         'contrast_curves': fig_base / 'contrast_curves',
         'diagnostics': fig_base / 'diagnostics',
+        'event_triggered_averages': fig_base / 'event_triggered_averages',
         'lmm': fig_base / 'lmm',
         'similarity': fig_base / 'similarity',
         'target_decoding': fig_base / 'target_decoding',
-        'traces': fig_base / 'traces',
         'movement_descriptive': fig_base / 'movement/descriptive',
         'movement_model_comparison': fig_base / 'movement/model_comparison',
         'persession': fig_base / 'persession',
@@ -776,6 +960,14 @@ if __name__ == '__main__':
     print("\nGenerating response magnitude plots...")
     plot_response_figures(group, fig_dirs['contrast_curves'])
     print(f"Response magnitude figures saved to {fig_dirs['contrast_curves']}")
+
+    # =====================================================================
+    # Event-triggered averages — one pass over the store's per-trial traces
+    # =====================================================================
+    print("\nGenerating event-triggered averages (reading the store)...")
+    plot_trace_figures(group, fig_dirs['event_triggered_averages'])
+    print("Event-triggered averages saved to "
+          f"{fig_dirs['event_triggered_averages']}")
 
     # =====================================================================
     # Masking diagnostics — how much window each trial type kept

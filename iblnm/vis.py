@@ -3824,7 +3824,37 @@ def plot_response_decoding_summary(response_matrix, coefficients,
     return fig
 
 
-def plot_mean_response_traces(agg_df, target_nm, count_label=None):
+def _draw_traces(ax, df_cell, contrasts, shade_map):
+    """Draw one panel's mean traces, one line per contrast, shaded ± SEM.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes drawn on; not styled or scaled here.
+    df_cell : pd.DataFrame
+        One (event, feedbackType) cell of the aggregate frame, with ``time``,
+        ``mean``, ``sem`` and ``contrast``.
+    contrasts : list
+        Contrast levels drawn, in plotting order.
+    shade_map : dict
+        Contrast level -> line color.
+    """
+    for contrast in contrasts:
+        df_c = df_cell[df_cell['contrast'] == contrast].sort_values('time')
+        if len(df_c) == 0:
+            continue
+        time_vals = df_c['time'].values
+        mean_trace = df_c['mean'].values
+        sem_trace = df_c['sem'].values
+        color = shade_map.get(contrast, 'gray')
+        ax.plot(time_vals, mean_trace, color=color, linewidth=1.5,
+                label=f'{contrast}')
+        ax.fill_between(time_vals, mean_trace - sem_trace,
+                        mean_trace + sem_trace, color=color, alpha=0.2)
+
+
+def plot_mean_response_traces(agg_df, target_nm, count_label=None,
+                              inset=False):
     """Aggregated peri-event response traces for one target-NM.
 
     A pure drawer: the means and SEMs are drawn exactly as given, with no
@@ -3848,6 +3878,10 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None):
         Text annotated on the top-right panel describing the data the
         aggregate was taken over (e.g. '120 trials\\n8 sessions\\n4 mice');
         the caller holds those counts.
+    inset : bool
+        Add an inset to every panel redrawing the same traces on their own
+        y-scale, for cohorts whose responses are too small to read at the
+        shared limits.
 
     Returns
     -------
@@ -3873,6 +3907,7 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None):
                              figsize=(4 * n_events, 6),
                              sharey=True, squeeze=False)
 
+    cells = {}
     for col, event in enumerate(events):
         for row, fb in enumerate(feedback_types):
             ax = axes[row, col]
@@ -3880,22 +3915,9 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None):
                 (agg_df['event'] == event)
                 & (agg_df['feedbackType'] == fb)
             ]
+            cells[row, col] = df_cell
 
-            for contrast in contrasts:
-                df_c = df_cell[df_cell['contrast'] == contrast].sort_values('time')
-                if len(df_c) == 0:
-                    continue
-
-                time_vals = df_c['time'].values
-                mean_trace = df_c['mean'].values
-                sem_trace = df_c['sem'].values
-
-                color = shade_map.get(contrast, 'gray')
-                ax.plot(time_vals, mean_trace, color=color, linewidth=1.5,
-                        label=f'{contrast}')
-                ax.fill_between(time_vals, mean_trace - sem_trace,
-                                mean_trace + sem_trace,
-                                color=color, alpha=0.2)
+            _draw_traces(ax, df_cell, contrasts, shade_map)
 
             ax.axvline(0, color='gray', linewidth=0.5, linestyle='--')
             ax.set_ylim(-1.5, 3)
@@ -3911,6 +3933,16 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None):
             if row == 0:
                 event_label = event.replace('_times', '')
                 ax.set_title(event_label)
+
+    # Each inset redraws its panel's traces and autoscales, leaving the shared
+    # limits to the panel underneath.
+    if inset:
+        for (row, col), df_cell in cells.items():
+            ax_inset = axes[row, col].inset_axes([0.62, 0.58, 0.36, 0.38])
+            _draw_traces(ax_inset, df_cell, contrasts, shade_map)
+            ax_inset.axvline(0, color='gray', linewidth=0.5, linestyle='--')
+            ax_inset.tick_params(labelsize=TICKFONTSIZE * 0.7)
+            ax_inset.set_xticklabels([])
 
     # Legend on first axis
     axes[0, 0].legend(title='Contrast', fontsize=TICKFONTSIZE,

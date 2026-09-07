@@ -945,6 +945,11 @@ TARGETNM_COLORS = {
     'PPT-ACh': '#00974eff',
 }
 
+# Cohorts whose event-triggered averages carry a panel inset. Their responses
+# are small enough that the y-scale shared across cohorts flattens them, so the
+# same traces are drawn again on their own scale.
+TRACE_INSET_TARGETNMS = ['DR-5HT', 'NBM-ACh', 'LC-NE']
+
 TARGETNM2POSITION = {
     'VTA-DA': 0,
     'SNc-DA': 1,

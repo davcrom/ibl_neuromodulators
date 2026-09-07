@@ -1905,6 +1905,23 @@ class TestPlotMeanResponseTraces:
                            for p in ax.patches)
         plt.close(fig)
 
+    def test_inset_redraws_each_panel_on_its_own_scale(self):
+        """``inset=True`` adds a small axes to every panel holding the same
+        traces, autoscaled instead of held to the shared y-limits — the small
+        responses of the DR-5HT, NBM-ACh and LC-NE cohorts are unreadable at
+        the common scale."""
+        from iblnm.vis import plot_mean_response_traces
+        traces = _make_traces_df(events=['stimOnTrigger_times'])
+        fig = plot_mean_response_traces(traces, 'DR-5HT', inset=True)
+
+        for panel in fig.axes:
+            assert len(panel.child_axes) == 1
+            inset = panel.child_axes[0]
+            np.testing.assert_allclose(inset.lines[0].get_ydata(),
+                                       panel.lines[0].get_ydata())
+            assert inset.get_ylim() != panel.get_ylim()
+        plt.close(fig)
+
     def test_count_label_annotated(self):
         """The caller's count line is annotated on the top-right panel."""
         from iblnm.vis import plot_mean_response_traces

@@ -5,6 +5,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
+
+from iblnm.config import STIM_ONSET_EVENT
+from iblnm.data import PhotometrySession
 
 
 def _make_group(response_magnitudes, trial_regressors):
@@ -66,6 +70,144 @@ def _make_movement_group(n_per_cell=50, seed=0):
                             })
                             trial += 1
     return _make_group(pd.DataFrame(resp_rows), pd.DataFrame(reg_rows))
+
+
+class _TraceSession:
+    """Session stub carrying the real correction methods over injected data.
+
+    ``mask_subsequent_events`` reads ``trials`` and ``subtract_baseline`` reads
+    nothing but its argument, so the correction under test is the pipeline's
+    own, not a re-implementation.
+    """
+
+    mask_subsequent_events = PhotometrySession.mask_subsequent_events
+    subtract_baseline = PhotometrySession.subtract_baseline
+
+    def __init__(self, trials, photometry_responses):
+        self.trials = trials
+        self.photometry_responses = photometry_responses
+
+
+class TestConditionTraces:
+    """The plotting pass's correction-and-aggregation step: per-trial traces
+    in, per-condition means and SEMs out."""
+
+    # Five samples spanning the (-0.1, 0) baseline window, which covers the
+    # -0.1 sample alone, so a hand-computed baseline is one number per trial.
+    _TIMES = np.array([-0.2, -0.1, 0.0, 0.1, 0.2])
+
+    def _recording(self, traces, feedback_lags=None, eid='e1', subject='m1'):
+        """One ``(recording row, session)`` pair holding the given traces.
+
+        ``traces`` is one row per trial, one column per entry of ``_TIMES``.
+        ``feedback_lags`` places each trial's feedback relative to its stimulus
+        onset; the default puts it past the last sample, so nothing is masked.
+        """
+        n = len(traces)
+        if feedback_lags is None:
+            feedback_lags = [10.0] * n
+        onsets = np.arange(n, dtype=float) * 100
+        trials = pd.DataFrame({
+            'trial': np.arange(n),
+            'stimOnTrigger_times': onsets,
+            'feedback_times': onsets + np.asarray(feedback_lags, dtype=float),
+        })
+        responses = xr.DataArray(
+            np.asarray(traces, dtype=float)[None, :, :],
+            dims=['event', 'trial', 'time'],
+            coords={'event': [STIM_ONSET_EVENT], 'trial': np.arange(n),
+                    'time': self._TIMES})
+        rec = pd.Series({'eid': eid, 'subject': subject, 'brain_region': 'VTA',
+                         'hemisphere': 'r', 'target_NM': 'VTA-DA'})
+        return rec, _TraceSession(trials, {'VTA': responses})
+
+    def _trials(self, n, eid='e1', subject='m1', contrast=100.0,
+                feedback_type=1, probability_left=0.5):
+        """The merged trial frame the selection runs on, one row per trial."""
+        return pd.DataFrame({
+            'eid': eid, 'subject': subject, 'target_NM': 'VTA-DA',
+            'brain_region': 'VTA', 'event': STIM_ONSET_EVENT,
+            'trial': np.arange(n), 'response': 1.0,
+            'contrast': contrast, 'feedbackType': feedback_type,
+            'choice': 1, 'response_time': 1.0, 'reaction_time': 0.2,
+            'probabilityLeft': probability_left,
+        })
+
+    def test_uncorrected_means_are_the_raw_trace_means(self):
+        """With the correction off, each condition's mean at each time point is
+        the plain trial mean of the traces as stored."""
+        from scripts.responses import condition_traces
+        rec, ps = self._recording([[0., 1., 2., 3., 4.],
+                                   [2., 3., 4., 5., 6.]])
+        agg = condition_traces([(rec, ps)], self._trials(2), mode='pool',
+                               correct=False)
+
+        assert agg['mean'].tolist() == [1., 2., 3., 4., 5.]
+        assert agg['time'].tolist() == self._TIMES.tolist()
+        assert (agg['n'] == 2).all()
+
+    def test_correction_masks_the_next_event_and_subtracts_the_baseline(self):
+        """With the correction on, each trial loses the samples past its
+        feedback and is shifted by its own ``BASELINE_WINDOW`` mean — here the
+        single sample at -0.1 s. The first trial's feedback lands at 0.15 s, so
+        its 0.2 s sample is masked and only the second trial is averaged there.
+        """
+        from scripts.responses import condition_traces
+        rec, ps = self._recording([[0., 1., 2., 3., 4.],
+                                   [2., 3., 4., 5., 6.]],
+                                  feedback_lags=[0.15, 10.0])
+        agg = condition_traces([(rec, ps)], self._trials(2), mode='pool',
+                               correct=True)
+
+        assert agg['mean'].tolist() == [-1., 0., 1., 2., 3.]
+        assert agg['n'].tolist() == [2, 2, 2, 2, 1]
+
+    def _uneven_cohort(self):
+        """Three recordings, flat traces, deliberately unbalanced.
+
+        Subject m1 records twice — 4 trials at 0 and 2 trials at 2 — and
+        subject m2 once, 1 trial at 10. Each mode therefore lands on its own
+        number: trials weight m1's 6 trials, subjects weight the two mice
+        equally, and recordings weight the three fibers equally.
+        """
+        recordings = [self._recording([[0.] * 5] * 4, eid='e1', subject='m1'),
+                      self._recording([[2.] * 5] * 2, eid='e2', subject='m1'),
+                      self._recording([[10.] * 5], eid='e3', subject='m2')]
+        trials = pd.concat([self._trials(4, eid='e1', subject='m1'),
+                            self._trials(2, eid='e2', subject='m1'),
+                            self._trials(1, eid='e3', subject='m2')],
+                           ignore_index=True)
+        return recordings, trials
+
+    @pytest.mark.parametrize('mode, expected, n', [
+        ('pool', 14 / 7, 7),               # every trial a unit
+        ('subject', (4 / 6 + 10) / 2, 2),  # mean of the two subject means
+        ('subject_centered', 4.0, 3),      # mean of the three recording means
+    ])
+    def test_each_mode_weights_its_own_unit(self, mode, expected, n):
+        """The same traces reduce to a different mean under each mode, and ``n``
+        reports the units the SEM was taken over."""
+        from scripts.responses import condition_traces
+        recordings, trials = self._uneven_cohort()
+
+        agg = condition_traces(recordings, trials, mode=mode, correct=False)
+
+        assert agg['mean'].tolist() == pytest.approx([expected] * 5)
+        assert agg['n'].tolist() == [n] * 5
+
+    def test_averages_the_trials_the_models_are_fitted_on(self):
+        """The trial set is ``select_modeling_trials``', not the unbiased block:
+        a ``probabilityLeft`` 0.8 trial is averaged and a no-go trial is not."""
+        from scripts.responses import condition_traces
+        rec, ps = self._recording([[0.] * 5, [10.] * 5, [100.] * 5])
+        trials = self._trials(3)
+        trials['probabilityLeft'] = [0.5, 0.8, 0.5]
+        trials['choice'] = [1, 1, 0]
+
+        agg = condition_traces([(rec, ps)], trials, mode='pool', correct=False)
+
+        assert agg['mean'].tolist() == [5.] * 5
+        assert agg['n'].tolist() == [2] * 5
 
 
 class TestSaveLMMFrames:
@@ -405,6 +547,105 @@ class TestComputeMaskingDiagnostics:
         assert list(frame.columns) == MASKING_DIAGNOSTIC_COLUMNS
         assert len(frame) == 4
         assert (frame['n_trials'] == 1).all()
+
+
+class TestPlotTraceFigures:
+    """The event-triggered averages: one figure per cohort, from the store."""
+
+    def _group(self):
+        """Group stub whose two recordings are one cohort each."""
+        group = MagicMock()
+        group.recordings = pd.DataFrame({
+            'eid': ['e1', 'e2'], 'subject': ['m1', 'm2'],
+            'brain_region': ['VTA', 'DR'], 'hemisphere': ['r', 'r'],
+            'target_NM': ['VTA-DA', 'DR-5HT']})
+        return group
+
+    def _aggregate(self):
+        return pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': STIM_ONSET_EVENT,
+             'contrast': 100.0, 'feedbackType': 1, 'time': t, 'mean': 0.5,
+             'sem': 0.1, 'n': 4} for t in (-0.1, 0.0, 0.1)])
+
+    def test_reads_each_file_once_and_skips_regions_without_a_cut(self,
+                                                                  tmp_path):
+        """A two-region session is read once and yields both its recordings;
+        a region carrying no stored cut yields nothing, as in the modelling
+        pass, rather than aborting the cohort."""
+        from scripts.responses import _cohort_recordings
+        (tmp_path / 'e1.h5').touch()
+        session = MagicMock(filepath=tmp_path / 'e1.h5')
+        session.photometry_responses = {'VTA': 'cut'}
+        group = MagicMock(_sessions={'e1': session})
+        group._get_session.return_value = session
+        cohort = pd.DataFrame({'eid': ['e1', 'e1'],
+                               'brain_region': ['VTA', 'SNc'],
+                               'target_NM': ['VTA-DA', 'SNc-DA']})
+
+        yielded = list(_cohort_recordings(group, cohort))
+
+        assert [rec['brain_region'] for rec, _ in yielded] == ['VTA']
+        assert session.load_h5.call_count == 1
+
+    def test_one_figure_per_cohort(self, tmp_path):
+        from scripts import responses
+        with patch.object(responses, 'condition_traces',
+                          return_value=self._aggregate()):
+            responses.plot_trace_figures(self._group(), tmp_path)
+
+        assert {p.name for p in tmp_path.glob('*.svg')} == {
+            'VTA-DA_traces.svg', 'DR-5HT_traces.svg'}
+
+    def test_insets_only_where_configured(self, tmp_path):
+        """The small-response cohorts named in ``TRACE_INSET_TARGETNMS`` get
+        their panels redrawn on their own scale; the others do not."""
+        from scripts import responses
+        from iblnm.config import TRACE_INSET_TARGETNMS
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(responses, 'condition_traces',
+                                             return_value=self._aggregate()))
+            drawer = stack.enter_context(
+                patch.object(responses, 'plot_mean_response_traces'))
+            responses.plot_trace_figures(self._group(), tmp_path)
+
+        insets = {call.args[1]: call.kwargs['inset']
+                  for call in drawer.call_args_list}
+        assert insets == {'VTA-DA': False,
+                          'DR-5HT': 'DR-5HT' in TRACE_INSET_TARGETNMS}
+
+
+class TestPlotResponseFigures:
+    """The contrast curves: aggregated in the script, drawn by ``vis``."""
+
+    def test_one_file_per_target_event_and_mode(self, tmp_path):
+        from scripts.responses import plot_response_figures
+        plot_response_figures(_make_movement_group(n_per_cell=5), tmp_path)
+
+        names = {p.name for p in tmp_path.glob('*.svg')}
+        assert names == {
+            f'{target_nm}_{event}_response{suffix}.svg'
+            for target_nm in ('VTA-DA', 'DR-5HT')
+            for event in ('stimOnTrigger', 'firstMovement', 'feedback')
+            for suffix in ('_pool', '_subject')}
+
+    def test_hands_the_drawer_pooled_condition_means(self, tmp_path):
+        """The frame ``plot_relative_contrast`` receives is the pooled mean of
+        that cohort-event's trials, one row per (side, contrast, outcome)."""
+        from scripts import responses
+        group = _make_movement_group(n_per_cell=5)
+        trials = group._modeling_frame()
+
+        with patch.object(responses, 'plot_relative_contrast') as drawer:
+            responses.plot_response_figures(group, tmp_path, modes=('pool',))
+
+        agg_df, target_nm, event = drawer.call_args_list[0].args
+        cell = trials[(trials['target_NM'] == target_nm)
+                      & (trials['event'] == event)]
+        expected = (cell.groupby(['side', 'contrast', 'feedbackType'])
+                    ['response'].mean().sort_index())
+        drawn = (agg_df.set_index(['side', 'contrast', 'feedbackType'])
+                 ['mean'].sort_index())
+        pd.testing.assert_series_equal(drawn, expected, check_names=False)
 
 
 class TestPlotMaskingFigures:
