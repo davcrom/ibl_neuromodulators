@@ -6500,12 +6500,14 @@ class TestCodeLmmPredictors:
         assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
         np.testing.assert_allclose(coded['contrast'].values, expected)
 
-    def test_timing_column_unchanged(self):
+    def test_timing_column_centered(self):
         group = _make_group_with_planted_trials()
         df = self._frame()
         coded = group._code_lmm_predictors(df)
-        np.testing.assert_array_equal(
-            coded['log_reaction_time'].values, df['log_reaction_time'].values)
+        assert coded['log_reaction_time'].mean() == pytest.approx(0.0, abs=1e-12)
+        np.testing.assert_allclose(
+            coded['log_reaction_time'].values,
+            df['log_reaction_time'].values - df['log_reaction_time'].mean())
 
     def test_input_frame_not_mutated(self):
         group = _make_group_with_planted_trials()

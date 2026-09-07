@@ -5074,11 +5074,12 @@ class PhotometrySessionGroup:
     ) -> pd.DataFrame:
         """Code the trial frame for LMM fitting; do not mutate the input.
 
-        Returns a copy with ``contrast`` transformed (``contrast_coding``) and
-        mean-centered, and ``side`` / ``reward`` deviation-coded to ±0.5
-        (``side``: contra = +0.5, ipsi = −0.5; ``reward``: ``feedbackType`` 1 =
-        +0.5, −1 = −0.5). ``log_<timing>`` columns are left untouched. Coding a
-        column a given formula does not use is harmless.
+        Returns a copy with ``contrast`` transformed (``contrast_coding``),
+        ``side`` / ``reward`` deviation-coded to ±0.5 (``side``: contra = +0.5,
+        ipsi = −0.5; ``reward``: ``feedbackType`` 1 = +0.5, −1 = −0.5), and
+        every ``config.CONTINUOUS_PREDICTORS`` column present mean-centered
+        within ``df``. Coding a column a given formula does not use is
+        harmless.
 
         Parameters
         ----------

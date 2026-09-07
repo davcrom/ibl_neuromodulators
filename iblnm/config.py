@@ -526,6 +526,15 @@ MOVEMENT_PREDICTORS = {
 MIN_SUBJECTS_MOVEMENT = 2
 MIN_TRIALS_MOVEMENT = 20
 
+# Continuous predictor columns that analysis.code_predictors mean-centers within
+# the frame it is handed (one recording-event), so every main effect is read at
+# the recording's own mean rather than at a raw zero that no go trial reaches --
+# a 1 s reaction time (log10 = 0) or a motionless wheel. choice_side is a
+# MOVEMENT_PREDICTORS value but not listed here: it is categorical, and its
+# deviation coding to +/-0.5 already puts it on the within-recording mean.
+# A name absent from a frame is skipped, so listing one costs nothing.
+CONTINUOUS_PREDICTORS = ('contrast', 'log_reaction_time', 'peak_velocity')
+
 # Pose QC (LightningPose output verification)
 LIKELIHOOD_THRESHOLD = 0.9          # gate keypoint speed where confidence < this
 MOVEMENT_RESPONSE_WINDOW = (0.1, 0.35)  # post-event scalar window (reuse BASELINE_WINDOW for pre)

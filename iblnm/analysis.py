@@ -20,6 +20,7 @@ from iblnm.config import (
     CROSSCORR_FS,
     CROSSCORR_LAG_WINDOW,
     MOVEMENT_PREDICTORS,
+    CONTINUOUS_PREDICTORS,
 )
 from iblnm.util import get_contrast_coding
 
@@ -1776,18 +1777,22 @@ def code_predictors(
 ) -> pd.DataFrame:
     """Code the trial frame for model fitting; do not mutate the input.
 
-    Returns a copy with ``contrast`` transformed (``contrast_coding``) and
-    mean-centered, and ``side`` / ``choice_side`` / ``reward`` deviation-coded
-    to ±0.5 (``side`` and ``choice_side``: contra = +0.5, ipsi = −0.5;
-    ``reward``: ``feedbackType`` 1 = +0.5, −1 = −0.5). ``log_<timing>`` columns
-    are left untouched. Coding a column a given formula does not use, or one
-    absent from ``df``, is harmless.
+    Returns a copy with ``contrast`` transformed (``contrast_coding``),
+    ``side`` / ``choice_side`` / ``reward`` deviation-coded to ±0.5 (``side``
+    and ``choice_side``: contra = +0.5, ipsi = −0.5; ``reward``:
+    ``feedbackType`` 1 = +0.5, −1 = −0.5), and every
+    ``config.CONTINUOUS_PREDICTORS`` column present mean-centered. Centering is
+    within the frame handed in — callers pass one recording-event at a time — so
+    no grouping happens here. NaNs are ignored by the mean and preserved in the
+    output. Coding a column a given formula does not use, or one absent from
+    ``df``, is harmless.
 
     Parameters
     ----------
     df : pd.DataFrame
         Trial-level frame with columns ``contrast``, ``side``, and
-        ``feedbackType``; optionally ``choice_side``.
+        ``feedbackType``; optionally ``choice_side`` and the continuous
+        movement predictors.
     contrast_coding : str
         Coding passed to :func:`iblnm.util.get_contrast_coding`.
 
@@ -1798,12 +1803,13 @@ def code_predictors(
     """
     transform, _ = get_contrast_coding(contrast_coding)
     df = df.copy()
-    coded = transform(df['contrast'])
-    df['contrast'] = coded - float(np.mean(coded))
+    df['contrast'] = transform(df['contrast'])
     df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
     df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
     if 'choice_side' in df.columns:
         df['choice_side'] = np.where(df['choice_side'] == 'contra', 0.5, -0.5)
+    continuous = [col for col in CONTINUOUS_PREDICTORS if col in df.columns]
+    df[continuous] = df[continuous] - df[continuous].mean()
     return df
 
 

@@ -2471,6 +2471,7 @@ class TestCodePredictors:
             'side': ['contra', 'ipsi', 'contra'],
             'feedbackType': [1, -1, 1],
             'log_reaction_time': [-1.5, -0.5, -2.0],
+            'peak_velocity': [40.0, 55.0, 90.0],
         })
 
     def test_side_and_reward_deviation_coded(self):
@@ -2487,12 +2488,21 @@ class TestCodePredictors:
         assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
         np.testing.assert_allclose(coded['contrast'].values, expected)
 
-    def test_timing_column_unchanged(self):
+    def test_movement_predictors_centered(self):
         from iblnm.analysis import code_predictors
         df = self._frame()
         coded = code_predictors(df)
-        np.testing.assert_array_equal(
-            coded['log_reaction_time'].values, df['log_reaction_time'].values)
+        for col in ('log_reaction_time', 'peak_velocity'):
+            assert coded[col].mean() == pytest.approx(0.0, abs=1e-12)
+            np.testing.assert_allclose(
+                coded[col].values, df[col].values - df[col].values.mean())
+
+    def test_absent_continuous_predictor_is_harmless(self):
+        from iblnm.analysis import code_predictors
+        df = self._frame().drop(columns=['peak_velocity'])
+        coded = code_predictors(df)
+        assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
+        assert coded['log_reaction_time'].mean() == pytest.approx(0.0, abs=1e-12)
 
     def test_input_frame_not_mutated(self):
         from iblnm.analysis import code_predictors
