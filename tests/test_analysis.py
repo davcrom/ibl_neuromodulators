@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.stats import sem as scipy_sem
 
 from iblnm.analysis import (
     add_fdr_qvalues,
@@ -2509,6 +2510,89 @@ class TestCodePredictors:
         df = self._frame()
         before = df.copy(deep=True)
         code_predictors(df)
+        pd.testing.assert_frame_equal(df, before)
+
+
+class TestAggregateConditions:
+    def _frame(self):
+        # Two contrasts; subject 'A' contributes 4 trials over two recordings,
+        # subject 'B' contributes 1 trial, so pooling and per-subject weighting
+        # differ.
+        return pd.DataFrame({
+            'subject': ['A'] * 4 + ['B'],
+            'eid': ['e1', 'e1', 'e2', 'e2', 'e3'],
+            'brain_region': ['VTA'] * 5,
+            'contrast': [0.0, 0.0, 0.0, 0.0, 0.0],
+            'response': [1.0, 3.0, 5.0, 7.0, 10.0],
+        })
+
+    def test_pool_matches_raw_mean_and_sem(self):
+        from iblnm.analysis import aggregate_conditions
+        df = self._frame()
+        out = aggregate_conditions(df, 'response', ['contrast'])
+        row = out.iloc[0]
+        assert row['contrast'] == 0.0
+        assert row['mean'] == pytest.approx(df['response'].mean())
+        assert row['sem'] == pytest.approx(scipy_sem(df['response']))
+        assert row['n'] == 5
+
+    def test_unit_cols_weight_units_equally(self):
+        from iblnm.analysis import aggregate_conditions
+        out = aggregate_conditions(
+            self._frame(), 'response', ['contrast'], unit_cols=['subject'])
+        row = out.iloc[0]
+        # Subject A means 4.0 (of 4 trials), subject B means 10.0 (of 1 trial).
+        assert row['mean'] == pytest.approx(7.0)
+        assert row['sem'] == pytest.approx(scipy_sem([4.0, 10.0]))
+        assert row['n'] == 2
+
+    def _two_subject_frame(self):
+        # Recording means 1, 3 (subject A) and 11, 13 (subject B): a large
+        # between-subject offset on top of a small within-subject spread.
+        return pd.DataFrame({
+            'subject': ['A'] * 4 + ['B'] * 4,
+            'eid': ['e1', 'e1', 'e2', 'e2', 'e3', 'e3', 'e4', 'e4'],
+            'brain_region': ['VTA'] * 8,
+            'contrast': [0.0] * 8,
+            'response': [0.0, 2.0, 2.0, 4.0, 10.0, 12.0, 12.0, 14.0],
+        })
+
+    def test_center_by_preserves_mean_and_shrinks_sem(self):
+        from iblnm.analysis import aggregate_conditions
+        df = self._two_subject_frame()
+        recordings = ['eid', 'brain_region']
+        centered = aggregate_conditions(
+            df, 'response', ['contrast'], unit_cols=recordings,
+            center_by='subject').iloc[0]
+        uncentered = aggregate_conditions(
+            df, 'response', ['contrast'], unit_cols=recordings).iloc[0]
+        by_subject = aggregate_conditions(
+            df, 'response', ['contrast'], unit_cols=['subject']).iloc[0]
+        assert centered['mean'] == pytest.approx(uncentered['mean'])
+        assert centered['n'] == 4
+        assert centered['sem'] < uncentered['sem']
+        assert centered['sem'] < by_subject['sem']
+
+    def test_all_nan_group_yields_nan(self):
+        from iblnm.analysis import aggregate_conditions
+        df = pd.DataFrame({
+            'contrast': [0.0, 0.0, 1.0, 1.0],
+            'response': [1.0, 3.0, np.nan, np.nan],
+        })
+        out = aggregate_conditions(df, 'response', ['contrast']).set_index(
+            'contrast')
+        assert np.isnan(out.loc[1.0, 'mean'])
+        assert np.isnan(out.loc[1.0, 'sem'])
+        assert out.loc[1.0, 'n'] == 0
+        assert out.loc[0.0, 'mean'] == pytest.approx(2.0)
+
+    def test_input_frame_not_mutated(self):
+        from iblnm.analysis import aggregate_conditions
+        df = self._two_subject_frame()
+        before = df.copy(deep=True)
+        aggregate_conditions(df, 'response', ['contrast'],
+                             unit_cols=['eid', 'brain_region'],
+                             center_by='subject')
         pd.testing.assert_frame_equal(df, before)
 
 

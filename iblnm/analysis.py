@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import patsy
 from scipy.stats import gaussian_kde
+from scipy.stats import sem as scipy_sem
 from tqdm import tqdm
 
 from brainbox.behavior.wheel import interpolate_position, velocity_filtered
@@ -1811,6 +1812,80 @@ def code_predictors(
     continuous = [col for col in CONTINUOUS_PREDICTORS if col in df.columns]
     df[continuous] = df[continuous] - df[continuous].mean()
     return df
+
+
+def aggregate_conditions(
+    df: pd.DataFrame,
+    value_col: str,
+    group_cols: Sequence[str],
+    unit_cols: Sequence[str] | None = None,
+    center_by: str | None = None,
+) -> pd.DataFrame:
+    """Reduce a long frame to per-condition means, SEMs and unit counts.
+
+    One reduction with two knobs rather than a set of aggregation modes: what
+    each mean is taken over (``unit_cols``) and whether a within-``center_by``
+    correction is applied first (``center_by``). The presets used by the
+    response figures are ``unit_cols=None`` (mean over trials),
+    ``unit_cols=['subject']`` (mean of subject means) and
+    ``unit_cols=['eid', 'brain_region'], center_by='subject'`` (mean over
+    recordings, between-subject offsets removed).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long frame, one row per observation; not mutated.
+    value_col : str
+        Column reduced.
+    group_cols : Sequence[str]
+        Condition keys. One output row per observed combination.
+    unit_cols : Sequence[str], optional
+        Averaging unit. ``None`` treats every row as a unit; otherwise rows are
+        averaged within each combination of these columns and the reduction runs
+        over those unit means, so units are weighted equally regardless of how
+        many rows each contributes.
+    center_by : str, optional
+        Column over which to center each condition before reducing: each unit
+        has its ``center_by`` group's mean subtracted and the condition's grand
+        mean added back. This is the Cousineau-style within-subject correction,
+        and it leaves each condition's mean unchanged while removing the
+        between-``center_by`` component from its SEM.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ``group_cols`` + ``mean``, ``sem``, ``n``, where ``n`` counts
+        the non-NaN units the SEM was taken over — trials, subjects or
+        recordings, depending on ``unit_cols``. A condition with fewer than two
+        units yields a NaN SEM, and one with no non-NaN values a NaN mean,
+        rather than raising.
+    """
+    group_cols = list(group_cols)
+    units = df
+    if unit_cols is not None:
+        unit_keys = group_cols + list(unit_cols)
+        if center_by is not None and center_by not in unit_keys:
+            unit_keys.append(center_by)
+        units = (
+            df.groupby(unit_keys, dropna=False, observed=True)[value_col]
+            .mean()
+            .reset_index()
+        )
+    if center_by is not None:
+        by_group = units.groupby(group_cols, dropna=False,
+                                 observed=True)[value_col]
+        by_center = units.groupby(group_cols + [center_by], dropna=False,
+                                  observed=True)[value_col]
+        units = units.assign(**{
+            value_col: units[value_col] - by_center.transform('mean')
+            + by_group.transform('mean')
+        })
+    return (
+        units.groupby(group_cols, dropna=False, observed=True)[value_col]
+        .agg(mean='mean', sem=lambda vals: scipy_sem(vals, nan_policy='omit'),
+             n='count')
+        .reset_index()
+    )
 
 
 def formula_columns(formula: str, columns) -> list:
