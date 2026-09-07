@@ -2000,6 +2000,25 @@ class PhotometrySession(PhotometrySessionLoader):
         if missing:
             raise IncompleteEventTimes(missing)
 
+    def complete_events(self) -> list[str]:
+        """The `config.RESPONSE_EVENTS` whose times are complete enough to cut on.
+
+        :meth:`validate_event_completeness` is non-fatal for a response cut: the
+        events it names are dropped and the rest are cut.
+
+        Returns
+        -------
+        list of str
+            The events to cut on, in `RESPONSE_EVENTS` order. Empty when no
+            event survives, in which case nothing is cut at all.
+        """
+        try:
+            self.validate_event_completeness()
+        except IncompleteEventTimes as error:
+            return [event for event in RESPONSE_EVENTS
+                    if event not in error.missing_events]
+        return list(RESPONSE_EVENTS)
+
     def validate_trials_in_photometry_time(self, band=None):
         """Raises TrialsNotInPhotometryTime if trial times fall outside photometry window."""
         if band is None:

@@ -30,8 +30,8 @@ import pandas as pd  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from iblnm.config import (  # noqa: E402
-    RESPONSE_EVENTS, SESSION_TYPES, SESSIONS_FPATH, SESSIONS_H5_DIR,
-    STIM_ONSET_EVENT, VALID_TARGETNMS,
+    SESSION_TYPES, SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
+    VALID_TARGETNMS,
 )
 from iblnm.data import (  # noqa: E402
     PREPROCESSED_BAND, WHEEL_LABEL, PhotometrySession, PhotometrySessionGroup,
@@ -134,21 +134,6 @@ def build_trials(ps: PhotometrySession) -> None:
         ps.log_error(error, product='trials')
 
 
-def complete_events(ps: PhotometrySession) -> list[str]:
-    """The `config.RESPONSE_EVENTS` whose times are complete enough to cut on.
-
-    `validate_event_completeness` is non-fatal for the response cut: the events
-    it names are dropped and the rest are cut. An empty list means no event
-    survived, and nothing is cut at all.
-    """
-    try:
-        ps.validate_event_completeness()
-    except IncompleteEventTimes as error:
-        return [event for event in RESPONSE_EVENTS
-                if event not in error.missing_events]
-    return list(RESPONSE_EVENTS)
-
-
 def build_photometry(ps: PhotometrySession) -> None:
     """Fetch both photometry sources, score them, preprocess and cut responses.
 
@@ -176,7 +161,7 @@ def build_photometry(ps: PhotometrySession) -> None:
         ps.validate_trials_in_photometry_time()
         ps.run_photometry_qc()
         ps.extract_preprocessed_photometry()
-        events = complete_events(ps)
+        events = ps.complete_events()
         if events:
             ps.photometry_responses = ps.extract_responses(
                 ps.photometry[PREPROCESSED_BAND], events=events)
