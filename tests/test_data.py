@@ -6785,6 +6785,115 @@ class TestCodeModelFrames:
         assert set(ps.response_magnitudes['brain_region']) == {'VTA-r'}
 
 
+def _donorless_session(**kwargs):
+    """:func:`_make_session_for_persession` with its photometry taken away.
+
+    A donor contributes a regressor column and a trial order, never a
+    response, so the preparation must run on a session that holds no
+    ``photometry_responses`` at all.
+    """
+    ps = _make_session_for_persession(**kwargs)
+    del ps.photometry_responses
+    return ps
+
+
+class TestDonorFrames:
+    """Donor preparation and donor-scope selection (PhotometrySession)."""
+
+    def test_donor_frame_is_built_without_loading_photometry(self, monkeypatch):
+        from iblnm.config import PERSESSION_REGRESSORS
+        from iblnm.data import PhotometrySession
+
+        ps = _donorless_session()
+        monkeypatch.setattr(
+            PhotometrySession, 'load_responses',
+            lambda *args, **kwargs: pytest.fail('photometry was loaded'))
+
+        donor = ps.prepare_donor_frame()
+        assert set(PERSESSION_REGRESSORS) <= set(donor.frame.columns)
+        assert 'response' not in donor.frame.columns
+        assert donor.frame[PERSESSION_REGRESSORS].notna().all().all()
+
+    def test_donor_rows_are_the_response_independent_selection(self):
+        """Only the three trials-only exclusions bite, so a donor frame is
+        longer than the same session's focal cells, which also drop the trials
+        whose response is null."""
+        from iblnm.config import LMM_FORMULAS
+
+        # The second recording carries no signal on its first 30 trials, so
+        # its cells lose those rows and the donor frame does not.
+        ps = _add_second_recording(_make_session_for_persession(),
+                                   n_missing=30)
+        trials = ps.trials
+        expected = ((trials['choice'] != 0)
+                    & (trials['response_times']
+                       - trials['stimOnTrigger_times'] > 0.05)
+                    & ~(trials['firstMovement_times']
+                        - trials['stimOnTrigger_times'] < 0)).sum()
+
+        frames = ps._prepare_model_frames(LMM_FORMULAS['persession'])
+        donor = _donorless_session().prepare_donor_frame()
+
+        assert len(donor.frame) == expected
+        assert all(len(donor.frame) > len(coded)
+                   for (region, _), coded in frames.items()
+                   if region == 'DR-l')
+
+    def test_donor_frame_preserves_trial_order(self):
+        ps = _donorless_session()
+        trial = ps.prepare_donor_frame().frame['trial']
+        assert trial.is_monotonic_increasing
+        assert set(trial) <= set(ps.trials['trial'])
+
+    @staticmethod
+    def _donor_pool():
+        """Four donors, each frame tagged with the eid that produced it.
+
+        ``mouse1`` contributes the focal session and a second one; ``mouse2``
+        shares the focal target NM and ``mouse3`` does not.
+        """
+        from iblnm.data import DonorFrame
+        rows = [('focal-eid', 'mouse1', ('VTA-DA',)),
+                ('sibling-eid', 'mouse1', ('VTA-DA',)),
+                ('same-target-eid', 'mouse2', ('VTA-DA',)),
+                ('other-target-eid', 'mouse3', ('DR-5HT',))]
+        return {eid: DonorFrame(eid, subject, target_nm,
+                                pd.DataFrame({'eid': [eid]}))
+                for eid, subject, target_nm in rows}
+
+    def _selected_eids(self, donor_scope):
+        ps = _donorless_session(eid='focal-eid', subject='mouse1',
+                                target_nm='VTA-DA')
+        frames = ps.select_donors(self._donor_pool(), donor_scope)
+        return [frame['eid'].iloc[0] for frame in frames]
+
+    def test_exclude_session_drops_only_the_focal_eid(self):
+        assert self._selected_eids('exclude_session') == [
+            'sibling-eid', 'same-target-eid', 'other-target-eid']
+
+    def test_exclude_subject_drops_every_session_of_the_focal_subject(self):
+        assert self._selected_eids('exclude_subject') == [
+            'same-target-eid', 'other-target-eid']
+
+    def test_same_target_keeps_other_subjects_sharing_the_target(self):
+        assert self._selected_eids('same_target') == ['same-target-eid']
+
+    def test_unknown_scope_raises_naming_the_known_scopes(self):
+        with pytest.raises(ValueError) as excinfo:
+            self._selected_eids('exclude_cohort')
+        assert 'exclude_cohort' in str(excinfo.value)
+        for scope in ('exclude_session', 'exclude_subject', 'same_target'):
+            assert scope in str(excinfo.value)
+
+    def test_pool_admitting_nobody_returns_empty(self):
+        """Every donor is the focal subject's, so no scope but the loosest
+        admits one — and the caller gets an empty pool, not an error."""
+        ps = _donorless_session(eid='focal-eid', subject='mouse1')
+        pool = {eid: donor for eid, donor in self._donor_pool().items()
+                if donor.subject == 'mouse1'}
+        assert ps.select_donors(pool, 'exclude_subject') == []
+
+
 class TestResponseOlsDropone:
     """The drop-one fits, run over the coded frames the pass already built."""
 

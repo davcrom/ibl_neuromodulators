@@ -1746,7 +1746,7 @@ def build_trial_regressors(
 
 
 def select_modeling_trials(
-    df: pd.DataFrame, response_col: str = 'response',
+    df: pd.DataFrame, response_col: str | None = 'response',
     probability_left: float | None = None,
     dropped: dict[str, int] | None = None,
 ) -> pd.DataFrame:
@@ -1773,8 +1773,11 @@ def select_modeling_trials(
         Merged trial frame carrying ``response_col``, ``probabilityLeft``,
         ``choice``, ``response_time``, ``reaction_time``, and the movement
         columns to be log-transformed.
-    response_col : str
+    response_col : str or None
         Column name for the response magnitude whose NaNs are dropped.
+        ``None`` applies the three response-independent exclusions alone, for
+        a frame that carries no response at all — the donor case, where the
+        trials contribute a regressor column and a trial order.
     probability_left : float or None
         When set, keep only trials with this ``probabilityLeft`` (e.g. ``0.5``
         for the unbiased block). ``None`` (default) keeps all blocks.
@@ -1792,7 +1795,8 @@ def select_modeling_trials(
     """
     if probability_left is not None:
         df = df[df['probabilityLeft'] == probability_left]
-    df = df.dropna(subset=[response_col])
+    if response_col is not None:
+        df = df.dropna(subset=[response_col])
     df = df.query('choice != 0 and response_time > 0.05')
     negative_reaction_time = df['reaction_time'] < 0
     if dropped is not None:

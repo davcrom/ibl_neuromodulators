@@ -114,6 +114,21 @@ class CodedFrame(NamedTuple):
     frame: pd.DataFrame
 
 
+class DonorFrame(NamedTuple):
+    """One session's prepared contribution to the cross-session swap null.
+
+    Built from the trials table alone, so it has no event and no region: one
+    frame serves every focal recording-event the session may donate to.
+    ``target_NM`` is the whole parallel-list column of the donating session
+    rather than one recording's entry, for the same reason.
+    """
+
+    eid: str
+    subject: str
+    target_NM: tuple[str, ...]
+    frame: pd.DataFrame
+
+
 def resolve_event_family(formulas: dict, event: str) -> dict[str, str]:
     """Select the formula family one event is fitted against.
 
@@ -162,6 +177,22 @@ _DONOR_SCOPES = {
     'exclude_subject': lambda focal, donor: donor.subject != focal.subject,
     'same_target': lambda focal, donor: (donor.subject != focal.subject
                                          and donor.target_NM == focal.target_NM),
+}
+
+
+# `_DONOR_SCOPES` at the session grain, for the donor frames a
+# `PhotometrySession` prepares. The rationale for each scope is the one given
+# above; only the target-NM comparison differs. Both sides now carry a parallel
+# list of target NMs — a session recording two regions has two — so
+# `same_target` asks whether the two sessions share any target rather than
+# whether they name the same one, which is the same test whenever either side
+# records a single region.
+_SESSION_DONOR_SCOPES = {
+    'exclude_session': lambda focal, donor: donor.eid != focal.eid,
+    'exclude_subject': lambda focal, donor: donor.subject != focal.subject,
+    'same_target': lambda focal, donor: (
+        donor.subject != focal.subject
+        and not set(donor.target_NM).isdisjoint(focal.target_NM)),
 }
 
 
@@ -3534,6 +3565,18 @@ class PhotometrySession(PhotometrySessionLoader):
                 for event in cut_events
             ], ignore_index=True)
 
+    def _trial_regressors(self) -> pd.DataFrame:
+        """This session's one-row-per-trial regressor frame.
+
+        Reads the stored `peak_velocity` off the session when it is there; a
+        session holding no wheel product gets an all-NaN ``peak_velocity``
+        column rather than an error, and the complete-case filter drops those
+        rows when a formula referencing it is fitted.
+        """
+        return analysis.build_trial_regressors(
+            self.trials, getattr(self, 'wheel_peak_velocity', None),
+            STIM_ONSET_EVENT)
+
     def _merge_response_magnitudes(self, events: Sequence[str]) -> pd.DataFrame:
         """Every recording's magnitudes with this session's trial regressors.
 
@@ -3556,9 +3599,7 @@ class PhotometrySession(PhotometrySessionLoader):
             persession formula reads (``signed_contrast``, ``movement_time``).
             Also assigned to ``self.response_magnitudes``.
         """
-        regressors = analysis.build_trial_regressors(
-            self.trials, getattr(self, 'wheel_peak_velocity', None),
-            STIM_ONSET_EVENT)
+        regressors = self._trial_regressors()
         magnitudes = _concat_frames(
             [self._recording_magnitudes(region, hemisphere, target_nm, events)
              for region, hemisphere, target_nm
@@ -3568,6 +3609,45 @@ class PhotometrySession(PhotometrySessionLoader):
         merged = magnitudes.merge(regressors, on='trial', how='left')
         self.response_magnitudes = task.add_relative_contrast(merged)
         return self.response_magnitudes
+
+    def _select_modeling_trials(self, events: Sequence[str] | None,
+                                response_col: str | None) -> pd.DataFrame:
+        """The uncoded modelling rows, both preparations' shared prefix.
+
+        Assembles the frame and applies the trial exclusions
+        (:func:`iblnm.analysis.select_modeling_trials`); coding happens in the
+        caller, on whatever row set it ends up with. ``events`` selects which
+        of the two frames is assembled — the focal one, one row per recording
+        x event x trial, or the donor one, one row per trial and no photometry
+        touched.
+
+        Parameters
+        ----------
+        events : Sequence[str] or None
+            Events to cut and merge magnitudes for. ``None`` is the donor
+            case: the trial regressors alone, tagged with the first
+            recording's hemisphere so the hemisphere-relative ``side`` and
+            ``choice_side`` can be derived. Which hemisphere does not matter
+            downstream — the other one negates both columns and every
+            interaction they enter, which spans the same design space and so
+            leaves R² unchanged.
+        response_col : str or None
+            Response magnitude column whose null rows are dropped. ``None``
+            alongside ``events=None``: a donor frame carries no response.
+
+        Returns
+        -------
+        pandas.DataFrame
+            The retained trials, uncoded. In the focal case the merged frame
+            is also left on ``self.response_magnitudes``, unselected.
+        """
+        if events is not None:
+            frame = self._merge_response_magnitudes(events)
+        else:
+            frame = self._trial_regressors().assign(
+                hemisphere=next(iter(self.hemisphere), None))
+            frame = task.add_relative_contrast(frame)
+        return analysis.select_modeling_trials(frame, response_col)
 
     def _prepare_model_frames(self, formulas: dict,
                               events: Sequence[str] = RESPONSE_EVENTS,
@@ -3611,8 +3691,7 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         families = {event: resolve_event_family(formulas, event)
                     for event in events}
-        selected = analysis.select_modeling_trials(
-            self._merge_response_magnitudes(events), response_col)
+        selected = self._select_modeling_trials(events, response_col)
 
         self.model_frames = {}
         for (region, event), rows in selected.groupby(
@@ -3623,6 +3702,80 @@ class PhotometrySession(PhotometrySessionLoader):
             if len(coded) >= min_trials:
                 self.model_frames[(region, event)] = coded
         return self.model_frames
+
+    def prepare_donor_frame(self, contrast_coding: str = 'log2') -> DonorFrame:
+        """Build this session's contribution to other sessions' swap nulls.
+
+        :meth:`_prepare_model_frames` stopped after its response-independent
+        selection step, coding on those rows: the trial regressors with the
+        no-go, false-start and negative-reaction-time exclusions applied, then
+        coded and centred. No photometry is loaded and no response-null rows
+        are dropped, so a donor frame is one frame per session — not one per
+        recording-event — and is typically longer than the focal frames it
+        donates to. `iblnm.analysis.permutation_null_delta_r2` truncates the
+        pair to the shorter length at swap time.
+
+        Trial order is preserved, which is the whole point of the swap: the
+        donor's regressor keeps its own serial structure while losing any
+        relationship to the focal session's responses.
+
+        Parameters
+        ----------
+        contrast_coding : str
+            Passed to :func:`iblnm.analysis.code_predictors`. Must match the
+            focal frames' coding, or the swapped column is on another scale.
+
+        Returns
+        -------
+        DonorFrame
+            This session's identity and its coded trial frame, carrying every
+            `config.PERSESSION_REGRESSORS` column. Also assigned to
+            ``self.donor_frame``.
+        """
+        self.load_trials()
+        self.load_peak_velocity()
+        selected = self._select_modeling_trials(None, None)
+        self.donor_frame = DonorFrame(
+            self.eid, self.subject, tuple(self.target_NM),
+            analysis.code_predictors(selected, contrast_coding))
+        return self.donor_frame
+
+    def select_donors(self, donors: dict[str, DonorFrame],
+                      donor_scope: str = 'exclude_subject',
+                      ) -> list[pd.DataFrame]:
+        """Narrow a donor pool to the sessions this one may swap columns with.
+
+        The focal side of the comparison is ``self``, read straight off the
+        session — its ``eid``, ``subject`` and ``target_NM``. There is no event
+        to match on: a donor frame is built from trials alone, so one frame
+        serves every event of every recording this session holds.
+
+        Parameters
+        ----------
+        donors : dict[str, DonorFrame]
+            Every prepared donor of the pass, keyed by eid, this session's own
+            included; every scope excludes it.
+        donor_scope : {'exclude_session', 'exclude_subject', 'same_target'}
+            Which sessions may donate. See ``_SESSION_DONOR_SCOPES``.
+
+        Returns
+        -------
+        list[pandas.DataFrame]
+            The admitted donors' frames, in ``donors`` order; empty when the
+            pool admits none. Only the swapped predictor column of each is
+            read downstream.
+
+        Raises
+        ------
+        ValueError
+            ``donor_scope`` names no known scope.
+        """
+        if donor_scope not in _SESSION_DONOR_SCOPES:
+            raise ValueError(f"Unrecognized donor_scope {donor_scope!r}; "
+                             f"expected one of "
+                             f"{sorted(_SESSION_DONOR_SCOPES)}")
+        admits = _SESSION_DONOR_SCOPES[donor_scope]
+        return [donor.frame for donor in donors.values() if admits(self, donor)]
 
     @staticmethod
     def fit_response_model(df: pd.DataFrame, formula: str,
