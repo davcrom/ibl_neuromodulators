@@ -5929,11 +5929,11 @@ class TestLoaderMethods:
             {'eid': 'eid-0', 'subject': 'subj-0', 'target_NM': 'target-0',
              'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'delta_r2': 0.1, 'p_value': 0.01,
-             'q_value': 0.03},
+             'q_value': 0.03, 'n_donors': 700},
             {'eid': 'eid-99', 'subject': 'subj-9', 'target_NM': 'target-X',
              'brain_region': 'region-0', 'event': 'stimOnTrigger_times',
              'predictor': 'contrast', 'delta_r2': 0.2, 'p_value': 0.02,
-             'q_value': 0.04},  # not in group
+             'q_value': 0.04, 'n_donors': 700},  # not in group
         ])[RESPONSE_OLS_SESSION_PVAL_COLUMNS]
         path = tmp_path / 'response_ols_persession_dropone_session_pvalues.parquet'
         df.to_parquet(path, index=False)
@@ -7936,6 +7936,12 @@ class TestDeltaRSquared:
         assert set(deltas.index) == set(fit.slices)
 
 
+def _donor_counts(null_vectors, n_donors=1000):
+    """Donor counts keyed like ``null_vectors``, large by default so the
+    1 / (n_donors + 1) p-value floor binds only where a test asks it to."""
+    return {key: n_donors for key in null_vectors}
+
+
 class TestAssembleSessionPvalueTable:
     """assemble_session_pvalue_table — per-recording drop-one permutation p."""
 
@@ -7959,7 +7965,8 @@ class TestAssembleSessionPvalueTable:
             ('e2', 'feedback', 'reward'): np.full(4, 0.01),
         }
 
-        table = assemble_session_pvalue_table(observed, null_vectors)
+        table = assemble_session_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors))
 
         assert list(table['eid']) == ['e1', 'e2']
         assert list(table['subject']) == ['m1', 'm1']
@@ -7977,7 +7984,8 @@ class TestAssembleSessionPvalueTable:
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm2', 0.20)])
         null_vectors = {('e2', 'feedback', 'reward'): np.full(4, 0.01)}
 
-        table = assemble_session_pvalue_table(observed, null_vectors)
+        table = assemble_session_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors))
 
         assert list(table['eid']) == ['e2']
 
@@ -7995,12 +8003,45 @@ class TestAssembleSessionPvalueTable:
             ('e2', 'feedback', 'reward'): beaten_null,
         }
 
-        table = assemble_session_pvalue_table(observed, null_vectors)
+        table = assemble_session_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors))
 
         by_eid = table.set_index('eid')['p_value']
         assert by_eid['e1'] == pytest.approx(1 / 5)
         assert by_eid['e2'] == pytest.approx(
             analysis.permutation_pvalue(0.01, beaten_null, 'greater'))
+
+    def test_pvalue_floored_at_the_donor_count(self):
+        """A null vector is a bootstrap resample of the donor ΔR² set, so its
+        length reports the resampling, not how finely the tail is resolved. A
+        ΔR² beating all 100 draws scores 1/101 by add-one correction, but with
+        four donors behind them the reported p is 1/5."""
+        from iblnm.data import assemble_session_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10)])
+        null_vectors = {('e1', 'feedback', 'reward'): np.full(100, 0.02)}
+
+        table = assemble_session_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors, 4))
+
+        assert table.iloc[0]['p_value'] == pytest.approx(1 / 5)
+        assert table.iloc[0]['n_donors'] == 4
+
+    def test_pvalue_above_the_floor_is_unchanged(self):
+        """The floor only lifts p; a p the null already puts above it is left
+        at its add-one value."""
+        from iblnm import analysis
+        from iblnm.data import assemble_session_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.01)])
+        null = np.array([0.0, 0.0, 0.02, 0.03])
+        null_vectors = {('e1', 'feedback', 'reward'): null}
+
+        table = assemble_session_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors, 4))
+
+        assert table.iloc[0]['p_value'] == pytest.approx(
+            analysis.permutation_pvalue(0.01, null, 'greater'))
 
     def test_alternative_is_forwarded(self):
         """The alternative argument reaches the primitive: the same row scored
@@ -8012,8 +8053,9 @@ class TestAssembleSessionPvalueTable:
         null = np.array([0.0, 0.05, 0.2, 0.3])
         null_vectors = {('e1', 'feedback', 'reward'): null}
 
-        table = assemble_session_pvalue_table(observed, null_vectors,
-                                              alternative='less')
+        table = assemble_session_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors),
+            alternative='less')
 
         assert table.iloc[0]['p_value'] == pytest.approx(
             analysis.permutation_pvalue(0.10, null, 'less'))
@@ -8027,7 +8069,8 @@ class TestAssembleSessionPvalueTable:
         observed = self._observed([('e1', 'm1', 0.10)])
         null_vectors = {('e1', 'feedback', 'reward'): np.full(4, 0.02)}
 
-        table = assemble_session_pvalue_table(observed, null_vectors)
+        table = assemble_session_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors))
 
         assert list(table.columns) == RESPONSE_OLS_SESSION_PVAL_COLUMNS
         assert table['q_value'].isna().all()
@@ -8043,7 +8086,8 @@ class TestAssembleSessionPvalueTable:
         null_vectors = ({} if empty == 'null_vectors'
                         else {('e1', 'feedback', 'reward'): np.full(4, 0.02)})
 
-        table = assemble_session_pvalue_table(observed, null_vectors)
+        table = assemble_session_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors))
 
         assert len(table) == 0
         assert list(table.columns) == RESPONSE_OLS_SESSION_PVAL_COLUMNS
@@ -8075,14 +8119,14 @@ class TestAssembleMousePvalueTable:
         }
 
         table = assemble_mouse_pvalue_table(
-            observed, null_vectors, n_bootstrap=99, random_state=0)
+            observed, null_vectors, _donor_counts(null_vectors),
+            n_bootstrap=99, random_state=0)
 
         assert len(table) == 1
         row = table.iloc[0]
         assert row['mean_delta_r2'] == pytest.approx(0.08)
         assert row['p_value'] == pytest.approx(1 / 100)
         assert row['n_sessions'] == 2
-        assert 'n_donors' not in table.columns
 
     def test_two_mice_pool_only_their_own_sessions(self):
         """Two mice in the same cell yield two rows; each mouse's mean pools
@@ -8097,7 +8141,8 @@ class TestAssembleMousePvalueTable:
             ('e3', 'feedback', 'reward'): np.array([0.04, 0.02, 0.05]),
         }
 
-        table = assemble_mouse_pvalue_table(observed, null_vectors)
+        table = assemble_mouse_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors))
 
         by_subject = table.set_index('subject')
         assert set(by_subject.index) == {'m1', 'm2'}
@@ -8114,7 +8159,8 @@ class TestAssembleMousePvalueTable:
         observed = self._observed([('e1', 'm1', 0.10)])
         null_vectors = {('e1', 'feedback', 'reward'): np.array([0.02, 0.01])}
 
-        table = assemble_mouse_pvalue_table(observed, null_vectors)
+        table = assemble_mouse_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors))
 
         assert list(table.columns) == RESPONSE_OLS_MOUSE_PVAL_COLUMNS
         # q_value sits between p_value and n_sessions and is left for the
@@ -8122,6 +8168,26 @@ class TestAssembleMousePvalueTable:
         assert RESPONSE_OLS_MOUSE_PVAL_COLUMNS.index('q_value') == (
             RESPONSE_OLS_MOUSE_PVAL_COLUMNS.index('p_value') + 1)
         assert table['q_value'].isna().all()
+
+    def test_pooled_pvalue_floored_at_the_smallest_donor_count(self):
+        """The pooled null draws one value per session, so it is no better
+        resolved than its coarsest session: a mouse pooling a 500-donor and a
+        4-donor session reports at most the 4-donor floor, 1/5, where the
+        bootstrap alone would have given 1/100."""
+        from iblnm.data import assemble_mouse_pvalue_table
+
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)])
+        null_vectors = {
+            ('e1', 'feedback', 'reward'): np.full(99, 0.02),
+            ('e2', 'feedback', 'reward'): np.full(99, 0.01),
+        }
+        n_donors = {('e1', 'feedback', 'reward'): 500,
+                    ('e2', 'feedback', 'reward'): 4}
+
+        table = assemble_mouse_pvalue_table(
+            observed, null_vectors, n_donors, n_bootstrap=99, random_state=0)
+
+        assert table.iloc[0]['p_value'] == pytest.approx(1 / 5)
 
     def test_group_with_no_null_vectors_is_skipped(self):
         """A cell whose sessions have no null vectors produces no row; sessions
@@ -8131,7 +8197,8 @@ class TestAssembleMousePvalueTable:
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm2', 0.20)])
         null_vectors = {('e2', 'feedback', 'reward'): np.array([0.04, 0.05])}
 
-        table = assemble_mouse_pvalue_table(observed, null_vectors)
+        table = assemble_mouse_pvalue_table(
+            observed, null_vectors, _donor_counts(null_vectors))
 
         assert list(table['subject']) == ['m2']
         assert table.iloc[0]['n_sessions'] == 1
@@ -8166,15 +8233,15 @@ class TestResponseOlsDroponePermutation:
                  'reward': '{response} ~ contrast'}
 
     @staticmethod
-    def _frames(rows=(('e1', 'VTA-DA', 'feedback_times'),
-                      ('e2', 'VTA-DA', 'feedback_times'),
-                      ('e3', 'VTA-DA', 'feedback_times'))):
-        """Coded frames from (eid, target_NM, event) tuples, each frame
+    def _frames(rows=(('e1', 'm1', 'VTA-DA', 'feedback_times'),
+                      ('e2', 'm1', 'VTA-DA', 'feedback_times'),
+                      ('e3', 'm2', 'VTA-DA', 'feedback_times'))):
+        """Coded frames from (eid, subject, target_NM, event) tuples, each frame
         carrying a ``tag`` column equal to its eid."""
         from iblnm.data import CodedFrame
-        return [CodedFrame(eid, 'm1', target_nm, 'VTA', event,
+        return [CodedFrame(eid, subject, target_nm, 'VTA', event,
                            pd.DataFrame({'tag': [eid]}))
-                for eid, target_nm, event in rows]
+                for eid, subject, target_nm, event in rows]
 
     @staticmethod
     def _patch_null(monkeypatch, empty_for=()):
@@ -8204,18 +8271,112 @@ class TestResponseOlsDroponePermutation:
         group.response_ols_dropone_results = self._observed()
         # e1/e2 VTA-DA and e3 DR-5HT all at feedback; e4 VTA-DA at stimOn.
         frames = self._frames([
-            ('e1', 'VTA-DA', 'feedback_times'),
-            ('e2', 'VTA-DA', 'feedback_times'),
-            ('e3', 'DR-5HT', 'feedback_times'),
-            ('e4', 'VTA-DA', 'stimOnTrigger_times'),
+            ('e1', 'm1', 'VTA-DA', 'feedback_times'),
+            ('e2', 'm1', 'VTA-DA', 'feedback_times'),
+            ('e3', 'm2', 'DR-5HT', 'feedback_times'),
+            ('e4', 'm1', 'VTA-DA', 'stimOnTrigger_times'),
         ])
         calls = self._patch_null(monkeypatch)
 
-        group.response_ols_dropone_permutation(frames, self._FORMULAS)
+        group.response_ols_dropone_permutation(
+            frames, self._FORMULAS, donor_scope='exclude_session')
 
         donors_for_e1 = next(d for f, d, _ in calls if f == 'e1')
         assert donors_for_e1 == {'e2', 'e3'}   # cross-cohort, same event
         assert 'e4' not in donors_for_e1       # different event excluded
+
+    @staticmethod
+    def _ten_recording_pool():
+        """Ten same-event, same-cohort recordings where subject m1 owns three
+        (e1, e2, e3) and seven other subjects own one each."""
+        owners = ['m1', 'm1', 'm1'] + [f'm{i}' for i in range(2, 9)]
+        return [(f'e{i}', subject, 'VTA-DA', 'feedback_times')
+                for i, subject in enumerate(owners, start=1)]
+
+    def test_default_scope_excludes_every_recording_of_focal_subject(
+            self, monkeypatch):
+        """The default donor_scope is 'exclude_subject': in a ten-recording pool
+        where m1 owns three, a focal m1 recording draws the seven recordings
+        owned by other subjects, not the nine other recordings."""
+        group = self._group()
+        group.response_ols_dropone_results = self._observed()
+        calls = self._patch_null(monkeypatch)
+
+        group.response_ols_dropone_permutation(
+            self._frames(self._ten_recording_pool()), self._FORMULAS)
+
+        donors_for_e1 = next(d for f, d, _ in calls if f == 'e1')
+        assert len(donors_for_e1) == 7
+        assert donors_for_e1 == {f'e{i}' for i in range(4, 11)}
+
+    def test_exclude_session_scope_keeps_the_focal_subjects_other_sessions(
+            self, monkeypatch):
+        """'exclude_session' drops only the focal recording, so the same pool
+        yields nine donors including the focal subject's two other sessions."""
+        group = self._group()
+        group.response_ols_dropone_results = self._observed()
+        calls = self._patch_null(monkeypatch)
+
+        group.response_ols_dropone_permutation(
+            self._frames(self._ten_recording_pool()), self._FORMULAS,
+            donor_scope='exclude_session')
+
+        donors_for_e1 = next(d for f, d, _ in calls if f == 'e1')
+        assert len(donors_for_e1) == 9
+        assert {'e2', 'e3'} <= donors_for_e1
+
+    def test_same_target_scope_keeps_only_the_focal_cohort(self, monkeypatch):
+        """'same_target' restricts the pool to the focal target_NM, on top of
+        excluding the focal subject."""
+        group = self._group()
+        group.response_ols_dropone_results = self._observed()
+        frames = self._frames([
+            ('e1', 'm1', 'VTA-DA', 'feedback_times'),
+            ('e2', 'm1', 'VTA-DA', 'feedback_times'),
+            ('e3', 'm2', 'VTA-DA', 'feedback_times'),
+            ('e4', 'm3', 'DR-5HT', 'feedback_times'),
+        ])
+        calls = self._patch_null(monkeypatch)
+
+        group.response_ols_dropone_permutation(
+            frames, self._FORMULAS, donor_scope='same_target')
+
+        donors_for_e1 = next(d for f, d, _ in calls if f == 'e1')
+        assert donors_for_e1 == {'e3'}
+
+    def test_n_donors_records_the_pool_each_null_was_built_from(
+            self, monkeypatch):
+        """The session table carries the donor count behind each row and floors
+        its p on it: a focal m1 recording drew 7 of the ten-recording pool, a
+        single-session subject's drew 9, and the 1000-draw stub null that every
+        observed ΔR² beats reports 1/8 rather than 1/1001."""
+        group = self._group()
+        pool = self._ten_recording_pool()
+        group.response_ols_dropone_results = pd.DataFrame(
+            [{'eid': eid, 'subject': subject, 'target_NM': target_nm,
+              'brain_region': 'VTA', 'event': event, 'predictor': 'reward',
+              'r2': 0.3, 'delta_r2': 0.10, 'n_trials': 100}
+             for eid, subject, target_nm, event in pool])
+        self._patch_null(monkeypatch)
+
+        session_table, _ = group.response_ols_dropone_permutation(
+            self._frames(pool), self._FORMULAS)
+
+        by_eid = session_table.set_index('eid')
+        assert by_eid.loc['e1', 'n_donors'] == 7
+        assert by_eid.loc['e4', 'n_donors'] == 9
+        assert by_eid.loc['e1', 'p_value'] == pytest.approx(1 / 8)
+
+    def test_unknown_donor_scope_raises(self, monkeypatch):
+        """An unrecognized donor_scope fails loudly rather than silently
+        scoring against an unintended pool."""
+        group = self._group()
+        group.response_ols_dropone_results = self._observed()
+        self._patch_null(monkeypatch)
+
+        with pytest.raises(ValueError, match='donor_scope'):
+            group.response_ols_dropone_permutation(
+                self._frames(), self._FORMULAS, donor_scope='all')
 
     def test_grain_and_columns(self, monkeypatch):
         """Returns (session, mouse) tables: the first at session grain, one row

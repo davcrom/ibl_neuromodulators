@@ -83,7 +83,7 @@ RESPONSE_OLS_MOUSE_PVAL_COLUMNS = [
 # predictor), scoring that recording's observed ΔR² against its own donor null.
 RESPONSE_OLS_SESSION_PVAL_COLUMNS = [
     'eid', 'subject', 'target_NM', 'brain_region', 'event', 'predictor',
-    'delta_r2', 'p_value', 'q_value',
+    'delta_r2', 'p_value', 'q_value', 'n_donors',
 ]
 
 
@@ -140,9 +140,59 @@ def resolve_event_family(formulas: dict, event: str) -> dict[str, str]:
     return formulas[event]
 
 
+# Which recording-events may stand in for a focal one in the cross-session swap
+# null, beyond sharing its event. Cohort (target_NM) is not filtered by default:
+# the swap replaces trial data, not photometry, and the IBL task is standardized
+# and interleaved across cohorts, so any session's trial sequence is a valid
+# stand-in. Excluding the focal subject rather than only the focal session is the
+# default because a subject's own sessions share its behavioral idiosyncrasies,
+# which is the very structure the null is meant to be free of.
+_DONOR_SCOPES = {
+    'exclude_session': lambda focal, donor: donor.eid != focal.eid,
+    'exclude_subject': lambda focal, donor: donor.subject != focal.subject,
+    'same_target': lambda focal, donor: (donor.subject != focal.subject
+                                         and donor.target_NM == focal.target_NM),
+}
+
+
+def select_donor_frames(focal: CodedFrame, frames: list[CodedFrame],
+                        donor_scope: str) -> list[pd.DataFrame]:
+    """Coded frames eligible to donate a swapped predictor column to ``focal``.
+
+    Parameters
+    ----------
+    focal : CodedFrame
+        Recording-event whose null is being built.
+    frames : list[CodedFrame]
+        Every coded recording-event of the pass, ``focal`` included; it is
+        excluded by every scope.
+    donor_scope : {'exclude_session', 'exclude_subject', 'same_target'}
+        Which recordings may donate, on top of matching ``focal.event``. See
+        ``_DONOR_SCOPES``.
+
+    Returns
+    -------
+    list[pd.DataFrame]
+        The eligible donors' frames, in ``frames`` order. Only the swapped
+        predictor column of each is read downstream.
+
+    Raises
+    ------
+    ValueError
+        ``donor_scope`` names no known scope.
+    """
+    if donor_scope not in _DONOR_SCOPES:
+        raise ValueError(f"Unrecognized donor_scope {donor_scope!r}; expected "
+                         f"one of {sorted(_DONOR_SCOPES)}")
+    eligible = _DONOR_SCOPES[donor_scope]
+    return [donor.frame for donor in frames
+            if donor.event == focal.event and eligible(focal, donor)]
+
+
 def assemble_mouse_pvalue_table(
     observed: pd.DataFrame,
     null_vectors: dict[tuple[str, str, str], np.ndarray],
+    n_donors: dict[tuple[str, str, str], int],
     n_bootstrap: int = 1000,
     random_state: int | None = 0,
 ) -> pd.DataFrame:
@@ -166,8 +216,14 @@ def assemble_mouse_pvalue_table(
         Maps ``(eid, event, predictor)`` to that session's donor null ΔR²
         vector (lengths may differ across sessions). Sessions absent from this
         mapping are not scorable and are dropped from their group.
+    n_donors : dict
+        Maps the same keys to the size of the donor pool behind that session's
+        null. The pooled null draws one value per session, so it is no better
+        resolved than its coarsest session and the cell's p-value floor comes
+        from the smallest pooled count (:func:`_floor_pvalue`).
     n_bootstrap : int
-        Pooled-null draws per cell; sets the p-value floor 1 / (n_bootstrap+1).
+        Pooled-null draws per cell. It does not set the p-value floor; the
+        donor counts do.
     random_state : int or None
         Seed for the bootstrap rng, created once and reused across cells.
 
@@ -177,8 +233,8 @@ def assemble_mouse_pvalue_table(
         One row per scorable ``(target_NM, event, predictor, subject)`` cell in
         ``RESPONSE_OLS_MOUSE_PVAL_COLUMNS`` order. ``mean_delta_r2`` is the
         pooled observed statistic, ``p_value`` the one-sided (greater) bootstrap
-        p, and ``n_sessions`` the pooled session count. ``q_value`` is present
-        but NaN — the caller fills it with
+        p floored on the donor counts, and ``n_sessions`` the pooled session
+        count. ``q_value`` is present but NaN — the caller fills it with
         :func:`iblnm.analysis.add_fdr_qvalues`, which chooses the correction
         families.
     """
@@ -188,28 +244,44 @@ def assemble_mouse_pvalue_table(
     for (target_NM, event, predictor, subject), group in observed.groupby(
             group_keys, sort=True):
         scorable = [
-            (row['delta_r2'], null_vectors[(row['eid'], event, predictor)])
+            (row['delta_r2'], null_vectors[(row['eid'], event, predictor)],
+             n_donors[(row['eid'], event, predictor)])
             for _, row in group.iterrows()
             if (row['eid'], event, predictor) in null_vectors
         ]
         if not scorable:
             continue
-        observed_by_stratum = [delta_r2 for delta_r2, _ in scorable]
-        null_by_stratum = [null for _, null in scorable]
+        observed_by_stratum = [delta_r2 for delta_r2, _, _ in scorable]
+        null_by_stratum = [null for _, null, _ in scorable]
         mean_delta_r2, p_value = analysis.bootstrap_pooled_pvalue(
             observed_by_stratum, null_by_stratum, rng=rng,
             n_bootstrap=n_bootstrap, alternative='greater')
         rows.append({
             'target_NM': target_NM, 'event': event, 'predictor': predictor,
             'subject': subject, 'mean_delta_r2': mean_delta_r2,
-            'p_value': p_value, 'n_sessions': len(scorable),
+            'p_value': _floor_pvalue(
+                p_value, min(count for _, _, count in scorable)),
+            'n_sessions': len(scorable),
         })
     return pd.DataFrame(rows, columns=RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
+
+
+def _floor_pvalue(p_value: float, n_donors: int) -> float:
+    """Lift a permutation p-value to the resolution its donor pool supports.
+
+    A donor null is bootstrap-resampled to a fixed length, so the add-one
+    correction inside :func:`iblnm.analysis.permutation_pvalue` floors at
+    1 / (n_draws + 1) — a resolution the resampling manufactured. The pool of
+    ``n_donors`` distinct donors behind those draws is what the null actually
+    resolves, so the reported p is floored at 1 / (n_donors + 1) instead.
+    """
+    return max(p_value, 1 / (n_donors + 1))
 
 
 def assemble_session_pvalue_table(
     observed: pd.DataFrame,
     null_vectors: dict[tuple[str, str, str], np.ndarray],
+    n_donors: dict[tuple[str, str, str], int],
     alternative: str = 'greater',
 ) -> pd.DataFrame:
     """Score each recording's drop-one ΔR² against its own donor null vector.
@@ -228,6 +300,9 @@ def assemble_session_pvalue_table(
         Maps ``(eid, event, predictor)`` to that recording's donor null ΔR²
         vector (lengths may differ across recordings). A row whose key is
         absent is unscorable — it had no scorable donor — and is dropped.
+    n_donors : dict
+        Maps the same keys to the size of the donor pool that null was built
+        from, which sets the p-value floor (:func:`_floor_pvalue`).
     alternative : {'greater', 'less', 'two-sided'}
         Tail passed to :func:`iblnm.analysis.permutation_pvalue`.
 
@@ -236,22 +311,25 @@ def assemble_session_pvalue_table(
     pd.DataFrame
         One row per scorable observed row, in
         ``RESPONSE_OLS_SESSION_PVAL_COLUMNS`` order. ``p_value`` is add-one
-        corrected, so it is floored at ``1 / (len(null) + 1)``. ``q_value`` is
-        present but NaN — the caller fills it with
-        :func:`iblnm.analysis.add_fdr_qvalues`, which chooses the correction
-        families.
+        corrected and then floored at ``1 / (n_donors + 1)``; ``n_donors``
+        carries the count it was floored on. ``q_value`` is present but NaN —
+        the caller fills it with :func:`iblnm.analysis.add_fdr_qvalues`, which
+        chooses the correction families.
     """
-    rows = [
-        {'eid': row['eid'], 'subject': row['subject'],
-         'target_NM': row['target_NM'], 'brain_region': row['brain_region'],
-         'event': row['event'], 'predictor': row['predictor'],
-         'delta_r2': row['delta_r2'],
-         'p_value': analysis.permutation_pvalue(
-             row['delta_r2'], null_vectors[(row['eid'], row['event'],
-                                            row['predictor'])], alternative)}
-        for _, row in observed.iterrows()
-        if (row['eid'], row['event'], row['predictor']) in null_vectors
-    ]
+    rows = []
+    for _, row in observed.iterrows():
+        key = (row['eid'], row['event'], row['predictor'])
+        if key not in null_vectors:
+            continue
+        p_value = analysis.permutation_pvalue(
+            row['delta_r2'], null_vectors[key], alternative)
+        rows.append(
+            {'eid': row['eid'], 'subject': row['subject'],
+             'target_NM': row['target_NM'],
+             'brain_region': row['brain_region'], 'event': row['event'],
+             'predictor': row['predictor'], 'delta_r2': row['delta_r2'],
+             'p_value': _floor_pvalue(p_value, n_donors[key]),
+             'n_donors': n_donors[key]})
     return pd.DataFrame(rows, columns=RESPONSE_OLS_SESSION_PVAL_COLUMNS)
 
 
@@ -4617,17 +4695,20 @@ class PhotometrySessionGroup:
     def response_ols_dropone_permutation(self, frames, formulas,
                                          reference='full',
                                          response_col='response',
+                                         donor_scope='exclude_subject',
                                          n_bootstrap=1000, random_state=0):
         """Per-mouse permutation p-values for the per-session drop-one ΔR² grid.
 
-        For each event the donor pool is every coded recording-event at that
-        event, across all cohorts (target_NMs) — the IBL task is standardized
-        and interleaved across cohorts on the same rigs, so any session's trial
+        For each event the donor pool is the coded recording-events at that
+        event that ``donor_scope`` admits (:func:`select_donor_frames`) — by
+        default every recording of a subject other than the focal one, spanning
+        all cohorts (target_NMs), since the IBL task is standardized and
+        interleaved across cohorts on the same rigs and any session's trial
         sequence is a valid stand-in. For each focal recording-event and each
         dropped predictor (the non-``reference`` ``formulas`` keys), the
         cross-session swap null
         (:func:`iblnm.analysis.permutation_null_delta_r2`) is computed against
-        all other same-event recordings (focal excluded). Those null vectors
+        that pool. Those null vectors
         score the observed ``self.response_ols_dropone_results`` at two grains:
         each recording against its own null
         (:func:`assemble_session_pvalue_table`), and each mouse's sessions
@@ -4649,9 +4730,12 @@ class PhotometrySessionGroup:
             Full-model key; the remaining keys are the dropped predictors.
         response_col : str
             Per-trial response magnitude column the formulas model.
+        donor_scope : {'exclude_subject', 'exclude_session', 'same_target'}
+            Which same-event recordings may donate a swapped predictor column
+            (:func:`select_donor_frames`).
         n_bootstrap : int
-            Pooled-null bootstrap draws per mouse cell; sets the p-value floor
-            1 / (n_bootstrap+1).
+            Pooled-null bootstrap draws per mouse cell. It does not set the
+            p-value floor; the donor count does.
         random_state : int or None
             Seed for the bootstrap rng.
 
@@ -4669,13 +4753,10 @@ class PhotometrySessionGroup:
         """
         predictors = [name for name in formulas if name != reference]
         rng = np.random.default_rng(random_state)
-        null_vectors = {}
+        null_vectors, donor_counts = {}, {}
         for focal in tqdm(frames,
                           desc="Permutation null (per recording-event)"):
-            # Cohort (target_NM) is deliberately not filtered on: the task is
-            # standardized and interleaved across cohorts.
-            donors = [donor.frame for donor in frames
-                      if donor.event == focal.event and donor.eid != focal.eid]
+            donors = select_donor_frames(focal, frames, donor_scope)
             for predictor in predictors:
                 null = analysis.permutation_null_delta_r2(
                     focal.frame, donors, formulas[reference],
@@ -4683,10 +4764,12 @@ class PhotometrySessionGroup:
                     n_bootstrap=n_bootstrap)
                 if null.size:
                     null_vectors[(focal.eid, focal.event, predictor)] = null
+                    donor_counts[(focal.eid, focal.event,
+                                  predictor)] = len(donors)
         session_pvalues = assemble_session_pvalue_table(
-            self.response_ols_dropone_results, null_vectors)
+            self.response_ols_dropone_results, null_vectors, donor_counts)
         mouse_pvalues = assemble_mouse_pvalue_table(
-            self.response_ols_dropone_results, null_vectors,
+            self.response_ols_dropone_results, null_vectors, donor_counts,
             n_bootstrap=n_bootstrap, random_state=random_state)
         return session_pvalues, mouse_pvalues
 
