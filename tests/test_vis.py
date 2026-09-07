@@ -7,7 +7,7 @@ matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 from unittest.mock import MagicMock
 
-from iblnm.config import _PERSESSION_REGRESSORS
+from iblnm.config import PERSESSION_REGRESSORS
 from iblnm.vis import plot_relative_contrast
 
 
@@ -1219,7 +1219,7 @@ class TestPlotOlsDropone:
 
     # Sourced from config so the row-label assertion below guards vis's figure
     # rows against drift from the canonical drop-one regressor list.
-    _PREDICTORS = tuple(_PERSESSION_REGRESSORS)
+    _PREDICTORS = tuple(PERSESSION_REGRESSORS)
     # Per-event delta_r2 base so a point's value identifies its event row.
     _EVENT_BASE = {'stimOnTrigger_times': 0.1, 'feedback_times': 0.5}
 

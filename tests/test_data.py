@@ -6806,12 +6806,12 @@ class TestCompareResponseModels:
 
     def test_coefficients_frame_columns_and_grain(self):
         from iblnm.data import PERSESSION_COEFS_COLUMNS
-        from iblnm.config import _PERSESSION_REGRESSORS
+        from iblnm.config import PERSESSION_REGRESSORS
         ps = _make_session_for_persession()
         _, coefs = ps.compare_response_models('VTA-r', self.formulas)
         assert list(coefs.columns) == PERSESSION_COEFS_COLUMNS
         # One row per (event, regressor) present in that event's full fit.
-        regressors = set(_PERSESSION_REGRESSORS)
+        regressors = set(PERSESSION_REGRESSORS)
         assert set(coefs['regressor']) <= regressors
         per_event = coefs.groupby('event')['regressor'].agg(set)
         for event, present in per_event.items():

@@ -172,13 +172,71 @@ def _termsets(formula):
     return [frozenset(t.strip().split(':')) for t in rhs.split('+')]
 
 
+# The per-recording drop-one family, pinned as literal data: `full` carries the
+# six mains and every two-way except side:reward, choice_side:side and
+# choice_side:reward, and each other key drops its regressor and every term
+# containing it.
+_EXPECTED_PERSESSION = {
+    'full':
+        '{response} ~ contrast + side + reward + choice_side + log_reaction_time'
+        ' + peak_velocity + contrast:side + contrast:reward'
+        ' + contrast:choice_side + contrast:log_reaction_time'
+        ' + contrast:peak_velocity + side:log_reaction_time'
+        ' + side:peak_velocity + reward:log_reaction_time'
+        ' + reward:peak_velocity + choice_side:log_reaction_time'
+        ' + choice_side:peak_velocity + log_reaction_time:peak_velocity',
+    'contrast':
+        '{response} ~ side + reward + choice_side + log_reaction_time'
+        ' + peak_velocity + side:log_reaction_time + side:peak_velocity'
+        ' + reward:log_reaction_time + reward:peak_velocity'
+        ' + choice_side:log_reaction_time + choice_side:peak_velocity'
+        ' + log_reaction_time:peak_velocity',
+    'side':
+        '{response} ~ contrast + reward + choice_side + log_reaction_time'
+        ' + peak_velocity + contrast:reward + contrast:choice_side'
+        ' + contrast:log_reaction_time + contrast:peak_velocity'
+        ' + reward:log_reaction_time + reward:peak_velocity'
+        ' + choice_side:log_reaction_time + choice_side:peak_velocity'
+        ' + log_reaction_time:peak_velocity',
+    'reward':
+        '{response} ~ contrast + side + choice_side + log_reaction_time'
+        ' + peak_velocity + contrast:side + contrast:choice_side'
+        ' + contrast:log_reaction_time + contrast:peak_velocity'
+        ' + side:log_reaction_time + side:peak_velocity'
+        ' + choice_side:log_reaction_time + choice_side:peak_velocity'
+        ' + log_reaction_time:peak_velocity',
+    'choice_side':
+        '{response} ~ contrast + side + reward + log_reaction_time'
+        ' + peak_velocity + contrast:side + contrast:reward'
+        ' + contrast:log_reaction_time + contrast:peak_velocity'
+        ' + side:log_reaction_time + side:peak_velocity'
+        ' + reward:log_reaction_time + reward:peak_velocity'
+        ' + log_reaction_time:peak_velocity',
+    'log_reaction_time':
+        '{response} ~ contrast + side + reward + choice_side + peak_velocity'
+        ' + contrast:side + contrast:reward + contrast:choice_side'
+        ' + contrast:peak_velocity + side:peak_velocity'
+        ' + reward:peak_velocity + choice_side:peak_velocity',
+    'peak_velocity':
+        '{response} ~ contrast + side + reward + choice_side'
+        ' + log_reaction_time + contrast:side + contrast:reward'
+        ' + contrast:choice_side + contrast:log_reaction_time'
+        ' + side:log_reaction_time + reward:log_reaction_time'
+        ' + choice_side:log_reaction_time',
+}
+
+
 def test_persession_formulas():
+    assert LMM_FORMULAS['persession'] == _EXPECTED_PERSESSION
+
+
+def test_persession_family_structure():
     formulas = _format(LMM_FORMULAS['persession'])
-    regressors = ['contrast', 'side', 'reward', 'choice_side',
-                  'log_reaction_time', 'peak_velocity']
+    regressors = list(config.PERSESSION_REGRESSORS)
     assert set(formulas) == {'full', *regressors}
 
     full = _termsets(formulas['full'])
+    assert len(full) == 18
     for r in regressors:                       # all six mains present
         assert frozenset({r}) in full
     for pair in ({'side', 'reward'}, {'choice_side', 'side'},

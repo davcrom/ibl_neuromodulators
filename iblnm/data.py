@@ -37,7 +37,7 @@ from iblnm.config import (
     VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS, VIDEO_QC_PROBLEM_COLS,
     WHEEL_FS, WHEEL_RESPONSE_EVENTS, WHEEL_RESPONSE_WINDOW, POSE_FS,
     store_raw,
-    _PERSESSION_REGRESSORS,
+    PERSESSION_REGRESSORS,
 )
 from iblnm.analysis import (
     get_responses, compute_response_magnitude, movement_delta, movement_trace,
@@ -3317,7 +3317,7 @@ class PhotometrySession(PhotometrySessionLoader):
             absent or no event is scorable.
         coefs : pd.DataFrame
             The ``reference`` model's main-effect weights, one row per (event,
-            regressor) for each regressor in ``_PERSESSION_REGRESSORS`` present
+            regressor) for each regressor in ``PERSESSION_REGRESSORS`` present
             in that event's fitted design: ``brain_region, target_NM, event,
             regressor, coef, coef_se, n_trials``. Read from the same fits — no
             refit. Empty (``PERSESSION_COEFS_COLUMNS``) when ``dropone`` is.
@@ -3416,11 +3416,11 @@ class PhotometrySession(PhotometrySessionLoader):
         """Main-effect weight and SE per regressor from one fitted model.
 
         Reads ``fit.params[r]`` / ``fit.bse[r]`` for each bare regressor name
-        ``r`` in ``_PERSESSION_REGRESSORS`` present in ``fit.params`` (a
+        ``r`` in ``PERSESSION_REGRESSORS`` present in ``fit.params`` (a
         regressor absent from this event's design contributes no row). No
         refit — ``fit`` is the already-fitted reference model.
         """
-        present = [r for r in _PERSESSION_REGRESSORS if r in fit.params.index]
+        present = [r for r in PERSESSION_REGRESSORS if r in fit.params.index]
         return pd.DataFrame({
             'brain_region': brain_region,
             'target_NM': target_NM,

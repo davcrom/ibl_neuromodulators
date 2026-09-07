@@ -1,4 +1,3 @@
-from itertools import combinations
 from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
@@ -508,7 +507,6 @@ RESPONSE_WINDOW = (-1, 1)
 BASELINE_WINDOW = (-0.1, 0)
 RESPONSE_WINDOWS = {
     'early': (0.1, 0.35),
-    #'late': (0.35, 0.6)
 }
 
 # Movement encoding analyses
@@ -693,32 +691,10 @@ def _movement_family(pred: str, reward: bool) -> dict:
             for name, terms in family.items()}
 
 
-# Per-recording OLS drop-one regressors. choice_side enters explicitly so its
-# own interactions are visible, but choice_side:side and choice_side:reward are
-# collinear with the reward and side mains (choice_side ≈ 2·side·reward), and
-# side:reward itself encodes choice — so all three two-ways are excluded.
-_PERSESSION_REGRESSORS = ['contrast', 'side', 'reward', 'choice_side',
-                          'log_reaction_time', 'peak_velocity']
-_PERSESSION_EXCLUDED = [frozenset(pair) for pair in
-                        (('side', 'reward'), ('choice_side', 'side'),
-                         ('choice_side', 'reward'))]
-
-
-def _persession_family() -> dict:
-    """Per-recording drop-one OLS family: every two-way interaction of
-    ``_PERSESSION_REGRESSORS`` except the collinear/choice-encoding pairs in
-    ``_PERSESSION_EXCLUDED``. Reference ``full``; each regressor key drops that
-    regressor and every term containing it.
-    """
-    mains = [(v,) for v in _PERSESSION_REGRESSORS]
-    pairs = [pair for pair in combinations(_PERSESSION_REGRESSORS, 2)
-             if frozenset(pair) not in _PERSESSION_EXCLUDED]
-    full = mains + pairs
-    family = {'full': full,
-              **{v: [t for t in full if v not in t]
-                 for v in _PERSESSION_REGRESSORS}}
-    return {name: '{response} ~ ' + _render_terms(terms)
-            for name, terms in family.items()}
+# Per-recording OLS drop-one regressors: the six the persession family below is
+# written over, and the regressors a coefficient is reported for.
+PERSESSION_REGRESSORS = ['contrast', 'side', 'reward', 'choice_side',
+                         'log_reaction_time', 'peak_velocity']
 
 
 LMM_FORMULAS = {
@@ -784,11 +760,62 @@ LMM_FORMULAS = {
     'movement_ceiling': {
         'ceiling': '{response} ~ choice_side * log_reaction_time * peak_velocity',
     },
-    # Per-session OLS drop-one: full two-way interaction model is the reference
-    # (see `_persession_family`). Each non-`full` key drops one regressor and
-    # every term containing it. choice_side is an explicit regressor; the
-    # side:reward, choice_side:side, and choice_side:reward two-ways are excluded.
-    'persession': _persession_family(),
+    # Per-session OLS drop-one over PERSESSION_REGRESSORS: `full` is the
+    # reference, carrying the six mains and every two-way except side:reward,
+    # choice_side:side and choice_side:reward — choice_side enters explicitly so
+    # its own interactions are visible, but it is collinear with the side and
+    # reward mains (choice_side ≈ 2·side·reward), and side:reward itself encodes
+    # choice. Each other key drops that regressor and every term containing it.
+    'persession': {
+        'full':
+            '{response} ~ contrast + side + reward + choice_side'
+            ' + log_reaction_time + peak_velocity + contrast:side'
+            ' + contrast:reward + contrast:choice_side'
+            ' + contrast:log_reaction_time + contrast:peak_velocity'
+            ' + side:log_reaction_time + side:peak_velocity'
+            ' + reward:log_reaction_time + reward:peak_velocity'
+            ' + choice_side:log_reaction_time + choice_side:peak_velocity'
+            ' + log_reaction_time:peak_velocity',
+        'contrast':
+            '{response} ~ side + reward + choice_side + log_reaction_time'
+            ' + peak_velocity + side:log_reaction_time + side:peak_velocity'
+            ' + reward:log_reaction_time + reward:peak_velocity'
+            ' + choice_side:log_reaction_time + choice_side:peak_velocity'
+            ' + log_reaction_time:peak_velocity',
+        'side':
+            '{response} ~ contrast + reward + choice_side + log_reaction_time'
+            ' + peak_velocity + contrast:reward + contrast:choice_side'
+            ' + contrast:log_reaction_time + contrast:peak_velocity'
+            ' + reward:log_reaction_time + reward:peak_velocity'
+            ' + choice_side:log_reaction_time + choice_side:peak_velocity'
+            ' + log_reaction_time:peak_velocity',
+        'reward':
+            '{response} ~ contrast + side + choice_side + log_reaction_time'
+            ' + peak_velocity + contrast:side + contrast:choice_side'
+            ' + contrast:log_reaction_time + contrast:peak_velocity'
+            ' + side:log_reaction_time + side:peak_velocity'
+            ' + choice_side:log_reaction_time + choice_side:peak_velocity'
+            ' + log_reaction_time:peak_velocity',
+        'choice_side':
+            '{response} ~ contrast + side + reward + log_reaction_time'
+            ' + peak_velocity + contrast:side + contrast:reward'
+            ' + contrast:log_reaction_time + contrast:peak_velocity'
+            ' + side:log_reaction_time + side:peak_velocity'
+            ' + reward:log_reaction_time + reward:peak_velocity'
+            ' + log_reaction_time:peak_velocity',
+        'log_reaction_time':
+            '{response} ~ contrast + side + reward + choice_side'
+            ' + peak_velocity + contrast:side + contrast:reward'
+            ' + contrast:choice_side + contrast:peak_velocity'
+            ' + side:peak_velocity + reward:peak_velocity'
+            ' + choice_side:peak_velocity',
+        'peak_velocity':
+            '{response} ~ contrast + side + reward + choice_side'
+            ' + log_reaction_time + contrast:side + contrast:reward'
+            ' + contrast:choice_side + contrast:log_reaction_time'
+            ' + side:log_reaction_time + reward:log_reaction_time'
+            ' + choice_side:log_reaction_time',
+    },
 }
 
 # Per-session OLS drop-one thresholds: minimum trials for a recording to be fit,
