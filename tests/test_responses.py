@@ -414,13 +414,12 @@ class TestAssembleOlsPersession:
         assert frame.loc[('e1', 'side'), 'coef_se'] == pytest.approx(0.1)
 
     def test_significance_joins_and_missing_rows_are_null(self):
-        """Scorable rows carry their q-value, null median and donor count; an
-        unscorable row keeps its fit and carries NaN significance."""
+        """Scorable rows carry their q-value and donor count; an unscorable row
+        keeps its fit and carries NaN significance."""
         frame = self._assembled().set_index(['eid', 'predictor'])
         scored = frame.loc[('e1', 'contrast')]
         assert scored['q_value'] == pytest.approx(0.03)
         assert scored['p_value'] == pytest.approx(0.01)
-        assert scored['delta_r2_null_median'] == pytest.approx(0.005)
         assert scored['n_donors'] == 42
         unscored = frame.loc[('e2', 'side')]
         assert np.isnan(unscored['q_value'])

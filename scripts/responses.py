@@ -598,13 +598,15 @@ def assemble_ols_persession(dropone, coefficients, session_pvalues):
     coefs = (coefficients.rename(columns={'regressor': 'predictor'})
              [_OLS_PERSESSION_KEYS + ['coef', 'coef_se']])
     pvalues = session_pvalues[
-        _OLS_PERSESSION_KEYS
-        + ['delta_r2_null_median', 'p_value', 'q_value', 'n_donors']]
+        _OLS_PERSESSION_KEYS + ['p_value', 'q_value', 'n_donors']]
     merged = (dropone
               .rename(columns={'r2': 'r2_full', 'r2_adj': 'r2_full_adj'})
               .merge(coefs, on=_OLS_PERSESSION_KEYS, how='left')
               .merge(pvalues, on=_OLS_PERSESSION_KEYS, how='left'))
-    return merged[OLS_PERSESSION_COLUMNS]
+    # `null` is the whole permutation vector, which this path never sees: the
+    # group's significance step keeps only the median. It arrives when
+    # `PhotometrySession.fit_responses` replaces this merge.
+    return merged.reindex(columns=OLS_PERSESSION_COLUMNS)
 
 
 def varcomp_coefficients(ols_persession: pd.DataFrame) -> pd.DataFrame:

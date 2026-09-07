@@ -25,6 +25,8 @@ from iblnm.config import (
     LABEL2EVENT, LENGTH_MISMATCH_THRESHOLD, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
     MOVEMENT_EVENTS, MOVEMENT_RESPONSE_WINDOW,
+    OLS_PERSESSION_COLUMNS,
+    PERSESSION_PVAL_N_BOOTSTRAP, PERSESSION_PVAL_SEED,
     PHOTOMETRY_BANDS, PHOTOMETRY_QC_THRESHOLDS,
     POSE_MEASURES, QCVAL2NUM,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
@@ -412,6 +414,91 @@ def _tag_recording(rows: pd.DataFrame, coded: CodedFrame) -> pd.DataFrame:
     return rows.assign(eid=coded.eid, subject=coded.subject,
                        target_NM=coded.target_NM,
                        brain_region=coded.brain_region, event=coded.event)
+
+
+# `config.OLS_PERSESSION_COLUMNS` less `q_value`: a session scores its own rows
+# against its own null, but the false-discovery-rate correction pools every
+# session of an (event, predictor) family, so the group fills that column after
+# collecting these frames.
+_SESSION_OLS_COLUMNS = [column for column in OLS_PERSESSION_COLUMNS
+                        if column != 'q_value']
+
+
+def _dropone_rows(fits: dict, n_trials: int,
+                  reference: str = 'full') -> pd.DataFrame:
+    """One cell's drop-one ΔR² carrying each dropped regressor's own weight.
+
+    The dropped ``predictor`` and the reference model's ``regressor`` are the
+    same names, so differencing the family
+    (:func:`iblnm.analysis.dropone_delta_r2`) and reading its weights
+    (:func:`_coefficient_rows`) give one row per predictor once joined. The
+    reference's R² repeats across those rows, which ``r2_full`` /
+    ``r2_full_adj`` say.
+
+    Parameters
+    ----------
+    fits : dict
+        Model name -> fitted ``statsmodels`` result, every member of one
+        event's family fitted on the same complete-case rows. None may be
+        ``None``; the caller drops a cell with a degenerate member before
+        calling.
+    n_trials : int
+        Rows every model was fit on, which the adjusted R² is penalized over.
+    reference : str
+        Full-model key each reduced model's ΔR² is measured against and whose
+        weights are read.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``predictor, r2_full, r2_full_adj, delta_r2, delta_r2_adj, coef,
+        coef_se, n_trials``, one row per dropped predictor.
+    """
+    scores = analysis.dropone_delta_r2(
+        {name: (fit.rsquared, fit.df_model) for name, fit in fits.items()},
+        n_trials, reference)
+    weights = _coefficient_rows(fits[reference], n_trials).rename(
+        columns={'regressor': 'predictor'})
+    return (scores.rename(columns={'r2': 'r2_full', 'r2_adj': 'r2_full_adj'})
+            .merge(weights, on='predictor', how='left'))
+
+
+def _score_against_null(rows: pd.DataFrame, nulls: dict[str, np.ndarray],
+                        n_donors: int) -> pd.DataFrame:
+    """Score one cell's observed drop-one ΔR² against its own donor null.
+
+    Parameters
+    ----------
+    rows : pandas.DataFrame
+        One cell's fitted rows, one per dropped ``predictor``, carrying the
+        observed ``delta_r2``.
+    nulls : dict[str, numpy.ndarray]
+        That cell's null ΔR² vector per predictor, from
+        :func:`iblnm.analysis.permutation_null_delta_r2`. A predictor no donor
+        was scorable for has an empty vector.
+    n_donors : int
+        Size of the donor pool the nulls were built from, which sets the
+        p-value floor (:func:`_floor_pvalue`).
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``rows`` with ``null``, ``p_value`` and ``n_donors`` added. ``null`` is
+        an object column of float32 arrays — parquet stores it as a list column
+        and the per-mouse pooling reads it back rather than refitting.
+        ``p_value`` is the one-sided (greater) permutation p, NaN where the null
+        is empty: an unscorable cell keeps its fit rather than dropping out.
+    """
+    null = [np.asarray(nulls[predictor], dtype=np.float32)
+            for predictor in rows['predictor']]
+    p_value = [
+        _floor_pvalue(analysis.permutation_pvalue(delta_r2, vector, 'greater'),
+                      n_donors) if vector.size else np.nan
+        for delta_r2, vector in zip(rows['delta_r2'], null)
+    ]
+    return rows.assign(
+        null=pd.Series(null, index=rows.index, dtype=object),
+        p_value=p_value, n_donors=n_donors)
 
 
 def _coefficient_rows(fit, n_trials: int) -> pd.DataFrame:
@@ -3776,6 +3863,96 @@ class PhotometrySession(PhotometrySessionLoader):
                              f"{sorted(_SESSION_DONOR_SCOPES)}")
         admits = _SESSION_DONOR_SCOPES[donor_scope]
         return [donor.frame for donor in donors.values() if admits(self, donor)]
+
+    def fit_responses(self, formulas: dict, donors: dict[str, DonorFrame],
+                      events: Sequence[str] = RESPONSE_EVENTS,
+                      reference: str = 'full',
+                      response_col: str = 'response',
+                      donor_scope: str = 'exclude_subject',
+                      n_bootstrap: int = PERSESSION_PVAL_N_BOOTSTRAP,
+                      random_state: int = PERSESSION_PVAL_SEED,
+                      ) -> pd.DataFrame:
+        """This session's complete drop-one OLS result, group-free.
+
+        Everything the per-session modelling pass produces for one session, from
+        formulas and a donor mapping alone: the drop-one ΔR², the reference
+        model's weights, the cross-session swap null and the p-value scored
+        against it. The store is read for this session's own products and
+        nothing else — no group is constructed and no other session is opened.
+
+        Per scorable cell (:meth:`_prepare_model_frames`, one per region ×
+        event): the family is fitted and differenced off ``reference``
+        (:func:`iblnm.analysis.dropone_delta_r2`), the reference model's weights
+        are read off the same fits (:func:`_coefficient_rows`), and the null is
+        built by swapping each dropped predictor's column in from every admitted
+        donor (:func:`iblnm.analysis.permutation_null_delta_r2`). The dropped
+        ``predictor`` and the weight's ``regressor`` are the same six names, so
+        the two join to one row per predictor.
+
+        Parameters
+        ----------
+        formulas : dict
+            Drop-one family, flat or event-keyed
+            (:func:`resolve_event_family`); ``reference`` names the full model
+            and every other key is a dropped predictor.
+        donors : dict[str, DonorFrame]
+            Every prepared donor of the pass, keyed by eid, this session's own
+            included; ``donor_scope`` excludes it (:meth:`select_donors`). An
+            empty mapping fits without scoring.
+        events : Sequence[str]
+            Events to cut and fit.
+        reference : str
+            Full-model key each reduced model's ΔR² is measured against.
+        response_col : str
+            Per-trial response magnitude column the formulas model.
+        donor_scope : {'exclude_subject', 'exclude_session', 'same_target'}
+            Which sessions may donate a swapped predictor column.
+        n_bootstrap : int
+            Length of each cell's null vector.
+        random_state : int
+            Seed for the swap rng, created once per session. One rng per
+            session rather than one per population changes which donors the
+            bootstrap resamples, not the statistic.
+
+        Returns
+        -------
+        pandas.DataFrame
+            ``config.OLS_PERSESSION_COLUMNS`` less ``q_value``, one row per
+            (region, event, dropped predictor); the FDR correction spans
+            sessions, so the group adds that column after collecting these.
+            Also assigned to ``self.response_ols``. A cell whose design is
+            degenerate for any family member contributes no rows; a cell with
+            no scorable donor keeps its fit and carries an empty ``null`` and a
+            NaN ``p_value``.
+        """
+        self.load_trials()
+        self.load_peak_velocity()
+        self.load_responses('photometry')
+        frames = self._prepare_model_frames(formulas, events, response_col)
+        donor_frames = self.select_donors(donors, donor_scope)
+        target_by_region = dict(zip(self.brain_region, self.target_NM))
+        rng = np.random.default_rng(random_state)
+
+        cells = []
+        for (region, event), frame in frames.items():
+            family = resolve_event_family(formulas, event)
+            fits = {name: self.fit_response_model(frame, formula, response_col)
+                    for name, formula in family.items()}
+            if any(fit is None for fit in fits.values()):
+                continue
+            nulls = analysis.permutation_null_delta_r2(
+                frame, donor_frames, family[reference],
+                {name: formula for name, formula in family.items()
+                 if name != reference},
+                response_col, rng=rng, n_bootstrap=n_bootstrap)
+            rows = _dropone_rows(fits, len(frame), reference)
+            cells.append(_score_against_null(rows, nulls, len(donor_frames))
+                         .assign(eid=self.eid, subject=self.subject,
+                                 target_NM=target_by_region[region],
+                                 brain_region=region, event=event))
+
+        self.response_ols = _concat_frames(cells, _SESSION_OLS_COLUMNS)
+        return self.response_ols
 
     @staticmethod
     def fit_response_model(df: pd.DataFrame, formula: str,

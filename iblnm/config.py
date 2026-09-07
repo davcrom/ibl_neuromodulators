@@ -62,13 +62,17 @@ RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 # predictor. The drop-one fits, the reference model's coefficients, the
 # permutation significance and the donor-pool size all key on that grain, so
 # they are one frame. The reference-model quantities (n_trials, r2_full,
-# r2_full_adj) repeat across a recording-event's predictor rows.
+# r2_full_adj) repeat across a recording-event's predictor rows. `null` is the
+# cell's whole permutation null vector, a `PERSESSION_PVAL_N_BOOTSTRAP`-long
+# float32 array in an object-dtype column: parquet stores it as a list column,
+# a reader naming other columns pays nothing for it, and holding it makes the
+# per-mouse pooling recomputable without refitting. Its median — the old
+# `delta_r2_null_median` — is derivable from it and so is no longer stored.
 OLS_PERSESSION_FPATH = RESPONSES_DIR / 'ols_persession.parquet'
 OLS_PERSESSION_COLUMNS = ['eid', 'subject', 'target_NM', 'brain_region',
                           'event', 'predictor', 'n_trials', 'r2_full',
-                          'r2_full_adj', 'delta_r2', 'delta_r2_adj',
-                          'delta_r2_null_median', 'coef', 'coef_se', 'p_value',
-                          'q_value', 'n_donors']
+                          'r2_full_adj', 'delta_r2', 'delta_r2_adj', 'null',
+                          'coef', 'coef_se', 'p_value', 'q_value', 'n_donors']
 # Per-mouse permutation significance — a coarser grain, so its own frame.
 RESPONSE_OLS_MOUSE_PVAL_FPATH = RESPONSES_DIR / 'ols_persession_mouse.parquet'
 # Group-level per-session coefficients frame: one row per (session, event,
