@@ -2413,7 +2413,7 @@ class TestSelectModelingTrials:
             'choice': [1, 1],
             'probabilityLeft': [0.5, 0.5],
             'response_time': [1.0, 1.0],
-            'reaction_time': [0.1, -0.2],  # second is non-positive -> log NaN
+            'reaction_time': [0.1, np.nan],  # second has no onset -> log NaN
             'movement_time': [0.1, 0.1],
             'peak_velocity': [1.0, 1.0],
         })
@@ -2427,6 +2427,40 @@ class TestSelectModelingTrials:
         df = self._merged_frame().rename(columns={'response': 'baseline'})
         kept = select_modeling_trials(df, response_col='baseline')
         assert kept['trial'].tolist() == [0, 3]
+
+    def _negative_reaction_time_frame(self):
+        # 10 go trials clearing every other filter; trials 4 and 7 have a
+        # movement onset back-dated before the stimulus trigger.
+        reaction_time = [0.2] * 10
+        reaction_time[4] = -0.01
+        reaction_time[7] = -0.01
+        return pd.DataFrame({
+            'trial': range(10),
+            'response': [1.0] * 10,
+            'choice': [1] * 10,
+            'probabilityLeft': [0.5] * 10,
+            'response_time': [1.0] * 10,
+            'reaction_time': reaction_time,
+            'movement_time': [0.15] * 10,
+            'peak_velocity': [1.0] * 10,
+        })
+
+    def test_drops_negative_reaction_times(self):
+        from iblnm.analysis import select_modeling_trials
+        kept = select_modeling_trials(self._negative_reaction_time_frame())
+        assert kept['trial'].tolist() == [0, 1, 2, 3, 5, 6, 8, 9]
+
+    def test_reports_negative_reaction_times_dropped(self):
+        from iblnm.analysis import select_modeling_trials
+        dropped = {}
+        select_modeling_trials(self._negative_reaction_time_frame(),
+                               dropped=dropped)
+        assert dropped == {'negative_reaction_time': 2}
+
+    def test_no_negative_reaction_time_reaches_the_log(self):
+        from iblnm.analysis import select_modeling_trials
+        kept = select_modeling_trials(self._negative_reaction_time_frame())
+        assert kept['log_reaction_time'].notna().all()
 
 
 class TestCodePredictors:

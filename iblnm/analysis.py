@@ -1715,25 +1715,41 @@ def build_trial_regressors(
 def select_modeling_trials(
     df: pd.DataFrame, response_col: str = 'response',
     probability_left: float | None = None,
+    dropped: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """Keep the go trials usable for response modeling.
 
     Drops no-go trials (``choice == 0``), false starts
-    (``response_time <= 0.05``), and trials with a null ``response_col``. Adds a
-    ``log_<var>`` column (base-10, NaN where the value is ≤ 0) for each
+    (``response_time <= 0.05``), trials with a null ``response_col``, and
+    trials with a negative ``reaction_time``. Adds a ``log_<var>`` column
+    (base-10, NaN where the value is ≤ 0 or missing) for each
     ``config.MOVEMENT_PREDICTORS`` entry coded as ``log_<var>``, so movement
     models can reference them; the NaN rows are dropped per family at fit time.
+
+    A negative ``reaction_time`` is
+    ``ibllib.io.extractors.training_wheel.extract_first_movement_times``
+    back-dating a movement onset into the trial's quiescence period, not a data
+    fault; it affects 0.885% of go trials, flat across contrast. Those trials
+    are removed here rather than turning into a NaN ``log_reaction_time``
+    further down, so the loss is countable. A missing (NaN) ``reaction_time``
+    is not a negative one and is kept.
 
     Parameters
     ----------
     df : pd.DataFrame
         Merged trial frame carrying ``response_col``, ``probabilityLeft``,
-        ``choice``, ``response_time``, and the log-transformed movement columns.
+        ``choice``, ``response_time``, ``reaction_time``, and the movement
+        columns to be log-transformed.
     response_col : str
         Column name for the response magnitude whose NaNs are dropped.
     probability_left : float or None
         When set, keep only trials with this ``probabilityLeft`` (e.g. ``0.5``
         for the unbiased block). ``None`` (default) keeps all blocks.
+    dropped : dict or None
+        Out-parameter for the exclusion tally, following this module's
+        ``exlog`` convention: when a dict is passed, the number of go trials
+        removed for a negative ``reaction_time`` is written to it under
+        ``'negative_reaction_time'``. Nothing is logged or printed here.
 
     Returns
     -------
@@ -1744,7 +1760,11 @@ def select_modeling_trials(
     if probability_left is not None:
         df = df[df['probabilityLeft'] == probability_left]
     df = df.dropna(subset=[response_col])
-    df = df.query('choice != 0 and response_time > 0.05').copy()
+    df = df.query('choice != 0 and response_time > 0.05')
+    negative_reaction_time = df['reaction_time'] < 0
+    if dropped is not None:
+        dropped['negative_reaction_time'] = int(negative_reaction_time.sum())
+    df = df[~negative_reaction_time].copy()
     for var, pred in MOVEMENT_PREDICTORS.items():
         if pred == f'log_{var}' and var in df.columns:
             df[pred] = np.where(df[var] > 0, np.log10(df[var]), np.nan)

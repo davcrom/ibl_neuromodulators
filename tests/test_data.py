@@ -6592,8 +6592,8 @@ class TestResponseLMMFit:
         reg = group.trial_regressors
         rng = np.random.default_rng(0)
         reg['reaction_time'] = rng.uniform(0.1, 2.0, len(reg))
-        # Non-positive reaction times -> _modeling_frame sets log to NaN.
-        reg.loc[reg.index[::5], 'reaction_time'] = -1.0
+        # Missing movement onsets -> _modeling_frame sets log to NaN.
+        reg.loc[reg.index[::5], 'reaction_time'] = np.nan
         formulas = {
             'full': '{response} ~ contrast + log_reaction_time',
             'contrast': '{response} ~ log_reaction_time',
