@@ -494,10 +494,10 @@ types are present, rather than re-validating.
 
 `brain_region`, `hemisphere`, and `target_NM` are parallel lists that must always have matching lengths. To get one row per recording, explode all three together: `df.explode(['brain_region', 'hemisphere', 'target_NM'])`.
 
-### `results/responses/responses.pqt` — one row per (recording x event x trial)
+### `results/responses/response_magnitudes.parquet` — one row per (recording x event x trial)
 
 Recording keys + response magnitude only. Trial-level task and movement
-predictors live in `trial_regressors.pqt` (join on `eid`, `trial`).
+predictors live in `trial_regressors.parquet` (join on `eid`, `trial`).
 
 | Column | Type | Description |
 |---|---|---|
@@ -533,9 +533,10 @@ ones whose window was masked end to end and whose magnitude is therefore NaN.
 | `pct_fully_masked` | float | % of trials with every sample masked |
 | `pct_move_in_window` | float | % of trials whose `reaction_time` is inside the window |
 
-### `results/responses/trial_regressors.pqt` — one row per (eid x trial)
+### `results/responses/trial_regressors.parquet` — one row per (eid x trial)
 
-Per-trial task and movement predictors. Join to `responses.pqt` on `eid`, `trial`.
+Per-trial task and movement predictors. Join to `response_magnitudes.parquet`
+on `eid`, `trial`.
 
 | Column | Type | Description |
 |---|---|---|
@@ -551,10 +552,6 @@ Per-trial task and movement predictors. Join to `responses.pqt` on `eid`, `trial
 | `movement_time` | float | feedback - firstMovement (seconds) |
 | `response_time` | float | feedback - stimOn (seconds) |
 | `peak_velocity` | float | Max abs wheel velocity per trial |
-
-### `results/responses/response_matrix.pqt` — one row per recording
-
-Response feature vectors indexed by `(eid, target_NM)`. Each column is a condition label encoding event x contrast x laterality x feedback (e.g. `stimOn_c1_contra_correct`). Values are mean response magnitudes in the early window.
 
 ### `data/qc_photometry.pqt` — one row per (session, brain region)
 

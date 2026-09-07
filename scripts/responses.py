@@ -1,15 +1,18 @@
 """
 Response Analysis Pipeline
 
-Extracts trial-level response magnitudes and recording-level response
-vectors, then produces similarity, decoding, and contrast-based figures.
-
-Includes biased, ephys, and qualifying training sessions (>70% performance
-with the full contrast set).
+Two passes over the biased and ephys sessions. The modelling pass extracts
+trial-level response magnitudes and their regressors from the store, fits the
+per-recording drop-one OLS models with their permutation significance, and
+fits the per-cell variance components; every frame it produces is cached. The
+plotting pass reads those frames, condition-averages the store's peri-event
+cuts, and draws the figures.
 
 Output:
-    data/responses/                — all parquet and CSV data files
-    figures/responses/             — all figures, organized by analysis
+    results/responses/             — one parquet per result frame, plus the
+                                     repeated-measures ANOVA table as CSV
+    figures/responses/             — contrast_curves/, event_triggered_averages/,
+                                     diagnostics/, persession/
 
 Usage:
     python scripts/responses.py              # plot from existing parquet files
@@ -44,7 +47,7 @@ from iblnm.vis import (
     plot_masking_diagnostics,
     plot_mean_response_traces,
     plot_relative_contrast,
-    plot_mean_response_vectors, plot_lmm_summary,
+    plot_lmm_summary,
     plot_lmm_ceiling,
     plot_lmm_reliability,
     plot_movement_r2_bars,
@@ -60,7 +63,6 @@ from iblnm.analysis import (
     add_fdr_qvalues,
     aggregate_conditions,
     select_modeling_trials,
-    split_features_by_event,
 )
 
 
@@ -443,43 +445,6 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
 
 
 # =========================================================================
-# Response vectors plotting (per-event)
-# =========================================================================
-
-def plot_similarity_figures(group, similarity_dir, data_dir):
-    """Plot per-event response vector similarity figures.
-
-    For each event, produces:
-    1. Mean response vectors (raw + normalized)
-    2. Full recording × recording cosine similarity matrix
-    3. Reduced target × target summary matrices (all pairs + cross-subject)
-    4. Within-target similarity barplot
-
-    Parameters
-    ----------
-    group : PhotometrySessionGroup
-        Must have response_features populated.
-    similarity_dir : Path
-        Output directory for SVG files.
-    data_dir : Path
-        Output directory for parquet files.
-    """
-    features = group.response_features
-    per_event = split_features_by_event(features)
-
-    for event_stem, event_features in per_event.items():
-        print(f"\n  [{event_stem}] {len(event_features.columns)} features, "
-              f"{len(event_features)} recordings")
-
-        # Mean response vectors
-        fig = plot_mean_response_vectors(event_features)
-        fig.savefig(
-            similarity_dir / f'mean_response_vectors_{event_stem}.svg',
-            dpi=FIGURE_DPI, bbox_inches='tight')
-        plt.close(fig)
-
-
-# =========================================================================
 # Movement encoding
 # =========================================================================
 
@@ -833,11 +798,6 @@ if __name__ == '__main__':
         'contrast_curves': fig_base / 'contrast_curves',
         'diagnostics': fig_base / 'diagnostics',
         'event_triggered_averages': fig_base / 'event_triggered_averages',
-        'lmm': fig_base / 'lmm',
-        'similarity': fig_base / 'similarity',
-        'target_decoding': fig_base / 'target_decoding',
-        'movement_descriptive': fig_base / 'movement/descriptive',
-        'movement_model_comparison': fig_base / 'movement/model_comparison',
         'persession': fig_base / 'persession',
     }
     for d in fig_dirs.values():
@@ -1025,10 +985,3 @@ if __name__ == '__main__':
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
     print(f"Variance-components figure saved to {fig_dirs['persession']}")
-
-    # =====================================================================
-    # Response vectors: per-event similarity
-    # =====================================================================
-    # ~ print("\nComputing per-event response vector similarity...")
-    # ~ plot_similarity_figures(group, fig_dirs['similarity'], data_dir)
-    # ~ print(f"Similarity figures saved to {fig_dirs['similarity']}")

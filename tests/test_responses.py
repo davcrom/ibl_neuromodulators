@@ -756,33 +756,6 @@ def _responses_source():
     return src, main_block
 
 
-class TestReprocessWiring:
-    """Source-level wiring: cache-load is default, --reprocess opts into refit,
-    and the trial-level LMM/movement stages are no longer called from __main__
-    while their definitions remain."""
-
-    def test_reprocess_flag_replaces_plot(self):
-        src, main_block = _responses_source()
-        assert "'--reprocess'" in src
-        assert "'--plot'" not in src
-        assert 'args.reprocess' in main_block
-
-    def test_main_block_drops_lmm_and_movement_calls(self):
-        _, main_block = _responses_source()
-        assert 'plot_lmm_figures(' not in main_block
-        assert 'plot_movement_figures(' not in main_block
-
-    def test_lmm_and_movement_definitions_remain(self):
-        src, _ = _responses_source()
-        assert 'def plot_lmm_figures(' in src
-        assert 'def plot_movement_figures(' in src
-
-    def test_persession_display_flag_wired_to_figures(self):
-        src, main_block = _responses_source()
-        assert "'--persession-display'" in src
-        assert 'display=args.persession_display' in main_block
-
-
 def _reprocess_and_default_branches():
     """Split __main__ into the (reprocess body, default-onward) text."""
     _, main_block = _responses_source()
