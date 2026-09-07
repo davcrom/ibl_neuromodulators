@@ -511,6 +511,27 @@ predictors live in `trial_regressors.pqt` (join on `eid`, `trial`).
 | `event` | str | stimOn_times / firstMovement_times / feedback_times |
 | `trial` | int | Trial index |
 | `response` | float | Mean response in early window (0.1-0.35s) |
+| `masked_fraction` | float | Fraction of that window masked at the next event |
+
+### `results/responses/masking_diagnostics.parquet` — one row per (target_NM x event x contrast x feedbackType)
+
+How much of the response window each trial type kept. Masking removes the
+samples after the next event, so it takes more of the window on fast trials,
+and fast trials are more common at high contrast — read this beside any
+contrast-dependent result. Counted over the modeling trials, including the
+ones whose window was masked end to end and whose magnitude is therefore NaN.
+
+| Column | Type | Description |
+|---|---|---|
+| `target_NM` | str | Target-NM label |
+| `event` | str | stimOnTrigger_times / feedback_times |
+| `contrast` | float | Unsigned stimulus contrast |
+| `feedbackType` | float | 1 reward / -1 punishment |
+| `n_trials` | int | Trials in the cell |
+| `masked_fraction_mean` | float | Mean proportion of the window masked |
+| `pct_any_masked` | float | % of trials with any masked sample |
+| `pct_fully_masked` | float | % of trials with every sample masked |
+| `pct_move_in_window` | float | % of trials whose `reaction_time` is inside the window |
 
 ### `results/responses/trial_regressors.pqt` — one row per (eid x trial)
 

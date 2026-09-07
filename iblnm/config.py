@@ -21,14 +21,32 @@ RESPONSE_MAGNITUDES_FPATH = RESPONSES_DIR / 'response_magnitudes.parquet'
 TRIAL_REGRESSORS_FPATH = RESPONSES_DIR / 'trial_regressors.parquet'
 # One row per recording x event x trial. `trial` is the trials table's own
 # trial number, which is what joins to TRIAL_REGRESSOR_COLUMNS.
+# `masked_fraction` is the proportion of RESPONSE_WINDOWS['early'] that
+# `mask_subsequent_events` removed before the mean was taken — the masking
+# diagnostic's per-trial quantity, carried here because it describes exactly
+# the samples `response` was averaged over.
 RESPONSE_MAGNITUDE_COLUMNS = ['eid', 'subject', 'session_type', 'NM',
                               'target_NM', 'brain_region', 'hemisphere',
-                              'event', 'trial', 'response']
+                              'event', 'trial', 'response', 'masked_fraction']
 # One row per session x trial, as `analysis.build_trial_regressors` emits them.
 TRIAL_REGRESSOR_COLUMNS = ['eid', 'trial', 'signed_contrast', 'contrast',
                            'stim_side', 'choice', 'feedbackType',
                            'probabilityLeft', 'reaction_time', 'movement_time',
                            'response_time', 'peak_velocity']
+# How much of the response window the event masking removed, one row per
+# trial type within a cohort. Reported alongside every contrast-dependent
+# result, because masking removes fast trials and does so more often at high
+# contrast.
+MASKING_DIAGNOSTICS_FPATH = RESPONSES_DIR / 'masking_diagnostics.parquet'
+MASKING_DIAGNOSTIC_GROUP_COLS = ['target_NM', 'event', 'contrast',
+                                 'feedbackType']
+# The statistics, kept apart from the cell keys because the same reduction is
+# also run at a coarser grain for the run's printed summary.
+MASKING_DIAGNOSTIC_STATISTICS = ['n_trials', 'masked_fraction_mean',
+                                 'pct_any_masked', 'pct_fully_masked',
+                                 'pct_move_in_window']
+MASKING_DIAGNOSTIC_COLUMNS = (MASKING_DIAGNOSTIC_GROUP_COLS
+                              + MASKING_DIAGNOSTIC_STATISTICS)
 RESPONSE_MATRIX_FPATH = RESPONSES_DIR / 'response_matrix.pqt'
 RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 # Per-recording OLS results at one grain: recording x event x dropped

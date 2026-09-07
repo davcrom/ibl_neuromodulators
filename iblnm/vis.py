@@ -1936,6 +1936,75 @@ def create_psychometric_figure(
     return fig
 
 
+# Masking diagnostic column → (panel y-label, y-limit).
+_MASKING_PANELS = {
+    'masked_fraction_mean': ('Window masked', (0, 1)),
+    'pct_any_masked': ('% trials any masked', (0, 100)),
+    'pct_fully_masked': ('% trials fully masked', (0, 100)),
+    'pct_move_in_window': ('% trials moving in window', (0, 100)),
+}
+
+
+def plot_masking_diagnostics(diagnostics, target_nm, event, fig=None):
+    """Plot one cohort-event's masking statistics against contrast.
+
+    A pure drawer over the cell frame ``compute_masking_diagnostics`` writes:
+    one panel per statistic, contrast on the x-axis, correct and incorrect
+    trials as separate lines. Read together with any contrast-dependent
+    result, because a statistic rising with contrast means the high-contrast
+    responses were averaged over less of the window than the low-contrast
+    ones.
+
+    Parameters
+    ----------
+    diagnostics : pd.DataFrame
+        The rows of a single (target_NM x event) cohort-event, in
+        ``config.MASKING_DIAGNOSTIC_COLUMNS`` shape.
+    target_nm : str
+        Target neuromodulator label; used for the title and color lookup.
+    event : str
+        Raw event name (e.g. 'stimOnTrigger_times'); used for the title.
+    fig : plt.Figure or None
+        Figure with four existing axes to draw on. If None, a new one-row
+        figure is created.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if fig is None:
+        fig, _ = plt.subplots(1, len(_MASKING_PANELS), figsize=(12, 3),
+                              layout='constrained')
+
+    color = TARGETNM_COLORS.get(target_nm, 'black')
+    n_trials = int(diagnostics['n_trials'].sum())
+    fig.suptitle(f"{target_nm} — {event.replace('_times', '')}"
+                 f"\n{n_trials} trials", fontsize=LABELFONTSIZE)
+
+    contrasts = sorted(diagnostics['contrast'].unique())
+    ranks = list(range(len(contrasts)))
+
+    for ax, (column, (label, ylim)) in zip(fig.axes, _MASKING_PANELS.items()):
+        for feedback, ls in ((1, '-'), (-1, '--')):
+            by_contrast = (
+                diagnostics[diagnostics['feedbackType'] == feedback]
+                .set_index('contrast').reindex(contrasts))
+            ax.plot(ranks, by_contrast[column].values, marker='o', color=color,
+                    linestyle=ls,
+                    label='correct' if feedback == 1 else 'incorrect')
+        ax.set_xticks(ranks)
+        ax.set_xticklabels([f'{contrast:g}' for contrast in contrasts])
+        ax.set_xlabel('Contrast level')
+        ax.set_ylabel(label, fontsize=TICKFONTSIZE)
+        ax.set_ylim(*ylim)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    fig.axes[-1].legend(frameon=False, loc='upper left',
+                        bbox_to_anchor=(1, 1), fontsize=TICKFONTSIZE)
+    return fig
+
+
 def plot_relative_contrast(agg_df, target_nm, event, fig=None,
                            window_label=None, count_label=None):
     """Plot aggregated response magnitude by contrast, contra and ipsi panels.

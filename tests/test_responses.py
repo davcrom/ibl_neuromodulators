@@ -335,6 +335,97 @@ class TestVarcompCoefficients:
             self._coefficients())
 
 
+class TestComputeMaskingDiagnostics:
+    """How much of the response window the masking removed, per trial type and
+    cohort, reported alongside every contrast-dependent result."""
+
+    _WINDOW = (0.1, 0.35)
+
+    def _group(self, masked_fractions, reaction_times=None):
+        """One recording-event cell, one trial per entry of the given lists.
+
+        Every trial is a go trial with a real response time and a
+        non-negative reaction time, so nothing is dropped by the modeling
+        selection and the trial count equals the list length.
+        """
+        n = len(masked_fractions)
+        if reaction_times is None:
+            reaction_times = [0.2] * n
+        magnitudes = pd.DataFrame({
+            'eid': 'e1', 'subject': 'm1', 'session_type': 'biased',
+            'NM': 'DA', 'target_NM': 'VTA-DA', 'brain_region': 'VTA',
+            'hemisphere': 'r', 'event': 'stimOnTrigger_times',
+            'trial': np.arange(n), 'response': 1.0,
+            'masked_fraction': masked_fractions,
+        })
+        regressors = pd.DataFrame({
+            'eid': 'e1', 'trial': np.arange(n), 'contrast': 100.0,
+            'feedbackType': 1, 'choice': 1, 'response_time': 1.0,
+            'reaction_time': reaction_times, 'probabilityLeft': 0.5,
+        })
+        return _make_group(magnitudes, regressors)
+
+    def _cell(self, masked_fractions, reaction_times=None):
+        from scripts.responses import compute_masking_diagnostics
+        frame = compute_masking_diagnostics(
+            self._group(masked_fractions, reaction_times), window=self._WINDOW)
+        assert len(frame) == 1
+        return frame.iloc[0]
+
+    def test_partially_masked_cell(self):
+        """Half the trials lose half their window: a quarter of the window is
+        masked on average, over half the trials, none of them end to end."""
+        cell = self._cell([0.5] * 5 + [0.0] * 5)
+        assert cell['n_trials'] == 10
+        assert cell['masked_fraction_mean'] == pytest.approx(0.25)
+        assert cell['pct_any_masked'] == pytest.approx(50.0)
+        assert cell['pct_fully_masked'] == pytest.approx(0.0)
+
+    def test_fully_masked_trial_counts_as_masked_too(self):
+        """A window masked end to end is one of the trials with any masking."""
+        cell = self._cell([1.0, 0.0, 0.0, 0.0])
+        assert cell['pct_any_masked'] == pytest.approx(25.0)
+        assert cell['pct_fully_masked'] == pytest.approx(25.0)
+
+    def test_movement_inside_the_window_is_counted_by_reaction_time(self):
+        """First movement at 0.2 s falls inside a (0.1, 0.35) window; one at
+        0.5 s does not."""
+        cell = self._cell([0.0] * 4, reaction_times=[0.2, 0.2, 0.5, 0.5])
+        assert cell['pct_move_in_window'] == pytest.approx(50.0)
+
+    def test_cells_split_by_target_event_contrast_and_feedback(self):
+        """The frame's grain: one row per (target_NM, event, contrast,
+        feedbackType), carrying the schema's columns."""
+        from scripts.responses import compute_masking_diagnostics
+        from iblnm.config import MASKING_DIAGNOSTIC_COLUMNS
+        group = self._group([0.0] * 4)
+        group.trial_regressors['contrast'] = [100.0, 100.0, 0.0, 0.0]
+        group.trial_regressors['feedbackType'] = [1, -1, 1, -1]
+        frame = compute_masking_diagnostics(group, window=self._WINDOW)
+        assert list(frame.columns) == MASKING_DIAGNOSTIC_COLUMNS
+        assert len(frame) == 4
+        assert (frame['n_trials'] == 1).all()
+
+
+class TestPlotMaskingFigures:
+    """The masking diagnostics save loop: one figure per cohort-event."""
+
+    def test_one_file_per_target_and_event(self, tmp_path):
+        from scripts.responses import plot_masking_figures
+        diagnostics = pd.DataFrame([
+            {'target_NM': target_nm, 'event': event, 'contrast': 100.0,
+             'feedbackType': 1, 'n_trials': 50, 'masked_fraction_mean': 0.2,
+             'pct_any_masked': 20.0, 'pct_fully_masked': 5.0,
+             'pct_move_in_window': 60.0}
+            for target_nm in ['VTA-DA', 'DR-5HT']
+            for event in ['stimOnTrigger_times', 'feedback_times']
+        ])
+        plot_masking_figures(diagnostics, tmp_path)
+        assert {p.name for p in tmp_path.glob('*.svg')} == {
+            'VTA-DA_stimOnTrigger_masking.svg', 'VTA-DA_feedback_masking.svg',
+            'DR-5HT_stimOnTrigger_masking.svg', 'DR-5HT_feedback_masking.svg'}
+
+
 class TestPlotPersessionFigures:
     """The persession figure step plots from the in-scope merged OLS frame
     (``ols_persession``) without recomputing or writing data."""

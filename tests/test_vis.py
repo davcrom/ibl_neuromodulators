@@ -25,6 +25,65 @@ def df_group():
     return pd.DataFrame(rows)
 
 
+class TestPlotMaskingDiagnostics:
+    """The masking diagnostics figure: a pure drawer over the cell frame
+    ``compute_masking_diagnostics`` writes."""
+
+    def _diagnostics(self):
+        """One cohort-event, two contrasts, both outcomes. Masking rises with
+        contrast, as the faster trials at high contrast lose more window."""
+        return pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
+             'contrast': contrast, 'feedbackType': fb, 'n_trials': 100,
+             'masked_fraction_mean': fraction,
+             'pct_any_masked': 100 * fraction,
+             'pct_fully_masked': 50 * fraction,
+             'pct_move_in_window': 40 + 100 * fraction}
+            for contrast, fraction in [(0.0, 0.1), (100.0, 0.4)]
+            for fb in [1, -1]
+        ])
+
+    def test_one_panel_per_statistic(self):
+        from iblnm.vis import plot_masking_diagnostics
+        fig = plot_masking_diagnostics(self._diagnostics(), 'VTA-DA',
+                                       'stimOnTrigger_times')
+        assert len(fig.axes) == 4
+        plt.close(fig)
+
+    def test_panels_plot_their_statistic_in_contrast_order(self):
+        """Each panel's correct-trial line carries that statistic's column,
+        ordered by contrast."""
+        from iblnm.vis import plot_masking_diagnostics
+        diagnostics = self._diagnostics()
+        fig = plot_masking_diagnostics(diagnostics, 'VTA-DA',
+                                       'stimOnTrigger_times')
+        for ax, column in zip(fig.axes, ['masked_fraction_mean',
+                                         'pct_any_masked', 'pct_fully_masked',
+                                         'pct_move_in_window']):
+            correct = diagnostics[diagnostics['feedbackType'] == 1]
+            expected = correct.sort_values('contrast')[column].values
+            drawn = [line.get_ydata() for line in ax.lines]
+            assert any(np.allclose(y, expected) for y in drawn), column
+        plt.close(fig)
+
+    def test_both_outcomes_are_drawn(self):
+        """Correct and incorrect trials are separate lines in every panel."""
+        from iblnm.vis import plot_masking_diagnostics
+        fig = plot_masking_diagnostics(self._diagnostics(), 'VTA-DA',
+                                       'stimOnTrigger_times')
+        assert all(len(ax.lines) == 2 for ax in fig.axes)
+        plt.close(fig)
+
+    def test_empty_frame_no_crash(self):
+        from iblnm.vis import plot_masking_diagnostics
+        from iblnm.config import MASKING_DIAGNOSTIC_COLUMNS
+        fig = plot_masking_diagnostics(
+            pd.DataFrame(columns=MASKING_DIAGNOSTIC_COLUMNS), 'VTA-DA',
+            'stimOnTrigger_times')
+        assert isinstance(fig, plt.Figure)
+        plt.close(fig)
+
+
 class TestPlotRelativeContrast:
     def test_plots_given_means_and_sems(self):
         """Marker heights are the frame's ``mean``, error bars its ``sem``."""

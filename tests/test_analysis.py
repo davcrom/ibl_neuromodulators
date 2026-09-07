@@ -359,6 +359,41 @@ class TestComputeResponseMagnitude:
         np.testing.assert_allclose(result, 4.0)
 
 
+class TestComputeMaskedFraction:
+    """The masking diagnostic's per-trial quantity: how much of the response
+    window `mask_subsequent_events` removed, over the same samples
+    `compute_response_magnitude` averages."""
+
+    def test_unmasked_trace_scores_zero(self):
+        from iblnm.analysis import compute_masked_fraction
+        tpts = np.linspace(-1, 1, 61)
+        response = np.full(len(tpts), 2.0)
+        result = compute_masked_fraction(response, tpts, window=(0.1, 0.35))
+        assert result == pytest.approx(0.0)
+
+    def test_per_trial_fractions_2d(self):
+        """2D input scores each trial separately: one half-masked window, one
+        untouched, one masked end to end."""
+        from iblnm.analysis import compute_masked_fraction
+        tpts = np.linspace(-1, 1, 61)
+        i0, i1 = np.searchsorted(tpts, 0.1), np.searchsorted(tpts, 0.35)
+        half = i0 + (i1 - i0) // 2
+        responses = np.ones((3, len(tpts)))
+        responses[0, half:i1] = np.nan
+        responses[2, i0:i1] = np.nan
+        result = compute_masked_fraction(responses, tpts, window=(0.1, 0.35))
+        np.testing.assert_allclose(result, [(i1 - half) / (i1 - i0), 0.0, 1.0])
+
+    def test_masking_outside_the_window_is_not_counted(self):
+        """Samples NaN'd before the window opens leave the fraction at zero."""
+        from iblnm.analysis import compute_masked_fraction
+        tpts = np.linspace(-1, 1, 61)
+        response = np.ones(len(tpts))
+        response[tpts < 0.1] = np.nan
+        result = compute_masked_fraction(response, tpts, window=(0.1, 0.35))
+        assert result == pytest.approx(0.0)
+
+
 class TestKeypointSpeed:
     def test_constant_velocity(self):
         """Constant-velocity keypoint yields constant speed after the first frame."""

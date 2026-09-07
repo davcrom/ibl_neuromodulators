@@ -42,7 +42,8 @@ from iblnm.config import (
     PERSESSION_REGRESSORS,
 )
 from iblnm.analysis import (
-    get_responses, compute_response_magnitude, movement_delta, movement_trace,
+    get_responses, compute_response_magnitude, compute_masked_fraction,
+    movement_delta, movement_trace,
     per_third_crosscorr, resample_pose, resample_signal,
     fit_measurement_error_varcomp, summarize_posterior,
 )
@@ -4236,8 +4237,11 @@ class PhotometrySessionGroup:
         magnitudes : pandas.DataFrame
             One row per recording x event x trial, columns `eid, subject,
             session_type, NM, target_NM, brain_region, hemisphere, event,
-            trial, response`. `trial` is the trials table's own trial number,
-            not the row position, so it joins to `regressors`.
+            trial, response, masked_fraction`. `trial` is the trials table's
+            own trial number, not the row position, so it joins to
+            `regressors`; `masked_fraction` is how much of the window the
+            masking removed, so a magnitude comes with the support it was
+            taken over.
         regressors : pandas.DataFrame
             One row per session x trial, `eid` plus the
             `analysis.build_trial_regressors` columns.
@@ -4310,6 +4314,9 @@ class PhotometrySessionGroup:
                     'event': event,
                     'trial': trials,
                     'response': compute_response_magnitude(
+                        responses.sel(event=event).values, tpts,
+                        RESPONSE_WINDOWS['early']),
+                    'masked_fraction': compute_masked_fraction(
                         responses.sel(event=event).values, tpts,
                         RESPONSE_WINDOWS['early']),
                 })

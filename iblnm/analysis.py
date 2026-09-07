@@ -217,6 +217,37 @@ def compute_response_magnitude(response, tpts, window):
     return np.nanmean(response[..., i0:i1], axis=-1)
 
 
+def compute_masked_fraction(response, tpts, window):
+    """Fraction of a response window that carries no sample.
+
+    The masking diagnostic's per-trial quantity, taken over exactly the samples
+    :func:`compute_response_magnitude` averages, so it reports how much of the
+    magnitude's support the caller's masking removed. Applied after
+    ``PhotometrySession.mask_subsequent_events``, where a NaN sample is one
+    past the next event; on an unmasked cut it scores whatever the recording
+    itself left empty.
+
+    Parameters
+    ----------
+    response : np.ndarray
+        Shape (n_samples,) or (n_trials, n_samples).
+    tpts : np.ndarray
+        Shape (n_samples,). Time points corresponding to the last axis.
+    window : tuple of float
+        (start, end) in seconds.
+
+    Returns
+    -------
+    float or np.ndarray
+        Proportion in [0, 1] — scalar for 1D input, shape (n_trials,) for 2D.
+        A window masked end to end scores 1.0, which is the trial whose
+        magnitude is NaN.
+    """
+    i0 = np.searchsorted(tpts, window[0])
+    i1 = np.searchsorted(tpts, window[1])
+    return np.isnan(response[..., i0:i1]).mean(axis=-1)
+
+
 def tercile_split_curves(baseline, signed_contrast, outcome, min_count=5):
     """Per-contrast mean outcome, split into low- vs high-baseline terciles.
 

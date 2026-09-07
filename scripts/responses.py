@@ -32,6 +32,8 @@ from iblnm.config import (
     RESPONSE_VARCOMP_SUMMARY_FPATH, RESPONSE_VARCOMP_VIOLIN_FPATH,
     VARCOMP_MCMC, VARCOMP_TAU_PRIOR, VARCOMP_MIN_MICE,
     VARCOMP_MIN_SESSIONS_PER_MOUSE, VARCOMP_KDE_GRID, VARCOMP_HDI_PROB,
+    MASKING_DIAGNOSTICS_FPATH, MASKING_DIAGNOSTIC_GROUP_COLS,
+    MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_WINDOWS,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS,
     MOVEMENT_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
     PERSESSION_PVAL_N_BOOTSTRAP, PERSESSION_PVAL_SEED,
@@ -39,6 +41,7 @@ from iblnm.config import (
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.vis import (
+    plot_masking_diagnostics,
     plot_relative_contrast,
     plot_mean_response_vectors, plot_lmm_summary,
     plot_lmm_ceiling,
@@ -54,6 +57,8 @@ from iblnm.vis import (
 )
 from iblnm.analysis import (
     add_fdr_qvalues,
+    aggregate_conditions,
+    select_modeling_trials,
     split_features_by_event,
 )
 
@@ -477,6 +482,85 @@ def varcomp_coefficients(ols_persession: pd.DataFrame) -> pd.DataFrame:
             [RESPONSE_OLS_COEFS_COLUMNS])
 
 
+def compute_masking_diagnostics(
+    group, window: tuple[float, float] = RESPONSE_WINDOWS['early'],
+    group_cols: list[str] = MASKING_DIAGNOSTIC_GROUP_COLS,
+) -> pd.DataFrame:
+    """How much of the response window the event masking removed, per cell.
+
+    Masking removes the samples following the next event, so it takes away
+    more of the window on fast trials — and fast trials are more frequent at
+    high contrast. That makes every contrast-dependent result partly a
+    statement about which trials still had a window to average, which is what
+    this frame reports.
+
+    The trials counted are the modeling trials, minus the null-response drop:
+    the selection runs on ``masked_fraction``, which is finite on every trial,
+    so the trials whose window was masked end to end — the ones the models
+    never see — are the ones this frame exists to count.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        With ``response_magnitudes`` and ``trial_regressors`` populated;
+        ``masked_fraction`` comes from the former,
+        ``contrast``/``feedbackType``/``reaction_time`` from the latter.
+    window : tuple of float
+        The response window, in seconds relative to the event, that
+        ``masked_fraction`` was measured over. Only ``pct_move_in_window``
+        reads it; the fractions were computed upstream.
+    group_cols : sequence of str
+        Cell keys. One output row per observed combination.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The cell keys in ``group_cols``, then
+        ``config.MASKING_DIAGNOSTIC_STATISTICS``: the trial count,
+        the mean masked fraction, and the percentage of trials with any
+        masking, with the window masked end to end, and with first movement
+        inside the window. A trial with no ``reaction_time`` counts as one
+        whose movement was not in the window.
+    """
+    trials = select_modeling_trials(group._merge_trial_regressors(),
+                                    'masked_fraction')
+    trials = trials.assign(
+        any_masked=trials['masked_fraction'] > 0,
+        fully_masked=trials['masked_fraction'] == 1,
+        move_in_window=trials['reaction_time'].between(*window),
+    )
+    cells = aggregate_conditions(trials, 'masked_fraction', group_cols)
+    diagnostics = cells[group_cols].assign(
+        n_trials=cells['n'], masked_fraction_mean=cells['mean'])
+    for source, column in (('any_masked', 'pct_any_masked'),
+                           ('fully_masked', 'pct_fully_masked'),
+                           ('move_in_window', 'pct_move_in_window')):
+        proportions = aggregate_conditions(trials, source, group_cols)
+        diagnostics = diagnostics.merge(
+            proportions[group_cols + ['mean']].rename(
+                columns={'mean': column}), on=group_cols)
+        diagnostics[column] *= 100
+    return diagnostics[list(group_cols) + MASKING_DIAGNOSTIC_STATISTICS]
+
+
+def plot_masking_figures(diagnostics: pd.DataFrame, figures_dir) -> None:
+    """Save one masking diagnostics figure per (target_NM, event).
+
+    Parameters
+    ----------
+    diagnostics : pandas.DataFrame
+        The cell frame from :func:`compute_masking_diagnostics`.
+    figures_dir : Path
+        Output directory for SVG files.
+    """
+    for (target_nm, event), cells in diagnostics.groupby(['target_NM',
+                                                          'event']):
+        fig = plot_masking_diagnostics(cells, target_nm, event)
+        fname = f"{target_nm}_{event.replace('_times', '')}_masking.svg"
+        fig.savefig(figures_dir / fname, dpi=FIGURE_DPI, bbox_inches='tight')
+        plt.close(fig)
+
+
 # display mode → (drop-one figure fn, full-model R² figure fn)
 _PERSESSION_DISPLAY_FNS = {
     'session': (plot_ols_dropone, plot_ols_total_r2),
@@ -563,6 +647,7 @@ if __name__ == '__main__':
     fig_base = PROJECT_ROOT / 'figures/responses'
     fig_dirs = {
         'contrast_curves': fig_base / 'contrast_curves',
+        'diagnostics': fig_base / 'diagnostics',
         'lmm': fig_base / 'lmm',
         'similarity': fig_base / 'similarity',
         'target_decoding': fig_base / 'target_decoding',
@@ -691,6 +776,19 @@ if __name__ == '__main__':
     print("\nGenerating response magnitude plots...")
     plot_response_figures(group, fig_dirs['contrast_curves'])
     print(f"Response magnitude figures saved to {fig_dirs['contrast_curves']}")
+
+    # =====================================================================
+    # Masking diagnostics — how much window each trial type kept
+    # =====================================================================
+    print("\nComputing masking diagnostics...")
+    diagnostics = compute_masking_diagnostics(group)
+    diagnostics.to_parquet(MASKING_DIAGNOSTICS_FPATH, index=False)
+    # The same statistics at cohort grain, small enough to read in the log.
+    print(compute_masking_diagnostics(
+        group, group_cols=['target_NM', 'event']).to_string(index=False))
+    print(f"Saved masking diagnostics to {MASKING_DIAGNOSTICS_FPATH}")
+    plot_masking_figures(diagnostics, fig_dirs['diagnostics'])
+    print(f"Masking diagnostic figures saved to {fig_dirs['diagnostics']}")
 
     # =====================================================================
     # Repeated-measures ANOVA on subject means

@@ -8611,6 +8611,29 @@ class TestCollectResponses:
         merged = magnitudes.merge(regressors, on=['eid', 'trial'], how='left')
         assert select_modeling_trials(merged, 'response').empty
 
+    def test_magnitudes_carry_the_masked_fraction(self, tmp_path):
+        """Feedback lands a second after stimulus onset, so the response window
+        keeps every sample and the pass reports no masking."""
+        from iblnm.data import PhotometrySessionGroup
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=30)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        magnitudes, _ = group.collect_responses()
+        np.testing.assert_allclose(magnitudes['masked_fraction'].values, 0.0)
+
+    def test_fully_masked_window_scores_one(self, tmp_path):
+        """The trial whose magnitude is NaN because feedback preceded the
+        window carries a masked fraction of 1, not a null."""
+        from iblnm.data import PhotometrySessionGroup
+        from iblnm.config import STIM_ONSET_EVENT
+        recs = _make_recordings_df(n_eids=1, regions_per=1)
+        _write_h5(tmp_path / 'eid-0.h5', n_trials=30, fast_response=True)
+        group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
+        magnitudes, _ = group.collect_responses()
+        stim = magnitudes[magnitudes['event'] == STIM_ONSET_EVENT]
+        np.testing.assert_allclose(stim['masked_fraction'].values, 1.0)
+        assert stim['response'].isna().all()
+
     def test_only_response_events_are_cut(self, tmp_path):
         """The store holds a firstMovement cut too; it is not a response event."""
         from iblnm.data import PhotometrySessionGroup
