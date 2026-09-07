@@ -13,38 +13,61 @@ from iblnm.vis import plot_relative_contrast
 
 @pytest.fixture
 def df_group():
+    """Aggregate frame: one row per (side, contrast, feedbackType)."""
     rng = np.random.default_rng(0)
-    n = 60
-    return pd.DataFrame({
-        'subject': rng.choice(['s1', 's2', 's3'], n),
-        'side': rng.choice(['contra', 'ipsi'], n),
-        'contrast': rng.choice([100.0, 25.0, 12.5, 0.0], n),
-        'feedbackType': rng.choice([1, -1], n),
-        'centered_mean': rng.normal(0, 0.01, n),
-    })
+    rows = [
+        {'side': side, 'contrast': c, 'feedbackType': fb,
+         'mean': rng.normal(0, 0.01), 'sem': 0.002, 'n': 20}
+        for side in ['contra', 'ipsi']
+        for c in [0.0, 12.5, 25.0, 100.0]
+        for fb in [1, -1]
+    ]
+    return pd.DataFrame(rows)
 
 
 class TestPlotRelativeContrast:
+    def test_plots_given_means_and_sems(self):
+        """Marker heights are the frame's ``mean``, error bars its ``sem``."""
+        from matplotlib.container import ErrorbarContainer
+
+        df = pd.DataFrame([
+            {'side': 'contra', 'contrast': 0.0, 'feedbackType': 1,
+             'mean': 0.2, 'sem': 0.05, 'n': 12},
+            {'side': 'contra', 'contrast': 100.0, 'feedbackType': 1,
+             'mean': 1.4, 'sem': 0.10, 'n': 12},
+        ])
+        fig = plot_relative_contrast(df, 'VTA-DA', 'stimOnTrigger_times')
+        ax_c = fig.axes[0]
+
+        container = next(c for c in ax_c.containers
+                         if isinstance(c, ErrorbarContainer))
+        np.testing.assert_allclose(container.lines[0].get_ydata(), [0.2, 1.4])
+        segments = [np.array(seg) for bl in container.lines[2]
+                    for seg in bl.get_segments()]
+        np.testing.assert_allclose([seg[:, 1] for seg in segments],
+                                   [[0.15, 0.25], [1.3, 1.5]])
+        plt.close(fig)
+
     def test_returns_figure(self, df_group):
-        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
+        fig = plot_relative_contrast(df_group, 'VTA-DA', 'stimOnTrigger_times')
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_has_two_axes(self, df_group):
-        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
+        fig = plot_relative_contrast(df_group, 'VTA-DA', 'stimOnTrigger_times')
         assert len(fig.axes) == 2
         plt.close(fig)
 
     def test_contra_axis_inverted(self, df_group):
         """Contra (left) panel x-axis is inverted: xlim[0] > xlim[1]."""
-        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
+        fig = plot_relative_contrast(df_group, 'VTA-DA', 'stimOnTrigger_times')
         ax_contra = fig.axes[0]
         xlim = ax_contra.get_xlim()
         assert xlim[0] > xlim[1], "Contra x-axis should be inverted"
         plt.close(fig)
 
     def test_ipsi_axis_not_inverted(self, df_group):
-        fig = plot_relative_contrast(df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
+        fig = plot_relative_contrast(df_group, 'VTA-DA', 'stimOnTrigger_times')
         ax_ipsi = fig.axes[1]
         xlim = ax_ipsi.get_xlim()
         assert xlim[0] < xlim[1], "Ipsi x-axis should not be inverted"
@@ -53,32 +76,30 @@ class TestPlotRelativeContrast:
     def test_accepts_existing_figure(self, df_group):
         fig, _ = plt.subplots(1, 2, sharey=True)
         result = plot_relative_contrast(
-            df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times', fig=fig
+            df_group, 'VTA-DA', 'stimOnTrigger_times', fig=fig
         )
         assert result is fig
         plt.close(fig)
 
     def test_empty_group_no_crash(self):
         df_empty = pd.DataFrame(
-            columns=['subject', 'side', 'contrast', 'feedbackType', 'centered_mean']
+            columns=['side', 'contrast', 'feedbackType', 'mean', 'sem', 'n']
         )
-        fig = plot_relative_contrast(df_empty, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
+        fig = plot_relative_contrast(df_empty, 'VTA-DA', 'stimOnTrigger_times')
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_xticks_are_ranks(self):
         """X-ticks should be integer ranks, with contrast values as labels."""
         rows = [
-            {'subject': s, 'side': side, 'contrast': c,
-             'feedbackType': fb, 'centered_mean': 0.0}
-            for s in ['s1', 's2', 's3']
+            {'side': side, 'contrast': c, 'feedbackType': fb,
+             'mean': 0.0, 'sem': 0.01, 'n': 10}
             for side in ['contra', 'ipsi']
             for c in [0.0, 25.0, 100.0]
             for fb in [1, -1]
-            for _ in range(5)
         ]
         df = pd.DataFrame(rows)
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
+        fig = plot_relative_contrast(df, 'VTA-DA', 'stimOnTrigger_times')
 
         for ax in fig.axes:
             ticks = ax.get_xticks()
@@ -88,221 +109,52 @@ class TestPlotRelativeContrast:
         plt.close(fig)
 
     def test_both_panels_share_contrast_set(self):
-        """Both panels show ticks for all contrasts in df_group, even if one side has no data."""
+        """Both panels show ticks for every contrast in the frame, even if one
+        side carries no rows."""
         rows = [
-            {'subject': s, 'side': 'contra', 'contrast': c,
-             'feedbackType': 1, 'centered_mean': 0.1}
-            for s in ['s1', 's2', 's3']
+            {'side': 'contra', 'contrast': c, 'feedbackType': 1,
+             'mean': 0.1, 'sem': 0.01, 'n': 10}
             for c in [0.0, 25.0, 100.0]
-            for _ in range(5)
         ]  # no ipsi rows at all
         df = pd.DataFrame(rows)
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
+        fig = plot_relative_contrast(df, 'VTA-DA', 'stimOnTrigger_times')
 
         for ax in fig.axes:
             np.testing.assert_array_equal(ax.get_xticks(), [0, 1, 2])
         plt.close(fig)
 
-    def test_subject_mean_removal(self):
-        """Between-subject variance should be removed from plotted values."""
-        # All subjects have same contrast effect but different offsets
-        rows = []
-        for s, offset in [('s1', 5.0), ('s2', -5.0), ('s3', 10.0)]:
-            for side in ['contra', 'ipsi']:
-                for c in [0.0, 25.0, 100.0]:
-                    for fb in [1, -1]:
-                        for _ in range(20):
-                            rows.append({
-                                'subject': s, 'side': side, 'contrast': c,
-                                'feedbackType': fb,
-                                'centered_mean': offset + c * 0.001,
-                            })
-        df = pd.DataFrame(rows)
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
-        ax = fig.axes[0]
-        # After subject-mean removal, spread across contrasts should be tiny
-        # (just the 0.001*c effect), not dominated by subject offsets
-        lines = ax.get_lines()
-        for line in lines:
-            ydata = line.get_ydata()
-            if len(ydata) > 1:
-                assert np.ptp(ydata) < 1.0, (
-                    f"Subject-mean removal failed: spread {np.ptp(ydata):.2f}")
+    def test_missing_contrast_leaves_a_gap(self):
+        """A contrast present on one side only is drawn as NaN on the other, so
+        the two panels keep the same x positions."""
+        df = pd.DataFrame([
+            {'side': 'contra', 'contrast': 0.0, 'feedbackType': 1,
+             'mean': 0.3, 'sem': 0.02, 'n': 10},
+            {'side': 'contra', 'contrast': 100.0, 'feedbackType': 1,
+             'mean': 0.9, 'sem': 0.02, 'n': 10},
+            {'side': 'ipsi', 'contrast': 0.0, 'feedbackType': 1,
+             'mean': 0.4, 'sem': 0.02, 'n': 10},
+        ])
+        fig = plot_relative_contrast(df, 'VTA-DA', 'stimOnTrigger_times')
+        ipsi_means = fig.axes[1].containers[0].lines[0].get_ydata()
+        np.testing.assert_allclose(ipsi_means, [0.4, np.nan])
         plt.close(fig)
 
     def test_window_label_in_suptitle(self, df_group):
         """window_label parameter should appear in the figure suptitle."""
         fig = plot_relative_contrast(
-            df_group, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times', window_label='early'
+            df_group, 'VTA-DA', 'stimOnTrigger_times', window_label='early'
         )
         suptitle_text = fig.texts[0].get_text() if fig.texts else ''
         assert 'early' in suptitle_text, f"'early' not found in suptitle: {suptitle_text!r}"
         plt.close(fig)
 
-    def test_errorbars_not_nan_when_one_subject_has_all_nan(self):
-        """If one subject has all-NaN responses at a cell, errorbars should still
-        be computed from the remaining subjects (nan_policy='omit')."""
-        from matplotlib.container import ErrorbarContainer
-
-        # s3 has all-NaN centered_mean — pandas groupby.mean() returns NaN for s3
-        # s1 and s2 have different within-subject variance so errorbars survive
-        # subject-mean removal
-        rng = np.random.default_rng(42)
-        rows = [
-            {'subject': s, 'side': 'contra', 'contrast': 25.0,
-             'feedbackType': 1, 'centered_mean': val + rng.normal(0, 0.1)}
-            for s, val in [('s1', 0.3), ('s2', -0.3)]
-            for _ in range(15)
-        ] + [
-            {'subject': 's3', 'side': 'contra', 'contrast': 25.0,
-             'feedbackType': 1, 'centered_mean': np.nan}
-            for _ in range(15)
-        ]
-        df = pd.DataFrame(rows)
-
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
-        ax_c = fig.axes[0]  # contra panel
-
-        eb_containers = [c for c in ax_c.containers if isinstance(c, ErrorbarContainer)]
-        assert len(eb_containers) > 0, "No ErrorbarContainer found"
-
-        has_finite = False
-        for container in eb_containers:
-            for bl in container.lines[2]:
-                for seg in bl.get_segments():
-                    seg_arr = np.array(seg)
-                    if seg_arr.ndim == 2 and np.isfinite(seg_arr).all():
-                        if seg_arr[0, 1] != seg_arr[1, 1]:
-                            has_finite = True
-
-        assert has_finite, (
-            "Errorbars are NaN even though 2 subjects have valid data — "
-            "scipy_sem may be propagating NaN from the third subject"
+    def test_count_label_in_suptitle(self, df_group):
+        """The caller's count line is drawn into the suptitle."""
+        fig = plot_relative_contrast(
+            df_group, 'VTA-DA', 'stimOnTrigger_times',
+            count_label='42 sessions, 9 subjects',
         )
-        plt.close(fig)
-
-    def test_errorbars_rendered_with_within_subject_variance(self):
-        """Errorbars (± SEM) should be visible when there is within-subject variance."""
-        from matplotlib.container import ErrorbarContainer
-
-        # After subject-mean removal, between-subject variance is gone.
-        # Need within-subject variance for error bars.
-        rng = np.random.default_rng(42)
-        rows = [
-            {'subject': s, 'side': side, 'contrast': 25.0,
-             'feedbackType': fb, 'centered_mean': rng.normal(0, 0.5)}
-            for s in ['s1', 's2', 's3']
-            for side in ['contra', 'ipsi']
-            for fb in [1, -1]
-            for _ in range(15)
-        ]
-        df = pd.DataFrame(rows)
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA', 'stimOnTrigger_times')
-
-        for ax in fig.axes:
-            eb_containers = [c for c in ax.containers if isinstance(c, ErrorbarContainer)]
-            assert len(eb_containers) > 0, "No ErrorbarContainer found"
-
-            has_finite = False
-            for container in eb_containers:
-                for bl in container.lines[2]:  # barlines = vertical error bar lines
-                    for seg in bl.get_segments():
-                        seg_arr = np.array(seg)
-                        if seg_arr.ndim == 2 and np.isfinite(seg_arr).all() and seg_arr[0, 1] != seg_arr[1, 1]:
-                            has_finite = True
-
-            assert has_finite, "No finite, non-zero error bar segments found"
-        plt.close(fig)
-
-    def test_pool_and_subject_converge_after_subject_mean_removal(self):
-        """After subject-mean removal, pool and subject aggregation should give
-        the same grand mean (both see the same adjusted values)."""
-        rows = (
-            [{'subject': 's1', 'side': 'contra', 'contrast': 25.0,
-              'feedbackType': 1, 'response': 1.0}] * 20
-            + [{'subject': 's2', 'side': 'contra', 'contrast': 25.0,
-                'feedbackType': 1, 'response': 0.0}] * 5
-        )
-        df = pd.DataFrame(rows)
-
-        fig_pool = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOnTrigger_times',
-                                          aggregation='pool')
-        fig_subj = plot_relative_contrast(df.copy(), 'response', 'VTA-DA', 'stimOnTrigger_times',
-                                          aggregation='subject')
-        pool_mean = fig_pool.axes[0].containers[0].lines[0].get_ydata()[0]
-        subj_mean = fig_subj.axes[0].containers[0].lines[0].get_ydata()[0]
-        # Grand mean is preserved by subject-mean removal
-        expected = df['response'].mean()
-        assert np.isclose(pool_mean, expected, atol=0.01), (
-            f"Pool mean {pool_mean} != expected {expected}")
-        assert np.isclose(subj_mean, expected, atol=0.01), (
-            f"Subject mean {subj_mean} != expected {expected}")
-        plt.close(fig_pool)
-        plt.close(fig_subj)
-
-    def test_pool_is_default_aggregation(self):
-        """Default aggregation should be 'pool'."""
-        rows = (
-            [{'subject': 's1', 'side': 'contra', 'contrast': 25.0,
-              'feedbackType': 1, 'response': 1.0}] * 20
-            + [{'subject': 's2', 'side': 'contra', 'contrast': 25.0,
-                'feedbackType': 1, 'response': 0.0}] * 5
-        )
-        df = pd.DataFrame(rows)
-
-        fig = plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOnTrigger_times')
-        ax_c = fig.axes[0]
-        line = ax_c.containers[0].lines[0]
-        plotted_mean = line.get_ydata()[0]
-        assert np.isclose(plotted_mean, 0.8), (
-            f"Default should be pool (0.8), got {plotted_mean}"
-        )
-        plt.close(fig)
-
-    def test_invalid_aggregation_raises(self):
-        """Invalid aggregation value should raise ValueError."""
-        rows = [{'subject': 's1', 'side': 'contra', 'contrast': 25.0,
-                 'feedbackType': 1, 'response': 0.5}]
-        df = pd.DataFrame(rows)
-        with pytest.raises(ValueError, match='aggregation'):
-            plot_relative_contrast(df, 'response', 'VTA-DA', 'stimOnTrigger_times',
-                                   aggregation='invalid')
-
-    def test_min_trials_filter_drops_sparse_cells(self):
-        """Cells with <= min_trials rows should be excluded from the plot."""
-        from matplotlib.container import ErrorbarContainer
-
-        rng = np.random.default_rng(99)
-        # s1 and s2 have 20 trials at contrast 25 (well above threshold)
-        rows = [
-            {'subject': s, 'side': 'contra', 'contrast': 25.0,
-             'feedbackType': 1, 'centered_mean': rng.normal(0, 0.1)}
-            for s in ['s1', 's2']
-            for _ in range(20)
-        ]
-        # s1 and s2 have only 3 trials at contrast 100 (below threshold)
-        rows += [
-            {'subject': s, 'side': 'contra', 'contrast': 100.0,
-             'feedbackType': 1, 'centered_mean': rng.normal(5, 0.1)}
-            for s in ['s1', 's2']
-            for _ in range(3)
-        ]
-        df = pd.DataFrame(rows)
-
-        fig = plot_relative_contrast(df, 'centered_mean', 'VTA-DA',
-                                     'stimOnTrigger_times', min_trials=10)
-        ax_c = fig.axes[0]
-        eb_containers = [c for c in ax_c.containers
-                         if isinstance(c, ErrorbarContainer)]
-        # Only contrast 25 should survive; the plotted mean should be near 0
-        # (not pulled toward the contrast-100 value of ~5)
-        for container in eb_containers:
-            ydata = np.array(container.lines[0].get_ydata(), dtype=float)
-            finite = ydata[np.isfinite(ydata)]
-            assert all(abs(v) < 2.0 for v in finite), (
-                f"Sparse cells (contrast=100, mean~5) leaked through min_trials "
-                f"filter: plotted values {finite}"
-            )
+        assert '42 sessions, 9 subjects' in fig.texts[0].get_text()
         plt.close(fig)
 
 
@@ -1893,65 +1745,55 @@ class TestPlotLMMCoefficientHeatmap:
 # =============================================================================
 
 
-def _make_traces_df(n_targets=2, n_subjects=3, n_recs_per=2,
-                    n_timepoints=100, events=None, min_trials_per=12):
-    """Synthetic mean traces for testing.
+def _make_traces_df(n_timepoints=100, events=None):
+    """Synthetic aggregated traces for one target-NM.
 
-    Each (eid, target_NM, event, contrast, feedbackType) gets one row per
-    timepoint. ``min_trials_per`` controls the n_trials column so tests can
-    exercise the trial-count filter.
+    One row per (event, contrast, feedbackType, time), in the
+    ``aggregate_conditions`` output shape: ``mean``, ``sem`` and ``n``.
     """
-    from iblnm.config import TARGETNM_COLORS
-    targets = sorted(list(TARGETNM_COLORS.keys()))[:n_targets]
     if events is None:
         events = ['stimOnTrigger_times', 'firstMovement_times', 'feedback_times']
     contrasts = [0.0, 25.0, 100.0]
-    feedback_types = [1, -1]
     rng = np.random.default_rng(42)
     time = np.linspace(-0.5, 1.5, n_timepoints)
-    rows = []
-    for tnm in targets:
-        for s in range(n_subjects):
-            for r in range(n_recs_per):
-                eid = f'eid-{tnm}-s{s}-r{r}'
-                for event in events:
-                    for contrast in contrasts:
-                        for fb in feedback_types:
-                            # Add known offset so baseline norm is testable
-                            offset = 5.0
-                            trace = rng.normal(0, 0.1, n_timepoints) + offset
-                            for t_idx, t in enumerate(time):
-                                rows.append({
-                                    'eid': eid,
-                                    'subject': f's{s}',
-                                    'target_NM': tnm,
-                                    'brain_region': tnm.split('-')[0],
-                                    'event': event,
-                                    'contrast': contrast,
-                                    'feedbackType': fb,
-                                    'time': t,
-                                    'response': trace[t_idx],
-                                    'n_trials': min_trials_per,
-                                })
-    return pd.DataFrame(rows)
+    return pd.DataFrame([
+        {'event': event, 'contrast': contrast, 'feedbackType': fb,
+         'time': t, 'mean': m, 'sem': 0.05, 'n': 6}
+        for event in events
+        for contrast in contrasts
+        for fb in (1, -1)
+        for t, m in zip(time, rng.normal(0, 0.1, n_timepoints))
+    ])
 
 
 class TestPlotMeanResponseTraces:
 
-    def test_returns_one_figure_per_target(self):
+    def test_draws_the_given_means(self):
+        """Line data are the frame's ``mean`` values, untransformed."""
         from iblnm.vis import plot_mean_response_traces
-        traces = _make_traces_df(n_targets=2)
-        target = sorted(traces['target_NM'].unique())[0]
-        df_t = traces[traces['target_NM'] == target]
-        fig = plot_mean_response_traces(df_t, target)
+        time = np.linspace(-0.5, 1.5, 20)
+        means = 5.0 + np.sin(time)
+        traces = pd.DataFrame([
+            {'event': 'stimOnTrigger_times', 'contrast': 100.0,
+             'feedbackType': 1, 'time': t, 'mean': m, 'sem': 0.1, 'n': 6}
+            for t, m in zip(time, means)
+        ])
+        fig = plot_mean_response_traces(traces, 'VTA-DA')
+        line = fig.axes[0].lines[0]
+        np.testing.assert_allclose(line.get_xdata(), time)
+        np.testing.assert_allclose(line.get_ydata(), means)
+        plt.close(fig)
+
+    def test_returns_figure(self):
+        from iblnm.vis import plot_mean_response_traces
+        fig = plot_mean_response_traces(_make_traces_df(), 'VTA-DA')
         assert isinstance(fig, plt.Figure)
         plt.close(fig)
 
     def test_layout_2_rows_n_event_cols(self):
         from iblnm.vis import plot_mean_response_traces
-        traces = _make_traces_df(n_targets=1, events=['stimOnTrigger_times', 'feedback_times'])
-        target = traces['target_NM'].iloc[0]
-        fig = plot_mean_response_traces(traces, target)
+        traces = _make_traces_df(events=['stimOnTrigger_times', 'feedback_times'])
+        fig = plot_mean_response_traces(traces, 'VTA-DA')
         # 2 rows (reward, omission) × 2 event columns = 4 axes
         assert len(fig.axes) == 4
         plt.close(fig)
@@ -1960,14 +1802,13 @@ class TestPlotMeanResponseTraces:
         import matplotlib as mpl
         from iblnm.vis import plot_mean_response_traces
         from iblnm.config import NM_CMAPS, ANALYSIS_CONTRASTS
-        traces = _make_traces_df(n_targets=1)
-        target = traces['target_NM'].iloc[0]
-        nm = target.split('-')[-1]
+        traces = _make_traces_df()
+        target = 'VTA-DA'
         fig = plot_mean_response_traces(traces, target)
         ax = fig.axes[0]
         # Lines (excluding vline) should use NM colormap shades
         contrasts = sorted(traces['contrast'].unique())
-        cmap = NM_CMAPS[nm]
+        cmap = NM_CMAPS[target.split('-')[-1]]
         n_levels = len(ANALYSIS_CONTRASTS)
         shade_map = {c: cmap(0.3 + 0.7 * i / (n_levels - 1))
                      for i, c in enumerate(ANALYSIS_CONTRASTS)}
@@ -1977,50 +1818,26 @@ class TestPlotMeanResponseTraces:
             np.testing.assert_allclose(actual, expected, atol=0.01)
         plt.close(fig)
 
-    def test_baseline_normalized(self):
+    def test_fill_between_spans_the_sem(self):
+        """The shaded band runs from ``mean - sem`` to ``mean + sem``."""
         from iblnm.vis import plot_mean_response_traces
-        traces = _make_traces_df(n_targets=1, events=['stimOnTrigger_times'])
-        target = traces['target_NM'].iloc[0]
-        fig = plot_mean_response_traces(traces, target)
-        ax = fig.axes[0]
-        # With offset=5.0 in synthetic data, after baseline normalization
-        # the traces should be centered near 0, not near 5
-        for line in ax.lines[:-1]:  # exclude vline
-            ydata = line.get_ydata()
-            assert abs(np.nanmean(ydata)) < 1.0
-        plt.close(fig)
-
-    def test_filters_low_trial_counts(self):
-        from iblnm.vis import plot_mean_response_traces
-        # Make traces where one contrast has < 5 trials per subject
-        traces = _make_traces_df(n_targets=1, events=['stimOnTrigger_times'])
-        target = traces['target_NM'].iloc[0]
-        # Set n_trials=3 for contrast=0.0 → should be excluded
-        mask = traces['contrast'] == 0.0
-        traces.loc[mask, 'n_trials'] = 3
-        fig = plot_mean_response_traces(traces, target)
-        ax = fig.axes[0]
-        # Should have 2 contrasts plotted (0.25, 1.0) + 1 vline = 3 lines
-        assert len(ax.lines) == 3
-        plt.close(fig)
-
-    def test_fill_between_present(self):
-        from iblnm.vis import plot_mean_response_traces
-        traces = _make_traces_df(n_targets=1, n_subjects=3)
-        target = traces['target_NM'].iloc[0]
-        fig = plot_mean_response_traces(traces, target)
-        for ax in fig.axes:
-            assert len(ax.collections) >= 1
+        traces = pd.DataFrame([
+            {'event': 'stimOnTrigger_times', 'contrast': 100.0,
+             'feedbackType': 1, 'time': t, 'mean': 1.0, 'sem': 0.25, 'n': 6}
+            for t in (0.0, 0.5, 1.0)
+        ])
+        fig = plot_mean_response_traces(traces, 'VTA-DA')
+        band = fig.axes[0].collections[0].get_paths()[0].vertices
+        assert np.isclose(band[:, 1].min(), 0.75)
+        assert np.isclose(band[:, 1].max(), 1.25)
         plt.close(fig)
 
     def test_event_order_stim_feedback(self):
         from iblnm.vis import plot_mean_response_traces
         traces = _make_traces_df(
-            n_targets=1,
             events=['feedback_times', 'stimOnTrigger_times'],
         )
-        target = traces['target_NM'].iloc[0]
-        fig = plot_mean_response_traces(traces, target)
+        fig = plot_mean_response_traces(traces, 'VTA-DA')
         # Top row: col 0, 1 → axes[0], axes[1]
         titles = [fig.axes[col].get_title() for col in range(2)]
         assert titles == ['stimOnTrigger', 'feedback']
@@ -2031,15 +1848,22 @@ class TestPlotMeanResponseTraces:
         from iblnm.vis import plot_mean_response_traces
         from iblnm.config import RESPONSE_WINDOWS
         traces = _make_traces_df(
-            n_targets=1,
             events=['stimOnTrigger_times', 'feedback_times'],
         )
-        target = traces['target_NM'].iloc[0]
-        fig = plot_mean_response_traces(traces, target)
+        fig = plot_mean_response_traces(traces, 'VTA-DA')
         for ax in fig.axes[:2]:  # top-row stimOn (col 0) and feedback (col 1)
             for start, _ in RESPONSE_WINDOWS.values():
                 assert any(np.isclose(p.get_x(), start, atol=0.01)
                            for p in ax.patches)
+        plt.close(fig)
+
+    def test_count_label_annotated(self):
+        """The caller's count line is annotated on the top-right panel."""
+        from iblnm.vis import plot_mean_response_traces
+        traces = _make_traces_df(events=['stimOnTrigger_times'])
+        fig = plot_mean_response_traces(traces, 'VTA-DA',
+                                        count_label='120 trials\n8 sessions')
+        assert any('120 trials' in t.get_text() for t in fig.axes[0].texts)
         plt.close(fig)
 
 

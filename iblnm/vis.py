@@ -10,7 +10,6 @@ from matplotlib import colors
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import FormatStrFormatter, MaxNLocator
-from scipy.stats import sem as scipy_sem
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import quantile_transform
 
@@ -1937,9 +1936,13 @@ def create_psychometric_figure(
     return fig
 
 
-def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
-                           window_label=None, aggregation='pool', min_trials=10):
-    """Plot response magnitude by contrast, split into contra and ipsi panels.
+def plot_relative_contrast(agg_df, target_nm, event, fig=None,
+                           window_label=None, count_label=None):
+    """Plot aggregated response magnitude by contrast, contra and ipsi panels.
+
+    A pure drawer: the means and SEMs are drawn exactly as given, with no
+    aggregation, correction or trial selection of its own. Produce ``agg_df``
+    with :func:`iblnm.analysis.aggregate_conditions`.
 
     The contra panel x-axis is inverted so that the highest contrast is on the
     far left; the ipsi panel runs normally left-to-right. Together they read:
@@ -1947,12 +1950,11 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
 
     Parameters
     ----------
-    df_group : pd.DataFrame
-        Pre-filtered rows for one (target_NM × event) group with columns
-        ``side`` ('contra' / 'ipsi'), ``contrast`` (absolute, 0–1),
-        ``feedbackType``, ``subject``, and ``<response_col>``.
-    response_col : str
-        Column name for the response magnitude to plot.
+    agg_df : pd.DataFrame
+        One row per condition of a single (target_NM × event) group, in the
+        ``aggregate_conditions`` output shape: group keys ``side``
+        ('contra' / 'ipsi'), ``contrast`` (absolute) and ``feedbackType``,
+        plus ``mean``, ``sem`` and ``n``.
     target_nm : str
         Target neuromodulator label; used for the title and color lookup.
     event : str
@@ -1962,16 +1964,14 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
         created with ``plt.subplots(1, 2, sharey=True)``.
     window_label : str or None
         Label for the response window (e.g. 'early', 'late').
-    aggregation : str
-        'pool' (default): grand mean ± SEM across all trials.
-        'subject': mean of subject means ± SEM of subject means.
+    count_label : str or None
+        Second title line describing the data the aggregate was taken over
+        (e.g. '42 sessions, 9 subjects'); the caller holds those counts.
 
     Returns
     -------
     plt.Figure
     """
-    if aggregation not in ('pool', 'subject'):
-        raise ValueError(f"aggregation must be 'pool' or 'subject', got {aggregation!r}")
     if fig is None:
         fig, _ = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05},
                               layout='constrained')
@@ -1981,54 +1981,27 @@ def plot_relative_contrast(df_group, response_col, target_nm, event, fig=None,
     event_label = event.replace('_times', '')
     _window = window_label or ''
     color = TARGETNM_COLORS.get(target_nm, 'black')
-    n_sessions = df_group['eid'].nunique() if 'eid' in df_group.columns else '?'
-    n_subjects = df_group['subject'].nunique() if len(df_group) > 0 else 0
     fig.suptitle(
-        f'{target_nm} — {event_label} ({_window})\n'
-        f'{n_sessions} sessions, {n_subjects} subjects',
+        f'{target_nm} — {event_label} ({_window})\n{count_label or ""}',
         fontsize=LABELFONTSIZE,
     )
 
-    # Compute contrasts from the full dataset so both panels share the same x-axis
-    contrasts = sorted(df_group['contrast'].unique()) if len(df_group) > 0 else []
+    # Contrasts from the whole frame so both panels share the same x-axis
+    contrasts = sorted(agg_df['contrast'].unique()) if len(agg_df) > 0 else []
     ranks = list(range(len(contrasts)))
-    rank_map = dict(zip(contrasts, ranks))
-
-    # Subject-mean removal: subtract per-subject mean, add grand mean
-    if len(df_group) > 0:
-        grand_mean = df_group[response_col].mean()
-        subj_means = df_group.groupby('subject')[response_col].transform('mean')
-        df_group = df_group.copy()
-        df_group[response_col] = df_group[response_col] - subj_means + grand_mean
-
-    # Remove subject × side × feedback × contrast conditions with too few trials
-    group_cols = ['subject', 'side', 'feedbackType', 'contrast']
-    trial_counts = df_group.groupby(group_cols)[response_col].transform('count')
-    df_group = df_group[trial_counts > min_trials]
 
     for ax, side in ((ax_c, 'contra'), (ax_i, 'ipsi')):
-        df_side = df_group[df_group['side'] == side]
+        df_side = agg_df[agg_df['side'] == side]
 
         for feedback, ls in ((1, '-'), (-1, '--')):
             df_fb = df_side[df_side['feedbackType'] == feedback]
             if len(df_fb) == 0:
                 continue
 
-            means, sems = [], []
-            for c in contrasts:
-                df_c = df_fb[df_fb['contrast'] == c]
-                if aggregation == 'pool':
-                    vals = df_c[response_col].dropna()
-                    means.append(vals.mean() if len(vals) > 0 else np.nan)
-                    sems.append(scipy_sem(vals, nan_policy='omit') if len(vals) > 0 else np.nan)
-                else:
-                    subj_means = df_c.groupby('subject')[response_col].mean()
-                    means.append(subj_means.mean() if len(subj_means) > 0 else np.nan)
-                    sems.append(scipy_sem(subj_means, nan_policy='omit') if len(subj_means) > 0 else np.nan)
-
+            by_contrast = df_fb.set_index('contrast').reindex(contrasts)
             label = 'correct' if feedback == 1 else 'incorrect'
-            xpos = np.array([rank_map[c] for c in contrasts])
-            ax.errorbar(xpos, means, yerr=np.array(sems, dtype=float),
+            ax.errorbar(ranks, by_contrast['mean'].values,
+                        yerr=by_contrast['sem'].values.astype(float),
                         marker='o', color=color, linestyle=ls, label=label)
 
         ax.set_xticks(ranks)
@@ -3756,45 +3729,43 @@ def plot_response_decoding_summary(response_matrix, coefficients,
     return fig
 
 
-def plot_mean_response_traces(traces_df, target_nm, min_trials=5,
-                              baseline_window=(-0.15, 0)):
-    """Mean peri-event response traces for one target-NM.
+def plot_mean_response_traces(agg_df, target_nm, count_label=None):
+    """Aggregated peri-event response traces for one target-NM.
+
+    A pure drawer: the means and SEMs are drawn exactly as given, with no
+    aggregation, correction or trial selection of its own. Produce ``agg_df``
+    with :func:`iblnm.analysis.aggregate_conditions`, grouping on
+    ``event``, ``contrast``, ``feedbackType`` and ``time``.
 
     Layout: 2 rows (reward top, omission bottom) × n_events columns.
-    Each panel has one line per contrast level, colored by the NM colormap.
-
-    For each (event, contrast, feedbackType), applies baseline normalization
-    (subtract mean in ``baseline_window``), then subject-mean removal before
-    computing the grand mean and SEM.
-
-    Conditions where any subject has fewer than ``min_trials`` trials are
-    excluded.
+    Each panel has one line per contrast level, colored by the NM colormap,
+    shaded ± SEM.
 
     Parameters
     ----------
-    traces_df : pd.DataFrame
-        Long-form with columns: eid, subject, target_NM, event, contrast,
-        feedbackType, time, response, n_trials.
+    agg_df : pd.DataFrame
+        Aggregated traces for a single target-NM, one row per
+        (event, contrast, feedbackType, time), with columns ``mean``, ``sem``
+        and ``n``.
     target_nm : str
-        Target-NM label (used for title).
-    min_trials : int
-        Minimum trials per subject per (event, contrast, feedbackType).
-    baseline_window : tuple of float
-        (start, end) seconds for baseline normalization.
+        Target-NM label; used for the title and the colormap.
+    count_label : str or None
+        Text annotated on the top-right panel describing the data the
+        aggregate was taken over (e.g. '120 trials\\n8 sessions\\n4 mice');
+        the caller holds those counts.
 
     Returns
     -------
     plt.Figure
     """
-    df = traces_df[traces_df['target_NM'] == target_nm].copy()
-    present = set(df['event'].unique())
+    present = set(agg_df['event'].unique())
     events = [e for e in RESPONSE_EVENTS if e in present]
     # Append any events not in the canonical order
     events += sorted(present - set(RESPONSE_EVENTS))
     n_events = max(len(events), 1)
     feedback_types = [1, -1]
     fb_labels = {1: 'Reward', -1: 'Omission'}
-    contrasts = sorted(df['contrast'].unique())
+    contrasts = sorted(agg_df['contrast'].unique())
 
     # Build color map: NM colormap with shades per contrast level
     nm = target_nm.split('-')[-1]
@@ -3810,82 +3781,26 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=5,
     for col, event in enumerate(events):
         for row, fb in enumerate(feedback_types):
             ax = axes[row, col]
-            df_cell = df[
-                (df['event'] == event)
-                & (df['feedbackType'] == fb)
+            df_cell = agg_df[
+                (agg_df['event'] == event)
+                & (agg_df['feedbackType'] == fb)
             ]
 
             for contrast in contrasts:
-                df_c = df_cell[df_cell['contrast'] == contrast]
+                df_c = df_cell[df_cell['contrast'] == contrast].sort_values('time')
                 if len(df_c) == 0:
                     continue
 
-                # Filter: drop recordings where the subject has too few trials
-                if 'n_trials' in df_c.columns:
-                    trials_per_subj = df_c.groupby('subject')['n_trials'].first()
-                    bad_subjects = trials_per_subj[trials_per_subj < min_trials].index
-                    df_c = df_c[~df_c['subject'].isin(bad_subjects)]
-                    if len(df_c) == 0:
-                        continue
-
-                # Pivot to (recording, time) matrix — group by
-                # (eid, fiber_idx) to distinguish bilateral recordings
-                has_fiber = 'fiber_idx' in df_c.columns
-                if has_fiber:
-                    rec_keys = list(df_c.groupby(['eid', 'fiber_idx']).groups.keys())
-                elif 'brain_region' in df_c.columns:
-                    rec_keys = list(df_c.groupby(['eid', 'brain_region']).groups.keys())
-                else:
-                    rec_keys = [(eid,) for eid in df_c['eid'].unique()]
-                time_vals = np.array(sorted(df_c['time'].unique()))
-                n_recs = len(rec_keys)
-                n_time = len(time_vals)
-
-                trace_matrix = np.full((n_recs, n_time), np.nan)
-                subjects_arr = []
-                for i, key in enumerate(rec_keys):
-                    if has_fiber:
-                        rec_data = df_c[(df_c['eid'] == key[0]) & (df_c['fiber_idx'] == key[1])]
-                    elif 'brain_region' in df_c.columns and len(key) == 2:
-                        rec_data = df_c[(df_c['eid'] == key[0]) & (df_c['brain_region'] == key[1])]
-                    else:
-                        rec_data = df_c[df_c['eid'] == key[0]]
-                    rec_data = rec_data.sort_values('time')
-                    trace_matrix[i] = rec_data['response'].values
-                    subjects_arr.append(rec_data['subject'].iloc[0])
-                subjects_arr = np.array(subjects_arr)
-
-                # Baseline normalization: subtract mean in baseline window
-                bl_mask = (time_vals >= baseline_window[0]) & (time_vals < baseline_window[1])
-                if bl_mask.any():
-                    bl_means = np.nanmean(trace_matrix[:, bl_mask], axis=1,
-                                          keepdims=True)
-                    trace_matrix = trace_matrix - bl_means
-
-                # Subject-mean removal
-                grand_mean = np.nanmean(trace_matrix, axis=0)
-                adjusted = np.copy(trace_matrix)
-                for s in np.unique(subjects_arr):
-                    s_mask = subjects_arr == s
-                    s_mean = np.nanmean(trace_matrix[s_mask], axis=0)
-                    adjusted[s_mask] = (
-                        trace_matrix[s_mask] - s_mean + grand_mean
-                    )
-
-                mean_trace = np.nanmean(adjusted, axis=0)
-                if n_recs > 1:
-                    sem_trace = (np.nanstd(adjusted, axis=0, ddof=1)
-                                 / np.sqrt(n_recs))
-                else:
-                    sem_trace = np.zeros(n_time)
+                time_vals = df_c['time'].values
+                mean_trace = df_c['mean'].values
+                sem_trace = df_c['sem'].values
 
                 color = shade_map.get(contrast, 'gray')
                 ax.plot(time_vals, mean_trace, color=color, linewidth=1.5,
                         label=f'{contrast}')
-                if n_recs > 1:
-                    ax.fill_between(time_vals, mean_trace - sem_trace,
-                                    mean_trace + sem_trace,
-                                    color=color, alpha=0.2)
+                ax.fill_between(time_vals, mean_trace - sem_trace,
+                                mean_trace + sem_trace,
+                                color=color, alpha=0.2)
 
             ax.axvline(0, color='gray', linewidth=0.5, linestyle='--')
             ax.set_ylim(-1.5, 3)
@@ -3906,22 +3821,12 @@ def plot_mean_response_traces(traces_df, target_nm, min_trials=5,
     axes[0, 0].legend(title='Contrast', fontsize=TICKFONTSIZE,
                       title_fontsize=TICKFONTSIZE, loc='upper left')
 
-    # N trials / N sessions / N mice label on last column, top row
-    n_sessions = df['eid'].nunique()
-    n_mice = df['subject'].nunique()
-    if 'n_trials' in df.columns:
-        n_trials = int(
-            df.groupby(['eid', 'event', 'contrast', 'feedbackType'])
-            ['n_trials'].first().sum()
+    if count_label is not None:
+        axes[0, -1].annotate(
+            count_label,
+            xy=(0.95, 0.92), xycoords='axes fraction',
+            fontsize=TICKFONTSIZE, ha='right', va='top', color='k',
         )
-        count_text = f'{n_trials} trials\n{n_sessions} sessions\n{n_mice} mice'
-    else:
-        count_text = f'{n_sessions} sessions\n{n_mice} mice'
-    axes[0, -1].annotate(
-        count_text,
-        xy=(0.95, 0.92), xycoords='axes fraction',
-        fontsize=TICKFONTSIZE, ha='right', va='top', color='k',
-    )
 
     fig.suptitle(target_nm, fontsize=LABELFONTSIZE)
     fig.tight_layout()
