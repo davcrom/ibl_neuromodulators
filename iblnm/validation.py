@@ -99,6 +99,18 @@ class IncompleteEventTimes(Exception):
         self.missing_events = missing_events
         super().__init__(f"Incomplete events: {', '.join(missing_events)}")
 
+class MissingFormula(Exception):
+    """Event has no entry in the formula family it is fitted against.
+
+    Carries event and family: the event that cannot be fitted and the family
+    that omits it.
+    """
+    def __init__(self, event, family):
+        self.event = event
+        self.family = family
+        super().__init__(f"No formula for event '{event}' in family with "
+                         f"events {sorted(family)}")
+
 class TrialsNotInPhotometryTime(Exception):
     """Trial times fall outside photometry recording window."""
 

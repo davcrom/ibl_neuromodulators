@@ -55,7 +55,7 @@ from iblnm.validation import (
     MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
     MissingMotionEnergy,
     InsufficientTrials, BlockStructureBug, MissingBlockInfo,
-    IncompleteEventTimes, TrialsNotInPhotometryTime,
+    IncompleteEventTimes, MissingFormula, TrialsNotInPhotometryTime,
     QCValidationError, AmbiguousRegionMapping,
     VideoLengthError,
 )
@@ -96,6 +96,42 @@ PERSESSION_COEFS_COLUMNS = [
     'brain_region', 'target_NM', 'event', 'regressor', 'coef', 'coef_se',
     'n_trials',
 ]
+
+
+def resolve_event_family(formulas: dict, event: str) -> dict[str, str]:
+    """Select the formula family one event is fitted against.
+
+    Two family shapes are in use. A flat family maps model name to formula
+    template and is shared by every event (``LMM_FORMULAS['persession']``); an
+    event-keyed family nests one such mapping per event, because the predictors
+    available differ by event — reward is only known at feedback
+    (``LMM_FORMULAS['task_reliability']`` and the movement families).
+
+    Parameters
+    ----------
+    formulas : dict
+        Either ``{name: formula_template}`` or ``{event: {name: template}}``.
+    event : str
+        Event whose family is wanted.
+
+    Returns
+    -------
+    dict[str, str]
+        That event's ``{name: formula_template}`` mapping. Resolving an
+        already-resolved flat family returns it unchanged, so the call is
+        idempotent and safe to repeat down a call chain.
+
+    Raises
+    ------
+    iblnm.validation.MissingFormula
+        ``formulas`` is event-keyed and does not name ``event``, which would
+        otherwise leave the event fitted against nothing.
+    """
+    if all(isinstance(template, str) for template in formulas.values()):
+        return formulas
+    if event not in formulas:
+        raise MissingFormula(event, formulas)
+    return formulas[event]
 
 
 def assemble_mouse_pvalue_table(
@@ -3286,8 +3322,8 @@ class PhotometrySession(PhotometrySessionLoader):
         """Fit a drop-one OLS family per event for one recording, return ΔR².
 
         Builds this recording's per-trial response frame for ``brain_region``,
-        then for each event fits every formula in ``formulas`` on the event's
-        complete-case trials and differences each reduced model against the
+        then for each event fits every formula in that event's family on the
+        event's complete-case trials and differences each reduced model against the
         ``reference`` model. Every model in an event is fit on the same rows
         (complete cases over the family's column union), so their R² are
         directly comparable. Each fit is cached in ``self.ols_fits`` keyed by
@@ -3297,9 +3333,13 @@ class PhotometrySession(PhotometrySessionLoader):
         ----------
         brain_region : str
             Recording region; must be a key of ``self.photometry_responses``.
-        formulas : dict[str, str]
-            Drop-one family ``{name: formula_template}``; ``{response}`` is
-            filled with ``response_col``. One key equals ``reference``.
+        formulas : dict
+            Drop-one family ``{name: formula_template}``, shared by every
+            event, or ``{event: {name: template}}`` for a family whose members
+            differ by event (:func:`resolve_event_family`, which raises
+            ``MissingFormula`` for a requested event the family omits).
+            ``{response}`` is filled with ``response_col``; one name equals
+            ``reference``.
         response_col : str
             Name of the per-trial response magnitude column.
         reference : str
@@ -3334,9 +3374,10 @@ class PhotometrySession(PhotometrySessionLoader):
 
         dropone_frames, coef_frames = [], []
         for event, df_event in coded.items():
+            family = resolve_event_family(formulas, event)
             fits = {name: self.fit_response_model(df_event, formula,
                                                   response_col)
-                    for name, formula in formulas.items()}
+                    for name, formula in family.items()}
             if any(fit is None for fit in fits.values()):
                 continue
             for name, fit in fits.items():
@@ -3378,8 +3419,10 @@ class PhotometrySession(PhotometrySessionLoader):
         brain_region : str
             Recording region; ``{}`` is returned if it is absent from
             ``self.photometry_responses``.
-        formulas : dict[str, str]
-            Drop-one family; their column union defines the complete-case trials.
+        formulas : dict
+            Drop-one family, flat or event-keyed
+            (:func:`resolve_event_family`); the column union of the event's
+            family defines that event's complete-case trials.
         events : sequence of str
             Events to build a frame for.
         response_col : str
@@ -3401,10 +3444,11 @@ class PhotometrySession(PhotometrySessionLoader):
         df = self._response_modeling_frame(brain_region, response_col)
         coded = {}
         for event in events:
+            family = resolve_event_family(formulas, event)
             df_event = analysis.code_predictors(df[df['event'] == event],
                                                 contrast_coding)
             union_cols = analysis.formula_union_columns(
-                formulas.values(), df_event.columns)
+                family.values(), df_event.columns)
             df_event = df_event.dropna(subset=union_cols)
             if len(df_event) >= min_trials:
                 coded[event] = df_event
@@ -4530,9 +4574,9 @@ class PhotometrySessionGroup:
 
         Parameters
         ----------
-        formulas : dict[str, str]
-            Drop-one family ``{name: formula_template}`` passed through to
-            ``compare_response_models``; one key equals ``reference``.
+        formulas : dict
+            Drop-one family, flat or event-keyed, passed through to
+            ``compare_response_models``; one name equals ``reference``.
         response_col : str
             Per-trial response magnitude column the formulas model.
         reference : str

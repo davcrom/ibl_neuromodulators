@@ -6818,6 +6818,22 @@ class TestCompareResponseModels:
             full_params = set(ps.ols_fits[('full', event)].params.index)
             assert present == regressors & full_params
 
+    def test_event_absent_from_event_keyed_family_raises(self):
+        from iblnm.validation import MissingFormula
+        ps = _make_session_for_persession()
+        with pytest.raises(MissingFormula) as excinfo:
+            ps.compare_response_models('VTA-r', {'feedback_times': self.formulas},
+                                       events=['stimOnTrigger_times'])
+        assert 'stimOnTrigger_times' in str(excinfo.value)
+        assert 'feedback_times' in str(excinfo.value)
+
+    def test_event_keyed_family_covering_every_event_fits(self):
+        from iblnm.config import RESPONSE_EVENTS
+        ps = _make_session_for_persession()
+        event_keyed = {event: self.formulas for event in RESPONSE_EVENTS}
+        out, _ = ps.compare_response_models('VTA-r', event_keyed)
+        assert set(out['event']) == set(RESPONSE_EVENTS)
+
     def test_coefficients_read_full_fit_params_and_bse(self):
         ps = _make_session_for_persession()
         _, coefs = ps.compare_response_models('VTA-r', self.formulas)

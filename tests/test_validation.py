@@ -37,6 +37,27 @@ class TestModuleImports:
         from iblnm.validation import make_log_entry  # noqa: F401
 
 
+class TestMissingFormula:
+    """Tests for MissingFormula: an event with no entry in a formula family."""
+
+    def test_importable(self):
+        from iblnm.validation import MissingFormula  # noqa: F401
+
+    def test_message_names_event_and_family_events(self):
+        from iblnm.validation import MissingFormula
+        exc = MissingFormula('stimOnTrigger_times',
+                             {'feedback_times': {'full': '{response} ~ 1'}})
+        assert 'stimOnTrigger_times' in str(exc)
+        assert 'feedback_times' in str(exc)
+
+    def test_carries_event_and_family(self):
+        from iblnm.validation import MissingFormula
+        family = {'feedback_times': {'full': '{response} ~ 1'}}
+        exc = MissingFormula('stimOnTrigger_times', family)
+        assert exc.event == 'stimOnTrigger_times'
+        assert exc.family is family
+
+
 class TestValidateSubject:
     def test_raises_for_excluded_subject(self):
         import pandas as pd
