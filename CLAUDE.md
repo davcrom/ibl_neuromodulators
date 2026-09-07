@@ -53,6 +53,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Session build, one block per modality | `scripts/download.py → build_session, build_trials, build_photometry, build_wheel, build_video` |
 | Download CLI (`--workers`, `--session-type`, `--target-NM`) | `scripts/download.py → parse_args, main` |
 | Session catalog (`sessions.pqt`) | `scripts/download.py → fetch_catalog` |
+| Response re-cut, that product alone | `scripts/rebuild_responses.py → rebuild_responses, main` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |
 | Psychometric fitting | `task.py → fit_psychometric, fit_psychometric_by_block, compute_fraction_correct` |
@@ -265,6 +266,30 @@ The CLI narrows which sessions run, never what is built within one:
 filter switched off — those are the criteria a session must clear to be
 *analysed*, not to be built, and the raw-photometry QC filter especially, since
 it reads the QC this pass exists to compute.
+
+### 2c. The Response Rebuild
+
+`scripts/rebuild_responses.py` is the one pass that rebuilds a single product.
+It re-cuts `photometry/{region}/responses` and nothing else, for the case a
+full download would answer wastefully: `config.RESPONSE_EVENTS`,
+`config.RESPONSE_WINDOW` or the cut changed, and every other product in the
+store is still current.
+
+It is the mirror image of the download path in what it reads. `main` builds the
+group with `from_h5_dir(scan_h5=False)` and `fix_catalog`, so the session list
+comes from the store's own `metadata` groups rather than from Alyx or
+`sessions.pqt`, and it turns the analysis filters off for the same reason
+`download.main` does. `rebuild_responses(ps)` then goes through `load_trials`
+and `load_photometry` — the `load_*` tier the download pass never touches,
+because here the store is the input rather than the output. Those two loads
+read the file; the fallback in `load_photometry` is the only thing that can
+reach Alyx, when a session holds no preprocessed band at all.
+
+`ps.complete_events()` is shared with `build_photometry`, and
+`save_h5(groups=['photometry'])` replaces each region's `responses` subgroup —
+so a renamed event leaves no orphan dataset behind — while round-tripping the
+preprocessed band and the QC beside it through the handler pair that read them.
+The CLI flags are the download's three, with the same meaning.
 
 ### 3. PhotometrySession Lifecycle
 
@@ -600,6 +625,7 @@ Tests use `pytest` with synthetic fixtures. No Alyx calls.
 | `test_dataset_overview.py` | Dataset flag construction |
 | `test_wheel.py` | Wheel raw, preprocessed and response products |
 | `test_download.py` | Catalog fixups, the per-modality build pass, the download CLI |
+| `test_rebuild_responses.py` | The response re-cut, its Alyx fallback, its CLI |
 
 Key fixtures in test files:
 - `mock_session_series()` — synthetic session metadata row

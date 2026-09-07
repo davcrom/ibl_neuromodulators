@@ -97,6 +97,30 @@ The three flags all narrow which sessions run, never what is built within one.
 `--target-NM` restrict the pass to the named `config.SESSION_TYPES` and
 `config.VALID_TARGETNMS`.
 
+### Re-cutting the responses alone
+
+`scripts/rebuild_responses.py` is the exception to the all-or-nothing build. It
+re-cuts `photometry/{region}/responses` for every stored session and touches
+nothing else, which is what a change to `config.RESPONSE_EVENTS`,
+`config.RESPONSE_WINDOW` or the cut itself calls for — a full `download.py` run
+would rebuild every other product and re-download the raw data to no purpose.
+
+```bash
+python scripts/rebuild_responses.py                  # every stored session
+python scripts/rebuild_responses.py --workers 4      # in parallel
+python scripts/rebuild_responses.py --session-type biased
+python scripts/rebuild_responses.py --target-NM LC-NE
+```
+
+It reads its session list from the store's own `metadata` groups rather than
+from Alyx or `sessions.pqt`, and each session's trials table and preprocessed
+band from its H5 file. The stale event's dataset goes when the group is
+replaced, so a rebuild after an event was renamed leaves no orphan behind. A
+session whose file holds no preprocessed band is the one case that reaches
+Alyx: `load_photometry` fetches its raw bands and preprocesses them as the
+download pass would. The three flags narrow which sessions run, as they do
+there.
+
 **Analysis scripts build nothing in bulk.** A session missing a product builds
 it through that session's `load_*` when the analysis reaches it. With the
 download all-or-nothing, that should not happen: an analysis running over a
