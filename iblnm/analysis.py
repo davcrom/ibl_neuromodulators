@@ -1672,7 +1672,7 @@ def build_trial_regressors(
         One session's trials table. Must carry ``trial, signed_contrast,
         contrast, stim_side, choice, feedbackType, probabilityLeft``; the
         event-time columns (``onset_event, firstMovement_times,
-        feedback_times``) are optional and yield NaN timing columns when
+        response_times``) are optional and yield NaN timing columns when
         absent. ``trial`` is the stored ONE trial index, which need not be
         contiguous — it is copied through, not regenerated, so the frame stays
         joinable against per-trial responses.
@@ -1690,8 +1690,11 @@ def build_trial_regressors(
         feedbackType, probabilityLeft, reaction_time, movement_time,
         response_time, peak_velocity``. ``reaction_time`` is
         ``firstMovement_times - onset_event``, ``movement_time`` is
-        ``feedback_times - firstMovement_times``, ``response_time`` is
-        ``feedback_times - onset_event`` (seconds).
+        ``response_times - firstMovement_times``, ``response_time`` is
+        ``response_times - onset_event`` (seconds). Both durations end at the
+        choice rather than at feedback delivery, which lags it by an
+        outcome-dependent amount (0.1 ms on correct trials, up to 1.75 s on
+        errors).
     """
     copy_cols = ['trial', 'signed_contrast', 'contrast', 'stim_side', 'choice',
                  'feedbackType', 'probabilityLeft']
@@ -1702,9 +1705,9 @@ def build_trial_regressors(
     df['reaction_time'] = _event_diff(
         trials, 'firstMovement_times', onset_event)
     df['movement_time'] = _event_diff(
-        trials, 'feedback_times', 'firstMovement_times')
+        trials, 'response_times', 'firstMovement_times')
     df['response_time'] = _event_diff(
-        trials, 'feedback_times', onset_event)
+        trials, 'response_times', onset_event)
     df['peak_velocity'] = _peak_velocity(wheel_velocity, n_trials)
     return df
 

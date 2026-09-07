@@ -2310,7 +2310,10 @@ class TestBuildTrialRegressors:
             'stimOnTrigger_times': [1.0, 2.0, 3.0],
             'stimOn_times': [1.06, 2.21, 3.06],
             'firstMovement_times': [1.3, 2.4, 3.2],
-            'feedback_times': [1.8, 2.9, 3.7],
+            'response_times': [1.8, 2.9, 3.7],
+            # Feedback delivery lags the choice; the durations measure to the
+            # choice, so every timing is 0.5 s shorter than the feedback one.
+            'feedback_times': [2.3, 3.4, 4.2],
         })
 
     def test_column_set_and_derived_timings(self):
@@ -2330,10 +2333,17 @@ class TestBuildTrialRegressors:
             trials['firstMovement_times'] - trials['stimOnTrigger_times'])
         np.testing.assert_allclose(
             df['movement_time'].values,
-            trials['feedback_times'] - trials['firstMovement_times'])
+            trials['response_times'] - trials['firstMovement_times'])
         np.testing.assert_allclose(
             df['response_time'].values,
-            trials['feedback_times'] - trials['stimOnTrigger_times'])
+            trials['response_times'] - trials['stimOnTrigger_times'])
+        # Both durations end at the choice, half a second before feedback.
+        np.testing.assert_allclose(
+            df['response_time'].values,
+            trials['feedback_times'] - trials['stimOnTrigger_times'] - 0.5)
+        np.testing.assert_allclose(
+            df['movement_time'].values,
+            trials['feedback_times'] - trials['firstMovement_times'] - 0.5)
 
     def test_trial_column_carries_stored_identity(self):
         """A trials frame whose `trial` skips values keeps those values."""
@@ -2369,7 +2379,7 @@ class TestBuildTrialRegressors:
         assert df['movement_time'].isna().all()
         np.testing.assert_allclose(
             df['response_time'].values,
-            trials['feedback_times'] - trials['stimOnTrigger_times'])
+            trials['response_times'] - trials['stimOnTrigger_times'])
 
 
 class TestSelectModelingTrials:

@@ -412,7 +412,7 @@ fetches the whole set itself and passes it to `collect_pose(video_qc=...)`.
 through `_RESPONSE_MODALITIES` to that modality's preprocessed-signal loader,
 result attribute, and the extraction arguments to fall back on when the caller
 names none — that fallback is how `load_responses('wheel')` alone cuts
-stimOn → feedback rather than the photometry window.
+stimOn → choice rather than the photometry window.
 
 The wheel's H5 label is `velocity`: one channel, but the label level stays so
 every modality's handlers walk labels the same way, and it names the
@@ -452,7 +452,7 @@ the full event axis; its own response event is selected at read time via
 
 The window is `(t0, t1)`. `t1` is either seconds relative to the event, or the
 name of a `ps.trials` column holding each trial's own window end — that second
-form is the wheel's cut, `window=(0.0, 'feedback_times')`. Every trial still
+form is the wheel's cut, `window=(0.0, 'response_times')`. Every trial still
 shares one time axis spanning to the longest trial and is NaN-padded beyond its
 own endpoint. The `trial` coordinate is the `trial` column of `ps.trials`, not
 the row position, so responses stay aligned to their trials after filtering.

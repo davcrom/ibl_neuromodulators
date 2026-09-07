@@ -228,15 +228,20 @@ class TestPreprocessedWheelProduct:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# wheel/responses — the stimOn → feedback cut
+# wheel/responses — the stimOn → choice cut
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_trials():
-    """Two trials whose windows differ, so the shared time axis is testable."""
+    """Two trials whose windows differ, so the shared time axis is testable.
+
+    Feedback lags the choice by 0.7 s on both trials, so a cut that ended at
+    `feedback_times` instead would give a longer time axis.
+    """
     return pd.DataFrame({
         'trial': [7, 9],
         'stimOnTrigger_times':   [1.0, 3.0],
-        'feedback_times': [1.5, 4.0],
+        'response_times': [1.5, 4.0],
+        'feedback_times': [2.2, 4.7],
     })
 
 
@@ -248,7 +253,7 @@ class TestWheelResponsesProduct:
         ps.trials = _make_trials()
         return ps
 
-    def test_nan_tail_starts_at_each_trials_feedback(self, wheeled_session):
+    def test_nan_tail_starts_at_each_trials_choice(self, wheeled_session):
         """One time axis spanning the longest trial; each trial masked at its own end."""
         from iblnm.config import WHEEL_FS
         responses = wheeled_session.load_responses('wheel')
@@ -288,7 +293,7 @@ class TestWheelResponsesProduct:
             velocity,
             events=wheeled_session.trials['stimOnTrigger_times'].to_numpy(),
             t0=0.0,
-            t1=wheeled_session.trials['feedback_times'].to_numpy(),
+            t1=wheeled_session.trials['response_times'].to_numpy(),
         )
         responses = wheeled_session.load_responses('wheel')
         new_matrix = responses['velocity'].sel(event='stimOnTrigger_times').values

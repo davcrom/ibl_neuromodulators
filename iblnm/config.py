@@ -573,10 +573,12 @@ store_raw = False
 # signal and the isosbestic control used to correct it.
 PHOTOMETRY_BANDS = ('GCaMP', 'Isosbestic')
 
-# The wheel matrix is cut from stimulus onset to each trial's own feedback, so
+# The wheel matrix is cut from stimulus onset to each trial's own choice, so
 # the window end names a trials column rather than a fixed offset in seconds.
+# Cutting to the choice rather than to feedback delivery keeps peak_velocity —
+# a maximum over the window — free of the outcome-dependent feedback lag.
 WHEEL_RESPONSE_EVENTS = [STIM_ONSET_EVENT]
-WHEEL_RESPONSE_WINDOW = (0.0, 'feedback_times')
+WHEEL_RESPONSE_WINDOW = (0.0, 'response_times')
 
 
 # Single-session photometry encoding model (kernel-based ridge regression).

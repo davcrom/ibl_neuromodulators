@@ -301,13 +301,13 @@ is the `video/{label}/preprocessed` channels, resampled to `POSE_FS`.
 
 The window end may instead name a trials column, giving each trial its own
 endpoint — the cut the wheel needs, from stimulus onset to that trial's
-feedback:
+choice:
 
 ```python
 ps.load_responses('wheel')   # events=['stimOn_times'],
-                             # window=(0.0, 'feedback_times')
+                             # window=(0.0, 'response_times')
 # → {'velocity': DataArray}; trials share one time axis spanning to the
-#   longest trial, each NaN-padded from its own feedback onward
+#   longest trial, each NaN-padded from its own choice onward
 ```
 
 Every channel carries the full event axis. A channel's own response event is

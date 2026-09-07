@@ -76,7 +76,8 @@ def _trials(n=MIN_NTRIALS):
         'probabilityLeft': np.full(n, 0.5),
         'stimOnTrigger_times': stim_on,
         'firstMovement_times': stim_on + 0.1,
-        'feedback_times': stim_on + 0.4,
+        'response_times': stim_on + 0.4,
+        'feedback_times': stim_on + 0.6,
     })
 
 
@@ -245,6 +246,18 @@ class TestFetchesOncePerDataset:
         assert 'VTA' in session.photometry_responses
         assert WHEEL_LABEL in session.wheel_responses
         assert session.video_times_qc and session.pose_xcorr
+
+    def test_the_wheel_cut_ends_at_the_choice(self, session):
+        """The wheel window closes at `response_times`, 0.2 s before feedback."""
+        download.build_session(session)
+
+        matrix = session.wheel_responses[WHEEL_LABEL]
+        tpts = matrix.coords['time'].to_numpy()
+        # Every trial runs stimOnTrigger → response_times = 0.4 s here, so the
+        # shared axis stops short of the 0.6 s feedback lag and nothing is
+        # NaN-padded.
+        assert tpts.max() < 0.4
+        assert not np.isnan(matrix.values).any()
 
     def test_the_file_is_written_whole(self, session, saved_groups):
         """One truncating write of what has no data of its own, then the rest."""

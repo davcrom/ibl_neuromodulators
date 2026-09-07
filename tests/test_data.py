@@ -2114,9 +2114,9 @@ class TestExtractResponses:
             self, mock_photometry_session):
         """A window end given as a column name ends each trial at its own event.
 
-        This is the wheel's cut, stimOn to that trial's feedback: every trial
-        shares one time axis spanning to the longest, and is NaN-padded from
-        its own feedback onward.
+        This is the mechanism behind the wheel's cut: every trial shares one
+        time axis spanning to the longest, and is NaN-padded from its own
+        endpoint onward.
         """
         session = mock_photometry_session
         session.extract_preprocessed_photometry()
@@ -5111,7 +5111,8 @@ def _make_session_with_responses(mock_one, n_trials=100, post_event_value=1.0):
     ps.trials = pd.DataFrame({
         'stimOnTrigger_times': np.linspace(10, 10 + n_trials, n_trials),
         'firstMovement_times': np.linspace(10.2, 10.2 + n_trials, n_trials),
-        'feedback_times': np.linspace(11, 11 + n_trials, n_trials),
+        'response_times': np.linspace(11, 11 + n_trials, n_trials),
+        'feedback_times': np.linspace(11, 11 + n_trials, n_trials) + 0.0005,
         'signed_contrast': signed,
         'contrast': contrast_vals,
         'stim_side': sides,
@@ -5268,7 +5269,8 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
     all_nogo : bool
         If True, set all choice to 0 (no-go).
     fast_response : bool
-        If True, set feedback_times = stimOnTrigger_times + 0.01 (response_time < 0.05).
+        If True, set response_times = stimOnTrigger_times + 0.01 (response_time
+        < 0.05).
     """
     import h5py
 
@@ -5282,7 +5284,8 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
     post_mask = tpts >= 0
 
     stim_on = np.linspace(10, 10 + n_trials, n_trials)
-    feedback = stim_on + 0.01 if fast_response else np.linspace(11, 11 + n_trials, n_trials)
+    response = (stim_on + 0.01 if fast_response
+                else np.linspace(11, 11 + n_trials, n_trials))
 
     with h5py.File(path, 'w') as f:
         grp = f.create_group('trials/table')
@@ -5290,7 +5293,10 @@ def _write_h5(path, n_trials=100, regions=('VTA-r',), seed=42,
         grp.create_dataset('stimOnTrigger_times', data=stim_on)
         grp.create_dataset('firstMovement_times',
                            data=stim_on + 0.2)
-        grp.create_dataset('feedback_times', data=feedback)
+        grp.create_dataset('response_times', data=response)
+        # Feedback delivery lags the choice by the measured correct-trial
+        # amount, 0.5 ms.
+        grp.create_dataset('feedback_times', data=response + 0.0005)
         sides = rng.choice(['left', 'right'], n_trials)
         contrast_vals = rng.choice(contrasts, n_trials)
         signed = np.where(sides == 'left', -1, 1).astype(float) * contrast_vals
@@ -6710,7 +6716,10 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
         'trial': np.arange(n_trials),
         'stimOnTrigger_times': stim_on,
         'firstMovement_times': stim_on + reaction,
-        'feedback_times': stim_on + reaction + movement,
+        'response_times': stim_on + reaction + movement,
+        # Feedback delivery lags the choice by the measured correct-trial
+        # amount, 0.5 ms.
+        'feedback_times': stim_on + reaction + movement + 0.0005,
         'signed_contrast': signed,
         'contrast': contrast_vals,
         'stim_side': sides,
@@ -7831,13 +7840,14 @@ def _write_trial_regressor_h5(path, with_wheel=True):
 
     stim_on = np.array([10.0, 20.0, 30.0])
     first_move = np.array([10.5, 20.7, 31.2])
-    feedback = np.array([11.0, 21.5, 32.0])
+    response = np.array([11.0, 21.5, 32.0])
     with h5py.File(path, 'w') as f:
         grp = f.create_group('trials/table')
         grp.create_dataset('trial', data=np.arange(3))
         grp.create_dataset('stimOnTrigger_times', data=stim_on)
         grp.create_dataset('firstMovement_times', data=first_move)
-        grp.create_dataset('feedback_times', data=feedback)
+        grp.create_dataset('response_times', data=response)
+        grp.create_dataset('feedback_times', data=response + 0.3)
         grp.create_dataset('signed_contrast', data=np.array([-0.25, 0.0, 1.0]))
         grp.create_dataset('contrast', data=np.array([0.25, 0.0, 1.0]))
         grp.create_dataset('stim_side', data=np.array(['left', 'right', 'right'],
@@ -7854,7 +7864,7 @@ def _write_trial_regressor_h5(path, with_wheel=True):
             wheel_grp.create_dataset('stimOnTrigger_times', data=velocity)
             wheel_grp.create_dataset('trials', data=np.arange(3))
             wheel_grp.create_dataset('times', data=np.arange(3) / 100)
-    return stim_on, first_move, feedback
+    return stim_on, first_move, response
 
 
 class TestGetTrialRegressors:
@@ -7862,7 +7872,7 @@ class TestGetTrialRegressors:
     def test_trial_regressors_schema_and_values(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup
         recs = _make_recordings_df(n_eids=1, regions_per=1)
-        stim_on, first_move, feedback = _write_trial_regressor_h5(
+        stim_on, first_move, response = _write_trial_regressor_h5(
             tmp_path / 'eid-0.h5')
         group = PhotometrySessionGroup(recs, one=MagicMock(), h5_dir=tmp_path)
 
@@ -7880,9 +7890,9 @@ class TestGetTrialRegressors:
         np.testing.assert_allclose(
             df['reaction_time'].values, first_move - stim_on)
         np.testing.assert_allclose(
-            df['movement_time'].values, feedback - first_move)
+            df['movement_time'].values, response - first_move)
         np.testing.assert_allclose(
-            df['response_time'].values, feedback - stim_on)
+            df['response_time'].values, response - stim_on)
 
     def test_trial_regressors_stores_result(self, tmp_path):
         from iblnm.data import PhotometrySessionGroup

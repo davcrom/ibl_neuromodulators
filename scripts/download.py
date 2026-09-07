@@ -30,8 +30,8 @@ import pandas as pd  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from iblnm.config import (  # noqa: E402
-    SESSION_TYPES, SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
-    VALID_TARGETNMS,
+    SESSION_TYPES, SESSIONS_FPATH, SESSIONS_H5_DIR, VALID_TARGETNMS,
+    WHEEL_RESPONSE_EVENTS, WHEEL_RESPONSE_WINDOW,
 )
 from iblnm.data import (  # noqa: E402
     PREPROCESSED_BAND, WHEEL_LABEL, PhotometrySession, PhotometrySessionGroup,
@@ -40,11 +40,6 @@ from iblnm.io import _get_default_connection  # noqa: E402
 from iblnm.validation import (  # noqa: E402
     BlockStructureBug, IncompleteEventTimes,
 )
-
-# The wheel's own cut: each trial's wheel velocity from its stimulus onset to
-# its own feedback, rather than the fixed peri-event window the photometry uses.
-WHEEL_RESPONSE_EVENTS = (STIM_ONSET_EVENT,)
-WHEEL_RESPONSE_WINDOW = (0.0, 'feedback_times')
 
 
 def query_session(row: pd.Series, one) -> bool:
