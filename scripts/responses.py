@@ -569,10 +569,18 @@ def plot_movement_figures(group, magnitudes, fig_dirs, data_dir):
 # models are fitted on and the rows the stored magnitude table carries cannot
 # drift apart: the fitting loop takes it per fiber x event and the link function
 # re-applies it without one to read the session-wide view back.
+# Every predictor the models read must be usable on every trial that survives,
+# donor and focal alike: a trial carrying a blank or an unloggable value is one
+# patsy would drop from the design behind the fit's back, leaving the row count
+# the adjusted R-squared is charged against wrong and, once a donor column is
+# swapped into it, a NaN in the least-squares design. `bounds` subsumes
+# `exclude_negative_reaction_time` here, since a reaction time at or below zero
+# has no log.
 PERSESSION_TRIAL_CRITERIA = {
     'exclude_nogo': True,
     'min_response_time': MIN_RESPONSE_TIME,
-    'exclude_negative_reaction_time': True,
+    'complete': ['choice', 'peak_velocity'],
+    'bounds': {'reaction_time': ('>', 0)},
 }
 
 

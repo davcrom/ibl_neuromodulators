@@ -3398,6 +3398,34 @@ class TestFilterTrials:
 
         assert list(session.trials['trial']) == [0, 1, 2, 3, 4, 5]
 
+    def test_filter_trials_bounds_drops_values_outside_the_named_range(
+            self, mock_session_series):
+        """`bounds` is the value criterion, `complete` only the blank one.
+
+        A column can be present and still unusable: `code_predictors` takes
+        `log10(reaction_time)`, so a zero or negative reaction time codes to
+        NaN downstream even though the trials table carries a value for it.
+        The comparison is the `(comparison, cutoff)` pair `filter_sessions`
+        already takes for the photometry QC, and a NaN fails every comparison,
+        so a bound implies the completeness the column would otherwise need.
+        """
+        trials = pd.DataFrame({
+            'trial': [0, 1, 2, 3, 4],
+            'reaction_time': [0.2, 0.0, -0.4, np.nan, 0.15],
+            'peak_velocity': [1.0, 2.0, 3.0, 4.0, 9.0],
+        })
+        session = self._session(mock_session_series, trials)
+
+        session.filter_trials(bounds={'reaction_time': ('>', 0)})
+        assert list(session.trials['trial']) == [0, 4]
+
+        session.filter_trials(bounds={'reaction_time': ('>=', 0)})
+        assert list(session.trials['trial']) == [0, 1, 4]
+
+        session.filter_trials(bounds={'reaction_time': ('>', 0),
+                                      'peak_velocity': ('<', 5)})
+        assert list(session.trials['trial']) == [0]
+
     def test_filter_trials_records_the_last_call_alone(
             self, mock_session_series):
         """`_trial_filters` is what is in force, not what has ever been asked.
@@ -6684,13 +6712,17 @@ class TestFitResponseModel:
 def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
                                  eid='test-eid', subject='mouse1',
                                  region='VTA-r', hemisphere='r',
-                                 target_nm='VTA-DA'):
+                                 target_nm='VTA-DA', unusable_trials=False):
     """PhotometrySession with contrast-driven responses for one recording.
 
     The early-window magnitude of every event is ``contrast_gain * contrast``
     plus small noise, so the ``contrast`` predictor carries real variance.
-    Wheel velocity is finite so ``peak_velocity`` survives complete-case
-    filtering. Trials are all unbiased-block go trials with a real response.
+    Trials are all unbiased-block go trials with a real response. Under
+    ``unusable_trials`` two of them carry the defects the predictor criteria
+    exist to remove: trial 0 has a zero reaction time, which codes to NaN once
+    ``code_predictors`` takes its log, and trial 1 has an all-NaN wheel cut, so
+    its ``peak_velocity`` is NaN. Off by default, so the fixtures that record
+    golden fit values keep every trial usable.
     The identity arguments (``eid``/``subject``/``region``/``hemisphere``/
     ``target_nm``) let callers build a multi-recording group; ``wheel_fs`` is
     set so the session round-trips through ``save_h5``.
@@ -6737,6 +6769,8 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
     # (a constant log predictor collinear with the intercept fails the fit).
     stim_on = np.linspace(10, 10 + n_trials, n_trials)
     reaction = rng.uniform(0.1, 0.5, n_trials)
+    if unusable_trials:
+        reaction[0] = 0.0  # no log10
     movement = rng.uniform(0.2, 1.0, n_trials)
     ps.trials = pd.DataFrame({
         'trial': np.arange(n_trials),
@@ -6755,9 +6789,12 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
     })
     # The wheel cut is what `peak_velocity` is built from; the caller writes it
     # to the store alongside the photometry.
+    wheel_cut = rng.normal(0, 1, (1, n_trials, 50))
+    if unusable_trials:
+        wheel_cut[:, 1, :] = np.nan  # no velocity, so no peak_velocity
     ps.wheel_responses = {
         WHEEL_LABEL: xr.DataArray(
-            rng.normal(0, 1, (1, n_trials, 50)),
+            wheel_cut,
             dims=['event', 'trial', 'time'],
             coords={'event': ['stimOnTrigger_times'], 'trial': np.arange(n_trials),
                     'time': np.arange(50) / 100},
@@ -6784,7 +6821,8 @@ def _persession_recordings(rows):
     ])
 
 
-def _persession_group(h5_dir, rows, n_trials=120):
+def _persession_group(h5_dir, rows, n_trials=120,
+                      unusable_trials=False):
     """Group over ``rows`` with its store written and nothing collected yet.
 
     Each row gets its own H5 (:func:`_make_session_for_persession`, whose
@@ -6800,7 +6838,8 @@ def _persession_group(h5_dir, rows, n_trials=120):
         eid, subject, region, hemisphere, target_nm = row
         ps = _make_session_for_persession(
             n_trials=count, seed=seed, eid=eid, subject=subject,
-            region=region, hemisphere=hemisphere, target_nm=target_nm)
+            region=region, hemisphere=hemisphere, target_nm=target_nm,
+            unusable_trials=unusable_trials)
         ps.save_h5(h5_dir / f'{eid}.h5',
                    groups=['metadata', 'trials', 'photometry', 'wheel'])
     return PhotometrySessionGroup(_persession_recordings(rows),

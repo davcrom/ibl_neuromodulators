@@ -456,7 +456,7 @@ class TestPrepareDonor:
         from scripts.responses import prepare_donor
         from tests.test_data import _donorless_session
 
-        ps = _donorless_session()
+        ps = _donorless_session(unusable_trials=True)
         monkeypatch.setattr(
             PhotometrySession, 'load_responses',
             lambda *args, **kwargs: pytest.fail('photometry was loaded'))
@@ -467,12 +467,12 @@ class TestPrepareDonor:
         assert donor.frame[PERSESSION_REGRESSORS].notna().all().all()
 
     def test_donor_rows_are_the_response_independent_selection(self):
-        """Only the three trials-only exclusions bite, so a donor frame is
-        longer than the same session's focal cells, which also drop the trials
-        whose response is null."""
-        from iblnm.config import MIN_RESPONSE_TIME
+        """Only the trials-only exclusions bite, so a donor frame is longer
+        than the same session's focal cells, which also drop the trials whose
+        response is null."""
         from iblnm.data import response_column
-        from scripts.responses import prepare_donor
+        from scripts.responses import (PERSESSION_TRIAL_CRITERIA,
+                                       prepare_donor)
         from tests.test_data import (_add_second_recording, _donorless_session,
                                      _make_session_for_persession,
                                      _measured_session)
@@ -480,20 +480,22 @@ class TestPrepareDonor:
         # The second recording carries no signal on its first 30 trials, so
         # its cells lose those rows and the donor frame does not.
         ps = _measured_session(_add_second_recording(
-            _make_session_for_persession(), n_missing=30))
+            _make_session_for_persession(unusable_trials=True), n_missing=30))
         trials = ps.trials
         expected = ((trials['choice'] != 0)
                     & (trials['response_times']
                        - trials['stimOnTrigger_times'] > 0.05)
-                    & ~(trials['firstMovement_times']
-                        - trials['stimOnTrigger_times'] < 0)).sum()
+                    & (trials['firstMovement_times']
+                       - trials['stimOnTrigger_times'] > 0)
+                    & ~np.isnan(ps.wheel_peak_velocity)).sum()
 
+        criteria = dict(PERSESSION_TRIAL_CRITERIA)
         ps.add_trial_columns(ps.cell_magnitudes('DR-l', STIM_ONSET_EVENT))
         ps.filter_trials(
-            exclude_nogo=True, min_response_time=MIN_RESPONSE_TIME,
-            exclude_negative_reaction_time=True,
-            complete=[response_column('DR-l', STIM_ONSET_EVENT)])
-        donor = prepare_donor(_donorless_session())
+            **{**criteria,
+               'complete': [*criteria['complete'],
+                            response_column('DR-l', STIM_ONSET_EVENT)]})
+        donor = prepare_donor(_donorless_session(unusable_trials=True))
 
         assert len(donor.frame) == expected
         assert len(donor.frame) > len(ps.trials)
@@ -916,7 +918,8 @@ class TestTwoPassRun:
         from iblnm.config import LMM_FORMULAS
         group = _persession_group(
             tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
-                       ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')])
+                       ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')],
+            unusable_trials=True)
 
         donors = group.collect_donor_frames(group.process(prepare_donor))
         returns = [frames for frames in

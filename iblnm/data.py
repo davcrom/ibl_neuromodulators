@@ -453,6 +453,12 @@ _ERROR_FIELDS = ('eid', 'error_type', 'error_message', 'traceback', 'product')
 # region never parts company with its hemisphere and target NM.
 PARALLEL_COLS = ['brain_region', 'hemisphere', 'target_NM']
 
+# Comparison each `(comparison, cutoff)` threshold pair names, kept as strings
+# in config.py so the thresholds stay plain serializable mappings. Shared by
+# `filter_sessions`'s photometry QC cutoffs and `filter_trials`'s bounds.
+_COMPARISONS = {'>=': operator.ge, '>': operator.gt,
+                '<=': operator.le, '<': operator.lt}
+
 _UNRECORDED_ERROR_TYPES = frozenset({'BlockingIOError'})
 _RESPONSES_RESERVED_KEYS = {'times', 'trials'}
 
@@ -1893,7 +1899,9 @@ class PhotometrySession(PhotometrySessionLoader):
                       min_response_time: float | bool = False,
                       exclude_negative_reaction_time: bool = False,
                       probability_left: float | bool = False,
-                      complete: list[str] | bool = False) -> None:
+                      complete: list[str] | bool = False,
+                      bounds: dict[str, tuple[str, float]] | bool = False,
+                      ) -> None:
         """Compute a boolean trial mask over the trials table. Non-destructive.
 
         Mirrors `PhotometrySessionGroup.filter_sessions`: one keyword per
@@ -1921,6 +1929,14 @@ class PhotometrySession(PhotometrySessionLoader):
             Drop the trials that are NaN in any of these columns. This is how a
             model's dependent variable enters the selection: the column has to
             be on the trials table first, which `add_trial_columns` does.
+        bounds : dict of str to (str, float) or False
+            Drop the trials whose value in each named column fails that
+            column's `(comparison, cutoff)` test — the pair `filter_sessions`
+            takes for the photometry QC cutoffs, one of '>=', '>', '<=', '<'.
+            A NaN fails every comparison, so a bounded column needs no entry in
+            `complete`. This is the criterion for a value that is present but
+            unusable, as `code_predictors` takes `log10(reaction_time)` and a
+            reaction time at or below zero codes to NaN downstream.
 
         Returns
         -------
@@ -1932,6 +1948,7 @@ class PhotometrySession(PhotometrySessionLoader):
             'exclude_negative_reaction_time': exclude_negative_reaction_time,
             'probability_left': probability_left,
             'complete': complete,
+            'bounds': bounds,
         }
         trials = self._trials
         keep = pd.Series(True, index=trials.index)
@@ -1945,6 +1962,9 @@ class PhotometrySession(PhotometrySessionLoader):
             keep &= trials['probabilityLeft'] == probability_left
         if complete is not False:
             keep &= trials[list(complete)].notna().all(axis=1)
+        if bounds is not False:
+            for column, (comparison, cutoff) in bounds.items():
+                keep &= _COMPARISONS[comparison](trials[column], cutoff)
 
         self._trial_mask = keep
         # Only the criteria in force, so the record reads as what was applied
@@ -4318,12 +4338,6 @@ def _apply_statistic(statistic, arrays):
     return statistic(*[a[:min_len] for a in arrays])
 
 
-# Comparison each PHOTOMETRY_QC_THRESHOLDS entry names, kept as strings in
-# config.py so the thresholds stay a plain serializable mapping.
-_QC_COMPARISONS = {'>=': operator.ge, '>': operator.gt,
-                   '<=': operator.le, '<': operator.lt}
-
-
 def _explode_recordings(sessions: pd.DataFrame) -> pd.DataFrame:
     """Explode session rows to one row per recording, numbering the fibers.
 
@@ -4556,7 +4570,7 @@ class PhotometrySessionGroup:
             columns=['eid', 'brain_region', *thresholds])
         passing = pd.Series(True, index=qc.index)
         for column, (comparison, cutoff) in thresholds.items():
-            passing &= _QC_COMPARISONS[comparison](qc[column], cutoff)
+            passing &= _COMPARISONS[comparison](qc[column], cutoff)
         return set(map(tuple, qc.loc[passing, ['eid', 'brain_region']].to_numpy()))
 
     def filter_sessions(self, session_types=SESSION_TYPES_TO_ANALYZE,
