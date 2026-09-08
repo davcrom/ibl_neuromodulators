@@ -346,27 +346,31 @@ class TestPlotMovementFigures:
 
 
 class _LinkSession:
-    """Session stub exposing what the two link functions call and read.
+    """Session stub exposing what the fitting link function calls and reads.
 
-    The link functions are the only place a session's state becomes group
-    data, so what they are responsible for is calling the right method and
-    handing back the right attributes — not the modelling itself, which is
-    covered against real sessions in ``tests/test_data.py``. This stub records
-    the arguments it was passed and plants the attributes the real methods
-    assign.
+    The link function is the only place a session's state becomes group data,
+    so what it is responsible for is sequencing the calls and handing back the
+    right views — not the modelling itself, which is covered against real
+    sessions in ``tests/test_data.py``. This stub records the arguments it was
+    passed and plants the frames those steps would have produced, including
+    the one piece of state the ordering turns on: ``filter_trials`` narrows
+    the ``trials`` and ``response_magnitudes`` views, and trial 2 is the row it
+    drops.
     """
 
+    _MASKED_AWAY_TRIAL = 2
+
     def __init__(self):
-        self.donor_frame = pd.DataFrame({'trial': [0, 1], 'contrast': [1.0, 2.0]})
-        self.response_magnitudes = pd.DataFrame(
-            {'trial': [0, 1], 'response': [0.5, 0.7], 'hemisphere': ['r', 'r']})
-        self.trials = pd.DataFrame(
-            {'trial': [0, 1], 'signed_contrast': [-25.0, 25.0],
-             'stim_side': ['left', 'right'], 'choice': [1, -1]})
-        self.wheel_peak_velocity = np.array([1.0, 2.0])
+        self._magnitudes = pd.DataFrame(
+            {'trial': [0, 1, 2], 'response': [0.5, 0.7, np.nan],
+             'hemisphere': ['r', 'r', 'r']})
+        self._trials = pd.DataFrame(
+            {'trial': [0, 1, 2], 'signed_contrast': [-25.0, 25.0, 100.0],
+             'stim_side': ['left', 'right', 'right'], 'choice': [1, -1, 1]})
+        self.trials = self._trials
+        self.wheel_peak_velocity = np.array([1.0, 2.0, 3.0])
         self.fits = pd.DataFrame({'predictor': ['contrast'],
                                   'delta_r2': [0.04]})
-        self.prepared = None
         self.fitted = None
         self.filtered = None
         self.called = []
@@ -382,9 +386,13 @@ class _LinkSession:
             return lambda *args, **kwargs: self.called.append(name)
         raise AttributeError(name)
 
-    def prepare_donor_frame(self):
-        self.prepared = True
-        return self.donor_frame
+    @property
+    def response_magnitudes(self):
+        return self._magnitudes[self._magnitudes['trial']
+                                .isin(self.trials['trial'])]
+
+    def masking_diagnostics(self):
+        return self._magnitudes
 
     def fit_responses(self, formulas, donors, **criteria):
         self.fitted = (formulas, donors, criteria)
@@ -392,29 +400,22 @@ class _LinkSession:
 
     def filter_trials(self, **criteria):
         self.filtered = criteria
+        self.trials = self._trials[self._trials['trial']
+                                   != self._MASKED_AWAY_TRIAL]
 
 
 class TestLinkFunctions:
-    """The two module-level functions ``group.process`` maps over the sessions:
-    each calls one session method and returns plain data, holding no reference
-    to a group."""
+    """The module-level functions ``group.process`` maps over the sessions:
+    each sequences one session's own calls and returns plain data, holding no
+    reference to a group."""
 
-    def test_build_donor_frame_returns_that_sessions_donor_frame(self):
-        from scripts.responses import build_donor_frame
-        ps = _LinkSession()
-
-        returned = build_donor_frame(ps)
-
-        assert ps.prepared is True
-        assert returned is ps.donor_frame
-
-    def test_fit_session_forwards_its_arguments_and_returns_both_frames(self):
+    def test_fit_session_forwards_its_arguments_and_returns_three_frames(self):
         from scripts.responses import PERSESSION_TRIAL_CRITERIA, fit_session
         ps = _LinkSession()
         formulas = {'full': '{response} ~ contrast'}
         donors = {'eid-1': 'donor'}
 
-        magnitudes, fits = fit_session(ps, formulas, donors)
+        magnitudes, fits, unfiltered = fit_session(ps, formulas, donors)
 
         assert ps.fitted == (formulas, donors, PERSESSION_TRIAL_CRITERIA)
         assert fits is ps.fits
@@ -424,6 +425,88 @@ class TestLinkFunctions:
         assert list(magnitudes['trial']) == [0, 1]
         # Right-hemisphere fiber, so the left stimulus of trial 0 is contra.
         assert list(magnitudes['side']) == ['contra', 'ipsi']
+
+    def test_fit_session_returns_the_masking_frame_unfiltered(self):
+        """The third frame is taken before the mask exists, so it keeps the
+        trial the filtered view drops — the trial whose window was masked end
+        to end is exactly what the masking diagnostic counts."""
+        from scripts.responses import fit_session
+        ps = _LinkSession()
+
+        magnitudes, _, unfiltered = fit_session(
+            ps, {'full': '{response} ~ contrast'}, {})
+
+        assert list(unfiltered['trial']) == [0, 1, 2]
+        assert ps._MASKED_AWAY_TRIAL not in set(magnitudes['trial'])
+        # Trial-level columns are joined on either side of the mask.
+        assert 'side' in unfiltered.columns
+
+
+class TestPrepareDonor:
+    """The first pass's link function, against real sessions.
+
+    A donor frame is the response-independent selection coded on one frame per
+    session, so what has to hold is the row set, the columns and the trial
+    order — not the modelling, which never sees a donor's responses because it
+    has none.
+    """
+
+    def test_donor_frame_is_built_without_loading_photometry(self, monkeypatch):
+        from iblnm.config import PERSESSION_REGRESSORS
+        from scripts.responses import prepare_donor
+        from tests.test_data import _donorless_session
+
+        ps = _donorless_session()
+        monkeypatch.setattr(
+            PhotometrySession, 'load_responses',
+            lambda *args, **kwargs: pytest.fail('photometry was loaded'))
+
+        donor = prepare_donor(ps)
+        assert set(PERSESSION_REGRESSORS) <= set(donor.frame.columns)
+        assert 'response' not in donor.frame.columns
+        assert donor.frame[PERSESSION_REGRESSORS].notna().all().all()
+
+    def test_donor_rows_are_the_response_independent_selection(self):
+        """Only the three trials-only exclusions bite, so a donor frame is
+        longer than the same session's focal cells, which also drop the trials
+        whose response is null."""
+        from iblnm.config import MIN_RESPONSE_TIME
+        from iblnm.data import response_column
+        from scripts.responses import prepare_donor
+        from tests.test_data import (_add_second_recording, _donorless_session,
+                                     _make_session_for_persession,
+                                     _measured_session)
+
+        # The second recording carries no signal on its first 30 trials, so
+        # its cells lose those rows and the donor frame does not.
+        ps = _measured_session(_add_second_recording(
+            _make_session_for_persession(), n_missing=30))
+        trials = ps.trials
+        expected = ((trials['choice'] != 0)
+                    & (trials['response_times']
+                       - trials['stimOnTrigger_times'] > 0.05)
+                    & ~(trials['firstMovement_times']
+                        - trials['stimOnTrigger_times'] < 0)).sum()
+
+        ps.add_trial_columns(ps.cell_magnitudes('DR-l', STIM_ONSET_EVENT))
+        ps.filter_trials(
+            exclude_nogo=True, min_response_time=MIN_RESPONSE_TIME,
+            exclude_negative_reaction_time=True,
+            complete=[response_column('DR-l', STIM_ONSET_EVENT)])
+        donor = prepare_donor(_donorless_session())
+
+        assert len(donor.frame) == expected
+        assert len(donor.frame) > len(ps.trials)
+
+    def test_donor_frame_preserves_trial_order(self):
+        from scripts.responses import prepare_donor
+        from tests.test_data import _donorless_session
+
+        ps = _donorless_session()
+        every_trial = set(ps.trials['trial'])
+        trial = prepare_donor(ps).frame['trial']
+        assert trial.is_monotonic_increasing
+        assert set(trial) <= every_trial
 
 
 class TestVarcompCoefficients:
@@ -803,42 +886,57 @@ class TestTwoPassRun:
 
     The passes run for real — `group.process` over a written store, the
     script's own link functions — because what the wiring has to get right is
-    the shape of what comes back: one trial-level frame and one fit frame per
-    session, collected into the three output files at their own grains.
+    the shape of what comes back: three frames per session, collected into the
+    output files at their own grains.
     """
 
     @staticmethod
     def _run(tmp_path):
         from tests.test_data import _persession_group
-        from scripts.responses import build_donor_frame, fit_session
+        from scripts.responses import fit_session, prepare_donor
         from iblnm.config import LMM_FORMULAS
         group = _persession_group(
             tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
                        ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')])
 
-        donors = group.collect_donor_frames(group.process(build_donor_frame))
-        returns = [pair for pair in
+        donors = group.collect_donor_frames(group.process(prepare_donor))
+        returns = [frames for frames in
                    group.process(fit_session,
                                  formulas=LMM_FORMULAS['persession'],
                                  donors=donors)
-                   if pair is not None]
-        magnitudes = pd.concat([pair[0] for pair in returns],
+                   if frames is not None]
+        magnitudes = pd.concat([frames[0] for frames in returns],
                                ignore_index=True)
-        ols, mouse = group.collect_fits([pair[1] for pair in returns])
-        return donors, magnitudes, ols, mouse
+        ols, mouse = group.collect_fits([frames[1] for frames in returns])
+        unfiltered = pd.concat([frames[2] for frames in returns],
+                               ignore_index=True)
+        return donors, magnitudes, ols, mouse, unfiltered
 
     def test_donor_pool_holds_every_session(self, tmp_path):
         """Pass 1 emits no trial-level output and admits every session,
         including ones that produce no scorable fit."""
-        donors, _, _, _ = self._run(tmp_path)
+        donors = self._run(tmp_path)[0]
         assert list(donors) == ['eid-0', 'eid-1']
+
+    def test_written_magnitudes_are_the_fitted_trials(self, tmp_path):
+        """The stored table carries the rows the models were fitted on: every
+        fiber x event of a session covers the same trials, and that trial count
+        is the ``n_trials`` its fits report."""
+        _, magnitudes, ols, _, _ = self._run(tmp_path)
+
+        for eid, rows in magnitudes.groupby('eid'):
+            per_cell = rows.groupby(['brain_region', 'event'])['trial'].apply(
+                frozenset)
+            assert len(set(per_cell)) == 1
+            assert set(ols.loc[ols['eid'] == eid, 'n_trials']) == {
+                len(per_cell.iloc[0])}
 
     def test_written_files_carry_the_schema_column_sets(self, tmp_path):
         """Round-tripped through parquet, each file holds its schema's columns
         at its own grain."""
         from iblnm.config import (OLS_PERSESSION_COLUMNS,
                                   RESPONSE_MAGNITUDE_COLUMNS)
-        _, magnitudes, ols, mouse = self._run(tmp_path)
+        _, magnitudes, ols, mouse, _ = self._run(tmp_path)
 
         paths = {}
         for name, frame in (('magnitudes', magnitudes[
@@ -863,7 +961,7 @@ class TestTwoPassRun:
         which is what makes the per-mouse pooling recomputable without
         refitting — parquet stores it as a list column."""
         from iblnm.config import PERSESSION_PVAL_N_BOOTSTRAP
-        _, _, ols, _ = self._run(tmp_path)
+        _, _, ols, _, _ = self._run(tmp_path)
         path = tmp_path / 'ols_persession.parquet'
         ols.to_parquet(path, index=False)
         read = pd.read_parquet(path)
@@ -878,7 +976,7 @@ class TestReprocessWiring:
 
     def test_both_passes_run_through_process(self):
         reprocess, _ = _reprocess_and_default_branches()
-        assert 'group.process(build_donor_frame)' in reprocess
+        assert 'group.process(prepare_donor)' in reprocess
         assert 'group.process(fit_session,' in reprocess
         assert 'collect_donor_frames(' in reprocess
         assert 'collect_fits(' in reprocess

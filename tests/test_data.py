@@ -6734,55 +6734,12 @@ def _donorless_session(**kwargs):
 
 
 class TestDonorFrames:
-    """Donor preparation and donor-scope selection (PhotometrySession)."""
+    """Donor-scope selection (PhotometrySession).
 
-    def test_donor_frame_is_built_without_loading_photometry(self, monkeypatch):
-        from iblnm.config import PERSESSION_REGRESSORS
-        from iblnm.data import PhotometrySession
-
-        ps = _donorless_session()
-        monkeypatch.setattr(
-            PhotometrySession, 'load_responses',
-            lambda *args, **kwargs: pytest.fail('photometry was loaded'))
-
-        donor = ps.prepare_donor_frame()
-        assert set(PERSESSION_REGRESSORS) <= set(donor.frame.columns)
-        assert 'response' not in donor.frame.columns
-        assert donor.frame[PERSESSION_REGRESSORS].notna().all().all()
-
-    def test_donor_rows_are_the_response_independent_selection(self):
-        """Only the three trials-only exclusions bite, so a donor frame is
-        longer than the same session's focal cells, which also drop the trials
-        whose response is null."""
-        from iblnm.config import MIN_RESPONSE_TIME, STIM_ONSET_EVENT
-        from iblnm.data import response_column
-
-        # The second recording carries no signal on its first 30 trials, so
-        # its cells lose those rows and the donor frame does not.
-        ps = _measured_session(_add_second_recording(
-            _make_session_for_persession(), n_missing=30))
-        trials = ps.trials
-        expected = ((trials['choice'] != 0)
-                    & (trials['response_times']
-                       - trials['stimOnTrigger_times'] > 0.05)
-                    & ~(trials['firstMovement_times']
-                        - trials['stimOnTrigger_times'] < 0)).sum()
-
-        ps.add_trial_columns(ps.cell_magnitudes('DR-l', STIM_ONSET_EVENT))
-        ps.filter_trials(
-            exclude_nogo=True, min_response_time=MIN_RESPONSE_TIME,
-            exclude_negative_reaction_time=True,
-            complete=[response_column('DR-l', STIM_ONSET_EVENT)])
-        donor = _donorless_session().prepare_donor_frame()
-
-        assert len(donor.frame) == expected
-        assert len(donor.frame) > len(ps.trials)
-
-    def test_donor_frame_preserves_trial_order(self):
-        ps = _donorless_session()
-        trial = ps.prepare_donor_frame().frame['trial']
-        assert trial.is_monotonic_increasing
-        assert set(trial) <= set(ps.trials['trial'])
+    The preparation itself is the script's first-pass link function and is
+    covered in ``tests/test_responses.py``; the session's part is narrowing a
+    prepared pool to the sessions it may swap columns with.
+    """
 
     @staticmethod
     def _donor_pool():
@@ -6836,10 +6793,12 @@ class TestDonorFrames:
 def _donor_pool_for(*sessions):
     """An eid-keyed donor mapping prepared from ``sessions``.
 
-    What the script's first pass hands to ``fit_responses``: one prepared frame
-    per session, keyed by eid, built by the sessions themselves.
+    What the script's first pass hands to ``fit_responses``, built by that
+    pass's own link function rather than mirrored here, so the pool these
+    fits are scored against cannot drift from the one the pipeline builds.
     """
-    return {ps.eid: ps.prepare_donor_frame() for ps in sessions}
+    from scripts.responses import prepare_donor
+    return {ps.eid: prepare_donor(ps) for ps in sessions}
 
 
 class TestFitResponsesOlsDropone:
@@ -7186,6 +7145,7 @@ class TestModellingPass:
         neither stage re-derives or re-reads what the preparation built."""
         from iblnm import analysis
         from iblnm.data import PhotometrySession
+        from scripts.responses import prepare_donor
         group = _persession_group(
             tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
                        ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')])
@@ -7214,10 +7174,6 @@ class TestModellingPass:
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
                             null_spy)
 
-        def prepare(ps):
-            ps.prepare_donor_frame()
-            return ps.donor_frame
-
         def fit(ps, **kwargs):
             # The measurement sequence the link function runs before it fits;
             # `fit_responses` reads these off the session and loads nothing.
@@ -7230,7 +7186,7 @@ class TestModellingPass:
             return ps.fit_responses(**kwargs)
 
         with patch.object(PhotometrySession, 'load_h5', load_spy):
-            donors = group.collect_donor_frames(group.process(prepare))
+            donors = group.collect_donor_frames(group.process(prepare_donor))
             group.process(fit, formulas=self.formulas, donors=donors,
                           n_bootstrap=10)
 

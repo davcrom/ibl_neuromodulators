@@ -3821,46 +3821,6 @@ class PhotometrySession(PhotometrySessionLoader):
                 for event in cut_events
             ], ignore_index=True)
 
-    def _trial_regressors(self) -> pd.DataFrame:
-        """This session's one-row-per-trial regressor frame.
-
-        Reads the stored `peak_velocity` off the session when it is there; a
-        session holding no wheel product gets an all-NaN ``peak_velocity``
-        column rather than an error, and the complete-case filter drops those
-        rows when a formula referencing it is fitted.
-        """
-        return analysis.build_trial_regressors(
-            self.trials, getattr(self, 'wheel_peak_velocity', None),
-            STIM_ONSET_EVENT)
-
-    def _merge_response_magnitudes(self, events: Sequence[str]) -> pd.DataFrame:
-        """Every recording's magnitudes with this session's trial regressors.
-
-        The uncoded, unselected frame the modelling and plotting branches share:
-        one row per recording x event x trial, carrying the trial-level columns
-        beside the magnitude measured on that trial. A region the catalog names
-        but the store holds no cut for contributes no rows.
-
-        Parameters
-        ----------
-        events : Sequence[str]
-            Events to cut, `config.RESPONSE_EVENTS` by default.
-
-        Returns
-        -------
-        pandas.DataFrame
-            `config.RESPONSE_MAGNITUDE_COLUMNS` plus the columns
-            :func:`iblnm.task.add_relative_contrast` derives (``side``,
-            ``choice_side``, ``relative_contrast``) and the two regressors no
-            persession formula reads (``signed_contrast``, ``movement_time``).
-            Also assigned to ``self.response_magnitudes``.
-        """
-        magnitudes = self.extract_response_magnitudes(events)
-        merged = magnitudes.merge(self._trial_regressors(), on='trial',
-                                  how='left')
-        self.response_magnitudes = task.add_relative_contrast(merged)
-        return self.response_magnitudes
-
     @staticmethod
     def code_predictors(df: pd.DataFrame,
                         contrast_coding: str = 'log2') -> pd.DataFrame:
@@ -3912,81 +3872,6 @@ class PhotometrySession(PhotometrySessionLoader):
                       if col in df.columns]
         df[continuous] = df[continuous] - df[continuous].mean()
         return df
-
-    def _select_modeling_trials(self, events: Sequence[str] | None,
-                                response_col: str | None) -> pd.DataFrame:
-        """The uncoded modelling rows, both preparations' shared prefix.
-
-        Assembles the frame and applies the trial exclusions
-        (:func:`iblnm.analysis.select_modeling_trials`); coding happens in the
-        caller, on whatever row set it ends up with. ``events`` selects which
-        of the two frames is assembled — the focal one, one row per recording
-        x event x trial, or the donor one, one row per trial and no photometry
-        touched.
-
-        Parameters
-        ----------
-        events : Sequence[str] or None
-            Events to cut and merge magnitudes for. ``None`` is the donor
-            case: the trial regressors alone, tagged with the first
-            recording's hemisphere so the hemisphere-relative ``side`` and
-            ``choice_side`` can be derived. Which hemisphere does not matter
-            downstream — the other one negates both columns and every
-            interaction they enter, which spans the same design space and so
-            leaves R² unchanged.
-        response_col : str or None
-            Response magnitude column whose null rows are dropped. ``None``
-            alongside ``events=None``: a donor frame carries no response.
-
-        Returns
-        -------
-        pandas.DataFrame
-            The retained trials, uncoded. In the focal case the merged frame
-            is also left on ``self.response_magnitudes``, unselected.
-        """
-        if events is not None:
-            frame = self._merge_response_magnitudes(events)
-        else:
-            frame = self._trial_regressors().assign(
-                hemisphere=next(iter(self.hemisphere), None))
-            frame = task.add_relative_contrast(frame)
-        return analysis.select_modeling_trials(frame, response_col)
-
-    def prepare_donor_frame(self, contrast_coding: str = 'log2') -> DonorFrame:
-        """Build this session's contribution to other sessions' swap nulls.
-
-        The response-independent selection step alone, coded on those rows: the
-        trial regressors with the no-go, false-start and negative-reaction-time
-        exclusions applied, then coded and centred. No photometry is loaded and
-        no response-null rows are dropped, so a donor frame is one frame per
-        session — not one per recording-event — and is typically longer than the
-        focal frames it donates to. `iblnm.analysis.permutation_null_delta_r2`
-        truncates the pair to the shorter length at swap time.
-
-        Trial order is preserved, which is the whole point of the swap: the
-        donor's regressor keeps its own serial structure while losing any
-        relationship to the focal session's responses.
-
-        Parameters
-        ----------
-        contrast_coding : str
-            Passed to :meth:`code_predictors`. Must match the
-            focal frames' coding, or the swapped column is on another scale.
-
-        Returns
-        -------
-        DonorFrame
-            This session's identity and its coded trial frame, carrying every
-            `config.PERSESSION_REGRESSORS` column. Also assigned to
-            ``self.donor_frame``.
-        """
-        self.load_trials()
-        self.load_peak_velocity()
-        selected = self._select_modeling_trials(None, None)
-        self.donor_frame = DonorFrame(
-            self.eid, self.subject, tuple(self.target_NM),
-            self.code_predictors(selected, contrast_coding))
-        return self.donor_frame
 
     def select_donors(self, donors: dict[str, DonorFrame],
                       donor_scope: str = 'exclude_subject',

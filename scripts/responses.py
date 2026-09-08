@@ -4,11 +4,12 @@ Response Analysis Pipeline
 Three passes over the biased and ephys sessions. The first prepares each
 session's donor frame, the pool the cross-session swap null draws from; the
 second fits each session's drop-one OLS models against that pool and returns
-its trial-level magnitudes with them. The group collects both passes' returns
-into the population tables — adding the FDR q-values and the per-mouse pooling
-— fits the per-cell variance components, and caches every frame. The plotting
-pass reads those frames, condition-averages the store's peri-event cuts, and
-draws the figures.
+its trial-level magnitudes with them, twice over — once as the models saw
+them and once with no trial filter applied, which is what the masking
+diagnostic counts. The group collects both passes' returns into the population
+tables — adding the FDR q-values and the per-mouse pooling — fits the per-cell
+variance components, and caches every frame. The plotting pass reads those
+frames, condition-averages the store's peri-event cuts, and draws the figures.
 
 Output:
     results/responses/             — one parquet per result frame, plus the
@@ -43,7 +44,7 @@ from iblnm.config import (
     MIN_RESPONSE_TIME,
 )
 from iblnm import task
-from iblnm.data import PhotometrySessionGroup
+from iblnm.data import DonorFrame, PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.vis import (
     plot_masking_diagnostics,
@@ -582,14 +583,26 @@ PERSESSION_TRIAL_CRITERIA = {
 }
 
 
-def build_donor_frame(ps) -> pd.DataFrame:
+def prepare_donor(ps) -> DonorFrame:
     """First pass: prepare one session's contribution to the swap null.
 
-    The session builds the frame from its own trials and stored peak velocity
-    and leaves it on itself; this hands the frame back for
-    :meth:`PhotometrySessionGroup.collect_donor_frames` to key by eid. No
-    photometry is read — a donor contributes a regressor column and a trial
-    order, nothing else.
+    :func:`fit_session`'s measurement sequence with the photometry left out
+    and the response-completeness criterion switched off — a donor contributes
+    a regressor column and a trial order, never a response. So the surviving
+    trials are one frame per session rather than one per fiber x event, and it
+    is typically longer than the focal frames it donates to;
+    :func:`iblnm.analysis.permutation_null_delta_r2` truncates the pair to the
+    shorter length at swap time.
+
+    The frame is coded relative to the session's first fiber's hemisphere,
+    because ``side`` and ``choice_side`` are defined only once a hemisphere is
+    named. Which one it is does not matter downstream: the other negates both
+    columns and every interaction they enter, which spans the same design
+    space and so leaves R² unchanged.
+
+    Trial order is preserved, which is the whole point of the swap — the
+    donor's regressor keeps its own serial structure while losing any
+    relationship to the focal session's responses.
 
     Parameters
     ----------
@@ -598,15 +611,52 @@ def build_donor_frame(ps) -> pd.DataFrame:
 
     Returns
     -------
-    pandas.DataFrame
-        That session's ``DonorFrame``, plain data holding no reference to a
-        group.
+    DonorFrame
+        This session's identity and its coded trial frame, carrying every
+        `config.PERSESSION_REGRESSORS` column. Plain data holding no reference
+        to a group, for :meth:`PhotometrySessionGroup.collect_donor_frames` to
+        key by eid.
     """
-    ps.prepare_donor_frame()
-    return ps.donor_frame
+    ps.load_trials()
+    ps.extract_trial_timings()
+    ps.load_peak_velocity()
+    ps.add_trial_columns(ps.wheel_peak_velocity)
+    ps.filter_trials(**PERSESSION_TRIAL_CRITERIA)
+    hemisphere = next(iter(ps.hemisphere), None)
+    frame = PhotometrySession.code_predictors(
+        task.add_relative_contrast(ps.trials.assign(hemisphere=hemisphere)))
+    return DonorFrame(ps.eid, ps.subject, tuple(ps.target_NM), frame)
+
+
+def _join_trials(magnitudes: pd.DataFrame,
+                 trials: pd.DataFrame) -> pd.DataFrame:
+    """Put one session's trial-level columns beside its response magnitudes.
+
+    The measurement frame is one row per fiber x event x trial and the trials
+    table one row per trial, so this is an inner join on ``trial``: whichever
+    trials the table carries are the rows that come back, which is how the
+    trial mask reaches the magnitudes. ``hemisphere`` rides in on the
+    magnitudes, one entry per fiber, so ``side`` and ``choice_side`` come out
+    relative to the fiber that measured the row.
+
+    Parameters
+    ----------
+    magnitudes : pandas.DataFrame
+        `iblnm.data._RECORDING_MAGNITUDE_COLUMNS`, masked or not.
+    trials : pandas.DataFrame
+        The trials table, masked or not.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The join plus the three columns
+        :func:`iblnm.task.add_relative_contrast` derives.
+    """
+    return task.add_relative_contrast(magnitudes.merge(trials, on='trial'))
 
 
 def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
+                                                           pd.DataFrame,
                                                            pd.DataFrame]:
     """Second pass: fit one session's drop-one models against the donor pool.
 
@@ -635,6 +685,12 @@ def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
         x trial, carrying the rows the models were fitted on.
     fits : pandas.DataFrame
         This session's rows of the population OLS table.
+    unfiltered : pandas.DataFrame
+        The same frame with no mask applied, for
+        :func:`compute_masking_diagnostics`. Read before any mask exists,
+        because the trials whose response window was masked end to end carry
+        no magnitude, are dropped by the completeness criterion every fit
+        applies, and are the ones the diagnostic exists to count.
     """
     ps.load_trials()
     ps.extract_trial_timings()
@@ -642,11 +698,11 @@ def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
     ps.add_trial_columns(ps.wheel_peak_velocity)
     ps.load_responses('photometry')
     ps.extract_response_magnitudes()
+    unfiltered = _join_trials(ps.masking_diagnostics(), ps.trials)
     fits = ps.fit_responses(formulas, donors, **PERSESSION_TRIAL_CRITERIA)
     ps.filter_trials(**PERSESSION_TRIAL_CRITERIA)
-    magnitudes = task.add_relative_contrast(
-        ps.response_magnitudes.merge(ps.trials, on='trial'))
-    return magnitudes, fits
+    magnitudes = _join_trials(ps.response_magnitudes, ps.trials)
+    return magnitudes, fits, unfiltered
 
 
 def varcomp_coefficients(ols_persession: pd.DataFrame) -> pd.DataFrame:
@@ -821,6 +877,9 @@ RESULT_FPATHS = {
     'ols_mouse': RESPONSE_OLS_MOUSE_PVAL_FPATH,
     'varcomp_summary': RESPONSE_VARCOMP_SUMMARY_FPATH,
     'varcomp_violin': RESPONSE_VARCOMP_VIOLIN_FPATH,
+    # Cached like the rest, because the frame it is reduced from is the
+    # unfiltered one only the fitting pass holds.
+    'masking_diagnostics': MASKING_DIAGNOSTICS_FPATH,
 }
 
 
@@ -841,8 +900,8 @@ def read_result_frames(group, paths: dict = RESULT_FPATHS,
     group : PhotometrySessionGroup
         Already filtered and deduplicated; only its recordings are read.
     paths : dict[str, pathlib.Path]
-        Frame name to parquet path. Defaults to ``RESULT_FPATHS``, the five
-        files ``--reprocess`` writes.
+        Frame name to parquet path. Defaults to ``RESULT_FPATHS``, every file
+        ``--reprocess`` writes.
 
     Returns
     -------
@@ -918,18 +977,18 @@ if __name__ == '__main__':
         # kwargs once per session, so a parallel pass would serialize the whole
         # pool once for every session in it.
         print("\nPreparing donor frames...")
-        donors = group.collect_donor_frames(group.process(build_donor_frame))
+        donors = group.collect_donor_frames(group.process(prepare_donor))
         print(f"  Donor frames: {len(donors)}")
 
         # --- Pass 2: each session's drop-one fits, scored against that pool ---
         print("Fitting per-session drop-one OLS models...")
-        returns = [pair for pair in
+        returns = [frames for frames in
                    group.process(fit_session,
                                  formulas=LMM_FORMULAS['persession'],
                                  donors=donors)
-                   if pair is not None]
+                   if frames is not None]
 
-        magnitudes = (pd.concat([pair[0] for pair in returns],
+        magnitudes = (pd.concat([frames[0] for frames in returns],
                                 ignore_index=True) if returns
                       else pd.DataFrame(columns=RESPONSE_MAGNITUDE_COLUMNS))
         if len(magnitudes) == 0:
@@ -939,7 +998,7 @@ if __name__ == '__main__':
 
         # The FDR correction and the per-mouse pooling both span sessions, so
         # they happen here rather than in either pass.
-        ols, ols_mouse = group.collect_fits([pair[1] for pair in returns])
+        ols, ols_mouse = group.collect_fits([frames[1] for frames in returns])
 
         magnitudes.to_parquet(RESPONSE_MAGNITUDES_FPATH, index=False)
         ols.to_parquet(OLS_PERSESSION_FPATH, index=False)
@@ -947,6 +1006,21 @@ if __name__ == '__main__':
         print(f"Saved response magnitudes to {RESPONSE_MAGNITUDES_FPATH}")
         print(f"Saved per-recording OLS results to {OLS_PERSESSION_FPATH} "
               f"and per-mouse p-values to {RESPONSE_OLS_MOUSE_PVAL_FPATH}")
+
+        # --- Masking diagnostics: how much window each trial type kept ---
+        # From the third frame, the one no mask was applied to: the trials the
+        # models never saw are the ones this counts, so it is computed here
+        # rather than from the stored table, and cached for the no-flag branch.
+        print("\nComputing masking diagnostics...")
+        unfiltered = pd.concat([frames[2] for frames in returns],
+                               ignore_index=True)
+        diagnostics = compute_masking_diagnostics(unfiltered)
+        diagnostics.to_parquet(MASKING_DIAGNOSTICS_FPATH, index=False)
+        # The same statistics at cohort grain, small enough to read in the log.
+        print(compute_masking_diagnostics(
+            unfiltered, group_cols=['target_NM', 'event']).to_string(
+                index=False))
+        print(f"Saved masking diagnostics to {MASKING_DIAGNOSTICS_FPATH}")
 
         # --- Per-cell variance components (mouse vs session) ---
         print("Fitting per-cell variance-components model (PyMC sampling)...")
@@ -974,6 +1048,7 @@ if __name__ == '__main__':
         magnitudes = frames['magnitudes']
         ols, ols_mouse = frames['ols'], frames['ols_mouse']
         varcomp_violin = frames['varcomp_violin']
+        diagnostics = frames['masking_diagnostics']
 
     # =====================================================================
     # Response magnitude plots
@@ -996,13 +1071,7 @@ if __name__ == '__main__':
     # =====================================================================
     # Masking diagnostics — how much window each trial type kept
     # =====================================================================
-    print("\nComputing masking diagnostics...")
-    diagnostics = compute_masking_diagnostics(magnitudes)
-    diagnostics.to_parquet(MASKING_DIAGNOSTICS_FPATH, index=False)
-    # The same statistics at cohort grain, small enough to read in the log.
-    print(compute_masking_diagnostics(
-        magnitudes, group_cols=['target_NM', 'event']).to_string(index=False))
-    print(f"Saved masking diagnostics to {MASKING_DIAGNOSTICS_FPATH}")
+    print("\nGenerating masking diagnostic figures...")
     plot_masking_figures(diagnostics, fig_dirs['diagnostics'])
     print(f"Masking diagnostic figures saved to {fig_dirs['diagnostics']}")
 
