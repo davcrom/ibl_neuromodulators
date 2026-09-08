@@ -4291,35 +4291,34 @@ def _draw_rt_violins(df, ax=None, rt_range=None):
 # Group-based task performance figures
 # =============================================================================
 
-def _assemble_rt_trials(group):
-    """Build the trial table for RT violins from a group.
+def _assemble_rt_trials(magnitudes: pd.DataFrame | None) -> pd.DataFrame:
+    """Build the trial table for RT violins from the magnitude frame.
 
-    Takes one row per (eid, trial, target_NM) of ``group.response_magnitudes``
-    — the frame carries the trial-level columns beside the magnitude, so there
-    is nothing to join — keeps trials with a recorded choice across all pLeft
-    blocks, and restricts to the analysed target-NMs. Returns an empty frame
-    (with the columns ``_draw_rt_violins`` expects) when the magnitudes are
-    missing.
+    Takes one row per (eid, trial, target_NM) — the frame carries the
+    trial-level columns beside the magnitude, so there is nothing to join —
+    keeps trials with a recorded choice across all pLeft blocks, and restricts
+    to the analysed target-NMs. Returns an empty frame (with the columns
+    ``_draw_rt_violins`` expects) when the magnitudes are missing.
 
     Parameters
     ----------
-    group : PhotometrySessionGroup
-        May have ``response_magnitudes`` attached by the caller; the attribute
-        is absent when that parquet was not there to read.
+    magnitudes : pd.DataFrame or None
+        ``config.RESPONSE_MAGNITUDE_COLUMNS``, one row per recording x event x
+        trial. ``None`` when the caller found no magnitudes parquet to read.
 
     Returns
     -------
     pd.DataFrame
         Columns include ``response_time``, ``contrast``, ``target_NM``.
     """
-    if getattr(group, 'response_magnitudes', None) is None:
+    if magnitudes is None:
         return pd.DataFrame(columns=['response_time', 'contrast', 'target_NM'])
-    df_trial = group.response_magnitudes.drop_duplicates(
+    df_trial = magnitudes.drop_duplicates(
         subset=['eid', 'trial', 'target_NM']).query('choice != 0').copy()
     return df_trial[df_trial['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
 
 
-def plot_performance_grid(group, axes=None):
+def plot_performance_grid(group, magnitudes=None, axes=None):
     """Grid of task-performance panels, one row per target-NM.
 
     Column 0 holds the 50-50 block psychometric curves (thin line per session,
@@ -4330,8 +4329,10 @@ def plot_performance_grid(group, axes=None):
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have ``group.performance`` loaded; ``response_magnitudes`` is
-        needed for the RT column (empty otherwise).
+        Must have ``group.performance`` loaded.
+    magnitudes : pd.DataFrame, optional
+        The response magnitudes the RT column is drawn from. ``None`` draws the
+        psychometric column alone.
     axes : np.ndarray of Axes, optional
         Shape (n_targets, 2). Created if None.
 
@@ -4344,7 +4345,7 @@ def plot_performance_grid(group, axes=None):
         .drop_duplicates()
     )
     df_psych = group.performance.merge(rec_meta, on='eid', how='inner')
-    df_rt = _assemble_rt_trials(group)
+    df_rt = _assemble_rt_trials(magnitudes)
 
     # Shared RT x-axis range so all rows align (None when no RT data)
     rt_positive = df_rt.loc[df_rt['response_time'] > 0, 'response_time']

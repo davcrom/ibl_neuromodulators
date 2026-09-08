@@ -2329,15 +2329,13 @@ def _make_mock_group_with_performance_multi():
     return group
 
 
-def _make_mock_group_with_performance_and_rt():
-    """Mock group carrying both performance and RT trial data.
+def _make_rt_magnitudes():
+    """Magnitude frame matching the performance fixture's six eids.
 
-    Reuses the performance fixture's six eids (VTA-DA for 0-2, LC-NE for 3-5)
-    and attaches matching ``response_magnitudes`` so the combined grid can draw
-    both columns. The frame is the merged one the pipeline writes, so the RT
-    column reads its trial-level values without a join.
+    VTA-DA for eids 0-2, LC-NE for 3-5, so the combined grid can draw both
+    columns. The frame is the merged one the pipeline writes, so the RT column
+    reads its trial-level values without a join.
     """
-    group = _make_mock_group_with_performance()
     rng = np.random.default_rng(7)
     rows = []
     for i in range(6):
@@ -2354,24 +2352,23 @@ def _make_mock_group_with_performance_and_rt():
                 'probabilityLeft': rng.choice([0.2, 0.5, 0.8]),
                 'response_time': rng.uniform(0.1, 2.0),
             })
-    group.response_magnitudes = pd.DataFrame(rows)
-    return group
+    return pd.DataFrame(rows)
 
 
 class TestPlotPerformanceGrid:
 
     def test_returns_figure(self):
         from iblnm.vis import plot_performance_grid
-        group = _make_mock_group_with_performance_and_rt()
-        fig = plot_performance_grid(group)
+        group = _make_mock_group_with_performance()
+        fig = plot_performance_grid(group, _make_rt_magnitudes())
         assert isinstance(fig, plt.Figure)
         plt.close('all')
 
     def test_one_row_per_target_nm(self):
         """Two target-NMs → a 2x2 axes grid, psychometric titled per row."""
         from iblnm.vis import plot_performance_grid
-        group = _make_mock_group_with_performance_and_rt()
-        fig = plot_performance_grid(group)
+        group = _make_mock_group_with_performance()
+        fig = plot_performance_grid(group, _make_rt_magnitudes())
         assert len(fig.axes) == 4
         titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
         assert 'VTA-DA' in titles
@@ -2382,25 +2379,16 @@ class TestPlotPerformanceGrid:
         """Column 1 of each row holds RT violins (PolyCollection bodies)."""
         from matplotlib.collections import PolyCollection
         from iblnm.vis import plot_performance_grid
-        group = _make_mock_group_with_performance_and_rt()
-        fig = plot_performance_grid(group)
+        group = _make_mock_group_with_performance()
+        fig = plot_performance_grid(group, _make_rt_magnitudes())
         rt_axes = [fig.axes[row * 2 + 1] for row in range(2)]
         for ax in rt_axes:
             assert any(isinstance(c, PolyCollection) for c in ax.collections)
         plt.close('all')
 
     def test_missing_rt_data_still_returns_figure(self):
-        from iblnm.vis import plot_performance_grid
-        group = _make_mock_group_with_performance_and_rt()
-        group.response_magnitudes = None
-        fig = plot_performance_grid(group)
-        assert isinstance(fig, plt.Figure)
-        plt.close('all')
-
-    def test_unloaded_rt_data_still_returns_figure(self):
-        """The magnitudes are attached by the caller when their parquet exists,
-        so a group can reach the grid never carrying them at all. That draws
-        the psychometric column alone rather than raising."""
+        """The caller passes the magnitudes only when their parquet exists, so
+        the grid draws the psychometric column alone rather than raising."""
         from iblnm.vis import plot_performance_grid
         group = _make_mock_group_with_performance()
         fig = plot_performance_grid(group)
@@ -2410,17 +2398,16 @@ class TestPlotPerformanceGrid:
     def test_rt_trials_include_all_pleft_blocks(self):
         """RT trials are not restricted to the 50-50 block."""
         from iblnm.vis import _assemble_rt_trials
-        group = _make_mock_group_with_performance_and_rt()
-        df = _assemble_rt_trials(group)
+        df = _assemble_rt_trials(_make_rt_magnitudes())
         assert set(df['probabilityLeft'].unique()) == {0.2, 0.5, 0.8}
         plt.close('all')
 
     def test_rt_xaxis_shared_across_rows(self):
         """RT panels share x-limits and ticks even when per-target RT differs."""
         from iblnm.vis import plot_performance_grid
-        group = _make_mock_group_with_performance_and_rt()
+        group = _make_mock_group_with_performance()
         rng = np.random.default_rng(1)
-        trials = group.response_magnitudes.copy()
+        trials = _make_rt_magnitudes()
         eid_num = trials['eid'].str.split('-').str[1].astype(int)
         # VTA-DA (eid 0-2): fast (~0.1-0.3 s); LC-NE (eid 3-5): slow (~3-9 s)
         trials['response_time'] = np.where(
@@ -2428,8 +2415,7 @@ class TestPlotPerformanceGrid:
             rng.uniform(0.1, 0.3, len(trials)),
             rng.uniform(3.0, 9.0, len(trials)),
         )
-        group.response_magnitudes = trials
-        fig = plot_performance_grid(group)
+        fig = plot_performance_grid(group, trials)
         ax_top, ax_bot = fig.axes[1], fig.axes[3]
         assert ax_top.get_xlim() == ax_bot.get_xlim()
         assert list(ax_top.get_xticks()) == list(ax_bot.get_xticks())

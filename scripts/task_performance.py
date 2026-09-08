@@ -57,12 +57,13 @@ if __name__ == '__main__':
     print(f"  Recordings (session x region): {len(group)}")
 
     # =====================================================================
-    # Load data onto group
+    # Load the response magnitudes
     # =====================================================================
-    # The RT column of the performance grid reads the magnitudes off the group;
+    # The RT column of the performance grid is drawn from the magnitudes;
     # without the file it draws the psychometric column alone.
+    magnitudes = None
     if RESPONSE_MAGNITUDES_FPATH.exists():
-        group.response_magnitudes = group.filter_to_recordings(
+        magnitudes = group.filter_to_recordings(
             pd.read_parquet(RESPONSE_MAGNITUDES_FPATH))
 
     # =====================================================================
@@ -73,7 +74,7 @@ if __name__ == '__main__':
 
     # --- Performance grid: psychometric curves + RT by contrast per target-NM ---
     print("\nGenerating performance grid (psychometric + RT by contrast)...")
-    fig1 = plot_performance_grid(group)
+    fig1 = plot_performance_grid(group, magnitudes)
     fig1.savefig(output_dir / 'performance_grid.svg',
                  dpi=FIGURE_DPI, bbox_inches='tight')
     print(f"Saved: {output_dir / 'performance_grid.svg'}")
