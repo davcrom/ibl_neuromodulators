@@ -487,6 +487,8 @@ class TestPrepareDonor:
                        - trials['stimOnTrigger_times'] > 0.05)
                     & (trials['firstMovement_times']
                        - trials['stimOnTrigger_times'] > 0)
+                    & trials[['contrast', 'stim_side',
+                              'feedbackType']].notna().all(axis=1)
                     & ~np.isnan(ps.wheel_peak_velocity)).sum()
 
         criteria = dict(PERSESSION_TRIAL_CRITERIA)
@@ -499,6 +501,22 @@ class TestPrepareDonor:
 
         assert len(donor.frame) == expected
         assert len(donor.frame) > len(ps.trials)
+
+    def test_donor_frame_drops_the_trials_coding_would_falsify(self):
+        """A blank the coding hides is still a hole.
+
+        `code_predictors` codes `side`, `choice_side` and `reward` through
+        `np.where`, so a blank `stim_side` or `feedbackType` comes out as the
+        opposite level rather than as a blank — nothing downstream could catch
+        it. The five defective trials of the fixture are the criteria's whole
+        job: no log, no peak velocity, and the three blanks.
+        """
+        from scripts.responses import prepare_donor
+        from tests.test_data import _donorless_session
+
+        donor = prepare_donor(_donorless_session(unusable_trials=True))
+
+        assert set(donor.frame['trial']).isdisjoint(range(5))
 
     def test_donor_frame_preserves_trial_order(self):
         from scripts.responses import prepare_donor

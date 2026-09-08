@@ -573,13 +573,17 @@ def plot_movement_figures(group, magnitudes, fig_dirs, data_dir):
 # donor and focal alike: a trial carrying a blank or an unloggable value is one
 # patsy would drop from the design behind the fit's back, leaving the row count
 # the adjusted R-squared is charged against wrong and, once a donor column is
-# swapped into it, a NaN in the least-squares design. The reaction-time bound
-# is what a completeness entry cannot say: a reaction time at or below zero is
-# present but has no log.
+# swapped into it, a NaN in the least-squares design. `code_predictors` codes
+# `side`, `choice_side` and `reward` through `np.where`, so a blank
+# `stim_side` or `feedbackType` would come out as the opposite level rather
+# than as a blank — the completeness entry is the only place that can catch
+# those. The reaction-time bound is what a completeness entry cannot say in
+# turn: a reaction time at or below zero is present but has no log.
 PERSESSION_TRIAL_CRITERIA = {
     'exclude_nogo': True,
     'min_response_time': MIN_RESPONSE_TIME,
-    'complete': ['choice', 'peak_velocity'],
+    'complete': ['contrast', 'stim_side', 'feedbackType', 'choice',
+                 'peak_velocity'],
     'bounds': {'reaction_time': ('>', 0)},
 }
 

@@ -6713,11 +6713,14 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
     The early-window magnitude of every event is ``contrast_gain * contrast``
     plus small noise, so the ``contrast`` predictor carries real variance.
     Trials are all unbiased-block go trials with a real response. Under
-    ``unusable_trials`` two of them carry the defects the predictor criteria
-    exist to remove: trial 0 has a zero reaction time, which codes to NaN once
-    ``code_predictors`` takes its log, and trial 1 has an all-NaN wheel cut, so
-    its ``peak_velocity`` is NaN. Off by default, so the fixtures that record
-    golden fit values keep every trial usable.
+    ``unusable_trials`` the first five carry the defects the predictor criteria
+    exist to remove, one each: a zero reaction time (no log), an all-NaN wheel
+    cut (no ``peak_velocity``), then a blank ``stim_side``, ``feedbackType``
+    and ``contrast``. The last two blanks are the ones no downstream check
+    would catch, since ``code_predictors`` codes them through ``np.where`` and
+    a blank comes out as the opposite level rather than as a blank. Off by
+    default, so the fixtures that record golden fit values keep every trial
+    usable.
     The identity arguments (``eid``/``subject``/``region``/``hemisphere``/
     ``target_nm``) let callers build a multi-recording group; ``wheel_fs`` is
     set so the session round-trips through ``save_h5``.
@@ -6778,10 +6781,15 @@ def _make_session_for_persession(n_trials=120, contrast_gain=2.0, seed=0,
         'signed_contrast': signed,
         'contrast': contrast_vals,
         'stim_side': sides,
-        'feedbackType': rng.choice([1, -1], n_trials),
+        'feedbackType': rng.choice([1., -1.], n_trials),
         'choice': rng.choice([-1, 1], n_trials),
         'probabilityLeft': np.full(n_trials, 0.5),
     })
+    if unusable_trials:
+        # Blanks the np.where coding would otherwise read as the other level.
+        ps.trials.loc[2, 'stim_side'] = None
+        ps.trials.loc[3, 'feedbackType'] = np.nan
+        ps.trials.loc[4, 'contrast'] = np.nan
     # The wheel cut is what `peak_velocity` is built from; the caller writes it
     # to the store alongside the photometry.
     wheel_cut = rng.normal(0, 1, (1, n_trials, 50))
