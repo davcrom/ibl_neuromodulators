@@ -3360,10 +3360,8 @@ class TestFilterTrials:
             self, mock_session_series):
         """One keyword per exclusion, each recomputing the mask from scratch.
 
-        The four behavioral criteria are the ones the retired analysis-side
-        filter carried: no-go trials, false starts, and the movement onsets
-        `ibllib` back-dated into the quiescence period, plus the block
-        restriction.
+        The behavioral criteria are the ones the retired analysis-side filter
+        carried: no-go trials and false starts, plus the block restriction.
         """
         from iblnm.config import MIN_RESPONSE_TIME
         session = self._session(mock_session_series, self._trials())
@@ -3373,9 +3371,6 @@ class TestFilterTrials:
 
         session.filter_trials(min_response_time=MIN_RESPONSE_TIME)
         assert list(session.trials['trial']) == [0, 1, 2, 4, 5]
-
-        session.filter_trials(exclude_negative_reaction_time=True)
-        assert list(session.trials['trial']) == [0, 1, 2, 3, 5]
 
         session.filter_trials(probability_left=0.5)
         assert list(session.trials['trial']) == [0, 1, 2, 3, 4]

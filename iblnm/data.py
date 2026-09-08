@@ -1897,7 +1897,6 @@ class PhotometrySession(PhotometrySessionLoader):
 
     def filter_trials(self, exclude_nogo: bool = False,
                       min_response_time: float | bool = False,
-                      exclude_negative_reaction_time: bool = False,
                       probability_left: float | bool = False,
                       complete: list[str] | bool = False,
                       bounds: dict[str, tuple[str, float]] | bool = False,
@@ -1918,11 +1917,6 @@ class PhotometrySession(PhotometrySessionLoader):
             Drop the false starts, `response_time <= min_response_time`, and
             the trials with no `response_time` at all. Pass
             `config.MIN_RESPONSE_TIME`.
-        exclude_negative_reaction_time : bool
-            Drop the trials whose `reaction_time` is negative — `ibllib`'s
-            first-movement extractor back-dating a movement onset into the
-            quiescence period, not a data fault, and 0.885% of go trials. A
-            missing reaction time is not a negative one and is kept.
         probability_left : float or False
             Keep only the trials in this block, e.g. `0.5` for the unbiased one.
         complete : list of str or False
@@ -1945,7 +1939,6 @@ class PhotometrySession(PhotometrySessionLoader):
         criteria = {
             'exclude_nogo': exclude_nogo,
             'min_response_time': min_response_time,
-            'exclude_negative_reaction_time': exclude_negative_reaction_time,
             'probability_left': probability_left,
             'complete': complete,
             'bounds': bounds,
@@ -1956,8 +1949,6 @@ class PhotometrySession(PhotometrySessionLoader):
             keep &= trials['choice'] != 0
         if min_response_time is not False:
             keep &= trials['response_time'] > min_response_time
-        if exclude_negative_reaction_time:
-            keep &= ~(trials['reaction_time'] < 0)
         if probability_left is not False:
             keep &= trials['probabilityLeft'] == probability_left
         if complete is not False:
