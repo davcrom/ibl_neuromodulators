@@ -3227,6 +3227,122 @@ class TestAddTrialColumns:
         assert 'response' not in session.trials
 
 
+class TestFilterTrials:
+    """Tests for PhotometrySession.filter_trials() and the `trials` view."""
+
+    def _session(self, series, trials):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = trials
+        return session
+
+    def _trials(self):
+        """Six trials, each failing exactly one criterion but the first two."""
+        return pd.DataFrame({
+            'trial': [0, 1, 2, 3, 4, 5],
+            'choice': [1, -1, 0, 1, -1, 1],
+            'response_time': [0.8, 1.2, 0.9, 0.02, 1.1, 0.7],
+            'reaction_time': [0.2, 0.3, 0.25, 0.1, -0.4, 0.15],
+            'probabilityLeft': [0.5, 0.5, 0.5, 0.5, 0.5, 0.8],
+            'peak_velocity': [1.0, 2.0, 3.0, 4.0, 5.0, np.nan],
+        })
+
+    def test_filter_trials_drops_only_the_trials_each_criterion_names(
+            self, mock_session_series):
+        """One keyword per exclusion, each recomputing the mask from scratch.
+
+        The four behavioral criteria are the body of the retired
+        `analysis.select_modeling_trials`: no-go trials, false starts, and the
+        movement onsets `ibllib` back-dated into the quiescence period, plus the
+        block restriction.
+        """
+        from iblnm.config import MIN_RESPONSE_TIME
+        session = self._session(mock_session_series, self._trials())
+
+        session.filter_trials(exclude_nogo=True)
+        assert list(session.trials['trial']) == [0, 1, 3, 4, 5]
+
+        session.filter_trials(min_response_time=MIN_RESPONSE_TIME)
+        assert list(session.trials['trial']) == [0, 1, 2, 4, 5]
+
+        session.filter_trials(exclude_negative_reaction_time=True)
+        assert list(session.trials['trial']) == [0, 1, 2, 3, 5]
+
+        session.filter_trials(probability_left=0.5)
+        assert list(session.trials['trial']) == [0, 1, 2, 3, 4]
+
+        session.filter_trials(complete=['peak_velocity'])
+        assert list(session.trials['trial']) == [0, 1, 2, 3, 4]
+
+    def test_filter_trials_without_arguments_clears_a_narrower_mask(
+            self, mock_session_series):
+        """The unfiltered frame is reachable without a second method.
+
+        This is the one divergence from `filter_sessions`, whose bare call
+        applies the analysis defaults instead.
+        """
+        session = self._session(mock_session_series, self._trials())
+        session.filter_trials(exclude_nogo=True, probability_left=0.5)
+        assert len(session.trials) == 4
+
+        session.filter_trials()
+
+        assert list(session.trials['trial']) == [0, 1, 2, 3, 4, 5]
+
+    def test_filter_trials_records_the_last_call_alone(
+            self, mock_session_series):
+        """`_trial_filters` is what is in force, not what has ever been asked.
+
+        The mask is recomputed from scratch on every call, so a record that
+        accumulated would claim exclusions the view does not carry — and
+        `fit_region_responses` reads it to decide whether the response column
+        it is about to model was required to be present.
+        """
+        session = self._session(mock_session_series, self._trials())
+
+        session.filter_trials(exclude_nogo=True, complete=['peak_velocity'])
+        assert session._trial_filters == {
+            'exclude_nogo': True, 'complete': ['peak_velocity']}
+
+        session.filter_trials(probability_left=0.5)
+        assert session._trial_filters == {'probability_left': 0.5}
+
+        session.filter_trials()
+        assert session._trial_filters == {}
+
+    def test_filter_trials_view_keeps_the_lazy_load_contract(
+            self, mock_session_series):
+        """A session carrying no trials has no `trials`, as before the property.
+
+        Every load method guards on `hasattr`, so a view that answered with an
+        empty frame instead of raising would send `load_trials` past its own
+        check and leave the session silently empty.
+        """
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(
+            mock_session_series, one=MagicMock(), load_data=False)
+
+        assert not hasattr(session, 'trials')
+
+        session.trials = self._trials()
+        assert hasattr(session, 'trials')
+
+    def test_filter_trials_view_is_the_frame_extract_writes_to(
+            self, mock_session_series):
+        """Unfiltered, the view is the stored table, not a copy of it.
+
+        `extract_trial_timings` and `add_trial_columns` assign onto
+        `self.trials`; were the unfiltered view a copy, those columns would land
+        on a temporary and vanish.
+        """
+        session = self._session(mock_session_series, self._trials())
+
+        session.trials['movement_time'] = 1.0
+
+        session.filter_trials(exclude_nogo=True)
+        assert 'movement_time' in session.trials
+
+
 class TestExtractPerformance:
     """Tests for PhotometrySession.extract_performance()."""
 

@@ -1547,6 +1547,12 @@ class PhotometrySession(PhotometrySessionLoader):
         self.target_NM = _as_list(session_series.get('target_NM', []))
 
         self.errors = []
+        # The trial selection, set only by `filter_trials` and read by the
+        # `trials` property. `None` is the unfiltered state, which is what a
+        # session starts in and what makes the property hand back the stored
+        # frame itself rather than a masked copy.
+        self._trial_mask = None
+        self._trial_filters = {}
 
         super().__init__(*args, eid=self.eid, **kwargs)
         # No data attribute is pre-set: a product exists on the session only
@@ -1806,6 +1812,102 @@ class PhotometrySession(PhotometrySessionLoader):
         ('projects', True), ('users', True), ('brain_region', True),
         ('hemisphere', True), ('target_NM', True), ('datasets', True),
     ]
+
+    @property
+    def trials(self) -> pd.DataFrame:
+        """The trials table under the current trial mask.
+
+        Unfiltered — the state a session starts in and the one a bare
+        `filter_trials()` returns it to — this is the stored frame itself, so
+        the `extract_*` methods that add columns to `self.trials` write to the
+        table every later view is taken from. Under a mask it is a copy of the
+        selected rows, and adding a column to it changes nothing: only
+        `filter_trials` sets the mask, and only the unfiltered table is written
+        to.
+
+        Raises
+        ------
+        AttributeError
+            Nothing has loaded the trials yet, which is the lazy-load contract
+            every product follows and what `hasattr(self, 'trials')` checks.
+        """
+        trials = self._trials
+        if self._trial_mask is None:
+            return trials
+        return trials[self._trial_mask]
+
+    @trials.setter
+    def trials(self, value: pd.DataFrame) -> None:
+        self._trials = value
+
+    @trials.deleter
+    def trials(self) -> None:
+        del self._trials
+
+    def filter_trials(self, exclude_nogo: bool = False,
+                      min_response_time: float | bool = False,
+                      exclude_negative_reaction_time: bool = False,
+                      probability_left: float | bool = False,
+                      complete: list[str] | bool = False) -> None:
+        """Compute a boolean trial mask over the trials table. Non-destructive.
+
+        Mirrors `PhotometrySessionGroup.filter_sessions`: one keyword per
+        criterion, each call recomputing the mask from scratch, the selection
+        read back through the `trials` property. It diverges in its defaults —
+        every criterion is off, so `filter_trials()` clears the mask and the
+        unfiltered table is reachable without a second method.
+
+        Parameters
+        ----------
+        exclude_nogo : bool
+            Drop the trials the mouse made no choice on (`choice == 0`).
+        min_response_time : float or False
+            Drop the false starts, `response_time <= min_response_time`, and
+            the trials with no `response_time` at all. Pass
+            `config.MIN_RESPONSE_TIME`.
+        exclude_negative_reaction_time : bool
+            Drop the trials whose `reaction_time` is negative — `ibllib`'s
+            first-movement extractor back-dating a movement onset into the
+            quiescence period, not a data fault, and 0.885% of go trials. A
+            missing reaction time is not a negative one and is kept.
+        probability_left : float or False
+            Keep only the trials in this block, e.g. `0.5` for the unbiased one.
+        complete : list of str or False
+            Drop the trials that are NaN in any of these columns. This is how a
+            model's dependent variable enters the selection: the column has to
+            be on the trials table first, which `add_trial_columns` does.
+
+        Returns
+        -------
+        None
+        """
+        criteria = {
+            'exclude_nogo': exclude_nogo,
+            'min_response_time': min_response_time,
+            'exclude_negative_reaction_time': exclude_negative_reaction_time,
+            'probability_left': probability_left,
+            'complete': complete,
+        }
+        trials = self._trials
+        keep = pd.Series(True, index=trials.index)
+        if exclude_nogo:
+            keep &= trials['choice'] != 0
+        if min_response_time is not False:
+            keep &= trials['response_time'] > min_response_time
+        if exclude_negative_reaction_time:
+            keep &= ~(trials['reaction_time'] < 0)
+        if probability_left is not False:
+            keep &= trials['probabilityLeft'] == probability_left
+        if complete is not False:
+            keep &= trials[list(complete)].notna().all(axis=1)
+
+        self._trial_mask = keep
+        # Only the criteria in force, so the record reads as what was applied
+        # rather than as the signature. It is what `fit_region_responses`
+        # checks its response column against.
+        self._trial_filters = {name: value for name, value in criteria.items()
+                               if value is not False}
+        return None
 
     def load_trials(self) -> pd.DataFrame:
         """Return the trials table, fetching it from Alyx if it is not stored.
