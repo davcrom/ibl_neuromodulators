@@ -576,9 +576,11 @@ def _read_error_entries(group: h5py.Group) -> list[dict]:
 def _save_errors(session, h5_file):
     """Write `session.errors` into `errors/`, mirroring the product tree.
 
-    Entries are sorted by their `product` field: each product's entries replace
-    whatever `errors/{product}` held before, and products absent from this
-    attempt keep their existing groups. Entries with no product go to the
+    The tree is replaced, not merged into: what the session holds is the whole
+    log, since opening a file reads every entry back onto it. A product whose
+    entries were dropped by `clear_errors` therefore loses its group, which is
+    how a rebuilt product stops reporting the failure of its last attempt.
+    Entries are sorted by their `product` field; those with none go to the
     `errors/` root.
 
     `BlockingIOError` is never written: it is a transient file lock that
@@ -586,7 +588,7 @@ def _save_errors(session, h5_file):
     session permanently failed under the absent-data + present-error rule.
     """
     # Empty group signals "no errors" — distinguishable from "not yet written".
-    grp = h5_file.require_group('errors')
+    grp = _replace_group(h5_file, 'errors')
     by_product = defaultdict(list)
     for entry in session.errors:
         if entry['error_type'] not in _UNRECORDED_ERROR_TYPES:
@@ -1777,6 +1779,26 @@ class PhotometrySession(PhotometrySessionLoader):
         entry = make_log_entry(self.eid, error=error, product=product)
         if entry not in self.errors:
             self.errors.append(entry)
+
+    def clear_errors(self, product: str | None = None) -> None:
+        """Drop this session's logged errors for one product, or all of them.
+
+        A build attempt owns its product's error log: the entries a previous
+        attempt left were read back onto the session when its file was opened,
+        and re-writing them would keep reporting a failure the rebuild has
+        just fixed. Each build block clears its own product before it starts;
+        `None` clears the whole log, for a pass that rebuilds every product.
+
+        Parameters
+        ----------
+        product : str, optional
+            The `errors/{product}` group to forget. `None` clears every entry,
+            including those logged without a product.
+        """
+        if product is None:
+            self.errors = []
+        else:
+            self.errors = [e for e in self.errors if e['product'] != product]
 
     def stored_product_exists(self, product: str) -> bool:
         """Whether the session's H5 already holds `product`.

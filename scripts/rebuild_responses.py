@@ -61,7 +61,9 @@ def rebuild_responses(ps: PhotometrySession) -> None:
 
     The errors are written last, once, because `process` persists nothing: a
     pass that rebuilds a product owns that product's error log, and writes it
-    with the same call that writes the product.
+    with the same call that writes the product. Each block clears its own
+    product first, so a cut that succeeds this time drops the entry its last
+    attempt left; the products this pass does not touch keep theirs.
 
     Parameters
     ----------
@@ -70,6 +72,7 @@ def rebuild_responses(ps: PhotometrySession) -> None:
         can hand it to parallel workers.
     """
     try:
+        ps.clear_errors('photometry')
         ps.load_trials()
         signal = ps.load_photometry()
         events = ps.complete_events()
@@ -80,6 +83,7 @@ def rebuild_responses(ps: PhotometrySession) -> None:
         ps.log_error(error, product='photometry')
 
     try:
+        ps.clear_errors('wheel')
         ps.load_trials()
         ps.wheel_responses = ps.extract_responses(
             {WHEEL_LABEL: ps.load_wheel()}, events=WHEEL_RESPONSE_EVENTS,

@@ -909,6 +909,37 @@ class TestLogError:
         assert len(ps.errors) == 2
 
 
+class TestClearErrors:
+    """A build attempt discards the entries its previous attempt left."""
+
+    def _session_with_two_products_failed(self, series):
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(series, one=MagicMock(), load_data=False)
+        for product in ('photometry', 'wheel'):
+            try:
+                raise ValueError(f'{product} failed')
+            except ValueError as e:
+                ps.log_error(e, product=product)
+        return ps
+
+    def test_one_product_is_cleared_and_the_rest_stand(self, mock_session_series):
+        """`rebuild_responses` re-attempts two products, not the other two."""
+        ps = self._session_with_two_products_failed(mock_session_series)
+
+        ps.clear_errors('photometry')
+
+        assert [e['product'] for e in ps.errors] == ['wheel']
+
+    def test_clearing_without_a_product_empties_the_log(self,
+                                                        mock_session_series):
+        """`download.py` rebuilds every product, so it owns the whole log."""
+        ps = self._session_with_two_products_failed(mock_session_series)
+
+        ps.clear_errors()
+
+        assert ps.errors == []
+
+
 class TestH5Errors:
     """Tests for error save/load in H5."""
 
@@ -971,6 +1002,35 @@ class TestH5Errors:
         assert entry['error_message'] == 'no photometry'
         assert 'MissingRawData' in entry['traceback']
 
+    def test_a_cleared_product_loses_its_group_on_disk(self, mock_session_series,
+                                                       tmp_path):
+        """The written log is the log held: a fixed product leaves no group.
+
+        `clear_errors` drops the entries in memory; the save has to carry that
+        through, or the stored tree keeps reporting a failure that no longer
+        happens.
+        """
+        import h5py
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import MissingRawData, MissingLP
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+
+        for product, error in (('photometry', MissingRawData("no photometry")),
+                               ('video/pose', MissingLP("no pose"))):
+            try:
+                raise error
+            except Exception as e:
+                ps.log_error(e, product=product)
+        ps.save_h5(fpath, groups=['metadata', 'errors'])
+
+        ps.clear_errors('photometry')
+        ps.save_h5(fpath, groups=['errors'])
+
+        with h5py.File(fpath, 'r') as f:
+            assert list(f['errors']) == ['video']
+
     def test_save_errors_empty_list(self, mock_session_series, tmp_path):
         """Saving with no errors creates empty /errors group."""
         import h5py
@@ -1010,7 +1070,11 @@ class TestH5Errors:
 
     def test_rebuild_replaces_that_products_group_only(self, mock_session_series,
                                                        tmp_path):
-        """Last attempt wins for the rebuilt product; other products survive."""
+        """Last attempt wins for the rebuilt product; other products survive.
+
+        The second pass opens the file first, as every pipeline pass does, so
+        it holds the whole log and clears only the product it re-attempts.
+        """
         from iblnm.data import PhotometrySession
         from iblnm.validation import MissingRawData, MissingLP
         mock_one = MagicMock()
@@ -1030,6 +1094,8 @@ class TestH5Errors:
 
         # Second pass: only photometry/raw is retried, and fails differently.
         ps2 = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+        ps2.load_h5(fpath, groups=['errors'])
+        ps2.clear_errors('photometry/raw')
         try:
             raise MissingRawData("second attempt")
         except MissingRawData as e:

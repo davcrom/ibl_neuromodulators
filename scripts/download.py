@@ -229,7 +229,14 @@ def build_session(ps: PhotometrySession) -> None:
     The file is rewritten rather than merged into. The truncating write carries
     the metadata and the errors, which have no data of their own to detect;
     the append that follows writes whatever products the four blocks built.
+
+    The error log is cleared before the blocks run. A session arrives holding
+    every entry read out of its file, and this pass rebuilds every product, so
+    the log it writes is this attempt's alone — a product that failed last run
+    and builds cleanly now leaves no entry behind. `rebuild_responses` clears
+    per product instead, because it re-attempts only two of them.
     """
+    ps.clear_errors()
     build_trials(ps)
     build_photometry(ps)
     build_wheel(ps)
