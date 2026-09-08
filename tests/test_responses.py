@@ -427,7 +427,7 @@ class TestVarcompCoefficients:
              'brain_region': region, 'event': 'feedback_times',
              'predictor': regressor, 'n_trials': 200, 'r2_full': 0.4,
              'r2_full_adj': 0.35, 'delta_r2': 0.05, 'delta_r2_adj': 0.03,
-             'delta_r2_null_median': 0.01, 'coef': coef, 'coef_se': 0.1,
+             'coef': coef, 'coef_se': 0.1,
              'p_value': 0.01, 'q_value': 0.02, 'n_donors': 700}
             for eid, region in [('e1', 'VTA'), ('e2', 'SNc')]
             for coef, regressor in zip([0.3, -0.4], self._REGRESSORS)
@@ -653,7 +653,7 @@ class TestPlotPersessionFigures:
                     'brain_region': 'VTA', 'event': 'stimOnTrigger_times',
                     'predictor': p, 'n_trials': 100, 'r2_full': 0.5,
                     'r2_full_adj': 0.45, 'delta_r2': 0.05,
-                    'delta_r2_adj': 0.03, 'delta_r2_null_median': 0.01,
+                    'delta_r2_adj': 0.03,
                     'coef': 0.2, 'coef_se': 0.05, 'p_value': 0.01,
                     'q_value': 0.02, 'n_donors': 700})
         return pd.DataFrame(rows)
