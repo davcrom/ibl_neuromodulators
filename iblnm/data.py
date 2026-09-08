@@ -5415,8 +5415,8 @@ class PhotometrySessionGroup:
         trials : pandas.DataFrame
             The uncoded merged magnitude frame
             (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x
-            event x trial. :func:`iblnm.analysis.select_modeling_trials` runs
-            on it here, so every fit shares one trial selection.
+            event x trial, carrying the selection it was stored under — every
+            fit sees those rows as given.
         formulas : dict[str, str]
             Flat ``{name: formula_template}`` mapping; each template may
             contain ``{response}``, filled with ``response_col``.
@@ -5444,9 +5444,7 @@ class PhotometrySessionGroup:
             One row per fitted ``(group, name)`` with the ``group_by`` columns,
             ``name``, ``marginal_r2``, and ``conditional_r2``.
         """
-        df = analysis.select_modeling_trials(trials, response_col)
-        if events is not None:
-            df = df[df['event'].isin(events)]
+        df = trials if events is None else trials[trials['event'].isin(events)]
         self._lmm_group_by = list(group_by)
         formulas = {name: template.format(response=response_col)
                     for name, template in formulas.items()}
@@ -5614,9 +5612,7 @@ class PhotometrySessionGroup:
             Long-form ΔR² frame with columns ``[*group_by, 'predictor', 'fold',
             'n_trials', 'r2', 'delta_r2']``.
         """
-        df = analysis.select_modeling_trials(trials, response_col)
-        if events is not None:
-            df = df[df['event'].isin(events)]
+        df = trials if events is None else trials[trials['event'].isin(events)]
         cols = [*group_by, 'predictor', 'fold', 'n_trials', 'r2', 'delta_r2']
         formulas = {name: template.format(response=response_col)
                     for name, template in formulas.items()}
@@ -5651,8 +5647,8 @@ class PhotometrySessionGroup:
         trials : pandas.DataFrame
             The uncoded merged magnitude frame
             (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x
-            event x trial. :func:`iblnm.analysis.select_modeling_trials` runs
-            on it here, so every fit shares one trial selection.
+            event x trial, carrying the selection it was stored under — its
+            groups name the cached fits read back.
         name : str
             Model name whose cached fits to read.
         kind : str
@@ -5671,10 +5667,8 @@ class PhotometrySessionGroup:
             Long-form effect frame; columns include the ``group_by`` identity
             columns recovered from the registry keys.
         """
-        df = analysis.select_modeling_trials(trials, response_col)
-
         frames = []
-        for keys, _ in df.groupby(self._lmm_group_by):
+        for keys, _ in trials.groupby(self._lmm_group_by):
             group_values = keys if isinstance(keys, tuple) else (keys,)
             fit = self.lmm_fits.get((response_col, name, *group_values))
             if fit is None:
@@ -5811,8 +5805,8 @@ class PhotometrySessionGroup:
         trials : pandas.DataFrame
             The uncoded merged magnitude frame
             (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x
-            event x trial. :func:`iblnm.analysis.select_modeling_trials` runs
-            on it here, so every fit shares one trial selection.
+            event x trial, carrying the selection it was stored under — every
+            fit sees those rows as given.
         formula : str
             Wilkinson formula template with a ``{response}`` placeholder, e.g.
             ``LMM_FORMULAS['persession']['full']``. Its coefficient names become
@@ -5836,8 +5830,7 @@ class PhotometrySessionGroup:
             scorable.
         """
         formula = formula.format(response='response')
-        df = analysis.select_modeling_trials(trials, 'response')
-        df = df[df['event'] == event_name]
+        df = trials[trials['event'] == event_name]
         if 'fiber_idx' not in df.columns:
             df = df.assign(fiber_idx=0)
 
@@ -6307,8 +6300,8 @@ class PhotometrySessionGroup:
         trials : pandas.DataFrame
             The uncoded merged magnitude frame
             (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x
-            event x trial. :func:`iblnm.analysis.select_modeling_trials` runs
-            on it here, so every fit shares one trial selection.
+            event x trial, carrying the selection it was stored under — every
+            fit sees those rows as given.
         response_col : str
             Column name for the response magnitude.
         min_subjects : int
@@ -6325,10 +6318,9 @@ class PhotometrySessionGroup:
         """
         from iblnm.analysis import anova_rm
 
-        df = analysis.select_modeling_trials(trials, response_col)
-
         results = {}
-        for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
+        for (target_nm, event), df_group in trials.groupby(['target_NM',
+                                                            'event']):
             if df_group['subject'].nunique() < min_subjects:
                 continue
             event_label = event.replace('_times', '')

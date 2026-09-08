@@ -7,7 +7,6 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from iblnm.analysis import select_modeling_trials
 from iblnm.config import STIM_ONSET_EVENT
 from iblnm.data import PhotometrySession
 
@@ -204,8 +203,9 @@ class TestConditionTraces:
         assert agg['n'].tolist() == [n] * 5
 
     def test_averages_the_trials_the_models_are_fitted_on(self):
-        """The trial set is ``select_modeling_trials``', not the unbiased block:
-        a ``probabilityLeft`` 0.8 trial is averaged and a no-go trial is not."""
+        """The frame handed in is the trial set, with no selection re-derived:
+        the stored magnitudes already carry the trials the models fitted, so
+        every row of them is averaged."""
         from scripts.responses import condition_traces
         rec, ps = self._recording([[0.] * 5, [10.] * 5, [100.] * 5])
         trials = self._trials(3)
@@ -214,8 +214,8 @@ class TestConditionTraces:
 
         agg = condition_traces([(rec, ps)], trials, mode='pool', correct=False)
 
-        assert agg['mean'].tolist() == [5.] * 5
-        assert agg['n'].tolist() == [2] * 5
+        assert agg['mean'].tolist() == [pytest.approx(110 / 3)] * 5
+        assert agg['n'].tolist() == [3] * 5
 
 
 class TestSaveLMMFrames:
@@ -611,6 +611,25 @@ class TestComputeMaskingDiagnostics:
         cell = self._cell([0.0] * 4, reaction_times=[0.2, 0.2, 0.5, 0.5])
         assert cell['pct_move_in_window'] == pytest.approx(50.0)
 
+    def test_counts_the_trials_no_model_saw(self):
+        """The frame is counted as handed in, not re-selected.
+
+        A no-go trial whose window was masked end to end carries no response
+        and is fitted by nothing; it is exactly what the diagnostic exists to
+        report, so it must survive into the count. Re-deriving a modeling
+        selection here would drop it and report no masking at all.
+        """
+        from scripts.responses import compute_masking_diagnostics
+        magnitudes = self._magnitudes([1.0, 0.0])
+        magnitudes['choice'] = [0, 1]
+        magnitudes['response'] = [np.nan, 1.0]
+
+        cell = compute_masking_diagnostics(
+            magnitudes, window=self._WINDOW).iloc[0]
+
+        assert cell['n_trials'] == 2
+        assert cell['pct_fully_masked'] == pytest.approx(50.0)
+
     def test_cells_split_by_target_event_contrast_and_feedback(self):
         """The frame's grain: one row per (target_NM, event, contrast,
         feedbackType), carrying the schema's columns."""
@@ -711,7 +730,7 @@ class TestPlotResponseFigures:
         that cohort-event's trials, one row per (side, contrast, outcome)."""
         from scripts import responses
         _, magnitudes = _make_movement_group(n_per_cell=5)
-        trials = select_modeling_trials(magnitudes)
+        trials = magnitudes
 
         with patch.object(responses, 'plot_relative_contrast') as drawer:
             responses.plot_response_figures(magnitudes, tmp_path,

@@ -506,10 +506,10 @@ types are present, rather than re-validating.
 
 Recording keys and the response magnitude, with the trial-level task and
 movement columns beside them: there is no second trial-level table and no join
-at read time. Written uncoded, with no trial selection applied — every trial
-the session recorded — so a reader applies
-`analysis.select_modeling_trials` itself. Trial-level values repeat across a
-session's recordings and events.
+at read time. Written uncoded, carrying the trials the models were fitted on —
+the session's own trial mask, set by `PhotometrySession.filter_trials` — so a
+reader takes the rows as given rather than re-deriving a selection. Trial-level
+values repeat across a session's recordings and events.
 
 | Column | Type | Description |
 |---|---|---|

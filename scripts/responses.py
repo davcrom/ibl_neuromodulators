@@ -62,10 +62,7 @@ from iblnm.vis import (
     plot_ols_total_r2_violin,
     plot_varcomp_violins,
 )
-from iblnm.analysis import (
-    aggregate_conditions,
-    select_modeling_trials,
-)
+from iblnm.analysis import aggregate_conditions
 
 
 # =========================================================================
@@ -153,11 +150,10 @@ def condition_traces(recordings, trials: pd.DataFrame,
         The recordings to average over, as ``PhotometrySessionGroup`` yields
         them, each session carrying its loaded trials and photometry.
     trials : pandas.DataFrame
-        The uncoded merged magnitude frame
-        (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x event
-        x trial. :func:`iblnm.analysis.select_modeling_trials` runs on it here,
-        so the traces average the same trials the models fit — every block
-        included, no ``probabilityLeft`` restriction.
+        The stored magnitude frame (``config.RESPONSE_MAGNITUDE_COLUMNS``),
+        one row per recording x event x trial. It carries the fitted
+        selection already, so the traces average the trials the models fit
+        without re-deriving one here.
     mode : {'pool', 'subject', 'subject_centered'}
         Averaging unit, via ``AGGREGATION_MODES``.
     correct : bool
@@ -175,8 +171,7 @@ def condition_traces(recordings, trials: pd.DataFrame,
         ``group_cols`` plus ``mean``, ``sem`` and ``n``, the
         :func:`iblnm.analysis.aggregate_conditions` output shape.
     """
-    selected = select_modeling_trials(trials, response_col)
-    traces = pd.concat([_recording_traces(rec, ps, selected, correct)
+    traces = pd.concat([_recording_traces(rec, ps, trials, correct)
                         for rec, ps in recordings], ignore_index=True)
     return aggregate_conditions(traces, 'value', group_cols,
                                 **AGGREGATION_MODES[mode])
@@ -219,8 +214,8 @@ def plot_trace_figures(group, trials, figures_dir, mode='subject_centered',
         Filtered to the recordings in scope; it supplies the cohorts and opens
         each session's stored cut.
     trials : pandas.DataFrame
-        The uncoded merged magnitude frame, whose modeling selection names the
-        trials averaged (:func:`condition_traces`).
+        The stored magnitude frame, whose rows name the trials averaged
+        (:func:`condition_traces`).
     figures_dir : Path
         Output directory for the SVG figures.
     mode : {'pool', 'subject', 'subject_centered'}
@@ -275,9 +270,9 @@ def plot_response_figures(magnitudes, figures_dir, response_col='response',
     Parameters
     ----------
     magnitudes : pandas.DataFrame
-        The uncoded merged magnitude frame
-        (``config.RESPONSE_MAGNITUDE_COLUMNS``); the trials drawn are its
-        modeling selection.
+        The stored magnitude frame
+        (``config.RESPONSE_MAGNITUDE_COLUMNS``); its rows are the trials
+        drawn.
     figures_dir : Path
         Output directory for SVG files.
     response_col : str
@@ -287,14 +282,12 @@ def plot_response_figures(magnitudes, figures_dir, response_col='response',
         draws the same means where it weights units equally; they differ in
         what the error bars are taken over.
     """
-    trials = select_modeling_trials(magnitudes, response_col)
-
     for mode in modes:
-        cells = aggregate_conditions(trials, response_col,
+        cells = aggregate_conditions(magnitudes, response_col,
                                      CONTRAST_GROUP_COLS,
                                      **AGGREGATION_MODES[mode])
-        for (target_nm, event), df_group in trials.groupby(['target_NM',
-                                                            'event']):
+        for (target_nm, event), df_group in magnitudes.groupby(['target_NM',
+                                                                'event']):
             if df_group['subject'].nunique() < 2:
                 continue
             agg_df = cells[(cells['target_NM'] == target_nm)
@@ -742,17 +735,18 @@ def compute_masking_diagnostics(
     statement about which trials still had a window to average, which is what
     this frame reports.
 
-    The trials counted are the modeling trials, minus the null-response drop:
-    the selection runs on ``masked_fraction``, which is finite on every trial,
-    so the trials whose window was masked end to end — the ones the models
-    never see — are the ones this frame exists to count.
+    The trials are counted as they are handed in, with no selection of their
+    own: the frame to pass is the unfiltered one
+    (:meth:`PhotometrySession.masking_diagnostics`), because the trials whose
+    window was masked end to end carry no magnitude, are dropped by every fit,
+    and are the ones this frame exists to count.
 
     Parameters
     ----------
     magnitudes : pandas.DataFrame
         The uncoded merged magnitude frame
-        (``config.RESPONSE_MAGNITUDE_COLUMNS``), carrying
-        ``masked_fraction`` beside the ``contrast``/``feedbackType``/
+        (``config.RESPONSE_MAGNITUDE_COLUMNS``) with no trial mask applied,
+        carrying ``masked_fraction`` beside the ``contrast``/``feedbackType``/
         ``reaction_time`` the cells are keyed and counted on.
     window : tuple of float
         The response window, in seconds relative to the event, that
@@ -771,11 +765,10 @@ def compute_masking_diagnostics(
         inside the window. A trial with no ``reaction_time`` counts as one
         whose movement was not in the window.
     """
-    trials = select_modeling_trials(magnitudes, 'masked_fraction')
-    trials = trials.assign(
-        any_masked=trials['masked_fraction'] > 0,
-        fully_masked=trials['masked_fraction'] == 1,
-        move_in_window=trials['reaction_time'].between(*window),
+    trials = magnitudes.assign(
+        any_masked=magnitudes['masked_fraction'] > 0,
+        fully_masked=magnitudes['masked_fraction'] == 1,
+        move_in_window=magnitudes['reaction_time'].between(*window),
     )
     cells = aggregate_conditions(trials, 'masked_fraction', group_cols)
     diagnostics = cells[group_cols].assign(

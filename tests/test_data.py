@@ -7,7 +7,6 @@ import pytest
 import xarray as xr
 from unittest.mock import MagicMock, patch
 
-from iblnm.analysis import select_modeling_trials
 from iblnm.config import REQUIRED_CONTRASTS
 from iblnm.data import WHEEL_LABEL
 from iblnm.util import LOG_COLUMNS, contrast_transform
@@ -3251,10 +3250,10 @@ class TestFilterTrials:
             self, mock_session_series):
         """One keyword per exclusion, each recomputing the mask from scratch.
 
-        The four behavioral criteria are the body of the retired
-        `analysis.select_modeling_trials`: no-go trials, false starts, and the
-        movement onsets `ibllib` back-dated into the quiescence period, plus the
-        block restriction.
+        The four behavioral criteria are the ones the retired analysis-side
+        filter carried: no-go trials, false starts, and the movement onsets
+        `ibllib` back-dated into the quiescence period, plus the block
+        restriction.
         """
         from iblnm.config import MIN_RESPONSE_TIME
         session = self._session(mock_session_series, self._trials())
@@ -6523,7 +6522,7 @@ class TestResponseLMMFit:
         # Within each fitted group, every member fits the same trial count,
         # below the group's full total (the NaN-timing rows were dropped) — so
         # the drop-one ΔR² shares a denominator even for the timing-free model.
-        df = select_modeling_trials(magnitudes)
+        df = magnitudes
         checked = 0
         for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
             keys = [('response', name, target_nm, event) for name in formulas]
@@ -7420,7 +7419,7 @@ class TestResponseLMMEffects:
             assert col in effects.columns
 
         # Reproduce one group's reward EMMs by a direct call on the cached fit.
-        df = select_modeling_trials(magnitudes)
+        df = magnitudes
         (target_nm, event), _ = next(iter(df.groupby(['target_NM', 'event'])))
         fit = group.lmm_fits[('response', 'interactions', target_nm, event)]
         expected = compute_marginal_means(fit, ['reward'])
@@ -7474,7 +7473,7 @@ class TestResponseLMMResampling:
 
         # Reproduce one group's interactions delta_r2 by a direct call with the
         # same reference.
-        df = select_modeling_trials(magnitudes)
+        df = magnitudes
         (target_nm, event), df_group = next(
             iter(df.groupby(['target_NM', 'event'])))
         df_coded = PhotometrySession.code_predictors(df_group)
@@ -7503,7 +7502,7 @@ class TestResponseLMMResampling:
 
         # Reproduce one group's interactions delta_r2 by a direct call with the
         # same reference.
-        df = select_modeling_trials(magnitudes)
+        df = magnitudes
         (target_nm, event), df_group = next(
             iter(df.groupby(['target_NM', 'event'])))
         df_coded = PhotometrySession.code_predictors(df_group)
@@ -7857,22 +7856,6 @@ class TestGetGLMResponseFeatures:
         result = group.get_persession_ols_features(magnitudes, 
             self._formula(), event_name='stimOnTrigger_times')
         assert result.shape[1] == 19
-
-    def test_excludes_false_start_trials(self):
-        """Trials with response_time <= 0.05 must be excluded; all-fast → empty result."""
-        group, magnitudes = _make_group_for_response_lmm()
-        magnitudes['response_time'] = 0.01
-        result = group.get_persession_ols_features(magnitudes, 
-            self._formula(), event_name='stimOnTrigger_times')
-        assert len(result) == 0
-
-    def test_excludes_nogo_trials(self):
-        """Trials with choice == 0 must be excluded; all-nogo → empty result."""
-        group, magnitudes = _make_group_for_response_lmm()
-        magnitudes['choice'] = 0
-        result = group.get_persession_ols_features(magnitudes, 
-            self._formula(), event_name='stimOnTrigger_times')
-        assert len(result) == 0
 
 
 class TestGLMFeaturesCCA:
