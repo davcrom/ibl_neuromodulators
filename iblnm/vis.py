@@ -4304,14 +4304,15 @@ def _assemble_rt_trials(group):
     Parameters
     ----------
     group : PhotometrySessionGroup
-        May have ``response_magnitudes`` loaded.
+        May have ``response_magnitudes`` attached by the caller; the attribute
+        is absent when that parquet was not there to read.
 
     Returns
     -------
     pd.DataFrame
         Columns include ``response_time``, ``contrast``, ``target_NM``.
     """
-    if group.response_magnitudes is None:
+    if getattr(group, 'response_magnitudes', None) is None:
         return pd.DataFrame(columns=['response_time', 'contrast', 'target_NM'])
     df_trial = group.response_magnitudes.drop_duplicates(
         subset=['eid', 'trial', 'target_NM']).query('choice != 0').copy()

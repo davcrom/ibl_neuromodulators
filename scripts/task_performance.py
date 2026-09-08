@@ -59,8 +59,11 @@ if __name__ == '__main__':
     # =====================================================================
     # Load data onto group
     # =====================================================================
+    # The RT column of the performance grid reads the magnitudes off the group;
+    # without the file it draws the psychometric column alone.
     if RESPONSE_MAGNITUDES_FPATH.exists():
-        group.load_response_magnitudes(RESPONSE_MAGNITUDES_FPATH)
+        group.response_magnitudes = group.filter_to_recordings(
+            pd.read_parquet(RESPONSE_MAGNITUDES_FPATH))
 
     # =====================================================================
     # Figures

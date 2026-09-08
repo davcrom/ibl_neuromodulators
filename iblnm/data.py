@@ -4030,11 +4030,6 @@ class PhotometrySessionGroup:
         self.one = one
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
         self._sessions = {}  # eid → PhotometrySession cache
-        self.response_magnitudes = None
-        self.ols_persession = None
-        self.ols_persession_mouse = None
-        self.response_varcomp_summary = None
-        self.response_varcomp_violin = None
         self.response_features = None
         self.performance = None
         # Per-recording raw photometry QC, scanned by complete_catalog.
@@ -5054,23 +5049,6 @@ class PhotometrySessionGroup:
                      else pd.DataFrame(columns=RESPONSE_VARCOMP_VIOLIN_COLUMNS))
         return summary_df, violin_df
 
-    # -----------------------------------------------------------------
-    # Parquet loaders — populate group attributes from saved files
-    # -----------------------------------------------------------------
-
-    def _load_parquet(self, path):
-        """Read a parquet file and filter rows to current recordings.
-
-        Returns None if the file does not exist.
-        """
-
-        path = Path(path)
-        if not path.exists():
-            return None
-        df = pd.read_parquet(path)
-        eids = set(self.recordings['eid'])
-        return df[df['eid'].isin(eids)].copy()
-
     def load_performance(self) -> pd.DataFrame:
         """Read every catalogued session's `trials/performance` and join it on.
 
@@ -5098,74 +5076,9 @@ class PhotometrySessionGroup:
         self.performance = pd.DataFrame(rows)
         return self.performance
 
-    def load_response_magnitudes(self, path):
-        """Load response magnitudes from parquet, filtered to current recordings."""
-        self.response_magnitudes = self._load_parquet(path)
-
-    def load_ols_persession(self, path):
-        """Load the per-recording OLS frame from parquet.
-
-        One row per recording x event x dropped predictor
-        (``config.OLS_PERSESSION_COLUMNS``): the drop-one fits, the reference
-        model's coefficients and the per-recording permutation significance.
-        Keyed by ``eid``, so it goes through the eid-filtered
-        :meth:`_load_parquet` and keeps only the group's current recordings.
-        """
-        self.ols_persession = self._load_parquet(path)
-
-    def load_ols_persession_mouse(self, path):
-        """Load the per-mouse drop-one permutation p-value table from parquet.
-
-        Keyed by ``(target_NM, event, predictor, subject)`` with no ``eid``
-        column, so it is a plain read — not the eid-filtered ``_load_parquet``.
-        """
-        self.ols_persession_mouse = self._read_parquet(path)
-
-    @staticmethod
-    def _read_parquet(path):
-        """Read a parquet file unfiltered, returning None if it does not exist.
-
-        For tables keyed by cell rather than session (no ``eid`` column), where
-        the recordings-based filter of :meth:`_load_parquet` does not apply.
-        """
-        path = Path(path)
-        return pd.read_parquet(path) if path.exists() else None
-
-    def load_response_varcomp_summary(self, path):
-        """Load the variance-components summary table from parquet.
-
-        Keyed by ``(target_NM, event, regressor)`` with no ``eid`` column, so it
-        is a plain read — not the eid-filtered ``_load_parquet``.
-        """
-        self.response_varcomp_summary = self._read_parquet(path)
-
-    def load_response_varcomp_violin(self, path):
-        """Load the variance-components violin-shape table from parquet.
-
-        Keyed by ``(target_NM, event, regressor)`` with no ``eid`` column, so it
-        is a plain read — not the eid-filtered ``_load_parquet``.
-        """
-        self.response_varcomp_violin = self._read_parquet(path)
-
-    def load_response_features(self, path):
-        """Load response features from parquet, filtered to current recordings."""
-
-        path = Path(path)
-        if not path.exists():
-            self.response_features = None
-            return
-        df = pd.read_parquet(path)
-        if 'eid' in df.columns:
-            df = df.set_index(['eid', 'target_NM', 'fiber_idx'])
-        eids = set(self.recordings['eid'])
-        df = df[df.index.get_level_values('eid').isin(eids)]
-        self.response_features = df
-
     # -----------------------------------------------------------------
     # Trace loading and extraction
     # -----------------------------------------------------------------
-
-
 
 
     def _code_lmm_predictors(
@@ -5759,10 +5672,10 @@ class PhotometrySessionGroup:
         """
         if self.performance is None:
             from iblnm.config import PERFORMANCE_FPATH
-            self.performance = self._load_parquet(
+            self.performance = self.filter_to_recordings(pd.read_parquet(
                 performance_path if performance_path is not None
                 else PERFORMANCE_FPATH
-            )
+            ))
         if params is None:
             params = [
                 'psych_50_threshold', 'psych_50_bias',

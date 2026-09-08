@@ -600,8 +600,8 @@ if __name__ == '__main__':
         print(f"Error: {RESPONSE_MAGNITUDES_FPATH} not found. "
               "Run scripts/responses.py first.")
         raise SystemExit(1)
-    group.load_response_magnitudes(RESPONSE_MAGNITUDES_FPATH)
-    magnitudes = group.response_magnitudes
+    magnitudes = group.filter_to_recordings(
+        pd.read_parquet(RESPONSE_MAGNITUDES_FPATH))
 
     # =====================================================================
     # Plot-only mode

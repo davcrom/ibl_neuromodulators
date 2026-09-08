@@ -2397,6 +2397,16 @@ class TestPlotPerformanceGrid:
         assert isinstance(fig, plt.Figure)
         plt.close('all')
 
+    def test_unloaded_rt_data_still_returns_figure(self):
+        """The magnitudes are attached by the caller when their parquet exists,
+        so a group can reach the grid never carrying them at all. That draws
+        the psychometric column alone rather than raising."""
+        from iblnm.vis import plot_performance_grid
+        group = _make_mock_group_with_performance()
+        fig = plot_performance_grid(group)
+        assert isinstance(fig, plt.Figure)
+        plt.close('all')
+
     def test_rt_trials_include_all_pleft_blocks(self):
         """RT trials are not restricted to the 50-50 block."""
         from iblnm.vis import _assemble_rt_trials
