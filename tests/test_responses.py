@@ -639,8 +639,8 @@ class TestPlotMaskingFigures:
 
 
 class TestPlotPersessionFigures:
-    """The persession figure step plots from the in-scope merged OLS frame
-    (``ols_persession``) without recomputing or writing data."""
+    """The persession figure step plots from the merged OLS frame it is
+    handed, at the grain the caller read it in."""
 
     def _stub_frame(self):
         predictors = ['contrast', 'side', 'reward', 'choice_side',
@@ -658,19 +658,16 @@ class TestPlotPersessionFigures:
                     'q_value': 0.02, 'n_donors': 700})
         return pd.DataFrame(rows)
 
-    def test_plots_from_loaded_frame_without_recompute(self, tmp_path):
+    def test_plots_from_a_bare_frame(self, tmp_path):
+        """The frame and the output directory are the whole input — no group.
+        The per-mouse table is absent here, so this exercises the real drop-one
+        figure reading a frame rather than a mock."""
         from scripts import responses
-        group = MagicMock()
-        group.ols_persession = self._stub_frame()
-        # The per-mouse table is absent here: this test exercises the real
-        # drop-one figure, which reads it as a frame, not as a mock.
-        group.ols_persession_mouse = None
 
         fig_dir = tmp_path / 'persession'
         fig_dir.mkdir()
-        responses.plot_persession_figures(group, fig_dir)
+        responses.plot_persession_figures(self._stub_frame(), None, fig_dir)
 
-        group.response_ols_dropone.assert_not_called()
         svg = fig_dir / 'response_ols_persession_dropone.svg'
         assert svg.exists() and svg.stat().st_size > 0
 
@@ -695,8 +692,8 @@ class TestPlotPersessionFigures:
         (subject/violin take none)."""
         import matplotlib.pyplot as plt
         from scripts import responses
-        group = MagicMock()
-        group.ols_persession = self._stub_frame()
+        results = self._stub_frame()
+        mouse_pvalues = pd.DataFrame({'subject': ['s0'], 'p_value': [0.01]})
 
         fig_dir = tmp_path / 'persession'
         fig_dir.mkdir()
@@ -707,15 +704,73 @@ class TestPlotPersessionFigures:
             stack.enter_context(
                 patch.dict(responses._PERSESSION_DISPLAY_FNS, mocks))
             for mode in ('session', 'subject', 'target'):
-                responses.plot_persession_figures(group, fig_dir, display=mode)
+                responses.plot_persession_figures(results, mouse_pvalues,
+                                                  fig_dir, display=mode)
 
         for mode, (dropone_mock, total_r2_mock) in mocks.items():
             dropone_mock.assert_called_once()
             total_r2_mock.assert_called_once()
         session_kwargs = mocks['session'][0].call_args.kwargs
-        assert session_kwargs['mouse_pvalues'] is group.ols_persession_mouse
+        assert session_kwargs['mouse_pvalues'] is mouse_pvalues
         for mode in ('subject', 'target'):
             assert 'mouse_pvalues' not in mocks[mode][0].call_args.kwargs
+
+
+class TestReadResultFrames:
+    """The no-flag branch's read: written parquet in, narrowed frames out,
+    with neither fitting pass touched."""
+
+    _ROWS = [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
+             ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')]
+
+    def _group(self, tmp_path):
+        """Real group over two recordings, filtered to the first session."""
+        from tests.test_data import _bare_group
+        group = _bare_group(self._ROWS, tmp_path)
+        group.filter_sessions(session_types=False, exclude_subjects=False,
+                              exclude_eids=('eid-1',), qc_blockers=False,
+                              targetnms=False, photometry_qc=False,
+                              min_performance=False, required_contrasts=False)
+        return group
+
+    @staticmethod
+    def _write(tmp_path):
+        """The two grains the branch reads: eid-keyed, and cell-keyed."""
+        keyed = pd.DataFrame({'eid': ['eid-0', 'eid-1'],
+                              'brain_region': ['VTA-r', 'DR-l'],
+                              'value': [1.0, 2.0]})
+        unkeyed = pd.DataFrame({'target_NM': ['VTA-DA', 'DR-5HT'],
+                                'regressor': ['contrast', 'contrast'],
+                                'mean': [0.3, 0.4]})
+        paths = {}
+        for name, frame in (('ols', keyed), ('varcomp_summary', unkeyed)):
+            paths[name] = tmp_path / f'{name}.parquet'
+            frame.to_parquet(paths[name], index=False)
+        return paths
+
+    def test_narrows_keyed_frames_and_passes_the_others_whole(self, tmp_path):
+        """A file covering a session the group's filters dropped is narrowed on
+        load; the varcomp table, keyed by cell with no ``eid``, keeps every
+        row rather than matching nothing."""
+        from scripts.responses import read_result_frames
+        frames = read_result_frames(self._group(tmp_path),
+                                    self._write(tmp_path))
+
+        assert list(frames['ols']['eid']) == ['eid-0']
+        assert len(frames['varcomp_summary']) == 2
+
+    def test_neither_pass_runs(self, tmp_path):
+        """Both passes go through ``process``; reading the cached files runs
+        neither."""
+        from iblnm.data import PhotometrySessionGroup
+        from scripts.responses import read_result_frames
+        group = self._group(tmp_path)
+        paths = self._write(tmp_path)
+
+        with patch.object(PhotometrySessionGroup, 'process') as process:
+            read_result_frames(group, paths)
+
+        process.assert_not_called()
 
 
 class TestTwoPassRun:
@@ -855,10 +910,12 @@ class TestVarcompWiring:
         assert 'RESPONSE_VARCOMP_VIOLIN_FPATH' in reprocess
         assert reprocess.count('.to_parquet(') >= 2
 
-    def test_default_loads_cached_varcomp(self):
+    def test_default_reads_the_cached_varcomp_files(self):
+        """The no-flag branch reads every cached frame through one call, the
+        varcomp tables among them, rather than a loader method per file."""
         _, default = _reprocess_and_default_branches()
-        assert 'load_response_varcomp_summary(' in default
-        assert 'load_response_varcomp_violin(' in default
+        assert 'read_result_frames(group)' in default
+        assert "frames['varcomp_violin']" in default
 
     def test_violin_figure_plotted(self):
         _, main_block = _responses_source()

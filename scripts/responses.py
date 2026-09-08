@@ -736,12 +736,13 @@ _PERSESSION_DISPLAY_FNS = {
 }
 
 
-def plot_persession_figures(group, figures_dir, display='session'):
+def plot_persession_figures(results: pd.DataFrame,
+                            mouse_pvalues: pd.DataFrame | None, figures_dir,
+                            display: str = 'session') -> None:
     """Save the per-session drop-one ΔR² and full-model R² figures.
 
-    Reads ``group.ols_persession`` (assembled under ``--reprocess`` or loaded
-    from cache in the default run), scopes it to ``RESPONSE_EVENTS`` (a cached
-    frame may carry events since dropped from the analysis), and saves two
+    Scopes the merged per-recording OLS frame to ``RESPONSE_EVENTS`` (a cached
+    frame may carry events since dropped from the analysis) and saves two
     figures from it: a drop-one ΔR² grid (dropped-regressor rows × event
     columns) and a full-model R² figure (its own y-axis). ``display`` selects
     how each session's values are drawn — per-session dots (``session``),
@@ -749,26 +750,26 @@ def plot_persession_figures(group, figures_dir, display='session'):
     via ``_PERSESSION_DISPLAY_FNS``; the SVG filenames are the same in every
     mode.
 
-    The frame carries each recording's own q-value, so the ``session`` mode
-    figure colors its dots from it directly; ``group.ols_persession_mouse``, the
-    coarser per-mouse grain, is threaded in beside it to color the subject mean
-    dashes.
-
     Parameters
     ----------
-    group : PhotometrySessionGroup
-        Must have ``ols_persession`` populated, and ``ols_persession_mouse``
-        when ``display='session'``.
+    results : pandas.DataFrame
+        The merged per-recording OLS frame
+        (``config.OLS_PERSESSION_COLUMNS``), one row per recording x event x
+        dropped predictor. It carries each recording's own q-value, so the
+        ``session`` mode figure colors its dots from it directly.
+    mouse_pvalues : pandas.DataFrame or None
+        The per-mouse p-value table, the coarser grain that colors the subject
+        mean dashes. Read in ``session`` mode alone; the other two modes take
+        none, so None is fine there.
     figures_dir : Path
         Output directory for the SVG figures.
     display : {'session', 'subject', 'target'}
         Per-session value display mode.
     """
     dropone_fn, total_r2_fn = _PERSESSION_DISPLAY_FNS[display]
-    results = group.ols_persession
     results = results[results['event'].isin(RESPONSE_EVENTS)]
 
-    dropone_kwargs = ({'mouse_pvalues': group.ols_persession_mouse}
+    dropone_kwargs = ({'mouse_pvalues': mouse_pvalues}
                       if display == 'session' else {})
     fig = dropone_fn(
         results,
@@ -785,6 +786,46 @@ def plot_persession_figures(group, figures_dir, display='session'):
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
     print("  Per-session OLS drop-one and full-model R² figures saved")
+
+
+# The frames --reprocess writes and the no-flag branch reads back, each under
+# the name the plotting steps take it by.
+RESULT_FPATHS = {
+    'magnitudes': RESPONSE_MAGNITUDES_FPATH,
+    'ols': OLS_PERSESSION_FPATH,
+    'ols_mouse': RESPONSE_OLS_MOUSE_PVAL_FPATH,
+    'varcomp_summary': RESPONSE_VARCOMP_SUMMARY_FPATH,
+    'varcomp_violin': RESPONSE_VARCOMP_VIOLIN_FPATH,
+}
+
+
+def read_result_frames(group, paths: dict = RESULT_FPATHS,
+                       ) -> dict[str, pd.DataFrame]:
+    """Read the cached result frames, each narrowed to the group's recordings.
+
+    The no-flag branch's whole data step: an earlier ``--reprocess`` run wrote
+    these files over whatever sessions it analysed, and this run's own filters
+    decide which of those rows are in scope.
+    :meth:`PhotometrySessionGroup.filter_to_recordings` does the narrowing at
+    whichever grain each frame is keyed on, so the per-mouse and
+    variance-components tables — keyed by cell, with no ``eid`` — come back
+    whole.
+
+    Parameters
+    ----------
+    group : PhotometrySessionGroup
+        Already filtered and deduplicated; only its recordings are read.
+    paths : dict[str, pathlib.Path]
+        Frame name to parquet path. Defaults to ``RESULT_FPATHS``, the five
+        files ``--reprocess`` writes.
+
+    Returns
+    -------
+    dict[str, pandas.DataFrame]
+        One narrowed frame per entry in ``paths``, under the same names.
+    """
+    return {name: group.filter_to_recordings(pd.read_parquet(path))
+            for name, path in paths.items()}
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -881,21 +922,17 @@ if __name__ == '__main__':
         print(f"Saved response magnitudes to {RESPONSE_MAGNITUDES_FPATH}")
         print(f"Saved per-recording OLS results to {OLS_PERSESSION_FPATH} "
               f"and per-mouse p-values to {RESPONSE_OLS_MOUSE_PVAL_FPATH}")
-        group.ols_persession, group.ols_persession_mouse = ols, ols_mouse
 
         # --- Per-cell variance components (mouse vs session) ---
         print("Fitting per-cell variance-components model (PyMC sampling)...")
-        group.response_varcomp_summary, group.response_varcomp_violin = (
-            group.response_varcomp(
-                varcomp_coefficients(ols),
-                mcmc=VARCOMP_MCMC, tau_prior=VARCOMP_TAU_PRIOR,
-                min_mice=VARCOMP_MIN_MICE,
-                min_sessions_per_mouse=VARCOMP_MIN_SESSIONS_PER_MOUSE,
-                grid_size=VARCOMP_KDE_GRID, hdi_prob=VARCOMP_HDI_PROB))
-        group.response_varcomp_summary.to_parquet(
-            RESPONSE_VARCOMP_SUMMARY_FPATH, index=False)
-        group.response_varcomp_violin.to_parquet(
-            RESPONSE_VARCOMP_VIOLIN_FPATH, index=False)
+        varcomp_summary, varcomp_violin = group.response_varcomp(
+            varcomp_coefficients(ols),
+            mcmc=VARCOMP_MCMC, tau_prior=VARCOMP_TAU_PRIOR,
+            min_mice=VARCOMP_MIN_MICE,
+            min_sessions_per_mouse=VARCOMP_MIN_SESSIONS_PER_MOUSE,
+            grid_size=VARCOMP_KDE_GRID, hdi_prob=VARCOMP_HDI_PROB)
+        varcomp_summary.to_parquet(RESPONSE_VARCOMP_SUMMARY_FPATH, index=False)
+        varcomp_violin.to_parquet(RESPONSE_VARCOMP_VIOLIN_FPATH, index=False)
         print(f"Saved variance components to {RESPONSE_VARCOMP_SUMMARY_FPATH} "
               f"and {RESPONSE_VARCOMP_VIOLIN_FPATH}")
 
@@ -903,21 +940,15 @@ if __name__ == '__main__':
         # =================================================================
         # Default: load pre-existing parquet files
         # =================================================================
-        for fpath in (RESPONSE_MAGNITUDES_FPATH,
-                      OLS_PERSESSION_FPATH,
-                      RESPONSE_OLS_MOUSE_PVAL_FPATH,
-                      RESPONSE_VARCOMP_SUMMARY_FPATH,
-                      RESPONSE_VARCOMP_VIOLIN_FPATH):
+        for fpath in RESULT_FPATHS.values():
             if not fpath.exists():
                 print(f"Error: {fpath} not found. Run with --reprocess first.")
                 raise SystemExit(1)
 
-        group.load_response_magnitudes(RESPONSE_MAGNITUDES_FPATH)
-        group.load_ols_persession(OLS_PERSESSION_FPATH)
-        group.load_ols_persession_mouse(RESPONSE_OLS_MOUSE_PVAL_FPATH)
-        group.load_response_varcomp_summary(RESPONSE_VARCOMP_SUMMARY_FPATH)
-        group.load_response_varcomp_violin(RESPONSE_VARCOMP_VIOLIN_FPATH)
-        magnitudes = group.response_magnitudes
+        frames = read_result_frames(group)
+        magnitudes = frames['magnitudes']
+        ols, ols_mouse = frames['ols'], frames['ols_mouse']
+        varcomp_violin = frames['varcomp_violin']
 
     # =====================================================================
     # Response magnitude plots
@@ -978,7 +1009,7 @@ if __name__ == '__main__':
     # Per-session OLS drop-one
     # =====================================================================
     print("\nGenerating per-session OLS drop-one figure...")
-    plot_persession_figures(group, fig_dirs['persession'],
+    plot_persession_figures(ols, ols_mouse, fig_dirs['persession'],
                             display=args.persession_display)
     print(f"Per-session OLS figures saved to {fig_dirs['persession']}")
 
@@ -987,7 +1018,7 @@ if __name__ == '__main__':
     # =====================================================================
     print("\nGenerating variance-components violin figure...")
     fig = plot_varcomp_violins(
-        group.response_varcomp_violin,
+        varcomp_violin,
         title='Per-cell variance components\nmouse (left) vs session (right)')
     fig.savefig(fig_dirs['persession'] / 'response_varcomp_violins.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
