@@ -2727,6 +2727,68 @@ class PhotometrySession(PhotometrySessionLoader):
             self.trials, 'response_times', STIM_ONSET_EVENT)
         return self.trials
 
+    def add_trial_columns(
+            self,
+            frame: pd.DataFrame | pd.Series | np.ndarray,
+            name: str = 'peak_velocity',
+    ) -> pd.DataFrame:
+        """Join a trial-indexed payload onto `self.trials`, keeping its rows.
+
+        The trials table carries `trial` — the stored ONE trial index — as a
+        column rather than as its index, because the H5 round-trip rebuilds a
+        RangeIndex. Keyed payloads are therefore aligned on that column, and a
+        trial the payload does not cover gets NaN. This is how
+        `wheel_peak_velocity` becomes the `peak_velocity` column, and how one
+        fiber x event's response magnitudes become a column an analysis can
+        filter on.
+
+        Parameters
+        ----------
+        frame : pandas.DataFrame or pandas.Series or numpy.ndarray
+            A frame or Series indexed by `trial`, adding one column per name;
+            or a 1-D array of one value per trial, aligned by position, which
+            is the shape `wheel_peak_velocity` comes in.
+        name : str
+            Column name for the payloads that carry none — an array, or an
+            unnamed Series. Defaults to `peak_velocity`, the only such payload
+            in the pipeline and the name `config.MOVEMENT_PREDICTORS` uses.
+
+        Returns
+        -------
+        pandas.DataFrame
+            `self.trials` with the columns added and its row count unchanged;
+            also reassigned to ``self.trials``.
+
+        Raises
+        ------
+        ValueError
+            The payload repeats a trial key — a many-to-one join would multiply
+            the table's rows rather than fail — or carries keys that are not
+            this session's trials, which is what a payload indexed by row
+            position looks like. An array of the wrong length raises from the
+            assignment.
+        """
+        if isinstance(frame, np.ndarray):
+            self.trials[name] = frame
+            return self.trials
+        if isinstance(frame, pd.Series):
+            frame = frame.rename(frame.name or name)
+        if frame.index.has_duplicates:
+            raise ValueError(
+                f"payload repeats trial keys "
+                f"{frame.index[frame.index.duplicated()].unique().tolist()}; "
+                f"one row per trial is required (eid {self.eid})"
+            )
+        unknown = frame.index.difference(self.trials['trial'])
+        if len(unknown):
+            raise ValueError(
+                f"payload carries {len(unknown)} keys that are not trials of "
+                f"this session ({unknown[:5].tolist()}...); it is not indexed "
+                f"by `trial` (eid {self.eid})"
+            )
+        self.trials = self.trials.join(frame, on='trial')
+        return self.trials
+
     def extract_performance(self) -> dict:
         """Score `self.trials` into the `trials/performance` payload.
 

@@ -3130,6 +3130,103 @@ class TestExtractTrialTimings:
         assert list(out['choice']) == [1, -1, 1]
 
 
+class TestAddTrialColumns:
+    """Tests for PhotometrySession.add_trial_columns()."""
+
+    def _session(self, series, trials):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = trials
+        return session
+
+    def _trials(self):
+        return pd.DataFrame({
+            'trial': [0, 3, 7, 9],
+            'choice': [1, -1, 1, -1],
+        })
+
+    def test_add_trial_columns_joins_a_partial_frame_on_trial(
+            self, mock_session_series):
+        """A frame covering some trials adds its columns without dropping rows.
+
+        The payload is keyed by `trial`, the stored ONE trial index, which need
+        not be contiguous — so the join is on that column, not on row position.
+        """
+        session = self._session(mock_session_series, self._trials())
+        payload = pd.DataFrame(
+            {'response': [0.5, 1.5]}, index=pd.Index([3, 9], name='trial'))
+
+        out = session.add_trial_columns(payload)
+
+        assert out is session.trials
+        assert len(out) == 4
+        assert list(out['trial']) == [0, 3, 7, 9]
+        np.testing.assert_allclose(
+            out['response'], [np.nan, 0.5, np.nan, 1.5])
+
+    def test_add_trial_columns_lands_an_array_under_the_given_name(
+            self, mock_session_series):
+        """`wheel_peak_velocity` is an array with no keys of its own.
+
+        It comes off the wheel response matrix one value per trial, in the
+        table's own order, so it is aligned by position and named by the
+        caller — `peak_velocity`, the name the formulas use.
+        """
+        session = self._session(mock_session_series, self._trials())
+
+        out = session.add_trial_columns(np.array([1.0, 2.0, 3.0, 4.0]))
+
+        assert len(out) == 4
+        np.testing.assert_allclose(out['peak_velocity'], [1.0, 2.0, 3.0, 4.0])
+
+    def test_add_trial_columns_rejects_repeated_trial_keys(
+            self, mock_session_series):
+        """A many-to-one payload would silently multiply the table's rows.
+
+        The response magnitudes are keyed by fiber x event x trial; handing one
+        over without selecting a single fiber and event repeats every trial key,
+        and the join would grow the table instead of failing.
+        """
+        session = self._session(mock_session_series, self._trials())
+        payload = pd.DataFrame(
+            {'response': [0.5, 1.5, 2.5]},
+            index=pd.Index([3, 3, 9], name='trial'),
+        )
+
+        with pytest.raises(ValueError):
+            session.add_trial_columns(payload)
+
+        assert len(session.trials) == 4
+        assert 'response' not in session.trials
+
+    def test_add_trial_columns_names_an_unnamed_series(
+            self, mock_session_series):
+        """A Series carries one column, and may not carry its name with it."""
+        session = self._session(mock_session_series, self._trials())
+        payload = pd.Series([0.5, 1.5], index=pd.Index([3, 9], name='trial'))
+
+        out = session.add_trial_columns(payload, name='response')
+
+        np.testing.assert_allclose(
+            out['response'], [np.nan, 0.5, np.nan, 1.5])
+
+    def test_add_trial_columns_rejects_a_positionally_indexed_frame(
+            self, mock_session_series):
+        """A frame indexed by row position is not trial-indexed.
+
+        `trial` is the stored ONE index and skips the trials ONE dropped, so a
+        RangeIndex payload lines up with the wrong trials wherever the two
+        diverge — silently, since the join would still find keys 0 and 3.
+        """
+        session = self._session(mock_session_series, self._trials())
+        payload = pd.DataFrame({'response': [0.5, 1.5, 2.5, 3.5]})
+
+        with pytest.raises(ValueError):
+            session.add_trial_columns(payload)
+
+        assert 'response' not in session.trials
+
+
 class TestExtractPerformance:
     """Tests for PhotometrySession.extract_performance()."""
 
