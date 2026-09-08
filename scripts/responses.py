@@ -985,7 +985,8 @@ if __name__ == '__main__':
                                 ignore_index=True) if returns
                       else pd.DataFrame(columns=RESPONSE_MAGNITUDE_COLUMNS))
         if len(magnitudes) == 0:
-            print("No response magnitudes extracted. Check H5 files exist.")
+            print(f"No response magnitudes: all {len(group.sessions)} "
+                  "sessions returned nothing. Check the logged errors.")
             raise SystemExit(1)
         magnitudes = magnitudes[RESPONSE_MAGNITUDE_COLUMNS]
 

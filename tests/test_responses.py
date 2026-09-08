@@ -1018,7 +1018,7 @@ class TestReprocessWiring:
         """The guard the collection pass inherited: nothing extracted means the
         store is not there to read."""
         reprocess, _ = _reprocess_and_default_branches()
-        assert 'Check H5 files exist' in reprocess
+        assert 'No response magnitudes' in reprocess
         assert 'raise SystemExit(1)' in reprocess
 
 
