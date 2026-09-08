@@ -864,6 +864,50 @@ class TestLogError:
         assert ps.errors[0]['traceback'] is not None
         assert 'ValueError' in ps.errors[0]['traceback']
 
+    def test_the_same_failure_is_logged_once(self, mock_session_series):
+        """A session reloaded and rebuilt must not stack up one failure.
+
+        The entries a session read out of its file are already on `ps.errors`
+        when a build re-attempts the product, so a failure that recurs would
+        otherwise be recorded again on every run.
+        """
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+
+        for _ in range(2):
+            try:
+                raise ValueError("same failure")
+            except ValueError as e:
+                ps.log_error(e, product='photometry')
+
+        assert len(ps.errors) == 1
+
+    def test_the_same_error_from_a_different_place_is_kept(
+            self, mock_session_series):
+        """Two failures alike in type and message are distinct if raised apart.
+
+        The traceback is what separates them — the same `KeyError` from the
+        response cut and from the wheel reduction are different faults.
+        """
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(mock_session_series, one=mock_one, load_data=False)
+
+        def raise_here():
+            raise ValueError("same failure")
+
+        def raise_there():
+            raise ValueError("same failure")
+
+        for raiser in (raise_here, raise_there):
+            try:
+                raiser()
+            except ValueError as e:
+                ps.log_error(e, product='photometry')
+
+        assert len(ps.errors) == 2
+
 
 class TestH5Errors:
     """Tests for error save/load in H5."""

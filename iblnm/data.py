@@ -1755,7 +1755,14 @@ class PhotometrySession(PhotometrySessionLoader):
         return self
 
     def log_error(self, error, product=None):
-        """Log an exception to the session's error list.
+        """Log an exception to the session's error list, once.
+
+        An entry matching one already logged is dropped rather than appended.
+        A session opened from its file carries the entries it read, so a
+        failure that recurs on the next build would otherwise be recorded again
+        on every run. The traceback is part of the comparison: two failures
+        alike in type and message but raised in different places are different
+        faults, and only the traceback separates them.
 
         Parameters
         ----------
@@ -1767,9 +1774,9 @@ class PhotometrySession(PhotometrySessionLoader):
             saved under; None writes it to the `errors/` root.
         """
         from iblnm.validation import make_log_entry
-        self.errors.append(
-            make_log_entry(self.eid, error=error, product=product)
-        )
+        entry = make_log_entry(self.eid, error=error, product=product)
+        if entry not in self.errors:
+            self.errors.append(entry)
 
     def stored_product_exists(self, product: str) -> bool:
         """Whether the session's H5 already holds `product`.
