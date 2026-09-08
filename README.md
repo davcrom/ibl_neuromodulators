@@ -100,10 +100,13 @@ The three flags all narrow which sessions run, never what is built within one.
 ### Re-cutting the responses alone
 
 `scripts/rebuild_responses.py` is the exception to the all-or-nothing build. It
-re-cuts `photometry/{region}/responses` for every stored session and touches
-nothing else, which is what a change to `config.RESPONSE_EVENTS`,
-`config.RESPONSE_WINDOW` or the cut itself calls for — a full `download.py` run
-would rebuild every other product and re-download the raw data to no purpose.
+re-cuts `photometry/{region}/responses` and `wheel/velocity/responses` for every
+stored session — plus `wheel/velocity/peak_velocity`, which is reduced from the
+wheel's cut — and touches nothing else, which is what a change to
+`config.RESPONSE_EVENTS`, `config.RESPONSE_WINDOW`,
+`config.WHEEL_RESPONSE_EVENTS`, `config.WHEEL_RESPONSE_WINDOW` or the cut
+itself calls for — a full `download.py` run would rebuild every other product
+and re-download the raw data to no purpose.
 
 ```bash
 python scripts/rebuild_responses.py                  # every stored session
@@ -113,13 +116,16 @@ python scripts/rebuild_responses.py --target-NM LC-NE
 ```
 
 It reads its session list from the store's own `metadata` groups rather than
-from Alyx or `sessions.pqt`, and each session's trials table and preprocessed
-band from its H5 file. The stale event's dataset goes when the group is
-replaced, so a rebuild after an event was renamed leaves no orphan behind. A
-session whose file holds no preprocessed band is the one case that reaches
-Alyx: `load_photometry` fetches its raw bands and preprocesses them as the
-download pass would. The three flags narrow which sessions run, as they do
-there.
+from Alyx or `sessions.pqt`, and each session's trials table, preprocessed band
+and preprocessed wheel velocity from its H5 file. The stale event's dataset
+goes when the group is replaced, so a rebuild after an event was renamed leaves
+no orphan behind. Each modality is re-cut in its own `try`, as the download
+build does, so a session whose photometry cannot be cut still has its wheel
+re-cut and logs the error against the modality that raised. A session whose
+file holds no preprocessed signal is the one case that reaches Alyx:
+`load_photometry` fetches its raw bands and preprocesses them, and `load_wheel`
+its raw encoder samples, as the download pass would. The three flags narrow
+which sessions run, as they do there.
 
 **Analysis scripts build nothing in bulk.** A session missing a product builds
 it through that session's `load_*` when the analysis reaches it. With the
