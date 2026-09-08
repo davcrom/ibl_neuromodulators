@@ -7221,6 +7221,64 @@ class TestCollectFits:
         assert mouse['q_value'].notna().all()
 
 
+class TestRecordingFilter:
+    """The group's narrowing of a saved frame to its filtered recordings."""
+
+    _ROWS = [('eid-0', 'subj-0', 'VTA', 'r', 'VTA-DA'),
+             ('eid-0', 'subj-0', 'DR', 'l', 'DR-5HT'),
+             ('eid-1', 'subj-1', 'VTA', 'r', 'VTA-DA')]
+
+    def test_recording_filter_drops_rows_outside_the_recordings(self,
+                                                                tmp_path):
+        """A frame keyed by eid alone keeps the rows whose session survived the
+        group's filters and loses the rest."""
+        group = _bare_group(self._ROWS, tmp_path)
+        group.filter_sessions(session_types=False, exclude_subjects=False,
+                              exclude_eids=('eid-1',), qc_blockers=False,
+                              targetnms=False, photometry_qc=False,
+                              min_performance=False, required_contrasts=False)
+        frame = pd.DataFrame({'eid': ['eid-0', 'eid-1', 'eid-2'],
+                              'value': [1.0, 2.0, 3.0]})
+
+        narrowed = group.filter_to_recordings(frame)
+
+        assert list(narrowed['eid']) == ['eid-0']
+        assert list(narrowed['value']) == [1.0]
+
+    def test_recording_filter_drops_a_region_its_session_kept(self, tmp_path):
+        """A frame keyed by (eid, brain_region) narrows at that grain: the
+        target filter cuts recordings rather than sessions, so eid-0's DR row
+        goes while its VTA row stays."""
+        group = _bare_group(self._ROWS, tmp_path)
+        group.filter_sessions(session_types=False, exclude_subjects=False,
+                              exclude_eids=False, qc_blockers=False,
+                              targetnms=('VTA-DA',), photometry_qc=False,
+                              min_performance=False, required_contrasts=False)
+        frame = pd.DataFrame({'eid': ['eid-0', 'eid-0', 'eid-1'],
+                              'brain_region': ['VTA', 'DR', 'VTA'],
+                              'value': [1.0, 2.0, 3.0]})
+
+        narrowed = group.filter_to_recordings(frame)
+
+        assert list(zip(narrowed['eid'], narrowed['brain_region'])) == [
+            ('eid-0', 'VTA'), ('eid-1', 'VTA')]
+
+    def test_recording_filter_leaves_an_unkeyed_frame_whole(self, tmp_path):
+        """The per-mouse table carries neither identifier. It is returned as it
+        came rather than emptied for matching nothing."""
+        group = _bare_group(self._ROWS, tmp_path)
+        group.filter_sessions(session_types=False, exclude_subjects=False,
+                              exclude_eids=('eid-1',), qc_blockers=False,
+                              targetnms=False, photometry_qc=False,
+                              min_performance=False, required_contrasts=False)
+        frame = pd.DataFrame({'subject': ['subj-0', 'subj-1'],
+                              'p_value': [0.01, 0.5]})
+
+        narrowed = group.filter_to_recordings(frame)
+
+        pd.testing.assert_frame_equal(narrowed, frame)
+
+
 class TestResponseLMMEffects:
 
     def test_coefficients_carry_terms_and_ci(self):

@@ -4827,6 +4827,40 @@ class PhotometrySessionGroup:
             group_cols=PERSESSION_FDR_GROUP_COLS)
         return ols[OLS_PERSESSION_COLUMNS], mouse
 
+    def filter_to_recordings(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Narrow a saved frame to the group's current recordings.
+
+        The read-side counterpart of the filters: a parquet file written by an
+        earlier run covers whatever sessions that run analysed, and this keeps
+        the rows the group's own `filter_sessions` and `deduplicate` masks
+        admit. No I/O — the caller reads the file.
+
+        Matching is on whichever of `eid` and `brain_region` the frame carries,
+        so a per-recording frame loses a region dropped by the photometry-QC or
+        target filter while its session's other regions stay, and a
+        per-session frame is narrowed on the eid alone. A frame keyed by
+        neither — the per-mouse table, at its coarser grain — is returned
+        whole rather than emptied.
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Any frame; only its identifier columns are read.
+
+        Returns
+        -------
+        pandas.DataFrame
+            A copy narrowed to the matching rows, in their original order, or
+            `df` itself when it carries no identifier column.
+        """
+        identifiers = [column for column in ('eid', 'brain_region')
+                       if column in df.columns]
+        if not identifiers:
+            return df
+        keys = pd.MultiIndex.from_frame(df[identifiers])
+        kept = pd.MultiIndex.from_frame(self.recordings[identifiers])
+        return df[keys.isin(kept)].copy()
+
     def collect_responses(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Response magnitudes and trial regressors, in one pass over the store.
 
