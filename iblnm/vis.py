@@ -2639,7 +2639,8 @@ def _decode_contrast_levels(emm_df: pd.DataFrame) -> pd.DataFrame:
     """Replace per-fit-centered coded contrast with true percent, per target-NM.
 
     The LMM mean-centers log2 contrast on each recording's own trial
-    distribution (:func:`iblnm.analysis.code_predictors`), so one percent maps to
+    distribution (:meth:`iblnm.data.PhotometrySession.code_predictors`), so one
+    percent maps to
     a different coded level for every target-NM. Within a single fit the
     0%-contrast clamp is always the minimum level, so subtracting that fit's own
     minimum cancels its centering constant and the log2 inverse recovers percent.

@@ -2440,22 +2440,6 @@ class TestSelectModelingTrials:
         kept = select_modeling_trials(self._merged_frame(), probability_left=0.5)
         assert kept['trial'].tolist() == [0]
 
-    def test_adds_log_timing_columns(self):
-        from iblnm.analysis import select_modeling_trials
-        df = pd.DataFrame({
-            'response': [1.0, 1.0],
-            'choice': [1, 1],
-            'probabilityLeft': [0.5, 0.5],
-            'response_time': [1.0, 1.0],
-            'reaction_time': [0.1, np.nan],  # second has no onset -> log NaN
-            'movement_time': [0.1, 0.1],
-            'peak_velocity': [1.0, 1.0],
-        })
-        kept = select_modeling_trials(df)
-        assert 'log_reaction_time' in kept.columns
-        assert kept['log_reaction_time'].iloc[0] == pytest.approx(np.log10(0.1))
-        assert np.isnan(kept['log_reaction_time'].iloc[1])
-
     def test_respects_response_col_argument(self):
         from iblnm.analysis import select_modeling_trials
         df = self._merged_frame().rename(columns={'response': 'baseline'})
@@ -2490,60 +2474,6 @@ class TestSelectModelingTrials:
         select_modeling_trials(self._negative_reaction_time_frame(),
                                dropped=dropped)
         assert dropped == {'negative_reaction_time': 2}
-
-    def test_no_negative_reaction_time_reaches_the_log(self):
-        from iblnm.analysis import select_modeling_trials
-        kept = select_modeling_trials(self._negative_reaction_time_frame())
-        assert kept['log_reaction_time'].notna().all()
-
-
-class TestCodePredictors:
-    def _frame(self):
-        # contrast in percent units; log2 coding requires nonzero values >= 1.
-        return pd.DataFrame({
-            'contrast': [0.0, 6.25, 100.0],
-            'side': ['contra', 'ipsi', 'contra'],
-            'feedbackType': [1, -1, 1],
-            'log_reaction_time': [-1.5, -0.5, -2.0],
-            'peak_velocity': [40.0, 55.0, 90.0],
-        })
-
-    def test_side_and_reward_deviation_coded(self):
-        from iblnm.analysis import code_predictors
-        coded = code_predictors(self._frame())
-        assert coded['side'].tolist() == [0.5, -0.5, 0.5]
-        assert coded['reward'].tolist() == [0.5, -0.5, 0.5]
-
-    def test_contrast_log2_coded_and_centered(self):
-        from iblnm.analysis import code_predictors
-        coded = code_predictors(self._frame())
-        expected = np.array([0.0, np.log2(6.25), np.log2(100.0)])
-        expected = expected - expected.mean()
-        assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
-        np.testing.assert_allclose(coded['contrast'].values, expected)
-
-    def test_movement_predictors_centered(self):
-        from iblnm.analysis import code_predictors
-        df = self._frame()
-        coded = code_predictors(df)
-        for col in ('log_reaction_time', 'peak_velocity'):
-            assert coded[col].mean() == pytest.approx(0.0, abs=1e-12)
-            np.testing.assert_allclose(
-                coded[col].values, df[col].values - df[col].values.mean())
-
-    def test_absent_continuous_predictor_is_harmless(self):
-        from iblnm.analysis import code_predictors
-        df = self._frame().drop(columns=['peak_velocity'])
-        coded = code_predictors(df)
-        assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
-        assert coded['log_reaction_time'].mean() == pytest.approx(0.0, abs=1e-12)
-
-    def test_input_frame_not_mutated(self):
-        from iblnm.analysis import code_predictors
-        df = self._frame()
-        before = df.copy(deep=True)
-        code_predictors(df)
-        pd.testing.assert_frame_equal(df, before)
 
 
 class TestAggregateConditions:

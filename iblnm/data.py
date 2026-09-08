@@ -20,11 +20,12 @@ from iblphotometry.qc import qc_signals
 from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
-    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, DDM_HMM_DIR, EIDS_TO_DROP,
+    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, CONTINUOUS_PREDICTORS,
+    DDM_HMM_DIR, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD, IBL_QC_VALUES,
     LABEL2EVENT, LENGTH_MISMATCH_THRESHOLD, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
-    MOVEMENT_EVENTS, MOVEMENT_RESPONSE_WINDOW,
+    MOVEMENT_EVENTS, MOVEMENT_PREDICTORS, MOVEMENT_RESPONSE_WINDOW,
     OLS_PERSESSION_COLUMNS, PERSESSION_FDR_GROUP_COLS,
     PERSESSION_PVAL_N_BOOTSTRAP, PERSESSION_PVAL_SEED,
     PHOTOMETRY_BANDS, PHOTOMETRY_QC_THRESHOLDS,
@@ -55,7 +56,7 @@ from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.util import (
     LOG_COLUMNS, deduplicate_log, enforce_schema, fix_catalog,
-    resolve_duplicate_group, validate_parallel_lists,
+    get_contrast_coding, resolve_duplicate_group, validate_parallel_lists,
 )
 from iblnm.validation import (
     MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
@@ -3821,6 +3822,58 @@ class PhotometrySession(PhotometrySessionLoader):
         self.response_magnitudes = task.add_relative_contrast(merged)
         return self.response_magnitudes
 
+    @staticmethod
+    def code_predictors(df: pd.DataFrame,
+                        contrast_coding: str = 'log2') -> pd.DataFrame:
+        """Code a trial frame for model fitting; do not mutate the input.
+
+        Returns a copy with a base-10 ``log_<var>`` column added for each
+        ``config.MOVEMENT_PREDICTORS`` entry coded as one, ``contrast``
+        transformed (``contrast_coding``), ``side`` / ``choice_side`` /
+        ``reward`` deviation-coded to ±0.5 (``side`` and ``choice_side``:
+        contra = +0.5, ipsi = −0.5; ``reward``: ``feedbackType`` 1 = +0.5,
+        −1 = −0.5), and every ``config.CONTINUOUS_PREDICTORS`` column present
+        mean-centered. The log columns are added before the centering, since
+        ``log_reaction_time`` is itself a continuous predictor. Centering is
+        within the frame handed in, so the caller decides the grain — one
+        recording-event for the per-session fits, one cohort for the pooled
+        ones. NaNs are ignored by the mean and preserved in the output. Coding
+        a column a given formula does not use, or one absent from ``df``, is
+        harmless.
+
+        Static because the pooled models code cohorts spanning many sessions
+        and have no session in hand.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Trial-level frame with columns ``contrast``, ``side`` and
+            ``feedbackType``; optionally ``choice_side`` and the movement
+            columns behind ``config.MOVEMENT_PREDICTORS``.
+        contrast_coding : str
+            Coding passed to :func:`iblnm.util.get_contrast_coding`.
+
+        Returns
+        -------
+        pd.DataFrame
+            A coded copy; the input is not mutated.
+        """
+        transform, _ = get_contrast_coding(contrast_coding)
+        df = df.copy()
+        for var, pred in MOVEMENT_PREDICTORS.items():
+            if pred == f'log_{var}' and var in df.columns:
+                df[pred] = np.log10(df[var].where(df[var] > 0))
+        df['contrast'] = transform(df['contrast'])
+        df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
+        df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
+        if 'choice_side' in df.columns:
+            df['choice_side'] = np.where(
+                df['choice_side'] == 'contra', 0.5, -0.5)
+        continuous = [col for col in CONTINUOUS_PREDICTORS
+                      if col in df.columns]
+        df[continuous] = df[continuous] - df[continuous].mean()
+        return df
+
     def _select_modeling_trials(self, events: Sequence[str] | None,
                                 response_col: str | None) -> pd.DataFrame:
         """The uncoded modelling rows, both preparations' shared prefix.
@@ -3892,7 +3945,7 @@ class PhotometrySession(PhotometrySessionLoader):
         min_trials : int
             A cell with fewer complete-case rows is not scorable and is omitted.
         contrast_coding : str
-            Passed to :func:`iblnm.analysis.code_predictors`.
+            Passed to :meth:`code_predictors`.
 
         Returns
         -------
@@ -3907,7 +3960,7 @@ class PhotometrySession(PhotometrySessionLoader):
         self.model_frames = {}
         for (region, event), rows in selected.groupby(
                 ['brain_region', 'event'], sort=False):
-            coded = analysis.code_predictors(rows, contrast_coding)
+            coded = self.code_predictors(rows, contrast_coding)
             coded = coded.dropna(subset=analysis.formula_union_columns(
                 families[event].values(), coded.columns))
             if len(coded) >= min_trials:
@@ -3933,7 +3986,7 @@ class PhotometrySession(PhotometrySessionLoader):
         Parameters
         ----------
         contrast_coding : str
-            Passed to :func:`iblnm.analysis.code_predictors`. Must match the
+            Passed to :meth:`code_predictors`. Must match the
             focal frames' coding, or the swapped column is on another scale.
 
         Returns
@@ -3948,7 +4001,7 @@ class PhotometrySession(PhotometrySessionLoader):
         selected = self._select_modeling_trials(None, None)
         self.donor_frame = DonorFrame(
             self.eid, self.subject, tuple(self.target_NM),
-            analysis.code_predictors(selected, contrast_coding))
+            self.code_predictors(selected, contrast_coding))
         return self.donor_frame
 
     def select_donors(self, donors: dict[str, DonorFrame],
@@ -5354,35 +5407,14 @@ class PhotometrySessionGroup:
     # -----------------------------------------------------------------
 
 
-    def _code_lmm_predictors(
-        self, df: pd.DataFrame, contrast_coding: str = 'log2'
-    ) -> pd.DataFrame:
-        """Code the trial frame for LMM fitting; do not mutate the input.
-
-        Returns a copy with ``contrast`` transformed (``contrast_coding``),
-        ``side`` / ``reward`` deviation-coded to ±0.5 (``side``: contra = +0.5,
-        ipsi = −0.5; ``reward``: ``feedbackType`` 1 = +0.5, −1 = −0.5), and
-        every ``config.CONTINUOUS_PREDICTORS`` column present mean-centered
-        within ``df``. Coding a column a given formula does not use is
-        harmless.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Trial-level frame with columns ``contrast``, ``side``, and
-            ``feedbackType``.
-        contrast_coding : str
-            Coding passed to :func:`iblnm.util.get_contrast_coding`.
-        """
-        return analysis.code_predictors(df, contrast_coding)
-
     def response_lmm_fit(self, trials, formulas, group_by,
                          response_col='response', reml=True, re_formula='1',
                          min_subjects=2, events=None):
         """Fit caller-supplied LMMs per ``group_by`` group and cache each fit.
 
         For every group with at least ``min_subjects`` subjects, codes the
-        trials (:meth:`_code_lmm_predictors`) and fits each model in
+        trials (:meth:`PhotometrySession.code_predictors`) and fits each
+        model in
         ``formulas`` via :func:`iblnm.analysis.fit_lmm`. Each fitted
         ``LMMResult`` is cached in ``self.lmm_fits`` under
         ``(response_col, name, *group_values)`` for later effect extraction.
@@ -5431,19 +5463,19 @@ class PhotometrySessionGroup:
         self._lmm_group_by = list(group_by)
         formulas = {name: template.format(response=response_col)
                     for name, template in formulas.items()}
-        model_cols = analysis.formula_union_columns(
-            formulas.values(), df.columns)
 
         rows = []
         for keys, df_group in df.groupby(group_by):
             group_values = keys if isinstance(keys, tuple) else (keys,)
-            df_coded = self._code_lmm_predictors(df_group)
+            df_coded = PhotometrySession.code_predictors(df_group)
             # Complete cases across the whole family, so every model fits the
             # same rows: a member whose formula omits a column must still drop
             # the rows where that column is NaN, else statsmodels misaligns
             # ``groups`` against the design matrix and the ΔR² denominators
-            # diverge.
-            df_coded = df_coded.dropna(subset=model_cols)
+            # diverge. The columns are read off the coded frame, which is where
+            # the ``log_<var>`` predictors a formula may name come into being.
+            df_coded = df_coded.dropna(subset=analysis.formula_union_columns(
+                formulas.values(), df_coded.columns))
             if df_coded['subject'].nunique() < min_subjects:
                 continue
             for name, formula in formulas.items():
@@ -5601,14 +5633,13 @@ class PhotometrySessionGroup:
         cols = [*group_by, 'predictor', 'fold', 'n_trials', 'r2', 'delta_r2']
         formulas = {name: template.format(response=response_col)
                     for name, template in formulas.items()}
-        model_cols = analysis.formula_union_columns(
-            formulas.values(), df.columns)
 
         frames = []
         for keys, df_group in df.groupby(group_by):
             group_values = keys if isinstance(keys, tuple) else (keys,)
-            df_coded = self._code_lmm_predictors(df_group).dropna(
-                subset=model_cols)
+            df_coded = PhotometrySession.code_predictors(df_group)
+            df_coded = df_coded.dropna(subset=analysis.formula_union_columns(
+                formulas.values(), df_coded.columns))
             if len(df_coded) < min_trials:
                 continue
             result = procedure(formulas, df_coded)
@@ -5805,7 +5836,7 @@ class PhotometrySessionGroup:
             If True, store t-statistics (``coef / SE``) instead of raw
             coefficients.
         contrast_coding : str
-            Coding passed to :func:`iblnm.analysis.code_predictors`.
+            Coding passed to :meth:`PhotometrySession.code_predictors`.
         min_trials : int
             A recording with fewer complete-case rows for the event is skipped.
 
@@ -5826,7 +5857,7 @@ class PhotometrySessionGroup:
         group_keys = ['eid', 'target_NM', 'brain_region', 'fiber_idx']
         features = {}
         for keys, grp in df.groupby(group_keys):
-            coded = analysis.code_predictors(grp, contrast_coding)
+            coded = PhotometrySession.code_predictors(grp, contrast_coding)
             coded = coded.dropna(
                 subset=analysis.formula_union_columns([formula], coded.columns))
             if len(coded) < min_trials:

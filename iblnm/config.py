@@ -561,7 +561,7 @@ MOVEMENT_VARS = ['choice', 'reaction_time', 'peak_velocity']
 # the deviation-coded fiber-relative choice side; reaction_time is heavily
 # right-skewed (raw skew 7.7) so it enters log-transformed; peak_velocity is
 # already roughly symmetric (raw skew 0.9) and enters raw.
-# `analysis.select_modeling_trials` supplies the matching log_<var> columns.
+# `PhotometrySession.code_predictors` supplies the matching log_<var> columns.
 MOVEMENT_PREDICTORS = {
     'choice': 'choice_side',
     'reaction_time': 'log_reaction_time',
@@ -570,7 +570,8 @@ MOVEMENT_PREDICTORS = {
 MIN_SUBJECTS_MOVEMENT = 2
 MIN_TRIALS_MOVEMENT = 20
 
-# Continuous predictor columns that analysis.code_predictors mean-centers within
+# Continuous predictor columns that PhotometrySession.code_predictors centers on
+# their mean within
 # the frame it is handed (one recording-event), so every main effect is read at
 # the recording's own mean rather than at a raw zero that no go trial reaches --
 # a 1 s reaction time (log10 = 0) or a motionless wheel. choice_side is a

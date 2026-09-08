@@ -6409,14 +6409,12 @@ class TestModelingFrame:
         assert frames[('VTA-r', STIM_ONSET_EVENT)]['trial'].tolist() == [0, 3]
 
 
-class TestCodeLmmPredictors:
+class TestCodePredictors:
 
     @staticmethod
-    def _group():
-        """A bare group: the coding step reads nothing off the object."""
-        from iblnm.data import PhotometrySessionGroup
-        return PhotometrySessionGroup(
-            _make_recordings_df(n_eids=1, regions_per=1), one=MagicMock())
+    def _code(df, **kwargs):
+        from iblnm.data import PhotometrySession
+        return PhotometrySession.code_predictors(df, **kwargs)
 
     def _frame(self):
         # contrast in percent units (compute_trial_contrasts multiplies by 100);
@@ -6427,44 +6425,54 @@ class TestCodeLmmPredictors:
             'choice_side': ['contra', 'ipsi', 'ipsi'],
             'feedbackType': [1, -1, 1],
             'log_reaction_time': [-1.5, -0.5, -2.0],
+            'peak_velocity': [40.0, 55.0, 90.0],
         })
 
     def test_side_and_reward_deviation_coded(self):
-        group = self._group()
-        coded = group._code_lmm_predictors(self._frame())
+        coded = self._code(self._frame())
         assert set(coded['side']) <= {-0.5, 0.5}
         assert set(coded['reward']) <= {-0.5, 0.5}
         assert coded['side'].tolist() == [0.5, -0.5, 0.5]
         assert coded['reward'].tolist() == [0.5, -0.5, 0.5]
 
     def test_choice_side_deviation_coded(self):
-        group = self._group()
-        coded = group._code_lmm_predictors(self._frame())
+        coded = self._code(self._frame())
         # contra = +0.5, ipsi = −0.5, same scheme as stimulus side.
         assert coded['choice_side'].tolist() == [0.5, -0.5, -0.5]
 
     def test_contrast_log2_coded_and_centered(self):
-        group = self._group()
-        coded = group._code_lmm_predictors(self._frame())
+        coded = self._code(self._frame())
         expected = np.array([0.0, np.log2(6.25), np.log2(100.0)])
         expected = expected - expected.mean()
         assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
         np.testing.assert_allclose(coded['contrast'].values, expected)
 
-    def test_timing_column_centered(self):
-        group = self._group()
+    def test_movement_predictors_centered(self):
         df = self._frame()
-        coded = group._code_lmm_predictors(df)
+        coded = self._code(df)
+        for col in ('log_reaction_time', 'peak_velocity'):
+            assert coded[col].mean() == pytest.approx(0.0, abs=1e-12)
+            np.testing.assert_allclose(
+                coded[col].values, df[col].values - df[col].values.mean())
+
+    def test_absent_continuous_predictor_is_harmless(self):
+        df = self._frame().drop(columns=['peak_velocity'])
+        coded = self._code(df)
+        assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
         assert coded['log_reaction_time'].mean() == pytest.approx(0.0, abs=1e-12)
+
+    def test_reaction_time_logged_and_centered(self):
+        df = self._frame().drop(columns=['log_reaction_time'])
+        df['reaction_time'] = [0.2, 2.0, 0.0]
+        coded = self._code(df)
+        logged = np.array([np.log10(0.2), np.log10(2.0), np.nan])
         np.testing.assert_allclose(
-            coded['log_reaction_time'].values,
-            df['log_reaction_time'].values - df['log_reaction_time'].mean())
+            coded['log_reaction_time'].values, logged - np.nanmean(logged))
 
     def test_input_frame_not_mutated(self):
-        group = self._group()
         df = self._frame()
         before = df.copy(deep=True)
-        group._code_lmm_predictors(df)
+        self._code(df)
         pd.testing.assert_frame_equal(df, before)
 
 
@@ -7395,6 +7403,7 @@ class TestResponseLMMResampling:
 
     def test_crossval_columns_and_matches_direct_call(self):
         from iblnm.analysis import crossval_lmm
+        from iblnm.data import PhotometrySession
         group, magnitudes = _make_group_for_response_lmm()
         formulas = {'full': '{response} ~ contrast * side * reward',
                     'interactions': '{response} ~ contrast + side + reward'}
@@ -7410,7 +7419,7 @@ class TestResponseLMMResampling:
         df = select_modeling_trials(magnitudes)
         (target_nm, event), df_group = next(
             iter(df.groupby(['target_NM', 'event'])))
-        df_coded = group._code_lmm_predictors(df_group)
+        df_coded = PhotometrySession.code_predictors(df_group)
         coded = {k: v.format(response='response') for k, v in formulas.items()}
         expected = crossval_lmm(df_coded, coded, 'response', reference='full')
 
@@ -7424,6 +7433,7 @@ class TestResponseLMMResampling:
 
     def test_jackknife_columns_and_matches_direct_call(self):
         from iblnm.analysis import jackknife_lmm
+        from iblnm.data import PhotometrySession
         group, magnitudes = _make_group_for_response_lmm()
         formulas = {'full': '{response} ~ contrast * side * reward',
                     'interactions': '{response} ~ contrast + side + reward'}
@@ -7438,7 +7448,7 @@ class TestResponseLMMResampling:
         df = select_modeling_trials(magnitudes)
         (target_nm, event), df_group = next(
             iter(df.groupby(['target_NM', 'event'])))
-        df_coded = group._code_lmm_predictors(df_group)
+        df_coded = PhotometrySession.code_predictors(df_group)
         coded = {k: v.format(response='response') for k, v in formulas.items()}
         expected = jackknife_lmm(df_coded, coded, 'response', reference='full')
 
@@ -7492,7 +7502,7 @@ class TestResponseLMMResampling:
         group, magnitudes = self._movement_group()
         starved = magnitudes['eid'].str.contains('DR-5HT')
         idx = magnitudes[starved].index
-        # ``select_modeling_trials`` derives ``log_reaction_time`` from the raw
+        # ``code_predictors`` derives ``log_reaction_time`` from the raw
         # column, so starve the raw ``reaction_time`` to push the group below
         # the floor.
         magnitudes.loc[idx[5:], 'reaction_time'] = np.nan

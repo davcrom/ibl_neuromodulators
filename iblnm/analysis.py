@@ -20,10 +20,7 @@ from iblnm.config import (
     BASELINE_WINDOW,
     CROSSCORR_FS,
     CROSSCORR_LAG_WINDOW,
-    MOVEMENT_PREDICTORS,
-    CONTINUOUS_PREDICTORS,
 )
-from iblnm.util import get_contrast_coding
 
 
 def get_responses(
@@ -1754,25 +1751,22 @@ def select_modeling_trials(
 
     Drops no-go trials (``choice == 0``), false starts
     (``response_time <= 0.05``), trials with a null ``response_col``, and
-    trials with a negative ``reaction_time``. Adds a ``log_<var>`` column
-    (base-10, NaN where the value is ≤ 0 or missing) for each
-    ``config.MOVEMENT_PREDICTORS`` entry coded as ``log_<var>``, so movement
-    models can reference them; the NaN rows are dropped per family at fit time.
+    trials with a negative ``reaction_time``.
 
     A negative ``reaction_time`` is
     ``ibllib.io.extractors.training_wheel.extract_first_movement_times``
     back-dating a movement onset into the trial's quiescence period, not a data
     fault; it affects 0.885% of go trials, flat across contrast. Those trials
-    are removed here rather than turning into a NaN ``log_reaction_time``
-    further down, so the loss is countable. A missing (NaN) ``reaction_time``
-    is not a negative one and is kept.
+    are removed here rather than turning into a NaN ``log_reaction_time`` in
+    :meth:`iblnm.data.PhotometrySession.code_predictors`, so the loss is
+    countable. A missing (NaN) ``reaction_time`` is not a negative one and is
+    kept.
 
     Parameters
     ----------
     df : pd.DataFrame
         Merged trial frame carrying ``response_col``, ``probabilityLeft``,
-        ``choice``, ``response_time``, ``reaction_time``, and the movement
-        columns to be log-transformed.
+        ``choice``, ``response_time`` and ``reaction_time``.
     response_col : str or None
         Column name for the response magnitude whose NaNs are dropped.
         ``None`` applies the three response-independent exclusions alone, for
@@ -1790,8 +1784,7 @@ def select_modeling_trials(
     Returns
     -------
     pd.DataFrame
-        The retained trials, with added ``log_<var>`` columns. A copy; the
-        input is not mutated.
+        The retained trials. A copy; the input is not mutated.
     """
     if probability_left is not None:
         df = df[df['probabilityLeft'] == probability_left]
@@ -1801,52 +1794,7 @@ def select_modeling_trials(
     negative_reaction_time = df['reaction_time'] < 0
     if dropped is not None:
         dropped['negative_reaction_time'] = int(negative_reaction_time.sum())
-    df = df[~negative_reaction_time].copy()
-    for var, pred in MOVEMENT_PREDICTORS.items():
-        if pred == f'log_{var}' and var in df.columns:
-            df[pred] = np.where(df[var] > 0, np.log10(df[var]), np.nan)
-    return df
-
-
-def code_predictors(
-    df: pd.DataFrame, contrast_coding: str = 'log2'
-) -> pd.DataFrame:
-    """Code the trial frame for model fitting; do not mutate the input.
-
-    Returns a copy with ``contrast`` transformed (``contrast_coding``),
-    ``side`` / ``choice_side`` / ``reward`` deviation-coded to ±0.5 (``side``
-    and ``choice_side``: contra = +0.5, ipsi = −0.5; ``reward``:
-    ``feedbackType`` 1 = +0.5, −1 = −0.5), and every
-    ``config.CONTINUOUS_PREDICTORS`` column present mean-centered. Centering is
-    within the frame handed in — callers pass one recording-event at a time — so
-    no grouping happens here. NaNs are ignored by the mean and preserved in the
-    output. Coding a column a given formula does not use, or one absent from
-    ``df``, is harmless.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Trial-level frame with columns ``contrast``, ``side``, and
-        ``feedbackType``; optionally ``choice_side`` and the continuous
-        movement predictors.
-    contrast_coding : str
-        Coding passed to :func:`iblnm.util.get_contrast_coding`.
-
-    Returns
-    -------
-    pd.DataFrame
-        A coded copy; the input is not mutated.
-    """
-    transform, _ = get_contrast_coding(contrast_coding)
-    df = df.copy()
-    df['contrast'] = transform(df['contrast'])
-    df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-    df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-    if 'choice_side' in df.columns:
-        df['choice_side'] = np.where(df['choice_side'] == 'contra', 0.5, -0.5)
-    continuous = [col for col in CONTINUOUS_PREDICTORS if col in df.columns]
-    df[continuous] = df[continuous] - df[continuous].mean()
-    return df
+    return df[~negative_reaction_time].copy()
 
 
 def aggregate_conditions(
