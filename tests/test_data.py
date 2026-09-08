@@ -7077,6 +7077,133 @@ class TestFitResponsesOlsDropone:
         assert fits.empty
 
 
+def _session_for_cell_fit(region='VTA-r', event='stimOnTrigger_times',
+                          **kwargs):
+    """``_make_session_for_persession`` carried through the view's setup.
+
+    The sequence a fitting loop runs before it names a cell: the trial timings
+    and the wheel regressor onto the trials table, the magnitudes measured, that
+    one fiber x event's magnitudes joined on as a column, and the mask computed
+    with that column required present. What is left is a session whose
+    ``trials`` are exactly the rows the cell is fitted on.
+    """
+    from iblnm.config import MIN_RESPONSE_TIME
+    from iblnm.data import response_column
+
+    ps = _make_session_for_persession(**kwargs)
+    ps.extract_trial_timings()
+    ps.add_trial_columns(ps.wheel_peak_velocity)
+    ps.extract_response_magnitudes()
+    ps.add_trial_columns(ps.cell_magnitudes(region, event))
+    ps.filter_trials(exclude_nogo=True, min_response_time=MIN_RESPONSE_TIME,
+                     complete=[response_column(region, event)])
+    return ps
+
+
+class TestFitRegionResponses:
+    """One fiber x event fitted on the rows the trial mask selects."""
+
+    @property
+    def formulas(self):
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']
+
+    def test_fit_region_responses_yields_one_row_per_dropped_predictor(self):
+        """The cell's whole result and nothing else: the session-level column
+        set, one row per family member but the reference, and no attribute
+        left behind — the mask, not a stored frame, is the state."""
+        from iblnm.data import _SESSION_OLS_COLUMNS
+        ps = _session_for_cell_fit()
+
+        rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
+                                       self.formulas, {}, n_bootstrap=16)
+
+        assert list(rows.columns) == _SESSION_OLS_COLUMNS
+        assert set(rows['predictor']) == set(self.formulas) - {'full'}
+        assert set(rows['brain_region']) == {'VTA-r'}
+        assert set(rows['event']) == {'stimOnTrigger_times'}
+        assert not hasattr(ps, 'response_ols')
+        assert not hasattr(ps, 'model_frames')
+
+    def test_fit_region_responses_fits_every_selected_trial(self):
+        """The mask is the whole selection: what it keeps is what is fitted,
+        with no complete-case drop of its own inside the fit."""
+        ps = _session_for_cell_fit()
+
+        rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
+                                       self.formulas, {}, n_bootstrap=16)
+
+        assert len(ps.trials) == 120
+        assert (rows['n_trials'] == len(ps.trials)).all()
+
+    def test_fit_region_responses_rejects_another_fibers_mask(self):
+        """The mask was computed with the first fiber's response required
+        present, so the second fiber's trials are not the ones it selects."""
+        ps = _add_second_recording(_session_for_cell_fit())
+
+        with pytest.raises(ValueError) as excinfo:
+            ps.fit_region_responses('DR-l', 'stimOnTrigger_times',
+                                    self.formulas, {}, n_bootstrap=16)
+
+        assert 'response_DR-l_stimOnTrigger_times' in str(excinfo.value)
+
+    def test_fit_region_responses_rejects_too_few_selected_trials(self):
+        ps = _session_for_cell_fit(n_trials=20)
+
+        with pytest.raises(ValueError) as excinfo:
+            ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
+                                    self.formulas, {}, n_bootstrap=16)
+
+        assert '20' in str(excinfo.value)
+
+    def test_fit_region_responses_codes_side_against_its_own_hemisphere(self):
+        """Two fibers, same trials and same signal, opposite hemispheres: the
+        stimulus that is contralateral to one is ipsilateral to the other, so
+        the deviation coding — and the weight it carries — negates."""
+        right = _session_for_cell_fit(hemisphere='r')
+        left = _session_for_cell_fit(hemisphere='l')
+
+        rows = {
+            hemisphere: ps.fit_region_responses(
+                'VTA-r', 'stimOnTrigger_times', self.formulas, {},
+                n_bootstrap=16).set_index('predictor')
+            for hemisphere, ps in (('r', right), ('l', left))
+        }
+
+        assert rows['l'].loc['side', 'coef'] == pytest.approx(
+            -rows['r'].loc['side', 'coef'])
+
+    def test_fit_region_responses_scores_against_the_admitted_donors(self):
+        """One donor from another subject, so `exclude_subject` admits it and
+        every predictor is scored against a null of the requested length."""
+        ps = _session_for_cell_fit(eid='focal-eid', subject='mouse1')
+        donors = _donor_pool_for(
+            _donorless_session(eid='donor-eid', subject='mouse2', seed=1))
+
+        rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
+                                       self.formulas, donors, n_bootstrap=16)
+
+        assert (rows['n_donors'] == 1).all()
+        assert rows['p_value'].notna().all()
+        assert {len(null) for null in rows['null']} == {16}
+
+    def test_fit_region_responses_drops_a_cell_with_a_degenerate_member(self):
+        """One unfittable member makes the cell's ΔR² incomparable across the
+        family, so it contributes no rows rather than partial ones."""
+        from iblnm.data import _SESSION_OLS_COLUMNS
+        ps = _session_for_cell_fit()
+        formulas = dict(self.formulas)
+        # A constant predictor is collinear with the intercept, so this one
+        # reduced model cannot be fit while the rest of the family can.
+        formulas['side'] = '{response} ~ probabilityLeft'
+
+        rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
+                                       formulas, {}, n_bootstrap=16)
+
+        assert rows.empty
+        assert list(rows.columns) == _SESSION_OLS_COLUMNS
+
+
 class TestModellingPass:
     """The two sequential passes over the store: donor pool, then fits."""
 

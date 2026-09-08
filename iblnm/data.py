@@ -135,6 +135,20 @@ def resolve_event_family(formulas: dict, event: str) -> dict[str, str]:
     return formulas[event]
 
 
+def response_column(region: str, event: str) -> str:
+    """Name one fiber x event's response magnitudes take on the trials table.
+
+    The trial mask is over trials, so a model's dependent variable enters the
+    selection as a column of `PhotometrySession.trials`
+    (:meth:`PhotometrySession.add_trial_columns`) named for the combination it
+    was measured on. Both sides of the fit read this name: the filter records
+    it under `complete`, and :meth:`PhotometrySession.fit_region_responses`
+    checks the record for it, which is what stops one fiber's trials being
+    fitted under another fiber's label.
+    """
+    return f'response_{region}_{event}'
+
+
 # Which sessions may stand in for a focal one in the cross-session swap null.
 # Cohort (target_NM) is not filtered by default: the swap replaces trial data,
 # not photometry, and the IBL task is standardized and interleaved across
@@ -3670,6 +3684,30 @@ class PhotometrySession(PhotometrySessionLoader):
         """
         return self._response_magnitudes
 
+    def cell_magnitudes(self, region: str, event: str) -> pd.Series:
+        """One fiber x event's response magnitudes, indexed by trial.
+
+        The measurement frame is one row per fiber x event x trial and the
+        trials table one row per trial, so this is the shape a magnitude has to
+        take to join the two — the payload
+        :meth:`add_trial_columns` puts on the trials table, and the dependent
+        variable :meth:`fit_region_responses` models. Read off the stored frame
+        rather than the masked property: the join is what the mask is computed
+        from.
+
+        Returns
+        -------
+        pandas.Series
+            `response` for that combination, indexed by `trial` and named
+            :func:`response_column`. Empty when the combination was not
+            measured.
+        """
+        magnitudes = self._response_magnitudes
+        cell = magnitudes[(magnitudes['brain_region'] == region)
+                          & (magnitudes['event'] == event)]
+        return (cell.set_index('trial')['response']
+                .rename(response_column(region, event)))
+
     def extract_response_magnitudes(
             self,
             events: Sequence[str] = RESPONSE_EVENTS,
@@ -4040,6 +4078,123 @@ class PhotometrySession(PhotometrySessionLoader):
                              f"{sorted(_SESSION_DONOR_SCOPES)}")
         admits = _SESSION_DONOR_SCOPES[donor_scope]
         return [donor.frame for donor in donors.values() if admits(self, donor)]
+
+    def fit_region_responses(self, region: str, event: str, formulas: dict,
+                             donors: dict[str, DonorFrame],
+                             reference: str = 'full',
+                             response_col: str = 'response',
+                             donor_scope: str = 'exclude_subject',
+                             n_bootstrap: int = PERSESSION_PVAL_N_BOOTSTRAP,
+                             rng: np.random.Generator | None = None,
+                             contrast_coding: str = 'log2',
+                             min_trials: int = MIN_TRIALS_PERSESSION,
+                             ) -> pd.DataFrame:
+        """Fit one fiber x event on the rows the trial mask currently selects.
+
+        The whole drop-one result for one cell: the family fitted and
+        differenced off ``reference``
+        (:func:`iblnm.analysis.dropone_delta_r2`), the reference model's
+        weights read off the same fits (:func:`_coefficient_rows`), and the
+        cross-session swap null each dropped predictor is scored against
+        (:func:`iblnm.analysis.permutation_null_delta_r2`).
+
+        It drops no rows. The frame it fits is ``self.trials`` coded — this
+        fiber's hemisphere-relative ``side`` and ``choice_side``
+        (:func:`iblnm.task.add_relative_contrast`), then
+        :meth:`code_predictors` — with this cell's magnitudes joined on as the
+        dependent variable, so the fitted rows are the rows the view returns
+        and every exclusion is one the mask already made.
+
+        Parameters
+        ----------
+        region, event : str
+            The fiber and the event this cell measures, keying both
+            ``self._response_magnitudes`` and the trials-table column
+            :func:`response_column` names.
+        formulas : dict
+            Drop-one family, flat or event-keyed
+            (:func:`resolve_event_family`); ``reference`` names the full model
+            and every other key is a dropped predictor.
+        donors : dict[str, DonorFrame]
+            Every prepared donor of the pass, keyed by eid, this session's own
+            included; ``donor_scope`` excludes it (:meth:`select_donors`). An
+            empty mapping fits without scoring.
+        reference : str
+            Full-model key each reduced model's ΔR² is measured against.
+        response_col : str
+            Name the magnitudes are modelled under, substituted into each
+            formula. Not :func:`response_column`'s name, which carries the
+            region and so is no valid formula term.
+        donor_scope : {'exclude_subject', 'exclude_session', 'same_target'}
+            Which sessions may donate a swapped predictor column.
+        n_bootstrap : int
+            Length of the null vector.
+        rng : numpy.random.Generator or None
+            Swap rng. ``None`` seeds one from `config.PERSESSION_PVAL_SEED`;
+            a loop over cells passes one rng so its cells do not resample the
+            same donors.
+        contrast_coding : str
+            Passed to :meth:`code_predictors`.
+        min_trials : int
+            Fewer selected rows than this is not scorable and raises.
+
+        Returns
+        -------
+        pandas.DataFrame
+            `_SESSION_OLS_COLUMNS`, one row per dropped predictor, tagged with
+            this cell's identity. Empty when any family member's design is
+            degenerate, since the cell's R² is then incomparable across the
+            family. Assigns nothing.
+
+        Raises
+        ------
+        ValueError
+            The last :meth:`filter_trials` call did not require this cell's
+            response column present — nothing else stops one fiber's trials
+            being fitted under another fiber's label — or the mask selects
+            fewer than ``min_trials`` rows.
+        """
+        column = response_column(region, event)
+        if column not in (self._trial_filters.get('complete') or []):
+            raise ValueError(
+                f"the trial mask does not require {column!r} present; "
+                f"`filter_trials(complete=...)` recorded "
+                f"{self._trial_filters.get('complete')} (eid {self.eid})")
+        trials = self.trials
+        if len(trials) < min_trials:
+            raise ValueError(
+                f"the trial mask selects {len(trials)} trials for "
+                f"{region} {event}, fewer than the {min_trials} required to "
+                f"fit (eid {self.eid})")
+
+        hemisphere = dict(zip(self.brain_region, self.hemisphere))[region]
+        frame = self.code_predictors(
+            task.add_relative_contrast(trials.assign(hemisphere=hemisphere)),
+            contrast_coding)
+        frame = frame.join(self.cell_magnitudes(region, event)
+                           .rename(response_col), on='trial')
+
+        family = resolve_event_family(formulas, event)
+        fits = {name: self.fit_response_model(frame, formula, response_col)
+                for name, formula in family.items()}
+        if any(fit is None for fit in fits.values()):
+            return pd.DataFrame(columns=_SESSION_OLS_COLUMNS)
+
+        if rng is None:
+            rng = np.random.default_rng(PERSESSION_PVAL_SEED)
+        donor_frames = self.select_donors(donors, donor_scope)
+        nulls = analysis.permutation_null_delta_r2(
+            frame, donor_frames, family[reference],
+            {name: formula for name, formula in family.items()
+             if name != reference},
+            response_col, rng=rng, n_bootstrap=n_bootstrap)
+        rows = _dropone_rows(fits, len(frame), reference)
+        return (_score_against_null(rows, nulls, len(donor_frames))
+                .assign(eid=self.eid, subject=self.subject,
+                        target_NM=dict(zip(self.brain_region,
+                                           self.target_NM))[region],
+                        brain_region=region, event=event)
+                [_SESSION_OLS_COLUMNS])
 
     def fit_responses(self, formulas: dict, donors: dict[str, DonorFrame],
                       events: Sequence[str] = RESPONSE_EVENTS,
