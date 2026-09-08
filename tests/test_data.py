@@ -5214,9 +5214,13 @@ class TestGroupProcess:
         assert 'eid-1' in results  # successful result present
         assert any(r is None for r in results)  # failed result is None
 
-    def test_process_writes_errors_to_h5(self, tmp_path):
-        """Errors are written to the session's H5 file."""
-        import h5py
+    def test_a_failed_pass_leaves_the_store_unwritten(self, tmp_path):
+        """`process` does not persist: only the function it runs writes.
+
+        An analysis pass iterates the store to read it, so a session whose
+        function raised carries its error in memory and the file is untouched.
+        A build persists by naming `errors` in its own `save_h5`.
+        """
         group = self._make_group_with_h5(tmp_path)
 
         def failing_fn(ps):
@@ -5224,31 +5228,25 @@ class TestGroupProcess:
 
         group.process(failing_fn)
 
-        # Check that errors were written to H5
-        with h5py.File(tmp_path / 'eid-0.h5', 'r') as f:
-            assert 'errors' in f
-            assert len(f['errors']['error_type']) > 0
+        assert self._logged_error_types(tmp_path) == []
 
-    def test_process_preserves_nonfatal_errors(self, tmp_path):
-        """Non-fatal errors logged via ps.log_error are persisted."""
-        import h5py
+    def test_a_pass_that_saves_persists_what_it_logged(self, tmp_path):
+        """The build path: the function names `errors` and its log lands."""
         from iblnm.validation import IncompleteEventTimes
         group = self._make_group_with_h5(tmp_path)
 
-        def fn_with_nonfatal(ps):
+        def fn_that_saves(ps):
             try:
                 raise IncompleteEventTimes(['firstMovement_times'])
             except IncompleteEventTimes as e:
                 ps.log_error(e)
+            ps.save_h5(groups=['errors'])
             return 'ok'
 
-        results = group.process(fn_with_nonfatal)
-        assert all(r == 'ok' for r in results)
+        results = group.process(fn_that_saves)
 
-        # Check non-fatal error was written to H5
-        with h5py.File(tmp_path / 'eid-0.h5', 'r') as f:
-            error_types = [v.decode() for v in f['errors']['error_type'][:]]
-            assert 'IncompleteEventTimes' in error_types
+        assert all(r == 'ok' for r in results)
+        assert set(self._logged_error_types(tmp_path)) == {'IncompleteEventTimes'}
 
     def _logged_error_types(self, tmp_path):
         """Every error type recorded across both sessions' `errors/` trees."""

@@ -246,6 +246,9 @@ class TestRebuildResponses:
         assert [(e['product'], e['error_type']) for e in session.errors] == [
             ('photometry', 'MissingRawData'), ('wheel', 'MissingRawData')]
         assert not hasattr(session, 'photometry_responses')
+        # The rebuild persists its own log: `process` no longer flushes for it.
+        with h5py.File(session.filepath, 'r') as h5:
+            assert sorted(h5['errors']) == ['photometry', 'wheel']
 
     def test_builds_the_band_when_the_file_holds_none(self, trials_only_session):
         """With no stored preprocessed signal, the raw bands come from Alyx."""

@@ -59,6 +59,10 @@ def rebuild_responses(ps: PhotometrySession) -> None:
     same handlers that read them, so what stands in the file after the write is
     what stood there before it.
 
+    The errors are written last, once, because `process` persists nothing: a
+    pass that rebuilds a product owns that product's error log, and writes it
+    with the same call that writes the product.
+
     Parameters
     ----------
     ps : PhotometrySession
@@ -84,6 +88,8 @@ def rebuild_responses(ps: PhotometrySession) -> None:
         ps.save_h5(groups=['wheel'])
     except Exception as error:
         ps.log_error(error, product='wheel')
+
+    ps.save_h5(groups=['errors'])
 
 
 def parse_args(argv=None) -> argparse.Namespace:

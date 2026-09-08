@@ -4208,40 +4208,40 @@ def _session_for_processing(h5_path, row, one):
     return ps
 
 
-def _process_one(ps, h5_path, fn, kwargs):
-    """Run `fn` on one session and flush its errors; return `fn`'s result.
+def _process_one(ps, fn, kwargs):
+    """Run `fn` on one session and return its result, or None if it raised.
 
-    A `BlockingIOError` propagates instead of being logged, and the flush is
-    skipped: it means another process holds the file, which `process` retries
-    at the end of the pass. Recording it would mark the session permanently
-    failed under the absent-data + present-error rule, for what is a transient
-    collision. Any other exception is logged against the session and the
-    result is None.
+    Nothing is persisted here. Writing an error to the store is a build's job,
+    and a build writes it by naming `errors` in its own `save_h5` — the same
+    call that writes the products it built. An analysis pass reads the store
+    and leaves it as it found it, so a failed session's error stays on the
+    session object and goes no further.
+
+    A `BlockingIOError` propagates instead of being logged: it means another
+    process holds the file, which `process` retries at the end of the pass.
+    Recording it would mark the session permanently failed under the
+    absent-data + present-error rule, for what is a transient collision.
     """
     try:
-        result = fn(ps, **kwargs)
+        return fn(ps, **kwargs)
     except BlockingIOError:
         raise
     except Exception as e:
         ps.log_error(e)
-        result = None
-    if h5_path.exists() or ps.errors:
-        ps.save_h5(h5_path, groups=['errors'])
-    return result
+        return None
 
 
 def _process_worker(eid, row_dict, h5_dir, fn, kwargs):
     """Worker function for parallel process(). Runs in a subprocess.
 
-    Creates its own ONE connection, builds a PhotometrySession, calls
-    fn(ps, **kwargs), and flushes errors to H5.
+    Creates its own ONE connection, builds a PhotometrySession and calls
+    fn(ps, **kwargs).
     """
     from iblnm.io import _get_default_connection
 
     one = _get_default_connection()
-    h5_path = Path(h5_dir) / f'{eid}.h5'
-    ps = _session_for_processing(h5_path, row_dict, one)
-    return _process_one(ps, h5_path, fn, kwargs)
+    ps = _session_for_processing(Path(h5_dir) / f'{eid}.h5', row_dict, one)
+    return _process_one(ps, fn, kwargs)
 
 
 def _resolve_ps_variable(ps, entry):
@@ -5097,10 +5097,10 @@ class PhotometrySessionGroup:
         for _, row in tqdm(sessions.iterrows(), total=len(sessions),
                            desc="Processing"):
             eid = row['eid']
-            h5_path = Path(self.h5_dir) / f'{eid}.h5'
-            ps = _session_for_processing(h5_path, row, self.one)
+            ps = _session_for_processing(
+                Path(self.h5_dir) / f'{eid}.h5', row, self.one)
             try:
-                results[eid] = _process_one(ps, h5_path, fn, kwargs)
+                results[eid] = _process_one(ps, fn, kwargs)
             except BlockingIOError:
                 results[eid] = None
                 blocked.add(eid)
