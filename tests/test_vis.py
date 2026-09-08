@@ -2333,33 +2333,28 @@ def _make_mock_group_with_performance_and_rt():
     """Mock group carrying both performance and RT trial data.
 
     Reuses the performance fixture's six eids (VTA-DA for 0-2, LC-NE for 3-5)
-    and attaches matching ``response_magnitudes`` / ``trial_regressors`` so the
-    combined grid can draw both columns.
+    and attaches matching ``response_magnitudes`` so the combined grid can draw
+    both columns. The frame is the merged one the pipeline writes, so the RT
+    column reads its trial-level values without a join.
     """
     group = _make_mock_group_with_performance()
     rng = np.random.default_rng(7)
-    resp_rows = []
-    regressor_rows = []
+    rows = []
     for i in range(6):
         tnm = 'VTA-DA' if i < 3 else 'LC-NE'
         for t in range(20):
-            resp_rows.append({
+            rows.append({
                 'eid': f'eid-{i}',
                 'subject': f'subj-{i % 3}',
                 'target_NM': tnm,
                 'trial': t,
                 'event': 'stimOnTrigger_times',
-            })
-            regressor_rows.append({
-                'eid': f'eid-{i}',
-                'trial': t,
                 'contrast': rng.choice([6.25, 25.0, 100.0]),
                 'choice': rng.choice([-1, 1]),
                 'probabilityLeft': rng.choice([0.2, 0.5, 0.8]),
                 'response_time': rng.uniform(0.1, 2.0),
             })
-    group.response_magnitudes = pd.DataFrame(resp_rows)
-    group.trial_regressors = pd.DataFrame(regressor_rows)
+    group.response_magnitudes = pd.DataFrame(rows)
     return group
 
 
@@ -2397,7 +2392,7 @@ class TestPlotPerformanceGrid:
     def test_missing_rt_data_still_returns_figure(self):
         from iblnm.vis import plot_performance_grid
         group = _make_mock_group_with_performance_and_rt()
-        group.trial_regressors = None
+        group.response_magnitudes = None
         fig = plot_performance_grid(group)
         assert isinstance(fig, plt.Figure)
         plt.close('all')
@@ -2415,15 +2410,15 @@ class TestPlotPerformanceGrid:
         from iblnm.vis import plot_performance_grid
         group = _make_mock_group_with_performance_and_rt()
         rng = np.random.default_rng(1)
-        reg = group.trial_regressors.copy()
-        eid_num = reg['eid'].str.split('-').str[1].astype(int)
+        trials = group.response_magnitudes.copy()
+        eid_num = trials['eid'].str.split('-').str[1].astype(int)
         # VTA-DA (eid 0-2): fast (~0.1-0.3 s); LC-NE (eid 3-5): slow (~3-9 s)
-        reg['response_time'] = np.where(
+        trials['response_time'] = np.where(
             eid_num < 3,
-            rng.uniform(0.1, 0.3, len(reg)),
-            rng.uniform(3.0, 9.0, len(reg)),
+            rng.uniform(0.1, 0.3, len(trials)),
+            rng.uniform(3.0, 9.0, len(trials)),
         )
-        group.trial_regressors = reg
+        group.response_magnitudes = trials
         fig = plot_performance_grid(group)
         ax_top, ax_bot = fig.axes[1], fig.axes[3]
         assert ax_top.get_xlim() == ax_bot.get_xlim()

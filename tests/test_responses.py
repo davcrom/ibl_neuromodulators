@@ -7,13 +7,21 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from iblnm.analysis import select_modeling_trials
 from iblnm.config import STIM_ONSET_EVENT
 from iblnm.data import PhotometrySession
 
 
-def _make_group(response_magnitudes, trial_regressors):
-    """Build a PhotometrySessionGroup with injected modeling frames."""
+def _make_group(magnitudes, regressors):
+    """Build a group over ``magnitudes``, beside the merged frame it covers.
+
+    The two frames are given as the store produces them — magnitudes per
+    recording x event x trial, regressors per session x trial — and merged
+    here, because the pipeline's own frame is merged and the hemisphere-relative
+    ``side`` / ``choice_side`` are derived on it.
+    """
     from iblnm.data import PhotometrySessionGroup
+    from iblnm.task import add_relative_contrast
     recs = pd.DataFrame([{
         'eid': eid, 'subject': subj,
         'brain_region': tnm.split('-')[0], 'hemisphere': 'r',
@@ -21,12 +29,12 @@ def _make_group(response_magnitudes, trial_regressors):
         'session_type': 'biased', 'start_time': '2024-01-01T10:00:00',
         'number': 1, 'task_protocol': 'biased_protocol',
     } for eid, subj, tnm in
-        response_magnitudes[['eid', 'subject', 'target_NM']]
+        magnitudes[['eid', 'subject', 'target_NM']]
         .drop_duplicates().itertuples(index=False)])
     group = PhotometrySessionGroup(recs, one=MagicMock())
-    group.response_magnitudes = response_magnitudes
-    group.trial_regressors = trial_regressors
-    return group
+    merged = add_relative_contrast(
+        magnitudes.merge(regressors, on=['eid', 'trial'], how='left'))
+    return group, merged
 
 
 def _make_movement_group(n_per_cell=50, seed=0):
@@ -238,10 +246,10 @@ class TestPlotLMMFigures:
 
     def _run(self, tmp_path):
         from scripts.responses import plot_lmm_figures
-        group = _make_movement_group()
+        group, magnitudes = _make_movement_group()
         fig_dir = tmp_path / 'lmm'
         fig_dir.mkdir(parents=True, exist_ok=True)
-        plot_lmm_figures(group, fig_dir, tmp_path)
+        plot_lmm_figures(group, magnitudes, fig_dir, tmp_path)
         return fig_dir
 
     def test_writes_suite_csvs_with_consistent_identifiers(self, tmp_path):
@@ -293,11 +301,11 @@ class TestPlotMovementFigures:
 
     def _run(self, tmp_path):
         from scripts.responses import plot_movement_figures
-        group = _make_movement_group()
+        group, magnitudes = _make_movement_group()
         fig_dirs = {'movement_model_comparison': tmp_path / 'model_comparison'}
         for d in fig_dirs.values():
             d.mkdir(parents=True, exist_ok=True)
-        plot_movement_figures(group, fig_dirs, tmp_path)
+        plot_movement_figures(group, magnitudes, fig_dirs, tmp_path)
         return fig_dirs
 
     def test_writes_reliability_and_r2_csvs(self, tmp_path):
@@ -337,101 +345,60 @@ class TestPlotMovementFigures:
                 / 'response_lmm_movement_ceiling.svg').exists()
 
 
-class TestAssembleOlsPersession:
-    """assemble_ols_persession merges the drop-one fits, the reference model's
-    coefficients and the per-recording permutation significance into one frame
-    at recording x event x dropped-predictor grain."""
+class _LinkSession:
+    """Session stub exposing what the two link functions call and read.
 
-    _PREDICTORS = ['contrast', 'side']
+    The link functions are the only place a session's state becomes group
+    data, so what they are responsible for is calling the right method and
+    handing back the right attributes — not the modelling itself, which is
+    covered against real sessions in ``tests/test_data.py``. This stub records
+    the arguments it was passed and plants the attributes the real methods
+    assign.
+    """
 
-    def _dropone(self):
-        """Two recordings of one mouse, one event, two dropped predictors."""
-        return pd.DataFrame([
-            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
-             'brain_region': region, 'event': 'feedback_times',
-             'predictor': predictor, 'r2': r2, 'r2_adj': r2 - 0.05,
-             'delta_r2': 0.02 + i / 100, 'delta_r2_adj': 0.01 + i / 100,
-             'n_trials': 200}
-            for eid, region, r2 in [('e1', 'VTA', 0.4), ('e2', 'SNc', 0.6)]
-            for i, predictor in enumerate(self._PREDICTORS)
-        ])
+    def __init__(self):
+        self.donor_frame = pd.DataFrame({'trial': [0, 1], 'contrast': [1.0, 2.0]})
+        self.response_magnitudes = pd.DataFrame({'trial': [0, 1],
+                                                 'response': [0.5, 0.7]})
+        self.response_ols = pd.DataFrame({'predictor': ['contrast'],
+                                          'delta_r2': [0.04]})
+        self.prepared = None
+        self.fitted = None
 
-    def _coefficients(self):
-        """Reference-model weights, keyed by ``regressor`` rather than ``predictor``."""
-        return pd.DataFrame([
-            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
-             'brain_region': region, 'event': 'feedback_times',
-             'regressor': predictor, 'coef': coef, 'coef_se': 0.1,
-             'n_trials': 200}
-            for eid, region in [('e1', 'VTA'), ('e2', 'SNc')]
-            for coef, predictor in zip([0.3, -0.4], self._PREDICTORS)
-        ])
+    def prepare_donor_frame(self):
+        self.prepared = True
+        return self.donor_frame
 
-    def _session_pvalues(self):
-        """Significance for every row but ``e2`` x ``side`` (unscorable)."""
-        return pd.DataFrame([
-            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
-             'brain_region': region, 'event': 'feedback_times',
-             'predictor': predictor, 'delta_r2': 0.02,
-             'delta_r2_null_median': 0.005, 'p_value': 0.01, 'q_value': 0.03,
-             'n_donors': 42}
-            for eid, region in [('e1', 'VTA'), ('e2', 'SNc')]
-            for predictor in self._PREDICTORS
-            if not (eid == 'e2' and predictor == 'side')
-        ])
+    def fit_responses(self, formulas, donors):
+        self.fitted = (formulas, donors)
+        return self.response_ols
 
-    def _assembled(self):
-        from scripts.responses import assemble_ols_persession
-        return assemble_ols_persession(
-            self._dropone(), self._coefficients(), self._session_pvalues())
 
-    def test_columns_and_grain(self):
-        """Exactly the schema columns in order, one row per (recording, event,
-        dropped predictor) — the drop-one frame's grain, unchanged by the joins."""
-        from iblnm.config import OLS_PERSESSION_COLUMNS
-        frame = self._assembled()
-        assert list(frame.columns) == OLS_PERSESSION_COLUMNS
-        assert len(frame) == 4
-        assert set(map(tuple, frame[['eid', 'predictor']].to_numpy())) == {
-            ('e1', 'contrast'), ('e1', 'side'),
-            ('e2', 'contrast'), ('e2', 'side')}
+class TestLinkFunctions:
+    """The two module-level functions ``group.process`` maps over the sessions:
+    each calls one session method and returns plain data, holding no reference
+    to a group."""
 
-    def test_reference_quantities_repeat_across_predictors(self):
-        """``r2_full`` is the drop-one frame's ``r2`` and is identical across a
-        recording-event's predictor rows."""
-        frame = self._assembled()
-        for eid, r2 in [('e1', 0.4), ('e2', 0.6)]:
-            rows = frame[frame['eid'] == eid]
-            assert rows['r2_full'].tolist() == pytest.approx([r2] * 2)
-            assert rows['r2_full_adj'].tolist() == pytest.approx([r2 - 0.05] * 2)
+    def test_build_donor_frame_returns_that_sessions_donor_frame(self):
+        from scripts.responses import build_donor_frame
+        ps = _LinkSession()
 
-    def test_coefficients_join_on_predictor_and_region(self):
-        """The coefficient rows join on (eid, brain_region, event, predictor),
-        matching ``regressor`` to ``predictor``."""
-        frame = self._assembled().set_index(['eid', 'predictor'])
-        assert frame.loc[('e1', 'contrast'), 'coef'] == pytest.approx(0.3)
-        assert frame.loc[('e2', 'side'), 'coef'] == pytest.approx(-0.4)
-        assert frame.loc[('e1', 'side'), 'coef_se'] == pytest.approx(0.1)
+        returned = build_donor_frame(ps)
 
-    def test_significance_joins_and_missing_rows_are_null(self):
-        """Scorable rows carry their q-value and donor count; an unscorable row
-        keeps its fit and carries NaN significance."""
-        frame = self._assembled().set_index(['eid', 'predictor'])
-        scored = frame.loc[('e1', 'contrast')]
-        assert scored['q_value'] == pytest.approx(0.03)
-        assert scored['p_value'] == pytest.approx(0.01)
-        assert scored['n_donors'] == 42
-        unscored = frame.loc[('e2', 'side')]
-        assert np.isnan(unscored['q_value'])
-        assert np.isnan(unscored['n_donors'])
-        assert unscored['delta_r2_adj'] == pytest.approx(0.02)
+        assert ps.prepared is True
+        assert returned is ps.donor_frame
 
-    def test_delta_r2_comes_from_the_fits_not_the_pvalue_table(self):
-        """``delta_r2`` is the fitted value: the p-value table carries its own
-        copy, and the merge must not overwrite or duplicate the column."""
-        frame = self._assembled().set_index(['eid', 'predictor'])
-        assert frame.loc[('e1', 'contrast'), 'delta_r2'] == pytest.approx(0.02)
-        assert frame.loc[('e1', 'side'), 'delta_r2'] == pytest.approx(0.03)
+    def test_fit_session_forwards_its_arguments_and_returns_both_frames(self):
+        from scripts.responses import fit_session
+        ps = _LinkSession()
+        formulas = {'full': '{response} ~ contrast'}
+        donors = {'eid-1': 'donor'}
+
+        magnitudes, fits = fit_session(ps, formulas, donors)
+
+        assert ps.fitted == (formulas, donors)
+        assert magnitudes is ps.response_magnitudes
+        assert fits is ps.response_ols
 
 
 class TestVarcompCoefficients:
@@ -482,7 +449,7 @@ class TestComputeMaskingDiagnostics:
 
     _WINDOW = (0.1, 0.35)
 
-    def _group(self, masked_fractions, reaction_times=None):
+    def _magnitudes(self, masked_fractions, reaction_times=None):
         """One recording-event cell, one trial per entry of the given lists.
 
         Every trial is a go trial with a real response time and a
@@ -501,15 +468,17 @@ class TestComputeMaskingDiagnostics:
         })
         regressors = pd.DataFrame({
             'eid': 'e1', 'trial': np.arange(n), 'contrast': 100.0,
+            'stim_side': 'right', 'signed_contrast': 100.0,
             'feedbackType': 1, 'choice': 1, 'response_time': 1.0,
             'reaction_time': reaction_times, 'probabilityLeft': 0.5,
         })
-        return _make_group(magnitudes, regressors)
+        return _make_group(magnitudes, regressors)[1]
 
     def _cell(self, masked_fractions, reaction_times=None):
         from scripts.responses import compute_masking_diagnostics
         frame = compute_masking_diagnostics(
-            self._group(masked_fractions, reaction_times), window=self._WINDOW)
+            self._magnitudes(masked_fractions, reaction_times),
+            window=self._WINDOW)
         assert len(frame) == 1
         return frame.iloc[0]
 
@@ -539,10 +508,10 @@ class TestComputeMaskingDiagnostics:
         feedbackType), carrying the schema's columns."""
         from scripts.responses import compute_masking_diagnostics
         from iblnm.config import MASKING_DIAGNOSTIC_COLUMNS
-        group = self._group([0.0] * 4)
-        group.trial_regressors['contrast'] = [100.0, 100.0, 0.0, 0.0]
-        group.trial_regressors['feedbackType'] = [1, -1, 1, -1]
-        frame = compute_masking_diagnostics(group, window=self._WINDOW)
+        magnitudes = self._magnitudes([0.0] * 4)
+        magnitudes['contrast'] = [100.0, 100.0, 0.0, 0.0]
+        magnitudes['feedbackType'] = [1, -1, 1, -1]
+        frame = compute_masking_diagnostics(magnitudes, window=self._WINDOW)
         assert list(frame.columns) == MASKING_DIAGNOSTIC_COLUMNS
         assert len(frame) == 4
         assert (frame['n_trials'] == 1).all()
@@ -590,7 +559,8 @@ class TestPlotTraceFigures:
         from scripts import responses
         with patch.object(responses, 'condition_traces',
                           return_value=self._aggregate()):
-            responses.plot_trace_figures(self._group(), tmp_path)
+            responses.plot_trace_figures(
+                self._group(), pd.DataFrame(), tmp_path)
 
         assert {p.name for p in tmp_path.glob('*.svg')} == {
             'VTA-DA_traces.svg', 'DR-5HT_traces.svg'}
@@ -605,7 +575,8 @@ class TestPlotTraceFigures:
                                              return_value=self._aggregate()))
             drawer = stack.enter_context(
                 patch.object(responses, 'plot_mean_response_traces'))
-            responses.plot_trace_figures(self._group(), tmp_path)
+            responses.plot_trace_figures(
+                self._group(), pd.DataFrame(), tmp_path)
 
         insets = {call.args[1]: call.kwargs['inset']
                   for call in drawer.call_args_list}
@@ -618,7 +589,7 @@ class TestPlotResponseFigures:
 
     def test_one_file_per_target_event_and_mode(self, tmp_path):
         from scripts.responses import plot_response_figures
-        plot_response_figures(_make_movement_group(n_per_cell=5), tmp_path)
+        plot_response_figures(_make_movement_group(n_per_cell=5)[1], tmp_path)
 
         names = {p.name for p in tmp_path.glob('*.svg')}
         assert names == {
@@ -631,11 +602,12 @@ class TestPlotResponseFigures:
         """The frame ``plot_relative_contrast`` receives is the pooled mean of
         that cohort-event's trials, one row per (side, contrast, outcome)."""
         from scripts import responses
-        group = _make_movement_group(n_per_cell=5)
-        trials = group._modeling_frame()
+        _, magnitudes = _make_movement_group(n_per_cell=5)
+        trials = select_modeling_trials(magnitudes)
 
         with patch.object(responses, 'plot_relative_contrast') as drawer:
-            responses.plot_response_figures(group, tmp_path, modes=('pool',))
+            responses.plot_response_figures(magnitudes, tmp_path,
+                                            modes=('pool',))
 
         agg_df, target_nm, event = drawer.call_args_list[0].args
         cell = trials[(trials['target_NM'] == target_nm)
@@ -746,6 +718,113 @@ class TestPlotPersessionFigures:
             assert 'mouse_pvalues' not in mocks[mode][0].call_args.kwargs
 
 
+class TestTwoPassRun:
+    """Both passes over a two-session store, and the files they write.
+
+    The passes run for real — `group.process` over a written store, the
+    script's own link functions — because what the wiring has to get right is
+    the shape of what comes back: one trial-level frame and one fit frame per
+    session, collected into the three output files at their own grains.
+    """
+
+    @staticmethod
+    def _run(tmp_path):
+        from tests.test_data import _persession_group
+        from scripts.responses import build_donor_frame, fit_session
+        from iblnm.config import LMM_FORMULAS
+        group = _persession_group(
+            tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
+                       ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')])
+
+        donors = group.collect_donor_frames(group.process(build_donor_frame))
+        returns = [pair for pair in
+                   group.process(fit_session,
+                                 formulas=LMM_FORMULAS['persession'],
+                                 donors=donors)
+                   if pair is not None]
+        magnitudes = pd.concat([pair[0] for pair in returns],
+                               ignore_index=True)
+        ols, mouse = group.collect_fits([pair[1] for pair in returns])
+        return donors, magnitudes, ols, mouse
+
+    def test_donor_pool_holds_every_session(self, tmp_path):
+        """Pass 1 emits no trial-level output and admits every session,
+        including ones that produce no scorable fit."""
+        donors, _, _, _ = self._run(tmp_path)
+        assert list(donors) == ['eid-0', 'eid-1']
+
+    def test_written_files_carry_the_schema_column_sets(self, tmp_path):
+        """Round-tripped through parquet, each file holds its schema's columns
+        at its own grain."""
+        from iblnm.config import (OLS_PERSESSION_COLUMNS,
+                                  RESPONSE_MAGNITUDE_COLUMNS)
+        _, magnitudes, ols, mouse = self._run(tmp_path)
+
+        paths = {}
+        for name, frame in (('magnitudes', magnitudes[
+                                RESPONSE_MAGNITUDE_COLUMNS]),
+                            ('ols', ols), ('mouse', mouse)):
+            paths[name] = tmp_path / f'{name}.parquet'
+            frame.to_parquet(paths[name], index=False)
+        read = {name: pd.read_parquet(path) for name, path in paths.items()}
+
+        assert list(read['magnitudes'].columns) == RESPONSE_MAGNITUDE_COLUMNS
+        assert list(read['ols'].columns) == OLS_PERSESSION_COLUMNS
+        # Recording x event x trial, and recording x event x predictor.
+        assert not read['magnitudes'].duplicated(
+            subset=['eid', 'brain_region', 'event', 'trial']).any()
+        assert not read['ols'].duplicated(
+            subset=['eid', 'brain_region', 'event', 'predictor']).any()
+        assert not read['mouse'].duplicated(
+            subset=['target_NM', 'event', 'predictor', 'subject']).any()
+
+    def test_ols_carries_the_whole_null_vector(self, tmp_path):
+        """`null` survives the parquet round trip as an array of its own,
+        which is what makes the per-mouse pooling recomputable without
+        refitting — parquet stores it as a list column."""
+        from iblnm.config import PERSESSION_PVAL_N_BOOTSTRAP
+        _, _, ols, _ = self._run(tmp_path)
+        path = tmp_path / 'ols_persession.parquet'
+        ols.to_parquet(path, index=False)
+        read = pd.read_parquet(path)
+
+        vector = read['null'].iloc[0]
+        assert isinstance(vector, np.ndarray)
+        assert len(vector) == PERSESSION_PVAL_N_BOOTSTRAP
+
+
+class TestReprocessWiring:
+    """Source-level wiring of the two passes into the ``--reprocess`` branch."""
+
+    def test_both_passes_run_through_process(self):
+        reprocess, _ = _reprocess_and_default_branches()
+        assert 'group.process(build_donor_frame)' in reprocess
+        assert 'group.process(fit_session,' in reprocess
+        assert 'collect_donor_frames(' in reprocess
+        assert 'collect_fits(' in reprocess
+
+    def test_neither_pass_is_parallelized(self):
+        """Both passes stay sequential: `_process_parallel` pickles kwargs once
+        per session, so a parallel pass would serialize the donor pool once for
+        every session in it. No CLI flag offers otherwise."""
+        src, _ = _responses_source()
+        assert 'workers=' not in src.replace('`workers=1`', '')
+        assert '--workers' not in src
+
+    def test_the_three_files_are_written_from_the_collected_frames(self):
+        reprocess, _ = _reprocess_and_default_branches()
+        for name in ('magnitudes.to_parquet(', 'ols.to_parquet(',
+                     'ols_mouse.to_parquet('):
+            assert name in reprocess
+
+    def test_empty_magnitudes_exits_nonzero(self):
+        """The guard the collection pass inherited: nothing extracted means the
+        store is not there to read."""
+        reprocess, _ = _reprocess_and_default_branches()
+        assert 'Check H5 files exist' in reprocess
+        assert 'raise SystemExit(1)' in reprocess
+
+
 def _responses_source():
     """Return (full source, __main__ block) of scripts/responses.py."""
     from pathlib import Path
@@ -769,9 +848,9 @@ class TestVarcompWiring:
     def test_reprocess_fits_and_caches_varcomp(self):
         reprocess, _ = _reprocess_and_default_branches()
         assert 'response_varcomp(' in reprocess
-        # Its coefficients come out of the merged per-recording OLS frame, not
-        # a coefficients frame of its own.
-        assert 'varcomp_coefficients(group.ols_persession)' in reprocess
+        # Its coefficients come out of the merged per-recording OLS frame the
+        # collection returned, not a coefficients frame of its own.
+        assert 'varcomp_coefficients(ols)' in reprocess
         assert 'RESPONSE_VARCOMP_SUMMARY_FPATH' in reprocess
         assert 'RESPONSE_VARCOMP_VIOLIN_FPATH' in reprocess
         assert reprocess.count('.to_parquet(') >= 2

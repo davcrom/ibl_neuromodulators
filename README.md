@@ -504,8 +504,12 @@ types are present, rather than re-validating.
 
 ### `results/responses/response_magnitudes.parquet` — one row per (recording x event x trial)
 
-Recording keys + response magnitude only. Trial-level task and movement
-predictors live in `trial_regressors.parquet` (join on `eid`, `trial`).
+Recording keys and the response magnitude, with the trial-level task and
+movement columns beside them: there is no second trial-level table and no join
+at read time. Written uncoded, with no trial selection applied — every trial
+the session recorded — so a reader applies
+`analysis.select_modeling_trials` itself. Trial-level values repeat across a
+session's recordings and events.
 
 | Column | Type | Description |
 |---|---|---|
@@ -516,10 +520,20 @@ predictors live in `trial_regressors.parquet` (join on `eid`, `trial`).
 | `target_NM` | str | Target-NM label |
 | `brain_region` | str | Recording target |
 | `hemisphere` | str | l / r |
-| `event` | str | stimOn_times / firstMovement_times / feedback_times |
+| `event` | str | stimOnTrigger_times / feedback_times |
 | `trial` | int | Trial index |
 | `response` | float | Mean response in early window (0.1-0.35s) |
 | `masked_fraction` | float | Fraction of that window masked at the next event |
+| `contrast` | float | Unsigned stimulus contrast |
+| `stim_side` | str | left / right |
+| `side` | str | Stimulus side relative to the fiber: contra / ipsi |
+| `feedbackType` | float | 1 reward / -1 punishment |
+| `choice` | float | -1 left / 0 no-go / 1 right |
+| `choice_side` | str | Chosen side relative to the fiber: contra / ipsi |
+| `response_time` | float | feedback - stimOn (seconds) |
+| `reaction_time` | float | firstMovement - stimOn (seconds) |
+| `probabilityLeft` | float | Block probability |
+| `peak_velocity` | float | Max abs wheel velocity per trial |
 
 ### `results/responses/masking_diagnostics.parquet` — one row per (target_NM x event x contrast x feedbackType)
 
@@ -540,26 +554,6 @@ ones whose window was masked end to end and whose magnitude is therefore NaN.
 | `pct_any_masked` | float | % of trials with any masked sample |
 | `pct_fully_masked` | float | % of trials with every sample masked |
 | `pct_move_in_window` | float | % of trials whose `reaction_time` is inside the window |
-
-### `results/responses/trial_regressors.parquet` — one row per (eid x trial)
-
-Per-trial task and movement predictors. Join to `response_magnitudes.parquet`
-on `eid`, `trial`.
-
-| Column | Type | Description |
-|---|---|---|
-| `eid` | str | Session UUID |
-| `trial` | int | Trial index |
-| `signed_contrast` | float | Signed stimulus contrast |
-| `contrast` | float | Unsigned stimulus contrast |
-| `stim_side` | str | left / right |
-| `choice` | float | -1 left / 0 no-go / 1 right |
-| `feedbackType` | float | 1 reward / -1 punishment |
-| `probabilityLeft` | float | Block probability |
-| `reaction_time` | float | firstMovement - stimOn (seconds) |
-| `movement_time` | float | feedback - firstMovement (seconds) |
-| `response_time` | float | feedback - stimOn (seconds) |
-| `peak_velocity` | float | Max abs wheel velocity per trial |
 
 ### `data/qc_photometry.pqt` — one row per (session, brain region)
 

@@ -1,12 +1,14 @@
 """
 Response Analysis Pipeline
 
-Two passes over the biased and ephys sessions. The modelling pass extracts
-trial-level response magnitudes and their regressors from the store, fits the
-per-recording drop-one OLS models with their permutation significance, and
-fits the per-cell variance components; every frame it produces is cached. The
-plotting pass reads those frames, condition-averages the store's peri-event
-cuts, and draws the figures.
+Three passes over the biased and ephys sessions. The first prepares each
+session's donor frame, the pool the cross-session swap null draws from; the
+second fits each session's drop-one OLS models against that pool and returns
+its trial-level magnitudes with them. The group collects both passes' returns
+into the population tables — adding the FDR q-values and the per-mouse pooling
+— fits the per-cell variance components, and caches every frame. The plotting
+pass reads those frames, condition-averages the store's peri-event cuts, and
+draws the figures.
 
 Output:
     results/responses/             — one parquet per result frame, plus the
@@ -28,10 +30,9 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
-    RESPONSES_DIR, RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH,
-    OLS_PERSESSION_FPATH, OLS_PERSESSION_COLUMNS,
+    RESPONSES_DIR, RESPONSE_MAGNITUDES_FPATH, RESPONSE_MAGNITUDE_COLUMNS,
+    OLS_PERSESSION_FPATH,
     RESPONSE_OLS_MOUSE_PVAL_FPATH, RESPONSE_OLS_COEFS_COLUMNS,
-    PERSESSION_FDR_GROUP_COLS,
     RESPONSE_VARCOMP_SUMMARY_FPATH, RESPONSE_VARCOMP_VIOLIN_FPATH,
     VARCOMP_MCMC, VARCOMP_TAU_PRIOR, VARCOMP_MIN_MICE,
     VARCOMP_MIN_SESSIONS_PER_MOUSE, VARCOMP_KDE_GRID, VARCOMP_HDI_PROB,
@@ -39,7 +40,6 @@ from iblnm.config import (
     MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_WINDOWS,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS, TRACE_INSET_TARGETNMS,
     MOVEMENT_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
-    PERSESSION_PVAL_N_BOOTSTRAP, PERSESSION_PVAL_SEED,
 )
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -60,7 +60,6 @@ from iblnm.vis import (
     plot_varcomp_violins,
 )
 from iblnm.analysis import (
-    add_fdr_qvalues,
     aggregate_conditions,
     select_modeling_trials,
 )
@@ -151,11 +150,11 @@ def condition_traces(recordings, trials: pd.DataFrame,
         The recordings to average over, as ``PhotometrySessionGroup`` yields
         them, each session carrying its loaded trials and photometry.
     trials : pandas.DataFrame
-        Merged magnitude-and-regressor frame
-        (:meth:`PhotometrySessionGroup._merge_trial_regressors`), one row per
-        recording x event x trial. :func:`iblnm.analysis.select_modeling_trials`
-        runs on it here, so the traces average the same trials the models fit —
-        every block included, no ``probabilityLeft`` restriction.
+        The uncoded merged magnitude frame
+        (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x event
+        x trial. :func:`iblnm.analysis.select_modeling_trials` runs on it here,
+        so the traces average the same trials the models fit — every block
+        included, no ``probabilityLeft`` restriction.
     mode : {'pool', 'subject', 'subject_centered'}
         Averaging unit, via ``AGGREGATION_MODES``.
     correct : bool
@@ -202,7 +201,7 @@ def _cohort_recordings(group, cohort: pd.DataFrame):
         group._sessions.pop(eid, None)
 
 
-def plot_trace_figures(group, figures_dir, mode='subject_centered',
+def plot_trace_figures(group, trials, figures_dir, mode='subject_centered',
                        correct=True):
     """Save one event-triggered average figure per cohort, from the store.
 
@@ -214,9 +213,11 @@ def plot_trace_figures(group, figures_dir, mode='subject_centered',
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Filtered to the recordings in scope, with ``response_magnitudes`` and
-        ``trial_regressors`` populated; the trials averaged are its modeling
-        selection.
+        Filtered to the recordings in scope; it supplies the cohorts and opens
+        each session's stored cut.
+    trials : pandas.DataFrame
+        The uncoded merged magnitude frame, whose modeling selection names the
+        trials averaged (:func:`condition_traces`).
     figures_dir : Path
         Output directory for the SVG figures.
     mode : {'pool', 'subject', 'subject_centered'}
@@ -225,7 +226,6 @@ def plot_trace_figures(group, figures_dir, mode='subject_centered',
         Mask each trace past the next event and subtract its baseline. False
         plots the uncorrected average.
     """
-    trials = group._merge_trial_regressors()
     for target_nm, cohort in group.recordings.groupby('target_NM'):
         cells = condition_traces(_cohort_recordings(group, cohort), trials,
                                  mode=mode, correct=correct)
@@ -261,7 +261,7 @@ def print_response_summary(df_responses):
     print(summary.to_string())
 
 
-def plot_response_figures(group, figures_dir, response_col='response',
+def plot_response_figures(magnitudes, figures_dir, response_col='response',
                           modes=('pool', 'subject')):
     """Plot response magnitude by contrast x feedback x stimulus side.
 
@@ -271,9 +271,10 @@ def plot_response_figures(group, figures_dir, response_col='response',
 
     Parameters
     ----------
-    group : PhotometrySessionGroup
-        Must have ``response_magnitudes`` and ``trial_regressors`` populated;
-        the trials are its canonical modeling selection.
+    magnitudes : pandas.DataFrame
+        The uncoded merged magnitude frame
+        (``config.RESPONSE_MAGNITUDE_COLUMNS``); the trials drawn are its
+        modeling selection.
     figures_dir : Path
         Output directory for SVG files.
     response_col : str
@@ -283,7 +284,7 @@ def plot_response_figures(group, figures_dir, response_col='response',
         draws the same means where it weights units equally; they differ in
         what the error bars are taken over.
     """
-    trials = group._modeling_frame(response_col)
+    trials = select_modeling_trials(magnitudes, response_col)
 
     for mode in modes:
         cells = aggregate_conditions(trials, response_col,
@@ -329,7 +330,8 @@ def _save_lmm_frames(frames, data_dir):
         frame.to_csv(data_dir / f'{name}.csv', index=False)
 
 
-def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
+def plot_lmm_figures(group, magnitudes, figures_dir, data_dir,
+                     response_col='response'):
     """Run the task-LMM suite via the formula-driven data-class methods, save
     each result as a CSV, and plot the labelled summaries.
 
@@ -351,7 +353,10 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have ``response_magnitudes`` and ``trial_regressors`` populated.
+        Holds the fit registry the effect frames are read back from.
+    magnitudes : pandas.DataFrame
+        The uncoded merged magnitude frame every fit's trial selection is
+        taken from.
     figures_dir : Path
         Output directory for SVG files.
     data_dir : Path
@@ -369,27 +374,30 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
     base_frames, cv_frames, jk_frames = [], [], []
     for event, formulas in event_formulas.items():
         base_frames.append(group.response_lmm_fit(
-            {'task_full': formulas['full']}, group_by, events=[event]))
+            magnitudes, {'task_full': formulas['full']}, group_by,
+            events=[event]))
         cv_frames.append(group.response_lmm_crossval(
-            formulas, group_by, events=[event]))
+            magnitudes, formulas, group_by, events=[event]))
         jk_frames.append(group.response_lmm_jackknife(
-            formulas, group_by, events=[event]))
+            magnitudes, formulas, group_by, events=[event]))
     r2_base = pd.concat(base_frames, ignore_index=True)
     if r2_base.empty:
         print("  No LMM results.")
         return
-    coefficients = group.response_lmm_effects('task_full', 'coefficients')
+    coefficients = group.response_lmm_effects(magnitudes, 'task_full',
+                                              'coefficients')
     # Bottom-row panels: main-effect EMMs (predicted mean ± CI) per factor.
     # Events whose model omits reward yield flat reward EMMs (the panel is
     # blank, not an error).
-    emm_frames = {f: group.response_lmm_effects('task_full', 'emm', [f])
+    emm_frames = {f: group.response_lmm_effects(magnitudes, 'task_full',
+                                                'emm', [f])
                   for f in ('reward', 'side', 'contrast')}
 
     # Ceiling: per-event saturated reporting model (reward only at feedback),
     # run per event like the reliability set. plot_lmm_ceiling reads
     # marginal/conditional R², so rename the fit frame's R² columns.
     ceiling = pd.concat(
-        [group.response_lmm_fit(cset, group_by, events=[event])
+        [group.response_lmm_fit(magnitudes, cset, group_by, events=[event])
          for event, cset in LMM_FORMULAS['task_ceiling'].items()],
         ignore_index=True)
     ceiling = ceiling.rename(
@@ -448,7 +456,7 @@ def plot_lmm_figures(group, figures_dir, data_dir, response_col='response'):
 # Movement encoding
 # =========================================================================
 
-def _movement_reliability(group, group_by):
+def _movement_reliability(group, magnitudes, group_by):
     """Stack cv and jackknife ΔR² across the per-movement-variable
     ``movement_<var>`` families. Each family is keyed by event (the revised task
     base is per-event), so each event runs its own set scoped via
@@ -457,18 +465,18 @@ def _movement_reliability(group, group_by):
     for var in MOVEMENT_VARS:
         for event, formulas in LMM_FORMULAS[f'movement_{var}'].items():
             cv.append(group.response_lmm_crossval(
-                formulas, group_by, events=[event],
+                magnitudes, formulas, group_by, events=[event],
                 min_subjects=MIN_SUBJECTS_MOVEMENT,
                 min_trials=MIN_TRIALS_MOVEMENT).assign(movement_var=var))
             jk.append(group.response_lmm_jackknife(
-                formulas, group_by, events=[event],
+                magnitudes, formulas, group_by, events=[event],
                 min_subjects=MIN_SUBJECTS_MOVEMENT,
                 min_trials=MIN_TRIALS_MOVEMENT).assign(movement_var=var))
     return (pd.concat(cv, ignore_index=True),
             pd.concat(jk, ignore_index=True))
 
 
-def _movement_r2(group, group_by):
+def _movement_r2(group, magnitudes, group_by):
     """Per-model in-sample marginal R² of the ``movement_<var>`` families.
 
     Each family is keyed by event; keys are renamed ``<name>_<var>`` so cached
@@ -481,27 +489,29 @@ def _movement_r2(group, group_by):
         for event, family in LMM_FORMULAS[f'movement_{var}'].items():
             formulas = {f'{name}_{var}': formula
                         for name, formula in family.items()}
-            r2 = group.response_lmm_fit(formulas, group_by, events=[event],
+            r2 = group.response_lmm_fit(magnitudes, formulas, group_by,
+                                        events=[event],
                                         min_subjects=MIN_SUBJECTS_MOVEMENT)
             r2['name'] = r2['name'].str.replace(f'_{var}$', '', regex=True)
             rows.append(r2.assign(movement_var=var))
     return pd.concat(rows, ignore_index=True)
 
 
-def plot_movement_figures(group, fig_dirs, data_dir):
+def plot_movement_figures(group, magnitudes, fig_dirs, data_dir):
     """Movement-encoding analyses over the response events (``RESPONSE_EVENTS``):
     cv/jackknife reliability ΔR² per movement variable (analogous to the task
     reliability plots), the three-bar in-sample R² comparison, and the movement
     ceiling (saturated 3-way of the movement predictors, per event)."""
     group_by = ['target_NM', 'event']
 
-    reliability_cv, reliability_jk = _movement_reliability(group, group_by)
-    r2 = _movement_r2(group, group_by)
+    reliability_cv, reliability_jk = _movement_reliability(
+        group, magnitudes, group_by)
+    r2 = _movement_r2(group, magnitudes, group_by)
 
     # Movement ceiling: saturated 3-way of the movement predictors, fit per
     # (target_NM, event). Renamed to marginal/conditional for plot_lmm_ceiling.
     ceiling = group.response_lmm_fit(
-        LMM_FORMULAS['movement_ceiling'], group_by,
+        magnitudes, LMM_FORMULAS['movement_ceiling'], group_by,
         min_subjects=MIN_SUBJECTS_MOVEMENT).rename(
         columns={'marginal_r2': 'marginal', 'conditional_r2': 'conditional'})
 
@@ -559,54 +569,59 @@ def plot_movement_figures(group, fig_dirs, data_dir):
 # Per-recording OLS drop-one
 # =========================================================================
 
-# Recording-event-predictor key the three per-recording OLS results join on.
-# brain_region is part of it: a bilateral session records two regions under one
-# eid, and each is fitted separately.
-_OLS_PERSESSION_KEYS = ['eid', 'brain_region', 'event', 'predictor']
+def build_donor_frame(ps) -> pd.DataFrame:
+    """First pass: prepare one session's contribution to the swap null.
 
-
-def assemble_ols_persession(dropone, coefficients, session_pvalues):
-    """Merge the per-recording OLS results into one frame, one row per fit.
-
-    The drop-one fits set the grain and the row count; the coefficients and the
-    permutation significance are joined onto them on
-    ``(eid, brain_region, event, predictor)``, matching the coefficient table's
-    ``regressor`` to the dropped ``predictor`` — the drop-one keys are the six
-    regressor names. A recording-event-predictor with no scorable donor null
-    keeps its fit and carries NaN significance rather than dropping out.
+    The session builds the frame from its own trials and stored peak velocity
+    and leaves it on itself; this hands the frame back for
+    :meth:`PhotometrySessionGroup.collect_donor_frames` to key by eid. No
+    photometry is read — a donor contributes a regressor column and a trial
+    order, nothing else.
 
     Parameters
     ----------
-    dropone : pandas.DataFrame
-        Drop-one fits (``data.RESPONSE_OLS_DROPONE_COLUMNS``), whose ``r2`` and
-        ``r2_adj`` are the reference model's and repeat across a
-        recording-event's predictor rows; renamed ``r2_full`` / ``r2_full_adj``
-        here to say so.
-    coefficients : pandas.DataFrame
-        Reference-model main-effect weights
-        (``config.RESPONSE_OLS_COEFS_COLUMNS``), keyed by ``regressor``.
-    session_pvalues : pandas.DataFrame
-        Per-recording permutation significance
-        (``data.RESPONSE_OLS_SESSION_PVAL_COLUMNS``) with ``q_value`` filled.
-        Its own ``delta_r2`` copy is dropped in favour of the fitted one.
+    ps : PhotometrySession
+        The session to prepare.
 
     Returns
     -------
     pandas.DataFrame
-        ``config.OLS_PERSESSION_COLUMNS``, in that order.
+        That session's ``DonorFrame``, plain data holding no reference to a
+        group.
     """
-    coefs = (coefficients.rename(columns={'regressor': 'predictor'})
-             [_OLS_PERSESSION_KEYS + ['coef', 'coef_se']])
-    pvalues = session_pvalues[
-        _OLS_PERSESSION_KEYS + ['p_value', 'q_value', 'n_donors']]
-    merged = (dropone
-              .rename(columns={'r2': 'r2_full', 'r2_adj': 'r2_full_adj'})
-              .merge(coefs, on=_OLS_PERSESSION_KEYS, how='left')
-              .merge(pvalues, on=_OLS_PERSESSION_KEYS, how='left'))
-    # `null` is the whole permutation vector, which this path never sees: the
-    # group's significance step keeps only the median. It arrives when
-    # `PhotometrySession.fit_responses` replaces this merge.
-    return merged.reindex(columns=OLS_PERSESSION_COLUMNS)
+    ps.prepare_donor_frame()
+    return ps.donor_frame
+
+
+def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
+                                                           pd.DataFrame]:
+    """Second pass: fit one session's drop-one models against the donor pool.
+
+    :meth:`PhotometrySession.fit_responses` leaves two frames on the session
+    and this returns both: the uncoded, unselected merged magnitudes — every
+    trial the session recorded, one row per recording x event x trial — and the
+    fit results at recording x event x dropped-predictor grain.
+
+    Parameters
+    ----------
+    ps : PhotometrySession
+        The session to fit.
+    formulas : dict
+        Drop-one family, ``config.LMM_FORMULAS['persession']``.
+    donors : dict
+        The whole pass's donor pool, keyed by eid; the session narrows it to
+        the sessions its ``donor_scope`` admits.
+
+    Returns
+    -------
+    magnitudes : pandas.DataFrame
+        ``ps.response_magnitudes``, the frame the trial-level output is
+        written from.
+    fits : pandas.DataFrame
+        ``ps.response_ols``, this session's rows of the population OLS table.
+    """
+    ps.fit_responses(formulas, donors)
+    return ps.response_magnitudes, ps.response_ols
 
 
 def varcomp_coefficients(ols_persession: pd.DataFrame) -> pd.DataFrame:
@@ -634,7 +649,8 @@ def varcomp_coefficients(ols_persession: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_masking_diagnostics(
-    group, window: tuple[float, float] = RESPONSE_WINDOWS['early'],
+    magnitudes: pd.DataFrame,
+    window: tuple[float, float] = RESPONSE_WINDOWS['early'],
     group_cols: list[str] = MASKING_DIAGNOSTIC_GROUP_COLS,
 ) -> pd.DataFrame:
     """How much of the response window the event masking removed, per cell.
@@ -652,10 +668,11 @@ def compute_masking_diagnostics(
 
     Parameters
     ----------
-    group : PhotometrySessionGroup
-        With ``response_magnitudes`` and ``trial_regressors`` populated;
-        ``masked_fraction`` comes from the former,
-        ``contrast``/``feedbackType``/``reaction_time`` from the latter.
+    magnitudes : pandas.DataFrame
+        The uncoded merged magnitude frame
+        (``config.RESPONSE_MAGNITUDE_COLUMNS``), carrying
+        ``masked_fraction`` beside the ``contrast``/``feedbackType``/
+        ``reaction_time`` the cells are keyed and counted on.
     window : tuple of float
         The response window, in seconds relative to the event, that
         ``masked_fraction`` was measured over. Only ``pct_move_in_window``
@@ -673,8 +690,7 @@ def compute_masking_diagnostics(
         inside the window. A trial with no ``reaction_time`` counts as one
         whose movement was not in the window.
     """
-    trials = select_modeling_trials(group._merge_trial_regressors(),
-                                    'masked_fraction')
+    trials = select_modeling_trials(magnitudes, 'masked_fraction')
     trials = trials.assign(
         any_masked=trials['masked_fraction'] > 0,
         fully_masked=trials['masked_fraction'] == 1,
@@ -827,62 +843,51 @@ if __name__ == '__main__':
 
     if args.reprocess:
         # =================================================================
-        # Full pipeline: extract from H5 files and re-fit per-session models
+        # Full pipeline: two sequential passes over the store's sessions
         # =================================================================
 
-        # --- Magnitudes and regressors, one pass over the store ---
-        print("\nCollecting responses...")
-        group.response_magnitudes, group.trial_regressors = (
-            group.collect_responses())
+        # --- Pass 1: the donor pool the swap null draws from ---
+        # One prepared frame per session, held in memory and never written.
+        # Both passes run at the default `workers=1`: `process` pickles its
+        # kwargs once per session, so a parallel pass would serialize the whole
+        # pool once for every session in it.
+        print("\nPreparing donor frames...")
+        donors = group.collect_donor_frames(group.process(build_donor_frame))
+        print(f"  Donor frames: {len(donors)}")
 
-        if len(group.response_magnitudes) == 0:
+        # --- Pass 2: each session's drop-one fits, scored against that pool ---
+        print("Fitting per-session drop-one OLS models...")
+        returns = [pair for pair in
+                   group.process(fit_session,
+                                 formulas=LMM_FORMULAS['persession'],
+                                 donors=donors)
+                   if pair is not None]
+
+        magnitudes = (pd.concat([pair[0] for pair in returns],
+                                ignore_index=True) if returns
+                      else pd.DataFrame(columns=RESPONSE_MAGNITUDE_COLUMNS))
+        if len(magnitudes) == 0:
             print("No response magnitudes extracted. Check H5 files exist.")
             raise SystemExit(1)
+        magnitudes = magnitudes[RESPONSE_MAGNITUDE_COLUMNS]
 
-        group.response_magnitudes.to_parquet(
-            RESPONSE_MAGNITUDES_FPATH, index=False)
-        group.trial_regressors.to_parquet(TRIAL_REGRESSORS_FPATH, index=False)
+        # The FDR correction and the per-mouse pooling both span sessions, so
+        # they happen here rather than in either pass.
+        ols, ols_mouse = group.collect_fits([pair[1] for pair in returns])
+
+        magnitudes.to_parquet(RESPONSE_MAGNITUDES_FPATH, index=False)
+        ols.to_parquet(OLS_PERSESSION_FPATH, index=False)
+        ols_mouse.to_parquet(RESPONSE_OLS_MOUSE_PVAL_FPATH, index=False)
         print(f"Saved response magnitudes to {RESPONSE_MAGNITUDES_FPATH}")
-        print(f"Saved trial regressors to {TRIAL_REGRESSORS_FPATH}")
-
-        # --- Per-session drop-one fits and full-model coefficients ---
-        # One set of coded frames serves the fits and the permutation null, so
-        # both score the same rows and neither reopens the store.
-        print("Coding per-session model frames...")
-        model_frames = group.code_model_frames(LMM_FORMULAS['persession'])
-        print(f"  Scorable recording-events: {len(model_frames)}")
-
-        print("Fitting per-session drop-one OLS models...")
-        group.response_ols_dropone_results, coefs_df = (
-            group.response_ols_dropone(model_frames,
-                                       LMM_FORMULAS['persession']))
-
-        # --- Drop-one permutation significance, per session and per mouse ---
-        print("Computing drop-one permutation p-values...")
-        session_pvalues, mouse_pvalues = group.response_ols_dropone_permutation(
-            model_frames, LMM_FORMULAS['persession'],
-            n_bootstrap=PERSESSION_PVAL_N_BOOTSTRAP,
-            random_state=PERSESSION_PVAL_SEED)
-        # Correct each grain within (event, predictor): one family per grid cell.
-        # The per-recording grain then merges into the fits and the coefficients
-        # it shares a grain with; the per-mouse grain is coarser and stays apart.
-        group.ols_persession = assemble_ols_persession(
-            group.response_ols_dropone_results, coefs_df,
-            add_fdr_qvalues(session_pvalues,
-                            group_cols=PERSESSION_FDR_GROUP_COLS))
-        group.ols_persession_mouse = add_fdr_qvalues(
-            mouse_pvalues, group_cols=PERSESSION_FDR_GROUP_COLS)
-        group.ols_persession.to_parquet(OLS_PERSESSION_FPATH, index=False)
-        group.ols_persession_mouse.to_parquet(
-            RESPONSE_OLS_MOUSE_PVAL_FPATH, index=False)
         print(f"Saved per-recording OLS results to {OLS_PERSESSION_FPATH} "
               f"and per-mouse p-values to {RESPONSE_OLS_MOUSE_PVAL_FPATH}")
+        group.ols_persession, group.ols_persession_mouse = ols, ols_mouse
 
         # --- Per-cell variance components (mouse vs session) ---
         print("Fitting per-cell variance-components model (PyMC sampling)...")
         group.response_varcomp_summary, group.response_varcomp_violin = (
             group.response_varcomp(
-                varcomp_coefficients(group.ols_persession),
+                varcomp_coefficients(ols),
                 mcmc=VARCOMP_MCMC, tau_prior=VARCOMP_TAU_PRIOR,
                 min_mice=VARCOMP_MIN_MICE,
                 min_sessions_per_mouse=VARCOMP_MIN_SESSIONS_PER_MOUSE,
@@ -898,7 +903,7 @@ if __name__ == '__main__':
         # =================================================================
         # Default: load pre-existing parquet files
         # =================================================================
-        for fpath in (RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH,
+        for fpath in (RESPONSE_MAGNITUDES_FPATH,
                       OLS_PERSESSION_FPATH,
                       RESPONSE_OLS_MOUSE_PVAL_FPATH,
                       RESPONSE_VARCOMP_SUMMARY_FPATH,
@@ -908,26 +913,27 @@ if __name__ == '__main__':
                 raise SystemExit(1)
 
         group.load_response_magnitudes(RESPONSE_MAGNITUDES_FPATH)
-        group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
         group.load_ols_persession(OLS_PERSESSION_FPATH)
         group.load_ols_persession_mouse(RESPONSE_OLS_MOUSE_PVAL_FPATH)
         group.load_response_varcomp_summary(RESPONSE_VARCOMP_SUMMARY_FPATH)
         group.load_response_varcomp_violin(RESPONSE_VARCOMP_VIOLIN_FPATH)
+        magnitudes = group.response_magnitudes
 
     # =====================================================================
     # Response magnitude plots
     # =====================================================================
-    print_response_summary(group.response_magnitudes)
+    print_response_summary(magnitudes)
 
     print("\nGenerating response magnitude plots...")
-    plot_response_figures(group, fig_dirs['contrast_curves'])
+    plot_response_figures(magnitudes, fig_dirs['contrast_curves'])
     print(f"Response magnitude figures saved to {fig_dirs['contrast_curves']}")
 
     # =====================================================================
     # Event-triggered averages — one pass over the store's per-trial traces
     # =====================================================================
     print("\nGenerating event-triggered averages (reading the store)...")
-    plot_trace_figures(group, fig_dirs['event_triggered_averages'])
+    plot_trace_figures(group, magnitudes,
+                       fig_dirs['event_triggered_averages'])
     print("Event-triggered averages saved to "
           f"{fig_dirs['event_triggered_averages']}")
 
@@ -935,11 +941,11 @@ if __name__ == '__main__':
     # Masking diagnostics — how much window each trial type kept
     # =====================================================================
     print("\nComputing masking diagnostics...")
-    diagnostics = compute_masking_diagnostics(group)
+    diagnostics = compute_masking_diagnostics(magnitudes)
     diagnostics.to_parquet(MASKING_DIAGNOSTICS_FPATH, index=False)
     # The same statistics at cohort grain, small enough to read in the log.
     print(compute_masking_diagnostics(
-        group, group_cols=['target_NM', 'event']).to_string(index=False))
+        magnitudes, group_cols=['target_NM', 'event']).to_string(index=False))
     print(f"Saved masking diagnostics to {MASKING_DIAGNOSTICS_FPATH}")
     plot_masking_figures(diagnostics, fig_dirs['diagnostics'])
     print(f"Masking diagnostic figures saved to {fig_dirs['diagnostics']}")
@@ -948,7 +954,7 @@ if __name__ == '__main__':
     # Repeated-measures ANOVA on subject means
     # =====================================================================
     print("\nRunning repeated-measures ANOVA on subject means...")
-    anova_results = group.response_anovaRM_fit()
+    anova_results = group.response_anovaRM_fit(magnitudes)
     if anova_results:
         all_tables = []
         for (tnm, ev), table in anova_results.items():

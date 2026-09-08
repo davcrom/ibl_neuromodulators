@@ -18,9 +18,9 @@ TRIALS_DIR = PROJECT_ROOT / 'data/trials'  # one {subject}.csv per mouse
 RESULTS_DIR = PROJECT_ROOT / 'results'
 RESPONSES_DIR = RESULTS_DIR / 'responses'
 RESPONSE_MAGNITUDES_FPATH = RESPONSES_DIR / 'response_magnitudes.parquet'
-TRIAL_REGRESSORS_FPATH = RESPONSES_DIR / 'trial_regressors.parquet'
 # One row per recording x event x trial. `trial` is the trials table's own
-# trial number, which is what joins to TRIAL_REGRESSOR_COLUMNS.
+# trial number, so a session's trial-level values are identifiable across its
+# recordings and events.
 # `masked_fraction` is the proportion of RESPONSE_WINDOWS['early'] that
 # `mask_subsequent_events` removed before the mean was taken — the masking
 # diagnostic's per-trial quantity, carried here because it describes exactly
@@ -30,18 +30,17 @@ TRIAL_REGRESSORS_FPATH = RESPONSES_DIR / 'trial_regressors.parquet'
 # response figures split on, the columns the trial selection reads, and the one
 # stored regressor. Trial-level values repeat across a session's recordings and
 # events. `signed_contrast` and `movement_time` are not carried — no persession
-# formula and no plot reads either.
+# formula and no plot reads either. `side` and `choice_side` are: they are the
+# hemisphere-relative recodings of `stim_side` and `choice` that every model
+# formula and every contrast figure groups on, and `task.add_relative_contrast`
+# cannot re-derive them from this set because it also needs `signed_contrast`.
 RESPONSE_MAGNITUDE_COLUMNS = ['eid', 'subject', 'session_type', 'NM',
                               'target_NM', 'brain_region', 'hemisphere',
                               'event', 'trial', 'response', 'masked_fraction',
-                              'contrast', 'stim_side', 'feedbackType',
-                              'choice', 'response_time', 'reaction_time',
-                              'probabilityLeft', 'peak_velocity']
-# One row per session x trial, as `analysis.build_trial_regressors` emits them.
-TRIAL_REGRESSOR_COLUMNS = ['eid', 'trial', 'signed_contrast', 'contrast',
-                           'stim_side', 'choice', 'feedbackType',
-                           'probabilityLeft', 'reaction_time', 'movement_time',
-                           'response_time', 'peak_velocity']
+                              'contrast', 'stim_side', 'side', 'feedbackType',
+                              'choice', 'choice_side', 'response_time',
+                              'reaction_time', 'probabilityLeft',
+                              'peak_velocity']
 # How much of the response window the event masking removed, one row per
 # trial type within a cohort. Reported alongside every contrast-dependent
 # result, because masking removes fast trials and does so more often at high
@@ -561,8 +560,8 @@ MOVEMENT_VARS = ['choice', 'reaction_time', 'peak_velocity']
 # Predictor column each movement variable enters the LMM as. choice enters as
 # the deviation-coded fiber-relative choice side; reaction_time is heavily
 # right-skewed (raw skew 7.7) so it enters log-transformed; peak_velocity is
-# already roughly symmetric (raw skew 0.9) and enters raw. _modeling_frame
-# supplies the matching log_<var> columns.
+# already roughly symmetric (raw skew 0.9) and enters raw.
+# `analysis.select_modeling_trials` supplies the matching log_<var> columns.
 MOVEMENT_PREDICTORS = {
     'choice': 'choice_side',
     'reaction_time': 'log_reaction_time',

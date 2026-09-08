@@ -27,7 +27,7 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
-    RESPONSE_MAGNITUDES_FPATH, TRIAL_REGRESSORS_FPATH, TASK_ENCODING_DIR,
+    RESPONSE_MAGNITUDES_FPATH, TASK_ENCODING_DIR,
     DISPERSION_FIGURES_DIR, MIN_SESSIONS_DISPERSION,
     RESPONSE_EVENTS, FIGURE_DPI, TARGETNM_COLORS,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
@@ -176,7 +176,7 @@ def _neural_long_with_subject(features, recordings):
         var_name='term', value_name='coef').drop(columns='fiber_idx')
 
 
-def run_dispersion(group, events, args, fig_dir,
+def run_dispersion(group, magnitudes, events, args, fig_dir,
                    block_mains=CCA_BLOCK_MAINS,
                    min_sessions=MIN_SESSIONS_DISPERSION):
     """Build and save the coefficient-dispersion-vs-behavior scatter.
@@ -188,6 +188,8 @@ def run_dispersion(group, events, args, fig_dir,
     Parameters
     ----------
     group : PhotometrySessionGroup
+    magnitudes : pandas.DataFrame
+        The response magnitudes frame the per-session OLS fits are taken from.
     events : list of str
         Events forming the figure columns.
     args : argparse.Namespace
@@ -214,6 +216,7 @@ def run_dispersion(group, events, args, fig_dir,
     neural_by_event = {}
     for event in events:
         features = group.get_persession_ols_features(
+            magnitudes,
             formula=LMM_FORMULAS['persession']['full'], event_name=event,
             weight_by_se=args.weight_by_se, contrast_coding=args.contrast_coding,
         )
@@ -452,7 +455,8 @@ def _run_cca_block(group, event, block, feature_cols, cca_kwargs,
     _plot_cca_figures(results, cp, ws, label, scatter_dir, summary_dir)
 
 
-def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
+def run_cca(group, magnitudes, event, args, data_dir, scatter_dir,
+            summary_dir):
     """Fit the two-block per-cohort CCA for one event and save results.
 
     Fits the per-session OLS neural features and the shared psychometric
@@ -463,6 +467,8 @@ def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
     Parameters
     ----------
     group : PhotometrySessionGroup
+    magnitudes : pandas.DataFrame
+        The response magnitudes frame the per-session OLS fits are taken from.
     event : str
         Event name (e.g. 'stimOnTrigger_times').
     args : argparse.Namespace
@@ -480,7 +486,7 @@ def run_cca(group, event, args, data_dir, scatter_dir, summary_dir):
     # Fit per-session OLS for this event (CCA neural view), shared across blocks
     print("  Fitting per-session OLS for CCA neural features...")
     group.get_persession_ols_features(
-        formula=LMM_FORMULAS['persession']['full'],
+        magnitudes, formula=LMM_FORMULAS['persession']['full'],
         event_name=event, weight_by_se=args.weight_by_se,
         contrast_coding=args.contrast_coding,
     )
@@ -595,7 +601,7 @@ if __name__ == '__main__':
               "Run scripts/responses.py first.")
         raise SystemExit(1)
     group.load_response_magnitudes(RESPONSE_MAGNITUDES_FPATH)
-    group.load_trial_regressors(TRIAL_REGRESSORS_FPATH)
+    magnitudes = group.response_magnitudes
 
     # =====================================================================
     # Plot-only mode
@@ -614,7 +620,7 @@ if __name__ == '__main__':
     # Full pipeline: per-event GLM + CCA
     # =====================================================================
     print("\nCoefficient-dispersion-vs-behavior scatter")
-    run_dispersion(group, events, args, fig_dirs['dispersion'])
+    run_dispersion(group, magnitudes, events, args, fig_dirs['dispersion'])
 
     print("\nCCA pipeline")
 
@@ -626,7 +632,7 @@ if __name__ == '__main__':
 
         # --- CCA ---
         # run_cca fits the per-session GLMs (neural view) at entry.
-        run_cca(group, event, args, data_dir,
+        run_cca(group, magnitudes, event, args, data_dir,
                 fig_dirs['cca_scatter'], fig_dirs['cca_summary'])
 
     print(f"\nData saved to {data_dir}")

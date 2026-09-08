@@ -4294,31 +4294,27 @@ def _draw_rt_violins(df, ax=None, rt_range=None):
 def _assemble_rt_trials(group):
     """Build the trial table for RT violins from a group.
 
-    Joins ``group.response_magnitudes`` to ``group.trial_regressors`` on
-    (eid, trial), keeps trials with a recorded choice across all pLeft blocks,
-    and restricts to the analysed target-NMs. Returns an empty frame (with the
-    columns ``_draw_rt_violins`` expects) when either source is missing.
+    Takes one row per (eid, trial, target_NM) of ``group.response_magnitudes``
+    — the frame carries the trial-level columns beside the magnitude, so there
+    is nothing to join — keeps trials with a recorded choice across all pLeft
+    blocks, and restricts to the analysed target-NMs. Returns an empty frame
+    (with the columns ``_draw_rt_violins`` expects) when the magnitudes are
+    missing.
 
     Parameters
     ----------
     group : PhotometrySessionGroup
-        May have ``response_magnitudes`` and ``trial_regressors`` loaded.
+        May have ``response_magnitudes`` loaded.
 
     Returns
     -------
     pd.DataFrame
         Columns include ``response_time``, ``contrast``, ``target_NM``.
     """
-    if group.response_magnitudes is None or group.trial_regressors is None:
+    if group.response_magnitudes is None:
         return pd.DataFrame(columns=['response_time', 'contrast', 'target_NM'])
-    df_resp = group.response_magnitudes.drop_duplicates(
-        subset=['eid', 'trial', 'target_NM'])
-    df_trial = df_resp.merge(
-        group.trial_regressors[['eid', 'trial', 'response_time',
-                                'contrast', 'probabilityLeft', 'choice']],
-        on=['eid', 'trial'], how='inner',
-    )
-    df_trial = df_trial.query('choice != 0').copy()
+    df_trial = group.response_magnitudes.drop_duplicates(
+        subset=['eid', 'trial', 'target_NM']).query('choice != 0').copy()
     return df_trial[df_trial['target_NM'].isin(TARGETNMS_TO_ANALYZE)]
 
 
@@ -4333,8 +4329,8 @@ def plot_performance_grid(group, axes=None):
     Parameters
     ----------
     group : PhotometrySessionGroup
-        Must have ``group.performance`` loaded; ``response_magnitudes`` and
-        ``trial_regressors`` are needed for the RT column (empty otherwise).
+        Must have ``group.performance`` loaded; ``response_magnitudes`` is
+        needed for the RT column (empty otherwise).
     axes : np.ndarray of Axes, optional
         Shape (n_targets, 2). Created if None.
 

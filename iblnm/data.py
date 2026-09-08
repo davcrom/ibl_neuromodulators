@@ -33,7 +33,6 @@ from iblnm.config import (
     QC_SLIDING_AGG, QC_SLIDING_KWARGS, QC_SLIDING_METRICS,
     QC_UNDETRENDED_METRICS, REQUIRED_CONTRASTS,
     RESPONSE_EVENTS,
-    RESPONSE_OLS_COEFS_COLUMNS, TRIAL_REGRESSOR_COLUMNS,
     RESPONSE_VARCOMP_SUMMARY_COLUMNS, RESPONSE_VARCOMP_VIOLIN_COLUMNS,
     RESPONSE_WINDOW,
     RESPONSE_WINDOWS, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
@@ -67,13 +66,6 @@ from iblnm.validation import (
     VideoLengthError,
 )
 
-# Group-level long-form drop-one frame: per-recording rows tagged with their
-# eid/subject. target_NM precedes brain_region (the recording identity order).
-RESPONSE_OLS_DROPONE_COLUMNS = [
-    'eid', 'subject', 'target_NM', 'brain_region', 'event', 'predictor', 'r2',
-    'r2_adj', 'delta_r2', 'delta_r2_adj', 'n_trials',
-]
-
 # Per-mouse drop-one significance table: one row per (target_NM, event,
 # predictor, subject) cell, pooling the cell's sessions by bootstrap resampling
 # their per-session donor null ΔR² vectors.
@@ -82,14 +74,6 @@ RESPONSE_OLS_MOUSE_PVAL_COLUMNS = [
     'q_value', 'n_sessions',
 ]
 
-# Per-recording drop-one significance table: one row per (eid, event,
-# predictor), scoring that recording's observed ΔR² against its own donor null.
-RESPONSE_OLS_SESSION_PVAL_COLUMNS = [
-    'eid', 'subject', 'target_NM', 'brain_region', 'event', 'predictor',
-    'delta_r2', 'delta_r2_null_median', 'p_value', 'q_value', 'n_donors',
-]
-
-
 # One recording's magnitude rows, before the trial regressors are merged onto
 # them: the `config.RESPONSE_MAGNITUDE_COLUMNS` entries that come from the
 # response cut and the recording's identity rather than from the trials table.
@@ -97,23 +81,6 @@ _RECORDING_MAGNITUDE_COLUMNS = [
     'eid', 'subject', 'session_type', 'NM', 'target_NM', 'brain_region',
     'hemisphere', 'event', 'trial', 'response', 'masked_fraction',
 ]
-
-
-class CodedFrame(NamedTuple):
-    """One recording-event's coded, complete-case trial frame.
-
-    What the modelling pass hands to the fits and to the permutation null, so
-    both score the same rows without either reopening the store. The identity
-    fields are the recording's; ``frame`` is the coded frame itself, one row
-    per surviving trial.
-    """
-
-    eid: str
-    subject: str
-    target_NM: str
-    brain_region: str
-    event: str
-    frame: pd.DataFrame
 
 
 class DonorFrame(NamedTuple):
@@ -167,28 +134,17 @@ def resolve_event_family(formulas: dict, event: str) -> dict[str, str]:
     return formulas[event]
 
 
-# Which recording-events may stand in for a focal one in the cross-session swap
-# null, beyond sharing its event. Cohort (target_NM) is not filtered by default:
-# the swap replaces trial data, not photometry, and the IBL task is standardized
-# and interleaved across cohorts, so any session's trial sequence is a valid
-# stand-in. Excluding the focal subject rather than only the focal session is the
-# default because a subject's own sessions share its behavioral idiosyncrasies,
-# which is the very structure the null is meant to be free of.
-_DONOR_SCOPES = {
-    'exclude_session': lambda focal, donor: donor.eid != focal.eid,
-    'exclude_subject': lambda focal, donor: donor.subject != focal.subject,
-    'same_target': lambda focal, donor: (donor.subject != focal.subject
-                                         and donor.target_NM == focal.target_NM),
-}
-
-
-# `_DONOR_SCOPES` at the session grain, for the donor frames a
-# `PhotometrySession` prepares. The rationale for each scope is the one given
-# above; only the target-NM comparison differs. Both sides now carry a parallel
-# list of target NMs — a session recording two regions has two — so
-# `same_target` asks whether the two sessions share any target rather than
-# whether they name the same one, which is the same test whenever either side
-# records a single region.
+# Which sessions may stand in for a focal one in the cross-session swap null.
+# Cohort (target_NM) is not filtered by default: the swap replaces trial data,
+# not photometry, and the IBL task is standardized and interleaved across
+# cohorts, so any session's trial sequence is a valid stand-in. Excluding the
+# focal subject rather than only the focal session is the default because a
+# subject's own sessions share its behavioral idiosyncrasies, which is the very
+# structure the null is meant to be free of. Both sides carry a parallel list of
+# target NMs — a session recording two regions has two — so `same_target` asks
+# whether the two sessions share any target rather than whether they name the
+# same one, which is the same test whenever either side records a single
+# region.
 _SESSION_DONOR_SCOPES = {
     'exclude_session': lambda focal, donor: donor.eid != focal.eid,
     'exclude_subject': lambda focal, donor: donor.subject != focal.subject,
@@ -196,40 +152,6 @@ _SESSION_DONOR_SCOPES = {
         donor.subject != focal.subject
         and not set(donor.target_NM).isdisjoint(focal.target_NM)),
 }
-
-
-def select_donor_frames(focal: CodedFrame, frames: list[CodedFrame],
-                        donor_scope: str) -> list[pd.DataFrame]:
-    """Coded frames eligible to donate a swapped predictor column to ``focal``.
-
-    Parameters
-    ----------
-    focal : CodedFrame
-        Recording-event whose null is being built.
-    frames : list[CodedFrame]
-        Every coded recording-event of the pass, ``focal`` included; it is
-        excluded by every scope.
-    donor_scope : {'exclude_session', 'exclude_subject', 'same_target'}
-        Which recordings may donate, on top of matching ``focal.event``. See
-        ``_DONOR_SCOPES``.
-
-    Returns
-    -------
-    list[pd.DataFrame]
-        The eligible donors' frames, in ``frames`` order. Only the swapped
-        predictor column of each is read downstream.
-
-    Raises
-    ------
-    ValueError
-        ``donor_scope`` names no known scope.
-    """
-    if donor_scope not in _DONOR_SCOPES:
-        raise ValueError(f"Unrecognized donor_scope {donor_scope!r}; expected "
-                         f"one of {sorted(_DONOR_SCOPES)}")
-    eligible = _DONOR_SCOPES[donor_scope]
-    return [donor.frame for donor in frames
-            if donor.event == focal.event and eligible(focal, donor)]
 
 
 def assemble_mouse_pvalue_table(
@@ -315,64 +237,6 @@ def _floor_pvalue(p_value: float, n_donors: int) -> float:
     return max(p_value, 1 / (n_donors + 1))
 
 
-def assemble_session_pvalue_table(
-    observed: pd.DataFrame,
-    null_vectors: dict[tuple[str, str, str], np.ndarray],
-    n_donors: dict[tuple[str, str, str], int],
-    alternative: str = 'greater',
-) -> pd.DataFrame:
-    """Score each recording's drop-one ΔR² against its own donor null vector.
-
-    Pure assembler, the session-grain counterpart of
-    :func:`assemble_mouse_pvalue_table`: no grouping and no pooling, one output
-    row per scorable observed row.
-
-    Parameters
-    ----------
-    observed : pd.DataFrame
-        Observed drop-one frame (``RESPONSE_OLS_DROPONE_COLUMNS``), one row per
-        ``(eid, subject, target_NM, brain_region, event, predictor)`` carrying
-        the in-sample ``delta_r2``.
-    null_vectors : dict
-        Maps ``(eid, event, predictor)`` to that recording's donor null ΔR²
-        vector (lengths may differ across recordings). A row whose key is
-        absent is unscorable — it had no scorable donor — and is dropped.
-    n_donors : dict
-        Maps the same keys to the size of the donor pool that null was built
-        from, which sets the p-value floor (:func:`_floor_pvalue`).
-    alternative : {'greater', 'less', 'two-sided'}
-        Tail passed to :func:`iblnm.analysis.permutation_pvalue`.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per scorable observed row, in
-        ``RESPONSE_OLS_SESSION_PVAL_COLUMNS`` order. ``p_value`` is add-one
-        corrected and then floored at ``1 / (n_donors + 1)``; ``n_donors``
-        carries the count it was floored on. ``delta_r2_null_median`` is the
-        median of that row's null vector — the parameter-count bias the
-        adjusted ΔR² is read against. ``q_value`` is present but NaN —
-        the caller fills it with :func:`iblnm.analysis.add_fdr_qvalues`, which
-        chooses the correction families.
-    """
-    rows = []
-    for _, row in observed.iterrows():
-        key = (row['eid'], row['event'], row['predictor'])
-        if key not in null_vectors:
-            continue
-        p_value = analysis.permutation_pvalue(
-            row['delta_r2'], null_vectors[key], alternative)
-        rows.append(
-            {'eid': row['eid'], 'subject': row['subject'],
-             'target_NM': row['target_NM'],
-             'brain_region': row['brain_region'], 'event': row['event'],
-             'predictor': row['predictor'], 'delta_r2': row['delta_r2'],
-             'delta_r2_null_median': float(np.median(null_vectors[key])),
-             'p_value': _floor_pvalue(p_value, n_donors[key]),
-             'n_donors': n_donors[key]})
-    return pd.DataFrame(rows, columns=RESPONSE_OLS_SESSION_PVAL_COLUMNS)
-
-
 # =============================================================================
 # HDF5 save/load helpers
 # =============================================================================
@@ -401,13 +265,6 @@ def _concat_frames(frames: list[pd.DataFrame], columns: list[str]) -> pd.DataFra
     if not populated:
         return pd.DataFrame(columns=columns)
     return pd.concat(populated, ignore_index=True)[columns]
-
-
-def _tag_recording(rows: pd.DataFrame, coded: CodedFrame) -> pd.DataFrame:
-    """Stamp one recording-event's identity onto its result rows."""
-    return rows.assign(eid=coded.eid, subject=coded.subject,
-                       target_NM=coded.target_NM,
-                       brain_region=coded.brain_region, event=coded.event)
 
 
 # `config.OLS_PERSESSION_COLUMNS` less `q_value`: a session scores its own rows
@@ -4174,12 +4031,10 @@ class PhotometrySessionGroup:
         self.h5_dir = h5_dir if h5_dir is not None else SESSIONS_H5_DIR
         self._sessions = {}  # eid → PhotometrySession cache
         self.response_magnitudes = None
-        self.response_ols_dropone_results = None
         self.ols_persession = None
         self.ols_persession_mouse = None
         self.response_varcomp_summary = None
         self.response_varcomp_violin = None
-        self.trial_regressors = None
         self.response_features = None
         self.performance = None
         # Per-recording raw photometry QC, scanned by complete_catalog.
@@ -4861,170 +4716,6 @@ class PhotometrySessionGroup:
         kept = pd.MultiIndex.from_frame(self.recordings[identifiers])
         return df[keys.isin(kept)].copy()
 
-    def collect_responses(self) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Response magnitudes and trial regressors, in one pass over the store.
-
-        Walks the filtered recordings, opening each session's H5 once for its
-        `trials`, `photometry` and `wheel` groups. Per recording the stored
-        peri-event cuts are masked at the next event and baseline-subtracted
-        before the window mean is taken, so the magnitude carries the evoked
-        component alone; per session the trial regressors are built from the
-        same trials table. Per-trial traces are discarded as the loop advances.
-
-        A recording whose H5 is absent, whose region carries no cut, or whose
-        session holds no trials contributes no rows and does not abort the pass.
-        A session with no stored wheel responses scores NaN `peak_velocity`
-        rather than reaching Alyx for them.
-
-        Returns
-        -------
-        magnitudes : pandas.DataFrame
-            One row per recording x event x trial, columns `eid, subject,
-            session_type, NM, target_NM, brain_region, hemisphere, event,
-            trial, response, masked_fraction`. `trial` is the trials table's
-            own trial number, not the row position, so it joins to
-            `regressors`; `masked_fraction` is how much of the window the
-            masking removed, so a magnitude comes with the support it was
-            taken over.
-        regressors : pandas.DataFrame
-            One row per session x trial, `eid` plus the
-            `analysis.build_trial_regressors` columns.
-        """
-        magnitude_frames, regressor_frames = [], []
-        for rec, ps in tqdm(self, total=len(self),
-                            desc="Collecting responses"):
-            h5_path = Path(self.h5_dir) / f"{rec['eid']}.h5"
-            if not h5_path.exists():
-                continue
-            # __iter__ caches one session per eid, so a second region reuses
-            # the file this branch already read.
-            if not hasattr(ps, 'trials'):
-                ps.load_h5(h5_path, groups=['trials', 'photometry', 'wheel'])
-                regressor_frames.append(
-                    self._session_regressors(rec['eid'], ps))
-            magnitude_frames.append(self._recording_magnitudes(rec, ps))
-
-        return (_concat_frames(magnitude_frames,
-                               _RECORDING_MAGNITUDE_COLUMNS),
-                _concat_frames(regressor_frames, TRIAL_REGRESSOR_COLUMNS))
-
-    @staticmethod
-    def _session_regressors(eid: str, ps: PhotometrySession) -> pd.DataFrame:
-        """One session's trial regressors, tagged with its eid.
-
-        A session whose wheel responses were never stored passes no velocity,
-        scoring NaN `peak_velocity` rather than reaching Alyx for the samples.
-        """
-        wheel = getattr(ps, 'wheel_responses', {}).get(WHEEL_LABEL)
-        velocity = (wheel.sel(event=_WHEEL_T0_EVENT).values
-                    if wheel is not None else None)
-        regressors = analysis.build_trial_regressors(
-            ps.trials, analysis.peak_velocity(velocity, len(ps.trials)),
-            STIM_ONSET_EVENT)
-        regressors.insert(0, 'eid', eid)
-        return regressors
-
-    @staticmethod
-    def _recording_magnitudes(rec: pd.Series,
-                              ps: PhotometrySession) -> pd.DataFrame:
-        """One recording's per-trial magnitudes, one row per event x trial.
-
-        Empty when the region carries no stored cut, so an absent recording
-        drops out of the concatenation rather than raising.
-        """
-        region = rec['brain_region']
-        if region not in getattr(ps, 'photometry_responses', {}):
-            return pd.DataFrame(columns=_RECORDING_MAGNITUDE_COLUMNS)
-        responses = ps.subtract_baseline(ps.mask_subsequent_events(
-            ps.photometry_responses[region]))
-        tpts = responses.coords['time'].values
-        trials = responses.coords['trial'].values
-        # The store may carry cuts this analysis does not model, so the event
-        # axis is `RESPONSE_EVENTS` rather than whatever was written.
-        events = [event for event in RESPONSE_EVENTS
-                  if event in responses.coords['event'].values]
-        if not events:
-            return pd.DataFrame(columns=_RECORDING_MAGNITUDE_COLUMNS)
-        keys = {key: rec.get(key) for key in
-                ('eid', 'subject', 'session_type', 'NM', 'target_NM')}
-        with warnings.catch_warnings():
-            # A trial whose window is masked end to end averages an empty
-            # slice. NaN is the intended magnitude there, and the null filter
-            # downstream drops it; the warning would fire once per recording.
-            warnings.simplefilter('ignore', RuntimeWarning)
-            return pd.concat([
-                pd.DataFrame({
-                    **keys,
-                    'brain_region': region,
-                    'hemisphere': rec['hemisphere'],
-                    'event': event,
-                    'trial': trials,
-                    'response': compute_response_magnitude(
-                        responses.sel(event=event).values, tpts,
-                        RESPONSE_WINDOWS['early']),
-                    'masked_fraction': compute_masked_fraction(
-                        responses.sel(event=event).values, tpts,
-                        RESPONSE_WINDOWS['early']),
-                })
-                for event in events
-            ], ignore_index=True)
-
-    def code_model_frames(self, formulas, events=RESPONSE_EVENTS,
-                          response_col='response',
-                          min_trials=MIN_TRIALS_PERSESSION,
-                          contrast_coding='log2') -> list[CodedFrame]:
-        """Coded complete-case model frames, one per recording-event.
-
-        The coding half of the modelling pass, reading the magnitudes and
-        regressors :meth:`collect_responses` left on the group rather than the
-        store. Selects the modeling trials over the whole population
-        (:meth:`_modeling_frame`), then codes each recording-event on its own —
-        centering is within the frame handed to
-        :func:`iblnm.analysis.code_predictors`, so it must not see two
-        recordings at once — and drops rows missing any column the event's
-        family references. The frames returned are the ones both
-        :meth:`response_ols_dropone` and
-        :meth:`response_ols_dropone_permutation` score, so neither reopens the
-        store.
-
-        Parameters
-        ----------
-        formulas : dict
-            Drop-one family, flat or event-keyed
-            (:func:`resolve_event_family`); every event in ``events`` must have
-            a family, which is resolved up front so a missing one raises
-            ``MissingFormula`` here rather than after the coding work.
-        events : sequence of str
-            Events to code. An event the magnitudes do not carry yields no
-            frames.
-        response_col : str
-            Per-trial response magnitude column the formulas model.
-        min_trials : int
-            A recording-event with fewer complete-case rows is omitted.
-        contrast_coding : str
-            Passed to :func:`iblnm.analysis.code_predictors`.
-
-        Returns
-        -------
-        list[CodedFrame]
-            One entry per scorable recording-event, in recording order.
-        """
-        families = {event: resolve_event_family(formulas, event)
-                    for event in events}
-        df = self._modeling_frame(response_col)
-        df = df[df['event'].isin(events)]
-
-        frames = []
-        keys = ['eid', 'subject', 'target_NM', 'brain_region', 'event']
-        for identity, recording_event in df.groupby(keys, sort=False):
-            event = identity[-1]
-            coded = analysis.code_predictors(recording_event, contrast_coding)
-            coded = coded.dropna(subset=analysis.formula_union_columns(
-                families[event].values(), coded.columns))
-            if len(coded) >= min_trials:
-                frames.append(CodedFrame(*identity, coded))
-        return frames
-
     def __getitem__(self, idx):
         rec = self.recordings.iloc[idx]
         return rec, self._get_session(rec)
@@ -5093,7 +4784,6 @@ class PhotometrySessionGroup:
 
     def _process_sequential(self, sessions, fn, **kwargs):
         """Single-process implementation of one `process` pass."""
-        from tqdm import tqdm
 
         results, blocked = {}, set()
         for _, row in tqdm(sessions.iterrows(), total=len(sessions),
@@ -5117,7 +4807,6 @@ class PhotometrySessionGroup:
         written by each worker from its own H5 file.
         """
         from concurrent.futures import ProcessPoolExecutor, as_completed
-        from tqdm import tqdm
 
         # Serialize rows as dicts for pickling
         tasks = {row['eid']: row.to_dict() for _, row in sessions.iterrows()}
@@ -5248,7 +4937,6 @@ class PhotometrySessionGroup:
             arrays). A unit whose run raises yields a non-null ``error``,
             ``p_value`` NaN, and NaN ``observed_*``/``null_*`` entries.
         """
-        from tqdm import tqdm
 
         view = self.recordings if unit == 'recordings' else self.sessions
         rng = np.random.default_rng(seed)
@@ -5288,151 +4976,6 @@ class PhotometrySessionGroup:
                     row[f'null_{key}'] = null[key]
             rows.append(row)
         return pd.DataFrame(rows)
-
-    def response_ols_dropone(self, frames, formulas, reference='full',
-                             response_col='response'):
-        """Per-recording drop-one OLS ΔR² over the coded frames of one pass.
-
-        Fits every formula in each frame's family on that recording-event's
-        rows and differences the reduced models off ``reference``, raw and
-        parameter-adjusted (:func:`iblnm.analysis.dropone_delta_r2`, which takes
-        each fit's ``df_model`` from these same fits). Every model of an event is
-        fit on the same complete-case rows, which is what makes their R²
-        comparable, and the reference model's main-effect weights are read off
-        the same fits rather than refit. A recording-event whose design is
-        degenerate for any member of its family contributes no rows. Touches
-        neither the store nor Alyx: :meth:`code_model_frames` did the reading.
-
-        Parameters
-        ----------
-        frames : list[CodedFrame]
-            Coded recording-event frames from :meth:`code_model_frames`.
-        formulas : dict
-            Drop-one family, flat or event-keyed
-            (:func:`resolve_event_family`); one name equals ``reference`` and
-            every other key is a dropped predictor.
-        reference : str
-            Full-model key each reduced model's ΔR² is measured against.
-        response_col : str
-            Per-trial response magnitude column the formulas model.
-
-        Returns
-        -------
-        dropone : pandas.DataFrame
-            Long-form ``RESPONSE_OLS_DROPONE_COLUMNS``, one row per
-            recording-event x dropped predictor; empty (those columns) when no
-            recording-event is scorable.
-        coefs : pandas.DataFrame
-            The reference model's main-effect weights from the same fits,
-            columns ``RESPONSE_OLS_COEFS_COLUMNS``; empty likewise.
-        """
-        dropone_frames, coef_frames = [], []
-        for coded in tqdm(frames, desc="Per-recording OLS drop-one"):
-            family = resolve_event_family(formulas, coded.event)
-            fits = {name: PhotometrySession.fit_response_model(
-                        coded.frame, formula, response_col)
-                    for name, formula in family.items()}
-            if any(fit is None for fit in fits.values()):
-                continue
-            n_trials = len(coded.frame)
-            rows = analysis.dropone_delta_r2(
-                {name: (fit.rsquared, fit.df_model)
-                 for name, fit in fits.items()},
-                n_trials, reference)
-            dropone_frames.append(
-                _tag_recording(rows.assign(n_trials=n_trials), coded))
-            coef_frames.append(_tag_recording(
-                _coefficient_rows(fits[reference], n_trials), coded))
-
-        return (_concat_frames(dropone_frames, RESPONSE_OLS_DROPONE_COLUMNS),
-                _concat_frames(coef_frames, RESPONSE_OLS_COEFS_COLUMNS))
-
-    def response_ols_dropone_permutation(self, frames, formulas,
-                                         reference='full',
-                                         response_col='response',
-                                         donor_scope='exclude_subject',
-                                         n_bootstrap=1000, random_state=0):
-        """Per-mouse permutation p-values for the per-session drop-one ΔR² grid.
-
-        For each event the donor pool is the coded recording-events at that
-        event that ``donor_scope`` admits (:func:`select_donor_frames`) — by
-        default every recording of a subject other than the focal one, spanning
-        all cohorts (target_NMs), since the IBL task is standardized and
-        interleaved across cohorts on the same rigs and any session's trial
-        sequence is a valid stand-in. For each focal recording-event and each
-        dropped predictor (the non-``reference`` ``formulas`` keys), the
-        cross-session swap null
-        (:func:`iblnm.analysis.permutation_null_delta_r2`) is computed against
-        that pool. Those null vectors
-        score the observed ``self.response_ols_dropone_results`` at two grains:
-        each recording against its own null
-        (:func:`assemble_session_pvalue_table`), and each mouse's sessions
-        pooled (:func:`assemble_mouse_pvalue_table`).
-
-        The frames are the ones :meth:`response_ols_dropone` fitted, so the
-        null scores the rows the observed ΔR² came from and nothing here
-        reopens the store.
-
-        Parameters
-        ----------
-        frames : list[CodedFrame]
-            Coded recording-event frames from :meth:`code_model_frames`.
-        formulas : dict[str, str]
-            Drop-one family ``{name: formula_template}``; ``reference`` is the
-            full model and every other key is a dropped predictor (and its
-            swapped column name).
-        reference : str
-            Full-model key; the remaining keys are the dropped predictors.
-        response_col : str
-            Per-trial response magnitude column the formulas model.
-        donor_scope : {'exclude_subject', 'exclude_session', 'same_target'}
-            Which same-event recordings may donate a swapped predictor column
-            (:func:`select_donor_frames`).
-        n_bootstrap : int
-            Pooled-null bootstrap draws per mouse cell. It does not set the
-            p-value floor; the donor count does.
-        random_state : int or None
-            Seed for the bootstrap rng.
-
-        Returns
-        -------
-        session_pvalues : pandas.DataFrame
-            Per-recording p-value table at grain ``(eid, event, predictor)``,
-            columns ``RESPONSE_OLS_SESSION_PVAL_COLUMNS``.
-        mouse_pvalues : pandas.DataFrame
-            Per-mouse p-value table at grain ``(target_NM, event, predictor,
-            subject)``, columns ``RESPONSE_OLS_MOUSE_PVAL_COLUMNS``.
-
-        Neither table carries q-values: the caller applies
-        :func:`iblnm.analysis.add_fdr_qvalues` with its own choice of families.
-        """
-        reduced_formulas = {name: formula for name, formula in formulas.items()
-                            if name != reference}
-        rng = np.random.default_rng(random_state)
-        null_vectors, donor_counts = {}, {}
-        for focal in tqdm(frames,
-                          desc="Permutation null (per recording-event)"):
-            donors = select_donor_frames(focal, frames, donor_scope)
-            nulls = analysis.permutation_null_delta_r2(
-                focal.frame, donors, formulas[reference], reduced_formulas,
-                response_col, rng=rng, n_bootstrap=n_bootstrap)
-            for predictor, null in nulls.items():
-                if null.size:
-                    null_vectors[(focal.eid, focal.event, predictor)] = null
-                    donor_counts[(focal.eid, focal.event,
-                                  predictor)] = len(donors)
-        observed = self.response_ols_dropone_results
-        session_pvalues = assemble_session_pvalue_table(
-            observed, null_vectors, donor_counts)
-        keys = list(zip(observed['eid'], observed['event'],
-                        observed['predictor']))
-        pooled = observed.assign(
-            null=pd.Series([null_vectors.get(key, np.empty(0)) for key in keys],
-                           index=observed.index, dtype=object),
-            n_donors=[donor_counts.get(key, 0) for key in keys])
-        mouse_pvalues = assemble_mouse_pvalue_table(
-            pooled, n_bootstrap=n_bootstrap, random_state=random_state)
-        return session_pvalues, mouse_pvalues
 
     def response_varcomp(self, coefficients, *, mcmc, tau_prior, min_mice,
                          min_sessions_per_mouse, grid_size, hdi_prob):
@@ -5604,11 +5147,6 @@ class PhotometrySessionGroup:
         """
         self.response_varcomp_violin = self._read_parquet(path)
 
-    def load_trial_regressors(self, path):
-        """Load trial regressors from parquet, filtered to current recordings."""
-        self.trial_regressors = self._load_parquet(path)
-
-
     def load_response_features(self, path):
         """Load response features from parquet, filtered to current recordings."""
 
@@ -5629,51 +5167,6 @@ class PhotometrySessionGroup:
 
 
 
-
-    def _merge_trial_regressors(self) -> pd.DataFrame:
-        """Join ``response_magnitudes`` with ``trial_regressors`` on (eid, trial).
-
-        Raises if either is unpopulated. Trial-level predictors
-        (contrast, side, choice, timing, peak velocity) come from
-        ``trial_regressors``; recording keys and ``response`` come from
-        ``response_magnitudes``.
-        """
-        if self.response_magnitudes is None:
-            raise ValueError(
-                "response_magnitudes not populated. "
-                "Call collect_responses() first."
-            )
-        if self.trial_regressors is None:
-            raise ValueError(
-                "trial_regressors not populated. "
-                "Call collect_responses() first."
-            )
-        return self.response_magnitudes.merge(
-            self.trial_regressors, on=['eid', 'trial'], how='left',
-        )
-
-    def _modeling_frame(self, response_col: str = 'response') -> pd.DataFrame:
-        """Canonical trial selection shared by every model and plot.
-
-        Merges ``response_magnitudes`` with ``trial_regressors``, adds
-        hemisphere-relative contrast/side, then keeps go trials
-        (``choice != 0``) with a real response (``response_time > 0.05`` and
-        non-null ``response_col``). All blocks are kept regardless of
-        ``probabilityLeft``. Adds a
-        ``log_<var>`` column (base-10 log, NaN where the value is ≤ 0) for each
-        ``config.TIMING_VARS`` entry present, so movement models can reference
-        them; the NaN rows are dropped per family at fit time. Every model and
-        plot derives from this frame so they share identical trials.
-
-        Parameters
-        ----------
-        response_col : str
-            Column name for the response magnitude whose NaNs are dropped.
-        """
-        from iblnm.task import add_relative_contrast
-
-        df = add_relative_contrast(self._merge_trial_regressors())
-        return analysis.select_modeling_trials(df, response_col)
 
     def _code_lmm_predictors(
         self, df: pd.DataFrame, contrast_coding: str = 'log2'
@@ -5697,9 +5190,9 @@ class PhotometrySessionGroup:
         """
         return analysis.code_predictors(df, contrast_coding)
 
-    def response_lmm_fit(self, formulas, group_by, response_col='response',
-                         reml=True, re_formula='1', min_subjects=2,
-                         events=None):
+    def response_lmm_fit(self, trials, formulas, group_by,
+                         response_col='response', reml=True, re_formula='1',
+                         min_subjects=2, events=None):
         """Fit caller-supplied LMMs per ``group_by`` group and cache each fit.
 
         For every group with at least ``min_subjects`` subjects, codes the
@@ -5714,6 +5207,11 @@ class PhotometrySessionGroup:
 
         Parameters
         ----------
+        trials : pandas.DataFrame
+            The uncoded merged magnitude frame
+            (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x
+            event x trial. :func:`iblnm.analysis.select_modeling_trials` runs
+            on it here, so every fit shares one trial selection.
         formulas : dict[str, str]
             Flat ``{name: formula_template}`` mapping; each template may
             contain ``{response}``, filled with ``response_col``.
@@ -5741,7 +5239,7 @@ class PhotometrySessionGroup:
             One row per fitted ``(group, name)`` with the ``group_by`` columns,
             ``name``, ``marginal_r2``, and ``conditional_r2``.
         """
-        df = self._modeling_frame(response_col)
+        df = analysis.select_modeling_trials(trials, response_col)
         if events is not None:
             df = df[df['event'].isin(events)]
         self._lmm_group_by = list(group_by)
@@ -5781,10 +5279,10 @@ class PhotometrySessionGroup:
         return pd.DataFrame(
             rows, columns=[*group_by, 'name', 'marginal_r2', 'conditional_r2'])
 
-    def response_lmm_crossval(self, formulas, group_by, response_col='response',
-                              reference='full', fold_col='subject',
-                              min_subjects=3, min_test=5, min_trials=0,
-                              events=None):
+    def response_lmm_crossval(self, trials, formulas, group_by,
+                              response_col='response', reference='full',
+                              fold_col='subject', min_subjects=3, min_test=5,
+                              min_trials=0, events=None):
         """Out-of-sample ΔR² by leave-one-fold-out cross-validation per group.
 
         See :meth:`_response_lmm_resample` for the orchestration; this binds the
@@ -5823,13 +5321,15 @@ class PhotometrySessionGroup:
                 fold_col=fold_col, min_subjects=min_subjects,
                 min_test=min_test)
 
-        return self._response_lmm_resample(procedure, formulas, group_by,
-                                           response_col, min_trials=min_trials,
+        return self._response_lmm_resample(trials, procedure, formulas,
+                                           group_by, response_col,
+                                           min_trials=min_trials,
                                            events=events)
 
-    def response_lmm_jackknife(self, formulas, group_by, response_col='response',
-                               reference='full', fold_col='subject',
-                               min_subjects=3, min_trials=0, events=None):
+    def response_lmm_jackknife(self, trials, formulas, group_by,
+                               response_col='response', reference='full',
+                               fold_col='subject', min_subjects=3,
+                               min_trials=0, events=None):
         """In-sample-influence ΔR² by leave-one-fold-out jackknife per group.
 
         See :meth:`_response_lmm_resample` for the orchestration; this binds the
@@ -5865,11 +5365,12 @@ class PhotometrySessionGroup:
                 df_coded, coded_formulas, response_col, reference=reference,
                 fold_col=fold_col, min_subjects=min_subjects)
 
-        return self._response_lmm_resample(procedure, formulas, group_by,
-                                           response_col, min_trials=min_trials,
+        return self._response_lmm_resample(trials, procedure, formulas,
+                                           group_by, response_col,
+                                           min_trials=min_trials,
                                            events=events)
 
-    def _response_lmm_resample(self, procedure, formulas, group_by,
+    def _response_lmm_resample(self, trials, procedure, formulas, group_by,
                                response_col, min_trials=0, events=None):
         """Run a resampling ``procedure`` per ``group_by`` group.
 
@@ -5908,7 +5409,7 @@ class PhotometrySessionGroup:
             Long-form ΔR² frame with columns ``[*group_by, 'predictor', 'fold',
             'n_trials', 'r2', 'delta_r2']``.
         """
-        df = self._modeling_frame(response_col)
+        df = analysis.select_modeling_trials(trials, response_col)
         if events is not None:
             df = df[df['event'].isin(events)]
         cols = [*group_by, 'predictor', 'fold', 'n_trials', 'r2', 'delta_r2']
@@ -5932,7 +5433,7 @@ class PhotometrySessionGroup:
         return pd.concat(frames, ignore_index=True)[cols] if frames \
             else pd.DataFrame(columns=cols)
 
-    def response_lmm_effects(self, name, kind, variables=None,
+    def response_lmm_effects(self, trials, name, kind, variables=None,
                              response_col='response'):
         """Extract a tidy effect frame from the cached fits of one named model.
 
@@ -5943,6 +5444,11 @@ class PhotometrySessionGroup:
 
         Parameters
         ----------
+        trials : pandas.DataFrame
+            The uncoded merged magnitude frame
+            (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x
+            event x trial. :func:`iblnm.analysis.select_modeling_trials` runs
+            on it here, so every fit shares one trial selection.
         name : str
             Model name whose cached fits to read.
         kind : str
@@ -5961,7 +5467,7 @@ class PhotometrySessionGroup:
             Long-form effect frame; columns include the ``group_by`` identity
             columns recovered from the registry keys.
         """
-        df = self._modeling_frame(response_col)
+        df = analysis.select_modeling_trials(trials, response_col)
 
         frames = []
         for keys, _ in df.groupby(self._lmm_group_by):
@@ -6081,13 +5587,15 @@ class PhotometrySessionGroup:
         self.response_features = df
         return df
 
-    def get_persession_ols_features(self, formula, event_name=STIM_ONSET_EVENT,
-                                  weight_by_se=False, contrast_coding='log2',
-                                  min_trials=MIN_TRIALS_PERSESSION):
+    def get_persession_ols_features(self, trials, formula,
+                                    event_name=STIM_ONSET_EVENT,
+                                    weight_by_se=False,
+                                    contrast_coding='log2',
+                                    min_trials=MIN_TRIALS_PERSESSION):
         """Fit a caller-supplied response model per recording, return coefficients.
 
-        Builds the canonical trial frame (:meth:`_modeling_frame`), restricts it
-        to ``event_name``, then for each recording codes the predictors, drops
+        Selects the modeling trials of ``trials``, restricts them to
+        ``event_name``, then for each recording codes the predictors, drops
         complete-case rows over the formula's columns, and fits ``formula``
         through :func:`iblnm.analysis.fit_ols`.
         The fitted coefficients (or t-statistics) become that recording's feature
@@ -6096,6 +5604,11 @@ class PhotometrySessionGroup:
 
         Parameters
         ----------
+        trials : pandas.DataFrame
+            The uncoded merged magnitude frame
+            (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x
+            event x trial. :func:`iblnm.analysis.select_modeling_trials` runs
+            on it here, so every fit shares one trial selection.
         formula : str
             Wilkinson formula template with a ``{response}`` placeholder, e.g.
             ``LMM_FORMULAS['persession']['full']``. Its coefficient names become
@@ -6119,7 +5632,7 @@ class PhotometrySessionGroup:
             scorable.
         """
         formula = formula.format(response='response')
-        df = self._modeling_frame(response_col='response')
+        df = analysis.select_modeling_trials(trials, 'response')
         df = df[df['event'] == event_name]
         if 'fiber_idx' not in df.columns:
             df = df.assign(fiber_idx=0)
@@ -6438,7 +5951,6 @@ class PhotometrySessionGroup:
         results = {}
         data = {}
 
-        from tqdm import tqdm
         for tnm in tqdm(target_nms.unique(), desc='Fitting CCA per cohort'):
             mask = target_nms == tnm
             X_cohort = X.loc[mask]
@@ -6578,19 +6090,21 @@ class PhotometrySessionGroup:
         self.cohort_cca_weight_similarities = df
         return df
 
-    def response_anovaRM_fit(self, response_col='response',
-                                    min_subjects=2, min_trials=10):
+    def response_anovaRM_fit(self, trials, response_col='response',
+                             min_subjects=2, min_trials=10):
         """Run repeated-measures ANOVA on subject-mean response magnitudes.
 
         For each (target_NM, event) group, aggregates trial-level data to
         subject means by (contrast, side, feedbackType), then runs a 3-way
         repeated-measures ANOVA via ``anova_rm``.
 
-        Requires ``self.response_magnitudes`` and ``self.trial_regressors``
-        to be populated.
-
         Parameters
         ----------
+        trials : pandas.DataFrame
+            The uncoded merged magnitude frame
+            (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x
+            event x trial. :func:`iblnm.analysis.select_modeling_trials` runs
+            on it here, so every fit shares one trial selection.
         response_col : str
             Column name for the response magnitude.
         min_subjects : int
@@ -6607,7 +6121,7 @@ class PhotometrySessionGroup:
         """
         from iblnm.analysis import anova_rm
 
-        df = self._modeling_frame(response_col)
+        df = analysis.select_modeling_trials(trials, response_col)
 
         results = {}
         for (target_nm, event), df_group in df.groupby(['target_NM', 'event']):
