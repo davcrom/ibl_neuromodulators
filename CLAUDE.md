@@ -53,7 +53,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Session build, one block per modality | `scripts/download.py → build_session, build_trials, build_photometry, build_wheel, build_video` |
 | Download CLI (`--workers`, `--session-type`, `--target-NM`) | `scripts/download.py → parse_args, main` |
 | Session catalog (`sessions.pqt`) | `scripts/download.py → fetch_catalog` |
-| Response re-cut, that product alone | `scripts/rebuild_responses.py → rebuild_responses, main` |
+| Response re-cut, the cut products alone | `scripts/rebuild_responses.py → rebuild_responses, main` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |
 | Psychometric fitting | `task.py → fit_psychometric, fit_psychometric_by_block, compute_fraction_correct` |
@@ -269,27 +269,38 @@ it reads the QC this pass exists to compute.
 
 ### 2c. The Response Rebuild
 
-`scripts/rebuild_responses.py` is the one pass that rebuilds a single product.
-It re-cuts `photometry/{region}/responses` and nothing else, for the case a
-full download would answer wastefully: `config.RESPONSE_EVENTS`,
-`config.RESPONSE_WINDOW` or the cut changed, and every other product in the
-store is still current.
+`scripts/rebuild_responses.py` is the one pass that rebuilds the cut products
+alone. It re-cuts `photometry/{region}/responses` and `wheel/velocity/
+responses`, plus the `wheel/velocity/peak_velocity` reduced from that cut, and
+nothing else, for the case a full download would answer wastefully:
+`config.RESPONSE_EVENTS`, `config.RESPONSE_WINDOW`,
+`config.WHEEL_RESPONSE_EVENTS`, `config.WHEEL_RESPONSE_WINDOW` or the cut
+changed, and every other product in the store is still current.
 
 It is the mirror image of the download path in what it reads. `main` builds the
 group with `from_h5_dir(scan_h5=False)` and `fix_catalog`, so the session list
 comes from the store's own `metadata` groups rather than from Alyx or
 `sessions.pqt`, and it turns the analysis filters off for the same reason
-`download.main` does. `rebuild_responses(ps)` then goes through `load_trials`
-and `load_photometry` — the `load_*` tier the download pass never touches,
-because here the store is the input rather than the output. Those two loads
-read the file; the fallback in `load_photometry` is the only thing that can
-reach Alyx, when a session holds no preprocessed band at all.
+`download.main` does. `rebuild_responses(ps)` then goes through `load_trials`,
+`load_photometry` and `load_wheel` — the `load_*` tier the download pass never
+touches, because here the store is the input rather than the output. Those
+loads read the file; their fallbacks are the only things that can reach Alyx,
+when a session holds no preprocessed band or velocity at all.
+
+One `try` per modality, the boundary `build_session` draws: a session whose
+photometry cannot be cut still has its wheel re-cut, and the error is logged
+against the modality that raised. Each block calls `load_trials` itself, so a
+session with no trials table logs against both; the second call answers from
+the attribute the first one set.
 
 `ps.complete_events()` is shared with `build_photometry`, and
-`save_h5(groups=['photometry'])` replaces each region's `responses` subgroup —
-so a renamed event leaves no orphan dataset behind — while round-tripping the
-preprocessed band and the QC beside it through the handler pair that read them.
-The CLI flags are the download's three, with the same meaning.
+`save_h5(groups=[...])` replaces each region's and the wheel's `responses`
+subgroup — so a renamed event leaves no orphan dataset behind — while
+round-tripping the preprocessed signals and the QC beside them through the
+handler pairs that read them. `peak_velocity` is rebuilt in the same block
+because it is reduced from the cut: leave it and a re-cut store carries a
+reduction of the old one. The CLI flags are the download's three, with the same
+meaning.
 
 ### 3. PhotometrySession Lifecycle
 
@@ -633,7 +644,7 @@ Tests use `pytest` with synthetic fixtures. No Alyx calls.
 | `test_dataset_overview.py` | Dataset flag construction |
 | `test_wheel.py` | Wheel raw, preprocessed and response products |
 | `test_download.py` | Catalog fixups, the per-modality build pass, the download CLI |
-| `test_rebuild_responses.py` | The response re-cut, its Alyx fallback, its CLI |
+| `test_rebuild_responses.py` | The photometry and wheel response re-cut, its Alyx fallback, its CLI |
 
 Key fixtures in test files:
 - `mock_session_series()` — synthetic session metadata row

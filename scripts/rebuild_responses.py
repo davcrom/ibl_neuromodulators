@@ -1,11 +1,14 @@
-"""Re-cut the photometry responses of every stored session.
+"""Re-cut the responses of every stored session, photometry and wheel.
 
 A narrow pass over the store: nothing is fetched and nothing else is rebuilt.
-Each session's preprocessed band and trials table are read back out of its H5
-file, the peri-event matrices are cut again, and `photometry/{region}/responses`
-is replaced. Use it after changing `config.RESPONSE_EVENTS`,
-`config.RESPONSE_WINDOW` or the cut itself, when a full `scripts/download.py`
-run would rebuild every other product to no purpose.
+Each session's preprocessed signals and trials table are read back out of its
+H5 file, the peri-event matrices are cut again, and
+`photometry/{region}/responses`, `wheel/velocity/responses` and the
+`wheel/velocity/peak_velocity` reduced from that cut are replaced. Use it after
+changing the events, the window or the cut itself — `config.RESPONSE_EVENTS`,
+`config.RESPONSE_WINDOW`, `config.WHEEL_RESPONSE_EVENTS`,
+`config.WHEEL_RESPONSE_WINDOW` — when a full `scripts/download.py` run would
+rebuild every other product to no purpose.
 
 Usage:
     python scripts/rebuild_responses.py                   # every session
@@ -24,26 +27,37 @@ import argparse  # noqa: E402
 
 from iblnm.config import (  # noqa: E402
     SESSION_TYPES, SESSIONS_H5_DIR, VALID_TARGETNMS,
+    WHEEL_RESPONSE_EVENTS, WHEEL_RESPONSE_WINDOW,
 )
 from iblnm.data import (  # noqa: E402
-    PREPROCESSED_BAND, PhotometrySession, PhotometrySessionGroup,
+    WHEEL_LABEL, PhotometrySession, PhotometrySessionGroup,
 )
 from iblnm.io import _get_default_connection  # noqa: E402
 
 
 def rebuild_responses(ps: PhotometrySession) -> None:
-    """Re-cut one session's photometry responses and write them back.
+    """Re-cut one session's photometry and wheel responses and write them back.
 
     The session arrives holding whatever its file stored, so the trials and the
-    preprocessed band are already in memory and the two loads below are reads
-    of the store, not trips to Alyx — unless the file is missing that product,
-    in which case `load_photometry` fetches the raw bands and preprocesses them
-    as the download pass would.
+    preprocessed signals are already in memory and the loads below are reads of
+    the store, not trips to Alyx — unless the file is missing that product, in
+    which case `load_photometry` fetches the raw bands and preprocesses them,
+    and `load_wheel` fetches the raw encoder samples and differentiates them, as
+    the download pass would.
 
-    `save_h5(groups=['photometry'])` replaces the `responses` subgroup of each
-    region. The preprocessed signal and the QC beside it are round-tripped
-    through the same handlers that read them, so what stands in the file after
-    the write is what stood there before it.
+    One `try` per modality, the boundary `scripts/download.py` draws: a fatal
+    step abandons its block, logs one error against that modality, and the other
+    modality is still re-cut. Each block loads the trials it reads, so a session
+    with no trials table logs against both rather than silently re-cutting
+    neither. The second call is free — `load_trials` answers from the attribute
+    the first one set.
+
+    `save_h5(groups=[...])` replaces the `responses` subgroup of each region and
+    of the wheel, and the wheel's `peak_velocity` beside it — the one product
+    reduced from a cut, so it is rebuilt here rather than left stale. The
+    preprocessed signals and the QC beside them are round-tripped through the
+    same handlers that read them, so what stands in the file after the write is
+    what stood there before it.
 
     Parameters
     ----------
@@ -61,10 +75,20 @@ def rebuild_responses(ps: PhotometrySession) -> None:
     except Exception as error:
         ps.log_error(error, product='photometry')
 
+    try:
+        ps.load_trials()
+        ps.wheel_responses = ps.extract_responses(
+            {WHEEL_LABEL: ps.load_wheel()}, events=WHEEL_RESPONSE_EVENTS,
+            window=WHEEL_RESPONSE_WINDOW)
+        ps.extract_peak_velocity()
+        ps.save_h5(groups=['wheel'])
+    except Exception as error:
+        ps.log_error(error, product='wheel')
+
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='Re-cut the photometry responses of the stored sessions')
+        description='Re-cut the responses of the stored sessions')
     parser.add_argument('--workers', '-w', type=int, default=1,
                         help='Number of parallel worker processes')
     parser.add_argument('--session-type', nargs='+', choices=SESSION_TYPES,
@@ -79,7 +103,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def main(argv=None) -> None:
-    """Re-cut every stored session's photometry responses.
+    """Re-cut every stored session's photometry and wheel responses.
 
     The catalog is rebuilt from the store's own `metadata` groups rather than
     read from `sessions.pqt`, so this pass covers what is on disk and queries
@@ -103,8 +127,7 @@ def main(argv=None) -> None:
         targetnms=args.target_NM or False, photometry_qc=False,
         min_performance=False, required_contrasts=False,
     )
-    print(f'Re-cutting {PREPROCESSED_BAND} responses for '
-          f'{len(group.sessions)} sessions')
+    print(f'Re-cutting responses for {len(group.sessions)} sessions')
 
     group.process(rebuild_responses, workers=args.workers)
 

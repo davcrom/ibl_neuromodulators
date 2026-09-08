@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 import scripts.rebuild_responses as rebuild
-from iblnm.config import RESPONSE_EVENTS
+from iblnm.config import RESPONSE_EVENTS, WHEEL_FS, WHEEL_RESPONSE_EVENTS
 from iblnm.data import PhotometrySession
 
 N_TRIALS = 5
@@ -53,18 +53,29 @@ def _raw_bands(duration=60.0, fs=30.0, seed=42):
 
 
 def _trials(n_trials=N_TRIALS):
-    """Trials spaced widely enough that no response window leaves the signal."""
+    """Trials spaced widely enough that no response window leaves the signal.
+
+    `response_times` is the wheel cut's per-trial window end, so it sits inside
+    the spacing too.
+    """
     stim_on = 10.0 + TRIAL_SPACING * np.arange(n_trials)
     return pd.DataFrame({
         'trial': np.arange(n_trials),
         'stimOnTrigger_times': stim_on,
+        'response_times': stim_on + 1.0,
         'feedback_times': stim_on + 1.0,
     })
 
 
+def _wheel_velocity(duration=60.0):
+    """A preprocessed wheel velocity on the `WHEEL_FS` grid, in rad/s."""
+    times = np.arange(0, duration, 1 / WHEEL_FS)
+    return pd.Series(np.sin(times), index=times)
+
+
 @pytest.fixture
 def stored_session(session_series, tmp_path):
-    """A written H5 holding trials, a preprocessed band, and its raw QC.
+    """A written H5 holding trials, a preprocessed band and velocity, and QC.
 
     No responses group: what the rebuild writes is the product under test, and
     a session that never had one is the same case as one whose cut changed.
@@ -79,6 +90,7 @@ def stored_session(session_series, tmp_path):
     # so a stored preprocessed signal always carries them.
     session.preprocessing_diagnostics = {'VTA': {'bleaching_tau': 300.0}}
     session.photometry_qc = {'VTA': {'n_unique_samples_GCaMP': 1200.0}}
+    session.wheel_velocity = _wheel_velocity()
     # Metadata is named explicitly, as the download build does: it is not a
     # product, so the auto-detected group list does not carry it.
     session.save_h5(groups=['metadata'], mode='w')
@@ -217,7 +229,11 @@ class TestRebuildResponses:
         assert not session.errors
 
     def test_a_failed_input_is_logged_not_raised(self, session_series, tmp_path):
-        """One session with nothing to cut from must not end the pass."""
+        """One session with nothing to cut from must not end the pass.
+
+        The trials are the input both modalities read, so a session without
+        them logs once against each rather than failing silently for the wheel.
+        """
         from iblnm.validation import MissingRawData
 
         session = PhotometrySession(session_series, one=MagicMock(),
@@ -228,7 +244,7 @@ class TestRebuildResponses:
             rebuild.rebuild_responses(session)
 
         assert [(e['product'], e['error_type']) for e in session.errors] == [
-            ('photometry', 'MissingRawData')]
+            ('photometry', 'MissingRawData'), ('wheel', 'MissingRawData')]
         assert not hasattr(session, 'photometry_responses')
 
     def test_builds_the_band_when_the_file_holds_none(self, trials_only_session):
@@ -243,3 +259,45 @@ class TestRebuildResponses:
         assert session.photometry_responses['VTA'].sizes['trial'] == N_TRIALS
         with h5py.File(trials_only_session, 'r') as h5:
             assert 'photometry/VTA/responses' in h5
+
+
+class TestRebuildWheelResponses:
+
+    def test_cuts_the_wheel_responses_from_the_stored_velocity(
+            self, stored_session):
+        """The wheel is re-cut on its own event and its own per-trial window."""
+        session = _reload(stored_session)
+
+        rebuild.rebuild_responses(session)
+
+        responses = session.wheel_responses['velocity']
+        assert (responses.coords['event'].values.tolist()
+                == list(WHEEL_RESPONSE_EVENTS))
+        assert responses.coords['trial'].values.tolist() == list(range(N_TRIALS))
+
+    def test_writes_the_wheel_responses_and_the_peak_velocity(
+            self, stored_session):
+        """Both wheel products land in the file, the reduction beside the cut."""
+        session = _reload(stored_session)
+
+        rebuild.rebuild_responses(session)
+
+        assert session.wheel_peak_velocity.shape == (N_TRIALS,)
+        with h5py.File(stored_session, 'r') as h5:
+            assert 'wheel/velocity/responses' in h5
+            assert 'wheel/velocity/peak_velocity' in h5
+        assert not session.errors
+
+    def test_a_failed_wheel_is_logged_against_the_wheel(self, stored_session):
+        """A wheel with nothing to cut from must not cost the photometry."""
+        from iblnm.validation import MissingRawData
+
+        session = _reload(stored_session)
+        with patch.object(PhotometrySession, 'load_wheel',
+                          side_effect=MissingRawData('_ibl_wheel.position.npy')):
+            del session.wheel_velocity
+            rebuild.rebuild_responses(session)
+
+        assert [(e['product'], e['error_type']) for e in session.errors] == [
+            ('wheel', 'MissingRawData')]
+        assert 'VTA' in session.photometry_responses
