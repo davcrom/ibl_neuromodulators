@@ -3632,25 +3632,111 @@ class PhotometrySession(PhotometrySessionLoader):
         return vec
 
 
-    def _recording_magnitudes(self, region: str, hemisphere: str,
-                              target_nm: str,
-                              events: Sequence[str]) -> pd.DataFrame:
-        """One region's per-trial response magnitudes, one row per event x trial.
+    @property
+    def response_magnitudes(self) -> pd.DataFrame:
+        """The response magnitudes under the current trial mask.
 
-        The stored cut is masked at the next event and baseline-subtracted
-        before the `config.RESPONSE_WINDOWS['early']` mean is taken, so the
-        magnitude carries the evoked component alone. Empty when the region's
-        cut holds none of ``events``, so a region the analysis does not model
-        drops out of the concatenation rather than raising.
+        The stored frame is one row per fiber x event x trial, so the mask —
+        one entry per trial — selects every row measured on a trial it keeps.
+        Unfiltered this is the stored frame itself, matching the `trials`
+        property; under a mask it is a copy of the selected rows.
+
+        Raises
+        ------
+        AttributeError
+            Nothing has extracted the magnitudes yet, which is the lazy-load
+            contract every product follows.
+        """
+        magnitudes = self._response_magnitudes
+        if self._trial_mask is None:
+            return magnitudes
+        return magnitudes[magnitudes['trial'].isin(self.trials['trial'])]
+
+    @response_magnitudes.setter
+    def response_magnitudes(self, value: pd.DataFrame) -> None:
+        self._response_magnitudes = value
+
+    @response_magnitudes.deleter
+    def response_magnitudes(self) -> None:
+        del self._response_magnitudes
+
+    def masking_diagnostics(self) -> pd.DataFrame:
+        """The magnitude frame with no trial mask applied.
+
+        The trials whose window was masked end to end carry a NaN ``response``
+        and a ``masked_fraction`` of 1, and are exactly the ones a filtered
+        view drops — so the count of them has to be taken before the mask.
+        """
+        return self._response_magnitudes
+
+    def extract_response_magnitudes(
+            self,
+            events: Sequence[str] = RESPONSE_EVENTS,
+            window: tuple[float, float] = RESPONSE_WINDOWS['early'],
+            mask_subsequent: bool = True,
+            subtract_baseline: bool = True) -> pd.DataFrame:
+        """Measure every fiber x event x trial response magnitude, once.
+
+        The measurement half of the session's state: identity columns and the
+        two numbers taken off the response cut, with no trial column merged, no
+        mask applied and no coding done. The trial-level regressors live on the
+        trials table and are joined by whatever fits them.
 
         Parameters
         ----------
-        region, hemisphere, target_nm : str
-            The recording's entries in the session's parallel list columns.
-            ``region`` also keys ``self.photometry_responses``.
+        events : Sequence[str]
+            Events to measure, in the order the rows are emitted. A fiber whose
+            stored cut holds none of them contributes nothing.
+        window : tuple of float
+            Seconds relative to the event, averaged into ``response``.
+        mask_subsequent : bool
+            Blank each trial's samples from the next event onward, so a window
+            running past the event that follows measures the evoked component
+            alone rather than the next one's.
+        subtract_baseline : bool
+            Subtract each trial's pre-event mean before the window is averaged.
+
+        Returns
+        -------
+        pandas.DataFrame
+            `_RECORDING_MAGNITUDE_COLUMNS`, also assigned to
+            ``self._response_magnitudes``. The parameters are not stored.
+        """
+        self.response_magnitudes = _concat_frames(
+            [self._recording_magnitudes(recording, events, window,
+                                        mask_subsequent, subtract_baseline)
+             for recording in zip(self.brain_region, self.hemisphere,
+                                  self.target_NM)
+             if recording[0] in self.photometry_responses],
+            _RECORDING_MAGNITUDE_COLUMNS)
+        return self._response_magnitudes
+
+    def _recording_magnitudes(self, recording: tuple[str, str, str],
+                              events: Sequence[str],
+                              window: tuple[float, float],
+                              mask_subsequent: bool,
+                              subtract_baseline: bool) -> pd.DataFrame:
+        """One region's per-trial response magnitudes, one row per event x trial.
+
+        The stored cut is masked at the next event and baseline-subtracted
+        before the ``window`` mean is taken, so the magnitude carries the
+        evoked component alone. Empty when the region's cut holds none of
+        ``events``, so a region the analysis does not model drops out of the
+        concatenation rather than raising.
+
+        Parameters
+        ----------
+        recording : tuple of str
+            ``(region, hemisphere, target_NM)``, the recording's entries in the
+            session's parallel list columns. ``region`` also keys
+            ``self.photometry_responses``.
         events : Sequence[str]
             Events to cut, in the order the rows are emitted. Events the stored
             cut does not carry are skipped.
+        window : tuple of float
+            Seconds relative to the event, averaged into ``response``.
+        mask_subsequent, subtract_baseline : bool
+            The two transforms applied to the cut before it is averaged.
 
         Returns
         -------
@@ -3659,8 +3745,12 @@ class PhotometrySession(PhotometrySessionLoader):
             is the trials table's own trial number, not the row position, so it
             joins to the trial regressors.
         """
-        responses = self.subtract_baseline(
-            self.mask_subsequent_events(self.photometry_responses[region]))
+        region, hemisphere, target_nm = recording
+        responses = self.photometry_responses[region]
+        if mask_subsequent:
+            responses = self.mask_subsequent_events(responses)
+        if subtract_baseline:
+            responses = self.subtract_baseline(responses)
         tpts = responses.coords['time'].values
         trials = responses.coords['trial'].values
         cut_events = [event for event in events
@@ -3684,11 +3774,9 @@ class PhotometrySession(PhotometrySessionLoader):
                     'event': event,
                     'trial': trials,
                     'response': compute_response_magnitude(
-                        responses.sel(event=event).values, tpts,
-                        RESPONSE_WINDOWS['early']),
+                        responses.sel(event=event).values, tpts, window),
                     'masked_fraction': compute_masked_fraction(
-                        responses.sel(event=event).values, tpts,
-                        RESPONSE_WINDOWS['early']),
+                        responses.sel(event=event).values, tpts, window),
                 })
                 for event in cut_events
             ], ignore_index=True)
@@ -3727,14 +3815,9 @@ class PhotometrySession(PhotometrySessionLoader):
             persession formula reads (``signed_contrast``, ``movement_time``).
             Also assigned to ``self.response_magnitudes``.
         """
-        regressors = self._trial_regressors()
-        magnitudes = _concat_frames(
-            [self._recording_magnitudes(region, hemisphere, target_nm, events)
-             for region, hemisphere, target_nm
-             in zip(self.brain_region, self.hemisphere, self.target_NM)
-             if region in self.photometry_responses],
-            _RECORDING_MAGNITUDE_COLUMNS)
-        merged = magnitudes.merge(regressors, on='trial', how='left')
+        magnitudes = self.extract_response_magnitudes(events)
+        merged = magnitudes.merge(self._trial_regressors(), on='trial',
+                                  how='left')
         self.response_magnitudes = task.add_relative_contrast(merged)
         return self.response_magnitudes
 

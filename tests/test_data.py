@@ -8808,3 +8808,82 @@ class TestCollectResponses:
             event=['firstMovement_times'])
         ps._prepare_model_frames(self.formulas, min_trials=1)
         assert ps.response_magnitudes.empty
+
+
+class TestExtractResponseMagnitudes:
+    """The measurement view: one row per fiber x event x trial, no trials."""
+
+    def test_response_magnitudes_carry_identity_and_measurements_alone(self):
+        """Two fibers x two response events x four trials, uncoded.
+
+        The frame carries what the response cut and the recording's identity
+        supply and nothing else: the trial-level regressors live on the trials
+        table and are joined by the fit, not merged in here.
+        """
+        from iblnm.config import RESPONSE_EVENTS
+        from iblnm.data import _RECORDING_MAGNITUDE_COLUMNS
+        ps = _session_with_planted_trials(n_regions=2)
+
+        magnitudes = ps.extract_response_magnitudes()
+
+        assert list(magnitudes.columns) == _RECORDING_MAGNITUDE_COLUMNS
+        assert len(magnitudes) == 2 * len(RESPONSE_EVENTS) * 4
+        counts = magnitudes.groupby(['brain_region', 'event']).size()
+        assert set(counts) == {4}
+        assert magnitudes is ps.response_magnitudes
+
+    def test_response_magnitudes_change_when_baseline_subtraction_is_off(self):
+        """Pre-event level is 0.5 and post-event 1.0, so the switch is visible.
+
+        Left in, the magnitude is the evoked step alone; switched off it is the
+        raw window mean, baseline included.
+        """
+        ps = _session_with_planted_trials()
+        ps.photometry_responses = {
+            region: responses.where(responses.coords['time'] >= 0, 0.5)
+            for region, responses in ps.photometry_responses.items()}
+
+        # Trial 1's false start masks its stimulus window away, so its
+        # magnitude is NaN either way and carries no level to compare.
+        subtracted = ps.extract_response_magnitudes()['response'].dropna()
+        raw = ps.extract_response_magnitudes(
+            subtract_baseline=False)['response'].dropna()
+
+        np.testing.assert_allclose(subtracted.values, 0.5, atol=1e-9)
+        np.testing.assert_allclose(raw.values, 1.0, atol=1e-9)
+
+    def test_response_magnitudes_mask_nothing_when_the_switch_is_off(self):
+        """Every choice lands 10 ms after stimulus onset, so masking blanks the
+        stimulus-locked window end to end; switched off, no sample is lost."""
+        ps = _session_with_planted_trials(fast_response=True)
+
+        masked = ps.extract_response_magnitudes()
+        unmasked = ps.extract_response_magnitudes(mask_subsequent=False)
+
+        assert masked['masked_fraction'].max() == 1.0
+        np.testing.assert_allclose(unmasked['masked_fraction'].values, 0.0)
+        assert unmasked['response'].notna().all()
+
+    def test_response_magnitudes_narrow_under_the_trial_mask(self):
+        """The mask is one entry per trial and the frame many rows per trial.
+
+        `masking_diagnostics` counts the trials whose window was masked away,
+        which are the ones a filtered view has already dropped — so it reads
+        the stored frame rather than the property.
+        """
+        ps = _session_with_planted_trials()
+        ps.extract_response_magnitudes()
+
+        ps.filter_trials(exclude_nogo=True)
+
+        assert sorted(ps.response_magnitudes['trial'].unique()) == [0, 1, 3]
+        assert sorted(ps.masking_diagnostics()['trial'].unique()) == [0, 1, 2, 3]
+
+    def test_response_magnitudes_skip_a_region_with_no_stored_cut(self):
+        """A catalogued region the store holds nothing for drops out silently."""
+        ps = _session_with_planted_trials(n_regions=2)
+        del ps.photometry_responses[ps.brain_region[0]]
+
+        magnitudes = ps.extract_response_magnitudes()
+
+        assert set(magnitudes['brain_region']) == {ps.brain_region[1]}
