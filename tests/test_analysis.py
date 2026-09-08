@@ -1,6 +1,7 @@
 """Tests for iblnm.analysis module."""
 import numpy as np
 import pandas as pd
+import patsy
 import pytest
 from scipy.stats import sem as scipy_sem
 
@@ -2750,6 +2751,87 @@ class TestSubstitutableOLS:
         formula = 'response ~ x + s + x:s'
         assert (SubstitutableOLS(formula, df).r2()
                 == pytest.approx(fit_ols(formula, df).rsquared, abs=1e-10))
+
+    def test_blank_row_is_refused_not_dropped(self):
+        """patsy drops rows with a blank by default, which would leave the
+        design matrix shorter than the raw factor columns kept beside it —
+        the two would then describe different trials and every substitution
+        would land on the wrong rows. Refuse the frame instead.
+        """
+        from iblnm.analysis import SubstitutableOLS
+        rng = np.random.default_rng(0)
+        df = self._frame(50, rng)
+        df.loc[7, 'x'] = np.nan
+
+        with pytest.raises(patsy.PatsyError):
+            SubstitutableOLS('response ~ x + s + x:s', df)
+
+    def test_r2_without_an_intercept_matches_statsmodels(self):
+        """A no-intercept design has nothing to centre against, so R² is
+        measured from zero rather than from the mean — statsmodels makes the
+        same switch, and no formula in the response family is fitted without
+        an intercept today.
+        """
+        from iblnm.analysis import SubstitutableOLS, fit_ols
+        rng = np.random.default_rng(5)
+        df = self._frame(200, rng)
+        formula = 'response ~ x + s + x:s - 1'
+        assert (SubstitutableOLS(formula, df).r2()
+                == pytest.approx(fit_ols(formula, df).rsquared, abs=1e-10))
+
+    def test_fit_matches_statsmodels_on_every_read_quantity(self):
+        """The four things the response pipeline reads off a fitted model,
+        against statsmodels on the same design. This is what lets the real
+        fits and the permutation null share one implementation.
+        """
+        from iblnm.analysis import SubstitutableOLS, fit_ols
+        rng = np.random.default_rng(6)
+        df = self._frame(200, rng)
+        formula = 'response ~ x + s + x:s'
+
+        got = SubstitutableOLS(formula, df).fit()
+        want = fit_ols(formula, df)
+
+        assert got.rsquared == pytest.approx(want.rsquared, abs=1e-10)
+        assert got.df_model == want.df_model
+        assert list(got.params.index) == list(want.params.index)
+        assert got.params.to_numpy() == pytest.approx(
+            want.params.to_numpy(), abs=1e-10)
+        assert got.bse.to_numpy() == pytest.approx(
+            want.bse.to_numpy(), abs=1e-10)
+
+    def test_fit_matches_statsmodels_on_every_response_formula(self):
+        """The whole drop-one family the response analysis fits, on a frame
+        shaped like a real recording's. The reference model's coefficients and
+        standard errors reach the results table, and every member's R² reaches
+        the drop-one difference, so all seven have to agree."""
+        from iblnm.analysis import SubstitutableOLS, fit_ols
+        from iblnm.config import LMM_FORMULAS
+        rng = np.random.default_rng(7)
+        n = 400
+        df = pd.DataFrame({
+            'contrast': rng.normal(0, 1, n),
+            'side': rng.choice([-0.5, 0.5], n),
+            'reward': rng.choice([-0.5, 0.5], n),
+            'choice_side': rng.choice([-0.5, 0.5], n),
+            'log_reaction_time': rng.normal(0, 1, n),
+            'peak_velocity': rng.normal(0, 1, n),
+        })
+        df['response'] = (2 * df['contrast'] + 0.5 * df['side']
+                          + 0.3 * df['contrast'] * df['side']
+                          + rng.normal(0, 0.5, n))
+
+        for name, template in LMM_FORMULAS['persession'].items():
+            formula = template.format(response='response')
+            got, want = SubstitutableOLS(formula, df).fit(), fit_ols(formula, df)
+            assert got.rsquared == pytest.approx(want.rsquared, abs=1e-10), name
+            assert got.df_model == want.df_model, name
+            assert got.nobs == want.nobs, name
+            assert list(got.params.index) == list(want.params.index), name
+            assert got.params.to_numpy() == pytest.approx(
+                want.params.to_numpy(), abs=1e-8), name
+            assert got.bse.to_numpy() == pytest.approx(
+                want.bse.to_numpy(), abs=1e-8), name
 
     def test_substitution_recomputes_interaction(self):
         """Swapping x matches a fit_ols on the frame with x overwritten,

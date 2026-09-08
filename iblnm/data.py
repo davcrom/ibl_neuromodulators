@@ -4163,12 +4163,18 @@ class PhotometrySession(PhotometrySessionLoader):
                            response_col: str = 'response'):
         """Fit one OLS response model on a prepared trial frame.
 
-        Thin, event/region-agnostic wrapper over ``analysis.fit_ols``: the
-        ``{response}`` placeholder in ``formula`` is filled with ``response_col``
-        before fitting, so the caller owns which magnitude column is the
-        response. Static because it reads nothing off the session — the
-        group-level drop-one calls it once per formula on a frame it already
-        holds.
+        Thin, event/region-agnostic wrapper over
+        :class:`iblnm.analysis.SubstitutableOLS`: the ``{response}``
+        placeholder in ``formula`` is filled with ``response_col`` before
+        fitting, so the caller owns which magnitude column is the response.
+        Static because it reads nothing off the session — the group-level
+        drop-one calls it once per formula on a frame it already holds.
+
+        The engine rather than ``analysis.fit_ols`` because the permutation
+        null refits through it thousands of times per cell, and a test
+        statistic scored against a null computed by different code is not
+        scored against anything. Its agreement with statsmodels is pinned by
+        test.
 
         Parameters
         ----------
@@ -4183,12 +4189,12 @@ class PhotometrySession(PhotometrySessionLoader):
 
         Returns
         -------
-        statsmodels RegressionResults or None
-            The fitted model (exposes ``.rsquared``, ``.params``), or ``None``
-            if the design is degenerate (mirrors ``analysis.fit_ols``).
+        iblnm.analysis.OLSResult or None
+            The fitted model (exposes ``.rsquared``, ``.df_model``,
+            ``.params``, ``.bse``), or ``None`` if the design is degenerate.
         """
         formula = formula.format(response=response_col)
-        return analysis.fit_ols(formula, df)
+        return analysis.SubstitutableOLS(formula, df).fit()
 
     def delta_r_squared(self, fit, cv: int = None) -> pd.Series:
         """Leave-one-regressor-out drop in R² for each block of an encoding fit.

@@ -6691,6 +6691,24 @@ class TestFitResponseModel:
         direct = fit_ols('magnitude ~ contrast', df)
         assert fit.rsquared == direct.rsquared
 
+    def test_fits_through_the_substitutable_engine_not_fit_ols(
+            self, mock_photometry_session, monkeypatch):
+        """The real fits and the permutation null must come from one
+        implementation, or the test statistic and its null distribution are
+        not comparable. `SubstitutableOLS` is the one the null uses, so it is
+        the one the real fits use too — `fit_ols` stays for the analyses that
+        do not build a null.
+        """
+        from iblnm import analysis
+        from iblnm.analysis import OLSResult
+        monkeypatch.setattr(analysis, 'fit_ols', lambda *a, **k: pytest.fail(
+            'the response fits went through fit_ols'))
+
+        fit = mock_photometry_session.fit_response_model(
+            self._coded_frame(), '{response} ~ contrast')
+
+        assert isinstance(fit, OLSResult)
+
     def test_returns_none_on_singular_design(self, mock_photometry_session):
         df = self._coded_frame()
         df['contrast'] = 1.0  # constant predictor -> collinear with intercept
@@ -7301,7 +7319,7 @@ class TestModellingPass:
 
         opened, fitted, permuted = [], [], []
         real_load_h5 = PhotometrySession.load_h5
-        real_fit_ols = analysis.fit_ols
+        real_engine = analysis.SubstitutableOLS
 
         def load_spy(self, fpath=None, groups=None):
             # `from_h5` adopts the path before loading, so a call naming no
@@ -7309,9 +7327,9 @@ class TestModellingPass:
             opened.append(str(fpath if fpath is not None else self.filepath))
             return real_load_h5(self, fpath, groups=groups)
 
-        def fit_spy(formula, df):
+        def engine_spy(formula, df):
             fitted.append(df)
-            return real_fit_ols(formula, df)
+            return real_engine(formula, df)
 
         def null_spy(focal_df, donor_dfs, full_formula, reduced_formulas,
                      *args, n_bootstrap=1000, **kwargs):
@@ -7319,7 +7337,7 @@ class TestModellingPass:
             return {predictor: np.full(n_bootstrap, 0.01)
                     for predictor in reduced_formulas}
 
-        monkeypatch.setattr('iblnm.analysis.fit_ols', fit_spy)
+        monkeypatch.setattr('iblnm.analysis.SubstitutableOLS', engine_spy)
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
                             null_spy)
 

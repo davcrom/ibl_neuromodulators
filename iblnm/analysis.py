@@ -1942,6 +1942,33 @@ def fit_ols(formula: str, df: pd.DataFrame):
     return result
 
 
+@dataclass
+class OLSResult:
+    """One ordinary-least-squares fit, as much of it as the callers read.
+
+    Attribute names are statsmodels' own, so a caller reading a
+    ``RegressionResults`` reads this unchanged and the tests can compare the
+    two field by field.
+
+    Attributes
+    ----------
+    params, bse : pd.Series
+        Coefficients and their standard errors, indexed by design column name.
+    rsquared : float
+        Centered on the response mean where the design has an intercept.
+    df_model : float
+        Design columns excluding the intercept.
+    nobs : int
+        Rows fitted.
+    """
+
+    params: pd.Series
+    bse: pd.Series
+    rsquared: float
+    df_model: float
+    nobs: int
+
+
 class SubstitutableOLS:
     """Reusable OLS design that refits fast with variables swapped or truncated.
 
@@ -1954,19 +1981,30 @@ class SubstitutableOLS:
     interactions); a term whose factor is an in-formula transform or otherwise
     not a column of ``data`` cannot be swapped and raises on substitution.
 
-    R² is the centered coefficient of determination, matching statsmodels'
-    ``.rsquared`` for an intercept model. Mirrors ``fit_ols``'s
-    None-on-degenerate contract: a rank-deficient (sub)design returns ``None``
-    rather than raising, so a refit loop can skip the unit cleanly.
+    R² matches statsmodels' ``.rsquared``: centered on the response mean when
+    the design carries a constant column, and measured from zero when it does
+    not, since a no-intercept model has no fitted mean to centre against.
+    Mirrors ``fit_ols``'s None-on-degenerate contract: a rank-deficient
+    (sub)design returns ``None`` rather than raising, so a refit loop can skip
+    the unit cleanly.
     """
 
     def __init__(self, formula: str, data: pd.DataFrame):
-        y, X = patsy.dmatrices(formula, data, return_type='dataframe')
+        # Refuse a frame with a blank rather than take patsy's default and drop
+        # those rows: the design would then be shorter than the raw factor
+        # columns kept beside it, and every substitution would write one
+        # trial's values onto another's row.
+        y, X = patsy.dmatrices(formula, data, return_type='dataframe',
+                               NA_action=patsy.NAAction(on_NA='raise'))
         self._y = y.to_numpy(dtype=float).ravel()
         self._X = X.to_numpy(dtype=float)
-        self._column_terms = [
-            name.split(':') for name in X.design_info.column_names
-        ]
+        self._column_names = list(X.design_info.column_names)
+        self._column_terms = [name.split(':') for name in self._column_names]
+        # Centering is the intercept model's; without a constant column there
+        # is no fitted mean to measure against, and R² runs from zero.
+        self._has_intercept = any(
+            np.ptp(self._X[:, j]) == 0 and self._X[0, j] != 0
+            for j in range(self._X.shape[1]))
         tokens = {tok for terms in self._column_terms for tok in terms}
         self._factors = {
             tok: data[tok].to_numpy(dtype=float)
@@ -1979,7 +2017,7 @@ class SubstitutableOLS:
         substitution: dict[str, np.ndarray] | None = None,
         n_rows: int | None = None,
     ) -> float | None:
-        """Centered R² of the model with columns swapped and/or truncated.
+        """R² of the model with columns swapped and/or truncated.
 
         Parameters
         ----------
@@ -1995,11 +2033,22 @@ class SubstitutableOLS:
         Returns
         -------
         float or None
-            The centered R², or ``None`` if the (sub)design is rank-deficient.
+            The R², centered or not as the design's intercept decides, or
+            ``None`` if the (sub)design is rank-deficient.
         """
-        substitution = substitution or {}
+        solved = self._solve(substitution or {}, n_rows)
+        return None if solved is None else solved[2]
+
+    def _design(self, substitution: dict[str, np.ndarray],
+                n_rows: int | None) -> tuple[np.ndarray, np.ndarray]:
+        """The response and design matrix with `substitution` written in.
+
+        Only the columns whose terms involve a swapped variable are rebuilt;
+        every other column keeps its stored value. Each is the elementwise
+        product of its ':'-joined factors, so a swap propagates into every
+        interaction the variable enters.
+        """
         m = n_rows if n_rows is not None else len(self._y)
-        ym = self._y[:m]
         Xm = self._X[:m].copy()
         for j, terms in enumerate(self._column_terms):
             if not set(terms) & substitution.keys():
@@ -2015,11 +2064,70 @@ class SubstitutableOLS:
                         f"cannot substitute term {tok!r}: not a data column"
                     )
             Xm[:, j] = column
+        return self._y[:m], Xm
+
+    def _solve(self, substitution: dict[str, np.ndarray], n_rows: int | None):
+        """Least-squares solve, or None when the (sub)design is rank-deficient.
+
+        Returns
+        -------
+        tuple or None
+            ``(beta, residuals, r2, ym, Xm)``, the pieces both `r2` and `fit`
+            are read from, so the two cannot answer from different arithmetic.
+        """
+        ym, Xm = self._design(substitution, n_rows)
         beta, _, rank, _ = np.linalg.lstsq(Xm, ym, rcond=None)
         if rank < Xm.shape[1]:
             return None
         resid = ym - Xm @ beta
-        return 1 - resid @ resid / ((ym - ym.mean()) ** 2).sum()
+        centered = ym - ym.mean() if self._has_intercept else ym
+        r2 = 1 - resid @ resid / (centered ** 2).sum()
+        return beta, resid, r2, ym, Xm
+
+    def fit(
+        self,
+        substitution: dict[str, np.ndarray] | None = None,
+        n_rows: int | None = None,
+    ) -> 'OLSResult | None':
+        """The whole fit, for a caller that needs more than R².
+
+        Same design, same solve and same R² as :meth:`r2` — this adds the
+        coefficients the solver already produces and their standard errors,
+        so the fits a result table is built from and the fits a permutation
+        null is built from come from one implementation.
+
+        Standard errors are the textbook least-squares form, the residual
+        variance scaled by the diagonal of the inverted cross-product matrix:
+        ``sqrt(diag((X'X)^-1) * RSS / (n - p))``, with ``p`` the design's
+        column count.
+
+        Parameters
+        ----------
+        substitution : dict of str to np.ndarray, optional
+            As :meth:`r2`.
+        n_rows : int, optional
+            As :meth:`r2`.
+
+        Returns
+        -------
+        OLSResult or None
+            ``None`` if the (sub)design is rank-deficient, matching
+            :meth:`r2`.
+        """
+        solved = self._solve(substitution or {}, n_rows)
+        if solved is None:
+            return None
+        beta, resid, r2, ym, Xm = solved
+        n_obs, n_columns = Xm.shape
+        sigma2 = resid @ resid / (n_obs - n_columns)
+        errors = np.sqrt(np.diag(np.linalg.inv(Xm.T @ Xm)) * sigma2)
+        return OLSResult(
+            params=pd.Series(beta, index=self._column_names),
+            bse=pd.Series(errors, index=self._column_names),
+            rsquared=r2,
+            df_model=float(n_columns - self._has_intercept),
+            nobs=n_obs,
+        )
 
 
 def adjusted_r2(r2: float, n_obs: int, n_params: int) -> float:
