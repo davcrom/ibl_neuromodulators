@@ -161,9 +161,34 @@ processing, decorate them with `@exception_logger` and accept `exlog=None`.
 ### 2. Error-Log-Driven Filtering
 
 Scripts do not re-validate upstream results. Each session's errors are the
-single source of truth in its H5 `/errors` group (written by each build block
-via `ps.log_error`, and by the `process` wrapper for anything that escapes
-them). There are no per-stage error log parquets to keep in sync.
+single source of truth in its H5 `/errors` group. There are no per-stage error
+log parquets to keep in sync.
+
+**Only a pass that builds a product writes that product's errors.** `log_error`
+puts an entry on the session; persisting it is a separate act, and a build
+persists by naming `errors` in the same `save_h5` that writes what it built —
+`download.py → build_session` and `scripts/rebuild_responses.py` are the two
+that do. `PhotometrySessionGroup.process` writes nothing: it runs the function,
+catches what escapes it, logs it against the session and returns `None` for
+that session. An analysis pass therefore reads the store and leaves it as it
+found it, and a session that failed carries its error in memory only.
+
+Three rules keep the stored log honest, all of them in `PhotometrySession`:
+
+- `log_error` drops an entry matching one already held. Opening a file reads
+  every entry back onto the session, so a failure that recurs would otherwise
+  be recorded again on every run. The traceback is part of the comparison —
+  the same type and message raised in two places are two faults.
+- `clear_errors(product=None)` drops the entries a previous attempt left, so a
+  product that failed last run and builds cleanly now leaves nothing behind.
+  `build_session` clears the whole log, since it rebuilds every product;
+  `rebuild_responses` clears `photometry` and `wheel`, the two it re-attempts.
+- `_save_errors` replaces the `errors` tree rather than merging into it: what
+  the session holds is the whole log. A cleared product loses its group instead
+  of keeping a stale one. The corollary is that a session constructed fresh —
+  never opened from its file — must not save `errors` alone, or it writes its
+  one entry over everything the file held. Every pipeline pass opens the file
+  first, through `_session_for_processing`.
 
 `PhotometrySessionGroup.from_catalog(catalog, one, h5_dir=SESSIONS_H5_DIR)`
 opens each catalogued session's file once and reads out everything the filters
@@ -245,6 +270,10 @@ computed from the bands, which is the invariant that ordering has to keep: a
 band inversion means the channels are not the bands they are labelled. Fetching
 is not computing.
 
+`build_session` opens with `ps.clear_errors()`. The session arrives holding
+every entry read out of its file, and this pass rebuilds every product, so the
+log it writes is this attempt's alone.
+
 Each block is one `try`, reproducing the boundary the pipeline had when every
 modality was its own script: a fatal step abandons its block, logs one error
 against that modality, and the next block still runs. Within a block some checks
@@ -291,7 +320,12 @@ One `try` per modality, the boundary `build_session` draws: a session whose
 photometry cannot be cut still has its wheel re-cut, and the error is logged
 against the modality that raised. Each block calls `load_trials` itself, so a
 session with no trials table logs against both; the second call answers from
-the attribute the first one set.
+the attribute the first one set. Each block also opens with
+`clear_errors('photometry')` or `clear_errors('wheel')` — per product, not
+blanket, because this pass re-attempts two of the four and the others keep the
+entries their last build left. The log is written once at the end, by a
+`save_h5(groups=['errors'])` outside both blocks, since `process` persists
+nothing.
 
 `ps.complete_events()` is shared with `build_photometry`, and
 `save_h5(groups=[...])` replaces each region's and the wheel's `responses`
@@ -620,8 +654,8 @@ and initializes list columns (replaces NaN with `[]`). Called when loading
   paths are defined in `config.py`.
 - **Error logs**: unified schema `['eid', 'error_type', 'error_message',
   'traceback', 'product']` (`util.LOG_COLUMNS`). Each session's errors live in
-  its H5 `errors/` tree, one group per product, rewritten whole on every build
-  attempt of that product.
+  its H5 `errors/` tree, one group per product, written only by the pass that
+  builds the product and rewritten whole on every attempt. See Key Pattern 2.
 - **Signed-zero in `signed_contrast`**: zero-contrast trials encode stimulus
   side via IEEE 754 signed zero (`-0.0` = left, `0.0` = right). `unique()`,
   `sorted()`, `set()`, `==`, and pandas `groupby` all treat `-0.0 == 0.0` and

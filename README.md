@@ -49,7 +49,9 @@ ruff check .               # lint
 
 One script fetches and builds everything. Each session's errors are written
 into its H5 `/errors` group, one group per product; the script prints an error
-summary rather than writing a separate log file.
+summary rather than writing a separate log file. Only a pass that builds a
+product writes that product's errors — an analysis script iterating the store
+reads it and leaves it as it found it.
 
 ```
 download.py → data/sessions/{eid}.h5  (every product, rebuilt every run)
