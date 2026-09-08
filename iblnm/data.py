@@ -25,7 +25,7 @@ from iblnm.config import (
     LABEL2EVENT, LENGTH_MISMATCH_THRESHOLD, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
     MOVEMENT_EVENTS, MOVEMENT_RESPONSE_WINDOW,
-    OLS_PERSESSION_COLUMNS,
+    OLS_PERSESSION_COLUMNS, PERSESSION_FDR_GROUP_COLS,
     PERSESSION_PVAL_N_BOOTSTRAP, PERSESSION_PVAL_SEED,
     PHOTOMETRY_BANDS, PHOTOMETRY_QC_THRESHOLDS,
     POSE_MEASURES, QCVAL2NUM,
@@ -234,8 +234,6 @@ def select_donor_frames(focal: CodedFrame, frames: list[CodedFrame],
 
 def assemble_mouse_pvalue_table(
     observed: pd.DataFrame,
-    null_vectors: dict[tuple[str, str, str], np.ndarray],
-    n_donors: dict[tuple[str, str, str], int],
     n_bootstrap: int = 1000,
     random_state: int | None = 0,
 ) -> pd.DataFrame:
@@ -252,18 +250,15 @@ def assemble_mouse_pvalue_table(
     Parameters
     ----------
     observed : pd.DataFrame
-        Observed drop-one frame (``RESPONSE_OLS_DROPONE_COLUMNS``), one row per
-        ``(eid, subject, target_NM, brain_region, event, predictor)`` carrying
-        the in-sample ``delta_r2``.
-    null_vectors : dict
-        Maps ``(eid, event, predictor)`` to that session's donor null ΔR²
-        vector (lengths may differ across sessions). Sessions absent from this
-        mapping are not scorable and are dropped from their group.
-    n_donors : dict
-        Maps the same keys to the size of the donor pool behind that session's
-        null. The pooled null draws one value per session, so it is no better
-        resolved than its coarsest session and the cell's p-value floor comes
-        from the smallest pooled count (:func:`_floor_pvalue`).
+        Per-session fits (``config.OLS_PERSESSION_COLUMNS``), one row per
+        ``(eid, target_NM, brain_region, event, predictor)`` carrying the
+        in-sample ``delta_r2`` beside the ``null`` vector it was scored against
+        and the ``n_donors`` that null was built from. Vector lengths may differ
+        across sessions — each is an arbitrarily ordered donor set — and a row
+        whose ``null`` is empty was not scorable and is dropped from its group.
+        The pooled null draws one value per session, so it is no better resolved
+        than its coarsest session and the cell's p-value floor comes from the
+        smallest pooled ``n_donors`` (:func:`_floor_pvalue`).
     n_bootstrap : int
         Pooled-null draws per cell. It does not set the p-value floor; the
         donor counts do.
@@ -287,10 +282,9 @@ def assemble_mouse_pvalue_table(
     for (target_NM, event, predictor, subject), group in observed.groupby(
             group_keys, sort=True):
         scorable = [
-            (row['delta_r2'], null_vectors[(row['eid'], event, predictor)],
-             n_donors[(row['eid'], event, predictor)])
+            (row['delta_r2'], np.asarray(row['null']), row['n_donors'])
             for _, row in group.iterrows()
-            if (row['eid'], event, predictor) in null_vectors
+            if np.size(row['null'])
         ]
         if not scorable:
             continue
@@ -4761,6 +4755,78 @@ class PhotometrySessionGroup:
         self.complete_catalog()
         return self._catalog[['eid', 'logged_errors']].copy()
 
+    def collect_donor_frames(self, frames: list[DonorFrame | None],
+                             ) -> dict[str, DonorFrame]:
+        """Assemble the first pass's returns into the swap null's donor pool.
+
+        Takes what `process` returned — one item per filtered session, in
+        `self.sessions` order — and keys it by the session that produced it.
+        The pool is what `PhotometrySession.select_donors` narrows per focal
+        session; it is held in memory for the fitting pass and never written.
+
+        Parameters
+        ----------
+        frames : list[DonorFrame or None]
+            Per-session returns in `self.sessions` order. `process` logs a
+            session whose function raised and returns None for it; such a
+            session is omitted rather than stored as a null donor, which would
+            fail at swap time instead of here.
+
+        Returns
+        -------
+        dict[str, DonorFrame]
+            eid -> that session's prepared donor frame, in session order.
+        """
+        return {eid: frame
+                for eid, frame in zip(self.sessions['eid'], frames)
+                if frame is not None}
+
+    def collect_fits(self, fits: list[pd.DataFrame | None],
+                     n_bootstrap: int = PERSESSION_PVAL_N_BOOTSTRAP,
+                     random_state: int = PERSESSION_PVAL_SEED,
+                     ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Assemble the fitting pass's returns into the population tables.
+
+        A session scores its own rows against its own null, but the
+        false-discovery-rate correction and the per-mouse pooling both span
+        sessions, so they are the group's work: this is where `q_value` is
+        filled and where a mouse's sessions are pooled into one p-value.
+
+        Parameters
+        ----------
+        fits : list[pandas.DataFrame or None]
+            Per-session returns of `PhotometrySession.fit_responses`
+            (`config.OLS_PERSESSION_COLUMNS` less `q_value`), in
+            `self.sessions` order. `process` returns None for a session whose
+            function raised; it contributes no rows.
+        n_bootstrap : int
+            Pooled-null draws per per-mouse cell. It does not set the p-value
+            floor; the sessions' donor counts do.
+        random_state : int
+            Seed for the pooling bootstrap.
+
+        Returns
+        -------
+        ols : pandas.DataFrame
+            `config.OLS_PERSESSION_COLUMNS`, one row per (recording, event,
+            dropped predictor), `q_value` corrected within each
+            `config.PERSESSION_FDR_GROUP_COLS` family.
+        mouse : pandas.DataFrame
+            `RESPONSE_OLS_MOUSE_PVAL_COLUMNS`, one row per (target_NM, event,
+            predictor, subject), pooled from those rows' own `null` vectors
+            (:func:`assemble_mouse_pvalue_table`) and corrected over the same
+            families at that coarser grain.
+        """
+        ols = analysis.add_fdr_qvalues(
+            _concat_frames([fit for fit in fits if fit is not None],
+                           _SESSION_OLS_COLUMNS),
+            group_cols=PERSESSION_FDR_GROUP_COLS)
+        mouse = analysis.add_fdr_qvalues(
+            assemble_mouse_pvalue_table(ols, n_bootstrap=n_bootstrap,
+                                        random_state=random_state),
+            group_cols=PERSESSION_FDR_GROUP_COLS)
+        return ols[OLS_PERSESSION_COLUMNS], mouse
+
     def collect_responses(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Response magnitudes and trial regressors, in one pass over the store.
 
@@ -5321,11 +5387,17 @@ class PhotometrySessionGroup:
                     null_vectors[(focal.eid, focal.event, predictor)] = null
                     donor_counts[(focal.eid, focal.event,
                                   predictor)] = len(donors)
+        observed = self.response_ols_dropone_results
         session_pvalues = assemble_session_pvalue_table(
-            self.response_ols_dropone_results, null_vectors, donor_counts)
+            observed, null_vectors, donor_counts)
+        keys = list(zip(observed['eid'], observed['event'],
+                        observed['predictor']))
+        pooled = observed.assign(
+            null=pd.Series([null_vectors.get(key, np.empty(0)) for key in keys],
+                           index=observed.index, dtype=object),
+            n_donors=[donor_counts.get(key, 0) for key in keys])
         mouse_pvalues = assemble_mouse_pvalue_table(
-            self.response_ols_dropone_results, null_vectors, donor_counts,
-            n_bootstrap=n_bootstrap, random_state=random_state)
+            pooled, n_bootstrap=n_bootstrap, random_state=random_state)
         return session_pvalues, mouse_pvalues
 
     def response_varcomp(self, coefficients, *, mcmc, tau_prior, min_mice,

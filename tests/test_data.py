@@ -7097,6 +7097,130 @@ class TestModellingPass:
         assert {id(df) for df in permuted} == coded
 
 
+def _bare_group(rows, h5_dir):
+    """Group over ``rows`` with no store behind it.
+
+    For the collection and filtering methods, which read the catalog and the
+    per-session returns handed to them and never open a file.
+    """
+    from iblnm.data import PhotometrySessionGroup
+    return PhotometrySessionGroup(_persession_recordings(rows), one=None,
+                                  h5_dir=h5_dir)
+
+
+class TestCollectDonorFrames:
+    """The group's assembly of the first pass's returns into a donor pool."""
+
+    _ROWS = [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
+             ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT'),
+             ('eid-2', 'subj-2', 'VTA-r', 'r', 'VTA-DA')]
+
+    @staticmethod
+    def _returns(rows):
+        """One DonorFrame per row, as the first pass's link function returns."""
+        from iblnm.data import DonorFrame
+        return [DonorFrame(eid, subject, (target_nm,),
+                           pd.DataFrame({'eid': [eid]}))
+                for eid, subject, _, _, target_nm in rows]
+
+    def test_collect_donor_frames_keys_each_return_by_its_session(
+            self, tmp_path):
+        group = _bare_group(self._ROWS, tmp_path)
+
+        pool = group.collect_donor_frames(self._returns(self._ROWS))
+
+        assert list(pool) == ['eid-0', 'eid-1', 'eid-2']
+        assert [donor.eid for donor in pool.values()] == list(pool)
+        assert pool['eid-1'].frame['eid'].iloc[0] == 'eid-1'
+
+    def test_collect_donor_frames_omits_a_session_that_failed(self, tmp_path):
+        """`process` converts a raising session to a None return. It is left out
+        of the pool rather than stored as a null donor, and the sessions after
+        it keep their own eids."""
+        group = _bare_group(self._ROWS, tmp_path)
+        returns = self._returns(self._ROWS)
+        returns[1] = None
+
+        pool = group.collect_donor_frames(returns)
+
+        assert list(pool) == ['eid-0', 'eid-2']
+        assert pool['eid-2'].frame['eid'].iloc[0] == 'eid-2'
+
+
+def _session_fit(eid, subject, deltas, null=None, n_donors=1000,
+                 event='feedback_times', target_nm='VTA-DA', region='VTA'):
+    """One session's `fit_responses` return: a row per dropped predictor.
+
+    ``deltas`` maps predictor to its observed ΔR²; every row carries the same
+    ``null`` vector, so a case's p-values follow from the ΔR² alone.
+    """
+    null = np.full(4, 0.01) if null is None else null
+    return pd.DataFrame([
+        {'eid': eid, 'subject': subject, 'target_NM': target_nm,
+         'brain_region': region, 'event': event, 'predictor': predictor,
+         'n_trials': 100, 'r2_full': 0.3, 'r2_full_adj': 0.28,
+         'delta_r2': delta_r2, 'delta_r2_adj': delta_r2 - 0.001,
+         'null': null, 'coef': 0.5, 'coef_se': 0.1,
+         'p_value': p_value, 'n_donors': n_donors}
+        for (predictor, delta_r2), p_value in zip(deltas.items(),
+                                                  np.linspace(0.01, 0.4,
+                                                              len(deltas)))
+    ])
+
+
+class TestCollectFits:
+    """The group's assembly of the fitting pass's per-session returns."""
+
+    def _fits(self):
+        """Two sessions of one mouse and one of another, same cell."""
+        return [_session_fit('e1', 'm1', {'contrast': 0.10, 'reward': 0.02}),
+                _session_fit('e2', 'm1', {'contrast': 0.06, 'reward': 0.01}),
+                _session_fit('e3', 'm2', {'contrast': 0.20, 'reward': 0.03})]
+
+    def test_collect_fits_returns_the_full_persession_schema(self, tmp_path):
+        """The concatenated frame carries `config.OLS_PERSESSION_COLUMNS` in
+        order, q_value included, and q is monotone in p within each
+        (event, predictor) family."""
+        from iblnm.config import OLS_PERSESSION_COLUMNS
+        group = _bare_group([('e1', 'm1', 'VTA', 'r', 'VTA-DA'),
+                             ('e2', 'm1', 'VTA', 'r', 'VTA-DA'),
+                             ('e3', 'm2', 'VTA', 'r', 'VTA-DA')], tmp_path)
+
+        ols, _ = group.collect_fits(self._fits())
+
+        assert list(ols.columns) == OLS_PERSESSION_COLUMNS
+        assert len(ols) == 6
+        for _, family in ols.groupby(['event', 'predictor']):
+            ordered = family.sort_values('p_value')
+            assert ordered['q_value'].is_monotonic_increasing
+            assert (ordered['q_value'] >= ordered['p_value'] - 1e-12).all()
+
+    def test_collect_fits_pools_each_mouse_over_its_own_sessions(self,
+                                                                 tmp_path):
+        """The per-mouse table has one row per (target_NM, event, predictor,
+        subject) in the input, counting only that mouse's sessions, and its
+        p-values are those the nulls carried on the frame give."""
+        from iblnm.data import (assemble_mouse_pvalue_table,
+                                RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
+        group = _bare_group([('e1', 'm1', 'VTA', 'r', 'VTA-DA'),
+                             ('e2', 'm1', 'VTA', 'r', 'VTA-DA'),
+                             ('e3', 'm2', 'VTA', 'r', 'VTA-DA')], tmp_path)
+
+        ols, mouse = group.collect_fits(self._fits())
+
+        assert list(mouse.columns) == RESPONSE_OLS_MOUSE_PVAL_COLUMNS
+        cells = list(zip(mouse['event'], mouse['predictor'], mouse['subject']))
+        assert sorted(cells) == [('feedback_times', 'contrast', 'm1'),
+                                 ('feedback_times', 'contrast', 'm2'),
+                                 ('feedback_times', 'reward', 'm1'),
+                                 ('feedback_times', 'reward', 'm2')]
+        assert dict(zip(mouse['subject'], mouse['n_sessions']))['m1'] == 2
+        assert dict(zip(mouse['subject'], mouse['n_sessions']))['m2'] == 1
+        expected = assemble_mouse_pvalue_table(ols)
+        assert mouse['p_value'].tolist() == expected['p_value'].tolist()
+        assert mouse['q_value'].notna().all()
+
+
 class TestResponseLMMEffects:
 
     def test_coefficients_carry_terms_and_ci(self):
@@ -8301,12 +8425,23 @@ class TestAssembleSessionPvalueTable:
 class TestAssembleMousePvalueTable:
     """assemble_mouse_pvalue_table — per-mouse drop-one permutation p."""
 
-    def _observed(self, rows):
-        """Build an observed drop-one frame from (eid, subject, delta_r2) rows."""
+    def _observed(self, rows, null_vectors, n_donors=None):
+        """Per-session fits from (eid, subject, delta_r2) rows and their nulls.
+
+        The nulls travel in the frame's own ``null`` and ``n_donors`` columns,
+        as ``PhotometrySession.fit_responses`` writes them. Keeping the
+        ``(eid, event, predictor)``-keyed dicts as the fixture input lets each
+        case name its vectors per session; a session with no vector carries an
+        empty one, which is how an unscorable cell reaches the pooling.
+        """
+        n_donors = n_donors or _donor_counts(null_vectors)
         return pd.DataFrame(
             [{'eid': eid, 'subject': subject, 'target_NM': 'VTA-DA',
               'brain_region': 'VTA', 'event': 'feedback', 'predictor': 'reward',
-              'r2': 0.3, 'delta_r2': delta_r2, 'n_trials': 100}
+              'r2': 0.3, 'delta_r2': delta_r2, 'n_trials': 100,
+              'null': null_vectors.get((eid, 'feedback', 'reward'),
+                                       np.empty(0)),
+              'n_donors': n_donors.get((eid, 'feedback', 'reward'), 0)}
              for eid, subject, delta_r2 in rows]
         )
 
@@ -8317,15 +8452,15 @@ class TestAssembleMousePvalueTable:
         crash this fixes)."""
         from iblnm.data import assemble_mouse_pvalue_table
 
-        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)])
         null_vectors = {
             ('e1', 'feedback', 'reward'): np.full(3, 0.02),
             ('e2', 'feedback', 'reward'): np.full(2, 0.01),
         }
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)],
+                                  null_vectors)
 
         table = assemble_mouse_pvalue_table(
-            observed, null_vectors, _donor_counts(null_vectors),
-            n_bootstrap=99, random_state=0)
+            observed, n_bootstrap=99, random_state=0)
 
         assert len(table) == 1
         row = table.iloc[0]
@@ -8338,16 +8473,15 @@ class TestAssembleMousePvalueTable:
         only its own sessions."""
         from iblnm.data import assemble_mouse_pvalue_table
 
-        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06),
-                                   ('e3', 'm2', 0.20)])
         null_vectors = {
             ('e1', 'feedback', 'reward'): np.array([0.02, 0.01, 0.03]),
             ('e2', 'feedback', 'reward'): np.array([0.015, 0.005, 0.02]),
             ('e3', 'feedback', 'reward'): np.array([0.04, 0.02, 0.05]),
         }
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06),
+                                   ('e3', 'm2', 0.20)], null_vectors)
 
-        table = assemble_mouse_pvalue_table(
-            observed, null_vectors, _donor_counts(null_vectors))
+        table = assemble_mouse_pvalue_table(observed)
 
         by_subject = table.set_index('subject')
         assert set(by_subject.index) == {'m1', 'm2'}
@@ -8361,11 +8495,10 @@ class TestAssembleMousePvalueTable:
         from iblnm.data import (assemble_mouse_pvalue_table,
                                 RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
 
-        observed = self._observed([('e1', 'm1', 0.10)])
         null_vectors = {('e1', 'feedback', 'reward'): np.array([0.02, 0.01])}
+        observed = self._observed([('e1', 'm1', 0.10)], null_vectors)
 
-        table = assemble_mouse_pvalue_table(
-            observed, null_vectors, _donor_counts(null_vectors))
+        table = assemble_mouse_pvalue_table(observed)
 
         assert list(table.columns) == RESPONSE_OLS_MOUSE_PVAL_COLUMNS
         # q_value sits between p_value and n_sessions and is left for the
@@ -8381,16 +8514,17 @@ class TestAssembleMousePvalueTable:
         bootstrap alone would have given 1/100."""
         from iblnm.data import assemble_mouse_pvalue_table
 
-        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)])
         null_vectors = {
             ('e1', 'feedback', 'reward'): np.full(99, 0.02),
             ('e2', 'feedback', 'reward'): np.full(99, 0.01),
         }
         n_donors = {('e1', 'feedback', 'reward'): 500,
                     ('e2', 'feedback', 'reward'): 4}
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)],
+                                  null_vectors, n_donors)
 
         table = assemble_mouse_pvalue_table(
-            observed, null_vectors, n_donors, n_bootstrap=99, random_state=0)
+            observed, n_bootstrap=99, random_state=0)
 
         assert table.iloc[0]['p_value'] == pytest.approx(1 / 5)
 
@@ -8399,11 +8533,11 @@ class TestAssembleMousePvalueTable:
         that do have vectors still pool."""
         from iblnm.data import assemble_mouse_pvalue_table
 
-        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm2', 0.20)])
         null_vectors = {('e2', 'feedback', 'reward'): np.array([0.04, 0.05])}
+        observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm2', 0.20)],
+                                  null_vectors)
 
-        table = assemble_mouse_pvalue_table(
-            observed, null_vectors, _donor_counts(null_vectors))
+        table = assemble_mouse_pvalue_table(observed)
 
         assert list(table['subject']) == ['m2']
         assert table.iloc[0]['n_sessions'] == 1
