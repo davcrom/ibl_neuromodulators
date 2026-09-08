@@ -40,7 +40,9 @@ from iblnm.config import (
     MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_WINDOWS,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS, TRACE_INSET_TARGETNMS,
     MOVEMENT_VARS, MIN_SUBJECTS_MOVEMENT, MIN_TRIALS_MOVEMENT,
+    MIN_RESPONSE_TIME,
 )
+from iblnm import task
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.vis import (
@@ -569,6 +571,17 @@ def plot_movement_figures(group, magnitudes, fig_dirs, data_dir):
 # Per-recording OLS drop-one
 # =========================================================================
 
+# The trial exclusions this analysis applies, held in one dict so the rows the
+# models are fitted on and the rows the stored magnitude table carries cannot
+# drift apart: the fitting loop takes it per fiber x event and the link function
+# re-applies it without one to read the session-wide view back.
+PERSESSION_TRIAL_CRITERIA = {
+    'exclude_nogo': True,
+    'min_response_time': MIN_RESPONSE_TIME,
+    'exclude_negative_reaction_time': True,
+}
+
+
 def build_donor_frame(ps) -> pd.DataFrame:
     """First pass: prepare one session's contribution to the swap null.
 
@@ -597,10 +610,12 @@ def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
                                                            pd.DataFrame]:
     """Second pass: fit one session's drop-one models against the donor pool.
 
-    :meth:`PhotometrySession.fit_responses` leaves two frames on the session
-    and this returns both: the uncoded, unselected merged magnitudes — every
-    trial the session recorded, one row per recording x event x trial — and the
-    fit results at recording x event x dropped-predictor grain.
+    Sequences the loading and the measurement the fit reads — the trials with
+    their timings, the wheel regressor onto the trials table, and every fiber x
+    event magnitude — then fits, then re-applies
+    ``PERSESSION_TRIAL_CRITERIA`` with no fiber or event named so the
+    magnitudes read back span every recording the session holds rather than the
+    last combination the loop happened to mask.
 
     Parameters
     ----------
@@ -615,13 +630,23 @@ def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
     Returns
     -------
     magnitudes : pandas.DataFrame
-        ``ps.response_magnitudes``, the frame the trial-level output is
-        written from.
+        The filtered magnitude view with its trials joined on and coded
+        relative to each recording's hemisphere — one row per recording x event
+        x trial, carrying the rows the models were fitted on.
     fits : pandas.DataFrame
-        ``ps.response_ols``, this session's rows of the population OLS table.
+        This session's rows of the population OLS table.
     """
-    ps.fit_responses(formulas, donors)
-    return ps.response_magnitudes, ps.response_ols
+    ps.load_trials()
+    ps.extract_trial_timings()
+    ps.load_peak_velocity()
+    ps.add_trial_columns(ps.wheel_peak_velocity)
+    ps.load_responses('photometry')
+    ps.extract_response_magnitudes()
+    fits = ps.fit_responses(formulas, donors, **PERSESSION_TRIAL_CRITERIA)
+    ps.filter_trials(**PERSESSION_TRIAL_CRITERIA)
+    magnitudes = task.add_relative_contrast(
+        ps.response_magnitudes.merge(ps.trials, on='trial'))
+    return magnitudes, fits
 
 
 def varcomp_coefficients(ols_persession: pd.DataFrame) -> pd.DataFrame:

@@ -6368,47 +6368,6 @@ def _session_with_planted_trials(n_regions=1, fast_response=False):
     return ps
 
 
-class TestModelingFrame:
-    """The uncoded, unselected frame a session merges before it codes."""
-
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
-
-    def test_carries_every_recorded_trial_uncoded(self):
-        from iblnm.config import RESPONSE_EVENTS
-        ps = _session_with_planted_trials()
-        ps._prepare_model_frames(self.formulas, min_trials=1)
-        df = ps.response_magnitudes
-        # No-go and false-start rows included, one row per event x trial.
-        assert len(df) == len(RESPONSE_EVENTS) * 4
-        assert sorted(df['trial'].unique()) == [0, 1, 2, 3]
-        # Untransformed contrast and the original stimulus-side labels.
-        assert set(df['contrast']) == {25.0}
-        assert set(df['stim_side']) == {'right'}
-
-    def test_carries_identity_and_derived_columns(self):
-        ps = _session_with_planted_trials()
-        ps._prepare_model_frames(self.formulas, min_trials=1)
-        df = ps.response_magnitudes
-        assert set(df['eid']) == {'eid-0'}
-        assert set(df['brain_region']) == {'VTA-r'}
-        assert set(df['target_NM']) == {'VTA-DA'}
-        for col in ('relative_contrast', 'contrast', 'side', 'peak_velocity',
-                    'response', 'masked_fraction'):
-            assert col in df.columns
-
-    def test_excludes_filtered_trials_from_the_coded_cells(self):
-        # Trial 1 (false start) and trial 2 (no-go) are dropped. Trial 3
-        # (biased block) is kept: the selection includes all blocks by default,
-        # filtering only on response_time and choice.
-        from iblnm.config import STIM_ONSET_EVENT
-        ps = _session_with_planted_trials()
-        frames = ps._prepare_model_frames(self.formulas, min_trials=1)
-        assert frames[('VTA-r', STIM_ONSET_EVENT)]['trial'].tolist() == [0, 3]
-
-
 class TestCodePredictors:
 
     @staticmethod
@@ -6762,67 +6721,6 @@ def _add_second_recording(ps, n_missing=0, region='DR-l', hemisphere='l',
     return ps
 
 
-class TestCodeModelFrames:
-    """The coding step of the modelling pass (PhotometrySession)."""
-
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
-
-    def test_one_coded_frame_per_region_event(self):
-        from iblnm.analysis import formula_union_columns
-        from iblnm.config import RESPONSE_EVENTS
-        ps = _make_session_for_persession()
-        frames = ps._prepare_model_frames(self.formulas)
-
-        assert set(frames) == {('VTA-r', event) for event in RESPONSE_EVENTS}
-        for coded in frames.values():
-            # Deviation-coded, and complete over every column the family uses.
-            assert set(np.unique(coded['side'])) <= {-0.5, 0.5}
-            union = formula_union_columns(self.formulas.values(),
-                                          coded.columns)
-            assert coded[union].notna().all().all()
-
-    def test_cell_below_min_trials_is_omitted_but_its_rows_remain(self):
-        from iblnm.config import RESPONSE_EVENTS
-        ps = _make_session_for_persession(n_trials=20)
-        frames = ps._prepare_model_frames(self.formulas)
-        assert frames == {}
-        # The uncoded frame is unfiltered by the fit's trial floor.
-        assert len(ps.response_magnitudes) == len(RESPONSE_EVENTS) * 20
-
-    def test_event_absent_from_event_keyed_family_raises(self):
-        from iblnm.validation import MissingFormula
-        ps = _make_session_for_persession()
-        with pytest.raises(MissingFormula) as excinfo:
-            ps._prepare_model_frames({'feedback_times': self.formulas},
-                                     events=['stimOnTrigger_times'])
-        assert 'stimOnTrigger_times' in str(excinfo.value)
-        assert 'feedback_times' in str(excinfo.value)
-
-    def test_predictors_are_centered_within_each_cell(self):
-        """Two regions retaining different trials each center on their own
-        mean, so neither carries the other's offset."""
-        ps = _add_second_recording(_make_session_for_persession(),
-                                   n_missing=30)
-        frames = ps._prepare_model_frames(self.formulas)
-        assert len(frames) == 4
-        sizes = {region: len(coded) for (region, _), coded in frames.items()}
-        assert sizes['VTA-r'] > sizes['DR-l']
-        for coded in frames.values():
-            assert coded['log_reaction_time'].mean() == pytest.approx(0.0)
-            assert coded['peak_velocity'].mean() == pytest.approx(0.0)
-
-    def test_region_with_no_stored_cut_contributes_no_cell(self):
-        """The catalog claims two regions; the store holds one."""
-        ps = _add_second_recording(_make_session_for_persession(),
-                                   n_missing=None)
-        frames = ps._prepare_model_frames(self.formulas)
-        assert {region for region, _ in frames} == {'VTA-r'}
-        assert set(ps.response_magnitudes['brain_region']) == {'VTA-r'}
-
-
 def _donorless_session(**kwargs):
     """:func:`_make_session_for_persession` with its photometry taken away.
 
@@ -6856,12 +6754,13 @@ class TestDonorFrames:
         """Only the three trials-only exclusions bite, so a donor frame is
         longer than the same session's focal cells, which also drop the trials
         whose response is null."""
-        from iblnm.config import LMM_FORMULAS
+        from iblnm.config import MIN_RESPONSE_TIME, STIM_ONSET_EVENT
+        from iblnm.data import response_column
 
         # The second recording carries no signal on its first 30 trials, so
         # its cells lose those rows and the donor frame does not.
-        ps = _add_second_recording(_make_session_for_persession(),
-                                   n_missing=30)
+        ps = _measured_session(_add_second_recording(
+            _make_session_for_persession(), n_missing=30))
         trials = ps.trials
         expected = ((trials['choice'] != 0)
                     & (trials['response_times']
@@ -6869,13 +6768,15 @@ class TestDonorFrames:
                     & ~(trials['firstMovement_times']
                         - trials['stimOnTrigger_times'] < 0)).sum()
 
-        frames = ps._prepare_model_frames(LMM_FORMULAS['persession'])
+        ps.add_trial_columns(ps.cell_magnitudes('DR-l', STIM_ONSET_EVENT))
+        ps.filter_trials(
+            exclude_nogo=True, min_response_time=MIN_RESPONSE_TIME,
+            exclude_negative_reaction_time=True,
+            complete=[response_column('DR-l', STIM_ONSET_EVENT)])
         donor = _donorless_session().prepare_donor_frame()
 
         assert len(donor.frame) == expected
-        assert all(len(donor.frame) > len(coded)
-                   for (region, _), coded in frames.items()
-                   if region == 'DR-l')
+        assert len(donor.frame) > len(ps.trials)
 
     def test_donor_frame_preserves_trial_order(self):
         ps = _donorless_session()
@@ -6982,7 +6883,7 @@ class TestFitResponsesOlsDropone:
         give the output schema, `q_value` excepted — the group adds that after
         collection, since the FDR families span sessions."""
         from iblnm.config import OLS_PERSESSION_COLUMNS, RESPONSE_EVENTS
-        ps = _make_session_for_persession()
+        ps = _measured_session(_make_session_for_persession())
         donors = _donor_pool_for(
             _donorless_session(eid='donor-eid', subject='mouse2', seed=1))
 
@@ -6997,7 +6898,7 @@ class TestFitResponsesOlsDropone:
         assert (per_event == set(self.formulas) - {'full'}).all()
 
     def test_delta_r2_and_coefficients_match_the_fitted_family(self):
-        ps = _make_session_for_persession()
+        ps = _measured_session(_make_session_for_persession())
         fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16)
 
         for event in set(fits['event']):
@@ -7019,7 +6920,7 @@ class TestFitResponsesOlsDropone:
         each penalized by that model's own parameter count over the 120 trials
         the family shares."""
         from iblnm.analysis import adjusted_r2
-        ps = _make_session_for_persession()
+        ps = _measured_session(_make_session_for_persession())
         fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16)
 
         n_trials = 120
@@ -7041,8 +6942,8 @@ class TestFitResponsesOlsDropone:
     def test_rows_carry_each_recordings_own_identity(self):
         """A two-region session stamps each cell with the region it was fitted
         on and that region's entry in the parallel target_NM column."""
-        ps = _add_second_recording(
-            _make_session_for_persession(eid='eid-0', subject='subj-0'))
+        ps = _measured_session(_add_second_recording(
+            _make_session_for_persession(eid='eid-0', subject='subj-0')))
         fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16)
 
         assert set(fits['eid']) == {'eid-0'}
@@ -7057,7 +6958,7 @@ class TestFitResponsesOlsDropone:
         """Too few trials to fit anything, so no cell is scorable — the caller
         still gets the named columns rather than a bare empty frame."""
         from iblnm.config import OLS_PERSESSION_COLUMNS
-        ps = _make_session_for_persession(n_trials=20)
+        ps = _measured_session(_make_session_for_persession(n_trials=20))
         fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16)
         assert list(fits.columns) == [column for column
                                       in OLS_PERSESSION_COLUMNS
@@ -7068,7 +6969,7 @@ class TestFitResponsesOlsDropone:
         """One unfittable member makes the cell's R² incomparable across the
         family, so the cell contributes no rows at all rather than partial
         ones."""
-        ps = _make_session_for_persession()
+        ps = _measured_session(_make_session_for_persession())
         formulas = dict(self.formulas)
         # A constant predictor is collinear with the intercept, so this one
         # reduced model cannot be fit while the rest of the family can.
@@ -7077,23 +6978,33 @@ class TestFitResponsesOlsDropone:
         assert fits.empty
 
 
+def _measured_session(ps):
+    """``ps`` carried to where a fitting method takes over.
+
+    The steps the link function runs before it fits: the trial timings and the
+    wheel regressor onto the trials table, then every fiber x event magnitude
+    measured. No response column is joined on and no mask is computed — those
+    belong to the fit, one pair per combination.
+    """
+    ps.extract_trial_timings()
+    ps.add_trial_columns(ps.wheel_peak_velocity)
+    ps.extract_response_magnitudes()
+    return ps
+
+
 def _session_for_cell_fit(region='VTA-r', event='stimOnTrigger_times',
                           **kwargs):
-    """``_make_session_for_persession`` carried through the view's setup.
+    """A measured session masked to one fiber x event's fittable rows.
 
-    The sequence a fitting loop runs before it names a cell: the trial timings
-    and the wheel regressor onto the trials table, the magnitudes measured, that
-    one fiber x event's magnitudes joined on as a column, and the mask computed
-    with that column required present. What is left is a session whose
-    ``trials`` are exactly the rows the cell is fitted on.
+    :func:`_measured_session` plus the two steps that name a cell: that
+    combination's magnitudes joined on as a column, and the mask computed with
+    that column required present. What is left is a session whose ``trials``
+    are exactly the rows the cell is fitted on.
     """
     from iblnm.config import MIN_RESPONSE_TIME
     from iblnm.data import response_column
 
-    ps = _make_session_for_persession(**kwargs)
-    ps.extract_trial_timings()
-    ps.add_trial_columns(ps.wheel_peak_velocity)
-    ps.extract_response_magnitudes()
+    ps = _measured_session(_make_session_for_persession(**kwargs))
     ps.add_trial_columns(ps.cell_magnitudes(region, event))
     ps.filter_trials(exclude_nogo=True, min_response_time=MIN_RESPONSE_TIME,
                      complete=[response_column(region, event)])
@@ -7123,7 +7034,6 @@ class TestFitRegionResponses:
         assert set(rows['brain_region']) == {'VTA-r'}
         assert set(rows['event']) == {'stimOnTrigger_times'}
         assert not hasattr(ps, 'response_ols')
-        assert not hasattr(ps, 'model_frames')
 
     def test_fit_region_responses_fits_every_selected_trial(self):
         """The mask is the whole selection: what it keeps is what is fitted,
@@ -7204,6 +7114,63 @@ class TestFitRegionResponses:
         assert list(rows.columns) == _SESSION_OLS_COLUMNS
 
 
+class TestFitResponses:
+    """The loop over this session's fibers and the named events."""
+
+    @property
+    def formulas(self):
+        from iblnm.config import LMM_FORMULAS
+        return LMM_FORMULAS['persession']
+
+    @property
+    def criteria(self):
+        from iblnm.config import MIN_RESPONSE_TIME
+        return {'exclude_nogo': True, 'min_response_time': MIN_RESPONSE_TIME}
+
+    def test_every_fiber_event_combination_is_fitted_and_tagged(self):
+        """Two fibers x two response events, each cell's rows carrying the
+        combination they were fitted on."""
+        from iblnm.config import RESPONSE_EVENTS
+        ps = _measured_session(
+            _add_second_recording(_make_session_for_persession()))
+
+        fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16,
+                                **self.criteria)
+
+        assert set(zip(fits['brain_region'], fits['event'])) == {
+            (region, event) for region in ('VTA-r', 'DR-l')
+            for event in RESPONSE_EVENTS}
+
+    def test_combination_under_the_trial_floor_is_skipped_silently(self):
+        """The second fiber carries no signal on 80 of the 120 trials, so its
+        completeness criterion leaves 40 rows — under the floor, so neither of
+        its events is fitted and nothing is raised."""
+        ps = _measured_session(_add_second_recording(
+            _make_session_for_persession(), n_missing=80))
+
+        fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16,
+                                **self.criteria)
+
+        assert set(fits['brain_region']) == {'VTA-r'}
+
+    def test_the_mask_is_left_where_the_last_combination_put_it(self):
+        """Nothing here saves, restores or clears the mask, and nothing is
+        stored: the view a caller reads afterwards is the last fiber x event's
+        selection — 90 of the 120 trials, the second fiber carrying no signal
+        on 30 — which is why the link function re-filters before reading it."""
+        from iblnm.config import RESPONSE_EVENTS
+        from iblnm.data import response_column
+        ps = _measured_session(_add_second_recording(
+            _make_session_for_persession(), n_missing=30))
+
+        ps.fit_responses(self.formulas, {}, n_bootstrap=16, **self.criteria)
+
+        last = response_column('DR-l', RESPONSE_EVENTS[-1])
+        assert len(ps.trials) == 90
+        assert ps.trials[last].notna().all()
+        assert not hasattr(ps, 'response_ols')
+
+
 class TestModellingPass:
     """The two sequential passes over the store: donor pool, then fits."""
 
@@ -7252,6 +7219,14 @@ class TestModellingPass:
             return ps.donor_frame
 
         def fit(ps, **kwargs):
+            # The measurement sequence the link function runs before it fits;
+            # `fit_responses` reads these off the session and loads nothing.
+            ps.load_trials()
+            ps.extract_trial_timings()
+            ps.load_peak_velocity()
+            ps.add_trial_columns(ps.wheel_peak_velocity)
+            ps.load_responses('photometry')
+            ps.extract_response_magnitudes()
             return ps.fit_responses(**kwargs)
 
         with patch.object(PhotometrySession, 'load_h5', load_spy):
@@ -8615,8 +8590,9 @@ class TestFitResponsesPermutation:
 
     @staticmethod
     def _focal():
-        """The session being fitted: mouse1, one VTA-DA recording."""
-        return _make_session_for_persession(eid='e1', subject='m1')
+        """The session being fitted: mouse1, one VTA-DA recording, measured."""
+        return _measured_session(
+            _make_session_for_persession(eid='e1', subject='m1'))
 
     @staticmethod
     def _pool(n_donors=3):
@@ -8840,111 +8816,6 @@ class TestLoadStates:
         ps.load_states()
 
         assert ps.states is None
-
-
-# =============================================================================
-# Response magnitude merge tests
-# =============================================================================
-
-class TestCollectResponses:
-    """The merge producing one session's uncoded response magnitudes."""
-
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
-
-    def test_magnitude_is_masked_baseline_subtracted_window_mean(self):
-        """Post-event signal is 1.0 and baseline 0, so every magnitude is 1.0."""
-        ps = _session_with_planted_trials()
-        ps._prepare_model_frames(self.formulas, min_trials=1)
-        np.testing.assert_allclose(
-            ps.response_magnitudes['response'].dropna().values, 1.0, atol=1e-9)
-
-    def test_trial_columns_repeat_across_recordings(self):
-        """The trial regressors are per session: two regions carry the same
-        four trials, not eight."""
-        ps = _session_with_planted_trials(n_regions=2)
-        ps._prepare_model_frames(self.formulas, min_trials=1)
-        df = ps.response_magnitudes
-        counts = df.groupby(['brain_region', 'event']).size()
-        assert set(counts) == {4}
-        for _, rows in df.groupby(['brain_region', 'event']):
-            np.testing.assert_array_equal(rows['trial'].values, np.arange(4))
-            np.testing.assert_allclose(rows['peak_velocity'].values,
-                                       [1.0, 2.0, 3.0, 4.0])
-
-    def test_session_with_no_responses_yields_an_empty_typed_frame(self):
-        ps = _session_with_planted_trials()
-        ps.photometry_responses = {}
-        frames = ps._prepare_model_frames(self.formulas, min_trials=1)
-        assert frames == {}
-        assert ps.response_magnitudes.empty
-        for col in ('eid', 'brain_region', 'event', 'response', 'contrast'):
-            assert col in ps.response_magnitudes.columns
-
-    def test_session_with_no_photometry_raises(self):
-        """A missing input raises for the caller to log, rather than scoring
-        a session with no signal in it."""
-        ps = _session_with_planted_trials()
-        del ps.photometry_responses
-        with pytest.raises(AttributeError):
-            ps._prepare_model_frames(self.formulas, min_trials=1)
-
-    def test_no_stored_peak_velocity_scores_nan(self):
-        ps = _session_with_planted_trials()
-        del ps.wheel_peak_velocity
-        ps._prepare_model_frames(self.formulas, min_trials=1)
-        assert ps.response_magnitudes['peak_velocity'].isna().all()
-
-    def test_fully_masked_window_is_nan_and_dropped(self):
-        """Feedback lands before the window opens, so every sample of the
-        stimulus-locked window is masked away."""
-        from iblnm.config import STIM_ONSET_EVENT
-        ps = _session_with_planted_trials(fast_response=True)
-        frames = ps._prepare_model_frames(self.formulas, min_trials=1)
-        df = ps.response_magnitudes
-        stim = df[df['event'] == STIM_ONSET_EVENT]
-        assert stim['response'].isna().all()
-        assert (STIM_ONSET_EVENT not in {event for _, event in frames})
-
-    def test_magnitudes_carry_the_masked_fraction(self):
-        """Feedback lands a second after stimulus onset on every trial but the
-        planted false start, so the window keeps every sample there and the
-        merge reports no masking."""
-        ps = _session_with_planted_trials()
-        ps._prepare_model_frames(self.formulas, min_trials=1)
-        df = ps.response_magnitudes
-        np.testing.assert_allclose(
-            df[df['trial'] != 1]['masked_fraction'].values, 0.0)
-
-    def test_fully_masked_window_scores_one(self):
-        """The trial whose magnitude is NaN because feedback preceded the
-        window carries a masked fraction of 1, not a null."""
-        from iblnm.config import STIM_ONSET_EVENT
-        ps = _session_with_planted_trials(fast_response=True)
-        ps._prepare_model_frames(self.formulas, min_trials=1)
-        df = ps.response_magnitudes
-        stim = df[df['event'] == STIM_ONSET_EVENT]
-        np.testing.assert_allclose(stim['masked_fraction'].values, 1.0)
-        assert stim['response'].isna().all()
-
-    def test_only_response_events_are_cut(self):
-        """The session holds a firstMovement cut too; it is not a response
-        event."""
-        from iblnm.config import RESPONSE_EVENTS
-        ps = _session_with_planted_trials()
-        ps._prepare_model_frames(self.formulas, min_trials=1)
-        assert set(ps.response_magnitudes['event']) == set(RESPONSE_EVENTS)
-
-    def test_region_carrying_no_response_event_contributes_no_rows(self):
-        """A region whose only stored cut is not a response event."""
-        ps = _session_with_planted_trials()
-        region = ps.brain_region[0]
-        ps.photometry_responses[region] = ps.photometry_responses[region].sel(
-            event=['firstMovement_times'])
-        ps._prepare_model_frames(self.formulas, min_trials=1)
-        assert ps.response_magnitudes.empty
 
 
 class TestExtractResponseMagnitudes:

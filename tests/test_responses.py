@@ -358,20 +358,40 @@ class _LinkSession:
 
     def __init__(self):
         self.donor_frame = pd.DataFrame({'trial': [0, 1], 'contrast': [1.0, 2.0]})
-        self.response_magnitudes = pd.DataFrame({'trial': [0, 1],
-                                                 'response': [0.5, 0.7]})
-        self.response_ols = pd.DataFrame({'predictor': ['contrast'],
-                                          'delta_r2': [0.04]})
+        self.response_magnitudes = pd.DataFrame(
+            {'trial': [0, 1], 'response': [0.5, 0.7], 'hemisphere': ['r', 'r']})
+        self.trials = pd.DataFrame(
+            {'trial': [0, 1], 'signed_contrast': [-25.0, 25.0],
+             'stim_side': ['left', 'right'], 'choice': [1, -1]})
+        self.wheel_peak_velocity = np.array([1.0, 2.0])
+        self.fits = pd.DataFrame({'predictor': ['contrast'],
+                                  'delta_r2': [0.04]})
         self.prepared = None
         self.fitted = None
+        self.filtered = None
+        self.called = []
+
+    def __getattr__(self, name):
+        """Record the load and extract calls and do nothing else.
+
+        The measurement sequence is what the link function is responsible for
+        ordering, not for computing; the stub plants the frames those steps
+        would have produced.
+        """
+        if name.startswith(('load_', 'extract_', 'add_trial_columns')):
+            return lambda *args, **kwargs: self.called.append(name)
+        raise AttributeError(name)
 
     def prepare_donor_frame(self):
         self.prepared = True
         return self.donor_frame
 
-    def fit_responses(self, formulas, donors):
-        self.fitted = (formulas, donors)
-        return self.response_ols
+    def fit_responses(self, formulas, donors, **criteria):
+        self.fitted = (formulas, donors, criteria)
+        return self.fits
+
+    def filter_trials(self, **criteria):
+        self.filtered = criteria
 
 
 class TestLinkFunctions:
@@ -389,16 +409,21 @@ class TestLinkFunctions:
         assert returned is ps.donor_frame
 
     def test_fit_session_forwards_its_arguments_and_returns_both_frames(self):
-        from scripts.responses import fit_session
+        from scripts.responses import PERSESSION_TRIAL_CRITERIA, fit_session
         ps = _LinkSession()
         formulas = {'full': '{response} ~ contrast'}
         donors = {'eid-1': 'donor'}
 
         magnitudes, fits = fit_session(ps, formulas, donors)
 
-        assert ps.fitted == (formulas, donors)
-        assert magnitudes is ps.response_magnitudes
-        assert fits is ps.response_ols
+        assert ps.fitted == (formulas, donors, PERSESSION_TRIAL_CRITERIA)
+        assert fits is ps.fits
+        # The fitting loop leaves the mask on one fiber x event; the same
+        # criteria are re-applied without one before the view is read.
+        assert ps.filtered == PERSESSION_TRIAL_CRITERIA
+        assert list(magnitudes['trial']) == [0, 1]
+        # Right-hemisphere fiber, so the left stimulus of trial 0 is contra.
+        assert list(magnitudes['side']) == ['contra', 'ipsi']
 
 
 class TestVarcompCoefficients:

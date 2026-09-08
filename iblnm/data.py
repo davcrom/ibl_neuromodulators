@@ -1,3 +1,4 @@
+import itertools
 import operator
 import warnings
 from collections import defaultdict
@@ -3951,71 +3952,16 @@ class PhotometrySession(PhotometrySessionLoader):
             frame = task.add_relative_contrast(frame)
         return analysis.select_modeling_trials(frame, response_col)
 
-    def _prepare_model_frames(self, formulas: dict,
-                              events: Sequence[str] = RESPONSE_EVENTS,
-                              response_col: str = 'response',
-                              min_trials: int = MIN_TRIALS_PERSESSION,
-                              contrast_coding: str = 'log2',
-                              ) -> dict[tuple[str, str], pd.DataFrame]:
-        """Build this session's fit-ready frames, one per (region, event) cell.
-
-        Four steps: merge the trial regressors with each region's magnitudes
-        (:meth:`_merge_response_magnitudes`, whose uncoded result is left on
-        ``self.response_magnitudes``), apply the response-independent trial
-        exclusions to the whole session, then code and centre each cell on its
-        own surviving rows. Coding runs per cell rather than per session
-        because a cell's row set is not final until its null responses are
-        dropped, and centring computed earlier would not be centring on the
-        fitted rows.
-
-        Parameters
-        ----------
-        formulas : dict
-            Drop-one family, flat or event-keyed
-            (:func:`resolve_event_family`); every event in ``events`` must have
-            a family, which is resolved up front so a missing one raises
-            ``MissingFormula`` before any coding work.
-        events : Sequence[str]
-            Events to cut and code. An event the stored responses do not carry
-            yields no cell.
-        response_col : str
-            Per-trial response magnitude column the formulas model.
-        min_trials : int
-            A cell with fewer complete-case rows is not scorable and is omitted.
-        contrast_coding : str
-            Passed to :meth:`code_predictors`.
-
-        Returns
-        -------
-        dict[tuple[str, str], pandas.DataFrame]
-            ``(brain_region, event)`` -> that cell's coded, complete-case trial
-            frame. Also assigned to ``self.model_frames``.
-        """
-        families = {event: resolve_event_family(formulas, event)
-                    for event in events}
-        selected = self._select_modeling_trials(events, response_col)
-
-        self.model_frames = {}
-        for (region, event), rows in selected.groupby(
-                ['brain_region', 'event'], sort=False):
-            coded = self.code_predictors(rows, contrast_coding)
-            coded = coded.dropna(subset=analysis.formula_union_columns(
-                families[event].values(), coded.columns))
-            if len(coded) >= min_trials:
-                self.model_frames[(region, event)] = coded
-        return self.model_frames
-
     def prepare_donor_frame(self, contrast_coding: str = 'log2') -> DonorFrame:
         """Build this session's contribution to other sessions' swap nulls.
 
-        :meth:`_prepare_model_frames` stopped after its response-independent
-        selection step, coding on those rows: the trial regressors with the
-        no-go, false-start and negative-reaction-time exclusions applied, then
-        coded and centred. No photometry is loaded and no response-null rows
-        are dropped, so a donor frame is one frame per session — not one per
-        recording-event — and is typically longer than the focal frames it
-        donates to. `iblnm.analysis.permutation_null_delta_r2` truncates the
-        pair to the shorter length at swap time.
+        The response-independent selection step alone, coded on those rows: the
+        trial regressors with the no-go, false-start and negative-reaction-time
+        exclusions applied, then coded and centred. No photometry is loaded and
+        no response-null rows are dropped, so a donor frame is one frame per
+        session — not one per recording-event — and is typically longer than the
+        focal frames it donates to. `iblnm.analysis.permutation_null_delta_r2`
+        truncates the pair to the shorter length at swap time.
 
         Trial order is preserved, which is the whole point of the swap: the
         donor's regressor keeps its own serial structure while losing any
@@ -4203,23 +4149,27 @@ class PhotometrySession(PhotometrySessionLoader):
                       donor_scope: str = 'exclude_subject',
                       n_bootstrap: int = PERSESSION_PVAL_N_BOOTSTRAP,
                       random_state: int = PERSESSION_PVAL_SEED,
-                      ) -> pd.DataFrame:
-        """This session's complete drop-one OLS result, group-free.
+                      **criteria) -> pd.DataFrame:
+        """This session's complete drop-one OLS result, every fiber x event.
 
-        Everything the per-session modelling pass produces for one session, from
-        formulas and a donor mapping alone: the drop-one ΔR², the reference
-        model's weights, the cross-session swap null and the p-value scored
-        against it. The store is read for this session's own products and
-        nothing else — no group is constructed and no other session is opened.
+        The loop around :meth:`fit_region_responses`: every combination of this
+        session's fibers and the named events, each one masked to its own
+        selection and fitted on it, the thin ones skipped. Each fiber x event
+        needs a mask of its own because its dependent variable is its own —
+        `filter_trials` is called once per combination with ``criteria`` plus
+        that combination's response column required present, which is the
+        record :meth:`fit_region_responses` checks itself against.
 
-        Per scorable cell (:meth:`_prepare_model_frames`, one per region ×
-        event): the family is fitted and differenced off ``reference``
-        (:func:`iblnm.analysis.dropone_delta_r2`), the reference model's weights
-        are read off the same fits (:func:`_coefficient_rows`), and the null is
-        built by swapping each dropped predictor's column in from every admitted
-        donor (:func:`iblnm.analysis.permutation_null_delta_r2`). The dropped
-        ``predictor`` and the weight's ``regressor`` are the same six names, so
-        the two join to one row per predictor.
+        Every combination's magnitudes are joined onto the trials table up
+        front (:meth:`add_trial_columns`), before the first mask exists, so
+        that a combination whose signal is missing scores NaN and is skipped by
+        the completeness criterion rather than raising.
+
+        The mask is left where the last iteration put it. Nothing here saves,
+        restores or clears it: the caller re-applies ``criteria`` without a
+        fiber or an event to read the session-wide view, so the stored table and
+        the fitted rows cannot drift apart. Loading is the caller's too — this
+        reads `self.trials` and `self._response_magnitudes` as they stand.
 
         Parameters
         ----------
@@ -4232,59 +4182,56 @@ class PhotometrySession(PhotometrySessionLoader):
             included; ``donor_scope`` excludes it (:meth:`select_donors`). An
             empty mapping fits without scoring.
         events : Sequence[str]
-            Events to cut and fit.
+            Events to fit, crossed with `self.brain_region`.
         reference : str
             Full-model key each reduced model's ΔR² is measured against.
         response_col : str
-            Per-trial response magnitude column the formulas model.
+            Name the magnitudes are modelled under, substituted into each
+            formula.
         donor_scope : {'exclude_subject', 'exclude_session', 'same_target'}
             Which sessions may donate a swapped predictor column.
         n_bootstrap : int
             Length of each cell's null vector.
         random_state : int
-            Seed for the swap rng, created once per session. One rng per
-            session rather than one per population changes which donors the
-            bootstrap resamples, not the statistic.
+            Seed for the swap rng, created once per session and shared by every
+            combination so they do not resample the same donors.
+        **criteria
+            Passed to :meth:`filter_trials`. A ``complete`` list is extended
+            with the combination's response column rather than replaced.
 
         Returns
         -------
         pandas.DataFrame
-            ``config.OLS_PERSESSION_COLUMNS`` less ``q_value``, one row per
-            (region, event, dropped predictor); the FDR correction spans
-            sessions, so the group adds that column after collecting these.
-            Also assigned to ``self.response_ols``. A cell whose design is
-            degenerate for any family member contributes no rows; a cell with
-            no scorable donor keeps its fit and carries an empty ``null`` and a
-            NaN ``p_value``.
+            `_SESSION_OLS_COLUMNS`, one row per (region, event, dropped
+            predictor); the FDR correction spans sessions, so the group adds
+            ``q_value`` after collecting these. A combination the mask leaves
+            under `config.MIN_TRIALS_PERSESSION` rows contributes none, as does
+            one whose design is degenerate for any family member. Assigns
+            nothing.
         """
-        self.load_trials()
-        self.load_peak_velocity()
-        self.load_responses('photometry')
-        frames = self._prepare_model_frames(formulas, events, response_col)
-        donor_frames = self.select_donors(donors, donor_scope)
-        target_by_region = dict(zip(self.brain_region, self.target_NM))
+        cells = list(itertools.product(self.brain_region, events))
+        self.add_trial_columns(pd.DataFrame(
+            {response_column(region, event): self.cell_magnitudes(region,
+                                                                  event)
+             for region, event in cells}))
+        required_columns = criteria.pop('complete', None) or []
         rng = np.random.default_rng(random_state)
 
-        cells = []
-        for (region, event), frame in frames.items():
-            family = resolve_event_family(formulas, event)
-            fits = {name: self.fit_response_model(frame, formula, response_col)
-                    for name, formula in family.items()}
-            if any(fit is None for fit in fits.values()):
+        fits = []
+        for region, event in cells:
+            self.filter_trials(
+                complete=[*required_columns, response_column(region, event)],
+                **criteria)
+            # Counted rather than caught: `fit_region_responses` raises on a
+            # thin cell for a direct caller's benefit, and a loop that skips
+            # needs no exception to do it.
+            if len(self.trials) < MIN_TRIALS_PERSESSION:
                 continue
-            nulls = analysis.permutation_null_delta_r2(
-                frame, donor_frames, family[reference],
-                {name: formula for name, formula in family.items()
-                 if name != reference},
-                response_col, rng=rng, n_bootstrap=n_bootstrap)
-            rows = _dropone_rows(fits, len(frame), reference)
-            cells.append(_score_against_null(rows, nulls, len(donor_frames))
-                         .assign(eid=self.eid, subject=self.subject,
-                                 target_NM=target_by_region[region],
-                                 brain_region=region, event=event))
-
-        self.response_ols = _concat_frames(cells, _SESSION_OLS_COLUMNS)
-        return self.response_ols
+            fits.append(self.fit_region_responses(
+                region, event, formulas, donors, reference=reference,
+                response_col=response_col, donor_scope=donor_scope,
+                n_bootstrap=n_bootstrap, rng=rng))
+        return _concat_frames(fits, _SESSION_OLS_COLUMNS)
 
     @staticmethod
     def fit_response_model(df: pd.DataFrame, formula: str,
