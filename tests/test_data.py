@@ -3056,6 +3056,80 @@ def _make_biased_trials(seed=42):
     })
 
 
+class TestExtractTrialTimings:
+    """Tests for PhotometrySession.extract_trial_timings()."""
+
+    def _session(self, series, trials):
+        from iblnm.data import PhotometrySession
+        session = PhotometrySession(series, one=MagicMock(), load_data=False)
+        session.trials = trials
+        return session
+
+    def test_trial_timings_derives_the_three_durations(self, mock_session_series):
+        """The three durations are the differences the models are fitted on."""
+        from iblnm.config import STIM_ONSET_EVENT
+        trials = pd.DataFrame({
+            'trial': [0, 3, 7],
+            STIM_ONSET_EVENT: [10.0, 20.0, 30.0],
+            'firstMovement_times': [10.2, 20.5, np.nan],
+            'response_times': [10.9, 21.0, 31.5],
+        })
+        session = self._session(mock_session_series, trials)
+
+        out = session.extract_trial_timings()
+
+        np.testing.assert_allclose(out['reaction_time'], [0.2, 0.5, np.nan])
+        np.testing.assert_allclose(out['movement_time'], [0.7, 0.5, np.nan])
+        np.testing.assert_allclose(out['response_time'], [0.9, 1.0, 1.5])
+
+    def test_trial_timings_nan_without_the_movement_column(
+            self, mock_session_series):
+        """A session extracted without movement onsets scores NaN, not an error.
+
+        `firstMovement_times` is absent from some sessions' tables, and the
+        pass that calls this cannot know which — so the two durations that need
+        it come back empty and the third is still derived.
+        """
+        from iblnm.config import STIM_ONSET_EVENT
+        trials = pd.DataFrame({
+            'trial': [0, 1],
+            STIM_ONSET_EVENT: [10.0, 20.0],
+            'response_times': [10.9, 21.0],
+        })
+        session = self._session(mock_session_series, trials)
+
+        out = session.extract_trial_timings()
+
+        assert out['reaction_time'].isna().all()
+        assert out['movement_time'].isna().all()
+        np.testing.assert_allclose(out['response_time'], [0.9, 1.0])
+
+    def test_trial_timings_keeps_the_rows_and_trial_index(
+            self, mock_session_series):
+        """The columns are added onto the trials table, which is not reindexed.
+
+        `trial` is the stored ONE trial index and need not be contiguous; the
+        response matrices are keyed by it, so a pass that regenerated it would
+        break the join.
+        """
+        from iblnm.config import STIM_ONSET_EVENT
+        trials = pd.DataFrame({
+            'trial': [0, 3, 7],
+            'choice': [1, -1, 1],
+            STIM_ONSET_EVENT: [10.0, 20.0, 30.0],
+            'firstMovement_times': [10.2, 20.5, 30.4],
+            'response_times': [10.9, 21.0, 31.5],
+        })
+        session = self._session(mock_session_series, trials)
+
+        out = session.extract_trial_timings()
+
+        assert out is session.trials
+        assert len(out) == 3
+        assert list(out['trial']) == [0, 3, 7]
+        assert list(out['choice']) == [1, -1, 1]
+
+
 class TestExtractPerformance:
     """Tests for PhotometrySession.extract_performance()."""
 

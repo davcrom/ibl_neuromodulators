@@ -2701,6 +2701,32 @@ class PhotometrySession(PhotometrySessionLoader):
     # Task Performance Methods
     # =========================================================================
 
+    def extract_trial_timings(self) -> pd.DataFrame:
+        """Add the three event-timing durations to `self.trials`, in seconds.
+
+        `reaction_time` is `firstMovement_times - config.STIM_ONSET_EVENT`,
+        `movement_time` is `response_times - firstMovement_times`, and
+        `response_time` is `response_times - config.STIM_ONSET_EVENT`. Both
+        durations end at the choice rather than at feedback delivery, which lags
+        it by an outcome-dependent amount (0.1 ms on correct trials, up to
+        1.75 s on errors). A missing event-time column yields an all-NaN
+        duration rather than an error, since a session can be extracted without
+        one. Writes nothing.
+
+        Returns
+        -------
+        pandas.DataFrame
+            `self.trials` with the three columns assigned in place; the row
+            count and every existing column are untouched.
+        """
+        self.trials['reaction_time'] = analysis._event_diff(
+            self.trials, 'firstMovement_times', STIM_ONSET_EVENT)
+        self.trials['movement_time'] = analysis._event_diff(
+            self.trials, 'response_times', 'firstMovement_times')
+        self.trials['response_time'] = analysis._event_diff(
+            self.trials, 'response_times', STIM_ONSET_EVENT)
+        return self.trials
+
     def extract_performance(self) -> dict:
         """Score `self.trials` into the `trials/performance` payload.
 

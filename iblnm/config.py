@@ -864,6 +864,10 @@ LMM_FORMULAS = {
     },
 }
 
+# False-start cutoff: a go trial whose response_time is at or below this is a
+# wheel turn already underway at stimulus onset, not a response to the stimulus.
+MIN_RESPONSE_TIME = 0.05  # seconds
+
 # Per-session OLS drop-one thresholds: minimum trials for a recording to be fit,
 # and minimum recordings per mouse (per cell) for that mouse to be plotted.
 MIN_TRIALS_PERSESSION = 50
