@@ -16,7 +16,7 @@ from sklearn.preprocessing import quantile_transform
 from iblnm.config import (
     ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP,
     PERSESSION_SIGNIFICANCE_ALPHA, PERSESSION_REGRESSORS,
-    RESPONSE_EVENTS, RESPONSE_WINDOWS, STIM_ONSET_EVENT,
+    RESPONSE_EVENTS, RESPONSE_MAGNITUDE_WINDOW, STIM_ONSET_EVENT,
     SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
@@ -3788,9 +3788,9 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None,
             ax.axvline(0, color='gray', linewidth=0.5, linestyle='--')
             ax.set_ylim(-1.5, 3)
 
-            # Shaded response windows (whichever are defined in config)
-            for start, end in RESPONSE_WINDOWS.values():
-                ax.axvspan(start, end, alpha=0.12, color='gray', zorder=0)
+            # Shaded response window
+            ax.axvspan(*RESPONSE_MAGNITUDE_WINDOW, alpha=0.12, color='gray',
+                       zorder=0)
 
             if row == 1:
                 ax.set_xlabel('Time (s)')

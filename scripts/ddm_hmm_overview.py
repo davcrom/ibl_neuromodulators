@@ -37,7 +37,8 @@ from matplotlib import pyplot as plt
 
 from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_H5_DIR, DDM_HMM_PARAMS_FPATH, DDM_HMM_FIGURES_DIR,
-    RESPONSE_EVENTS, RESPONSE_WINDOW, RESPONSE_WINDOWS, STIM_ONSET_EVENT,
+    RESPONSE_EVENTS, RESPONSE_MAGNITUDE_WINDOW, RESPONSE_WINDOW,
+    STIM_ONSET_EVENT,
 )
 from iblnm.analysis import (
     align_traces_at_transitions, compute_response_magnitude, pca_2d,
@@ -88,8 +89,8 @@ def _evoked_magnitudes(
     Runs the project's canonical evoked path on ``signals[column]``: peri-event
     matrices over ``RESPONSE_WINDOW``, samples later than the trial's next event
     masked out, per-trial pre-event baseline subtracted, then averaged over
-    ``RESPONSE_WINDOWS['early']``. ``mask_subsequent_events`` masks only the
-    non-terminal events, so a trial whose feedback lands inside the early window
+    ``RESPONSE_MAGNITUDE_WINDOW``. ``mask_subsequent_events`` masks only the
+    non-terminal events, so a trial whose feedback lands inside that window
     averages the surviving samples only, and one whose feedback precedes the
     window start leaves it empty and yields NaN — hence the suppressed
     all-NaN-slice ``RuntimeWarning``.
@@ -109,7 +110,8 @@ def _evoked_magnitudes(
         warnings.simplefilter('ignore', category=RuntimeWarning)
         magnitudes = {
             f"{event.removesuffix('_times')}_response": compute_response_magnitude(
-                evoked.sel(event=event).values, tpts, RESPONSE_WINDOWS['early'])
+                evoked.sel(event=event).values, tpts,
+                RESPONSE_MAGNITUDE_WINDOW)
             for event in RESPONSE_EVENTS
         }
     return pd.DataFrame(magnitudes, index=evoked.coords['trial'].values)

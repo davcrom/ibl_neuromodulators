@@ -1892,17 +1892,17 @@ class TestPlotMeanResponseTraces:
         plt.close(fig)
 
     def test_response_window_shading(self):
-        """Every window in RESPONSE_WINDOWS is shaded on every panel."""
+        """RESPONSE_MAGNITUDE_WINDOW is shaded on every panel."""
         from iblnm.vis import plot_mean_response_traces
-        from iblnm.config import RESPONSE_WINDOWS
+        from iblnm.config import RESPONSE_MAGNITUDE_WINDOW
         traces = _make_traces_df(
             events=['stimOnTrigger_times', 'feedback_times'],
         )
         fig = plot_mean_response_traces(traces, 'VTA-DA')
+        start, _ = RESPONSE_MAGNITUDE_WINDOW
         for ax in fig.axes[:2]:  # top-row stimOn (col 0) and feedback (col 1)
-            for start, _ in RESPONSE_WINDOWS.values():
-                assert any(np.isclose(p.get_x(), start, atol=0.01)
-                           for p in ax.patches)
+            assert any(np.isclose(p.get_x(), start, atol=0.01)
+                       for p in ax.patches)
         plt.close(fig)
 
     def test_inset_redraws_each_panel_on_its_own_scale(self):

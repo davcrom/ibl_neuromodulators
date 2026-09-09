@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 from matplotlib import pyplot as plt
 
-from iblnm.config import RESPONSE_WINDOWS
+from iblnm.config import RESPONSE_MAGNITUDE_WINDOW
 from iblnm.gui import PhotometrySessionViewer
 from iblnm.task import sort_trials_by_type
 
@@ -87,8 +87,8 @@ def test_all_incorrect():
 # _shade_response_windows
 # =========================================================================
 
-def test_shade_response_windows_marks_config_windows():
-    """Shaded spans match the configured post-event response windows."""
+def test_shade_response_windows_marks_config_window():
+    """The shaded span matches the configured post-event response window."""
     viewer = PhotometrySessionViewer(session=None)
     fig, ax = plt.subplots()
     viewer._shade_response_windows(ax)
@@ -99,6 +99,5 @@ def test_shade_response_windows_marks_config_windows():
         spans.add((round(float(x0), 6), round(float(x0 + p.get_width()), 6)))
     plt.close(fig)
 
-    expected = {(round(t0, 6), round(t1, 6))
-                for t0, t1 in RESPONSE_WINDOWS.values()}
-    assert spans == expected
+    t0, t1 = RESPONSE_MAGNITUDE_WINDOW
+    assert spans == {(round(t0, 6), round(t1, 6))}

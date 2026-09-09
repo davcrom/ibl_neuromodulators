@@ -35,7 +35,7 @@ from iblnm.config import (
     OLS_PERSESSION_FPATH,
     RESPONSE_OLS_MOUSE_PVAL_FPATH,
     MASKING_DIAGNOSTICS_FPATH, MASKING_DIAGNOSTIC_GROUP_COLS,
-    MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_WINDOWS,
+    MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_MAGNITUDE_WINDOW,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS, TRACE_INSET_TARGETNMS,
     MIN_RESPONSE_TIME,
 )
@@ -445,7 +445,7 @@ def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
 
 def compute_masking_diagnostics(
     magnitudes: pd.DataFrame,
-    window: tuple[float, float] = RESPONSE_WINDOWS['early'],
+    window: tuple[float, float] = RESPONSE_MAGNITUDE_WINDOW,
     group_cols: list[str] = MASKING_DIAGNOSTIC_GROUP_COLS,
 ) -> pd.DataFrame:
     """How much of the response window the event masking removed, per cell.

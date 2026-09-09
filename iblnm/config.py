@@ -21,7 +21,7 @@ RESPONSE_MAGNITUDES_FPATH = RESPONSES_DIR / 'response_magnitudes.parquet'
 # One row per recording x event x trial. `trial` is the trials table's own
 # trial number, so a session's trial-level values are identifiable across its
 # recordings and events.
-# `masked_fraction` is the proportion of RESPONSE_WINDOWS['early'] that
+# `masked_fraction` is the proportion of RESPONSE_MAGNITUDE_WINDOW that
 # `mask_subsequent_events` removed before the mean was taken — the masking
 # diagnostic's per-trial quantity, carried here because it describes exactly
 # the samples `response` was averaged over.
@@ -524,11 +524,9 @@ PHOTOMETRY_QC_THRESHOLDS = {
 
 # Analysis parameters
 # Event-based analyses
-RESPONSE_WINDOW = (-1, 1)
-BASELINE_WINDOW = (-0.1, 0)
-RESPONSE_WINDOWS = {
-    'early': (0.1, 0.35),
-}
+RESPONSE_WINDOW = (-1, 1)          # the stored peri-event cut
+BASELINE_WINDOW = (-0.1, 0)        # pre-event baseline, subtracted per trial
+RESPONSE_MAGNITUDE_WINDOW = (0.1, 0.35)  # averaged for a scalar magnitude
 
 # Movement encoding analyses
 # Predictor column each movement variable enters the model as. choice enters as

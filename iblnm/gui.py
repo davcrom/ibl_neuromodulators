@@ -17,7 +17,7 @@ from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.widgets import Button
 
-from iblnm.config import RESPONSE_WINDOWS, STIM_ONSET_EVENT
+from iblnm.config import RESPONSE_MAGNITUDE_WINDOW, STIM_ONSET_EVENT
 from iblnm.task import sort_trials_by_type
 
 DEMO_EID = '2025366a-c9aa-4b6c-97be-8af40eda6410'
@@ -44,7 +44,7 @@ FS_TITLE    = 10
 FS_LABEL    = 9
 FS_TICK     = 8
 
-# Shading for the post-event response windows (config.RESPONSE_WINDOWS)
+# Shading for the post-event response window (config.RESPONSE_MAGNITUDE_WINDOW)
 RESPONSE_WINDOW_SHADE = dict(color='0.6', alpha=0.15, lw=0, zorder=0)
 
 
@@ -323,12 +323,10 @@ class PhotometrySessionViewer:
         ax.tick_params(labelbottom=False, labelsize=FS_TICK)
 
     def _shade_response_windows(self, ax):
-        """Draw light bands marking the post-event response windows."""
-        edges = set()
-        for t0, t1 in RESPONSE_WINDOWS.values():
-            ax.axvspan(t0, t1, **RESPONSE_WINDOW_SHADE)
-            edges.update((t0, t1))
-        for edge in edges:
+        """Draw a light band marking the post-event response window."""
+        t0, t1 = RESPONSE_MAGNITUDE_WINDOW
+        ax.axvspan(t0, t1, **RESPONSE_WINDOW_SHADE)
+        for edge in (t0, t1):
             ax.axvline(edge, color='0.6', lw=0.4, alpha=0.6, zorder=0)
 
     def _plot_psth_by_type(self, ax, resp, trials, tpts, event_color,

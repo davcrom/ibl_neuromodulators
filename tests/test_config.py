@@ -12,6 +12,16 @@ def test_pose_qc_scalar_constants():
     assert config.POSE_FS == 30
 
 
+def test_response_windows_are_distinct_constants():
+    """The peri-event cut and the measurement window are separate constants.
+
+    ``RESPONSE_WINDOW`` bounds the stored cut; ``RESPONSE_MAGNITUDE_WINDOW`` is
+    the post-event interval a magnitude is averaged over, and must lie inside it.
+    """
+    assert config.RESPONSE_WINDOW == (-1, 1)
+    assert config.RESPONSE_MAGNITUDE_WINDOW == (0.1, 0.35)
+
+
 def test_pose_qc_path_constants():
     assert config.POSE_FPATH.name == 'pose.pqt'
     assert config.POSE_LOG_FPATH.name == 'pose_log.pqt'

@@ -35,8 +35,8 @@ from iblnm.config import (
     QC_SLIDING_AGG, QC_SLIDING_KWARGS, QC_SLIDING_METRICS,
     QC_UNDETRENDED_METRICS, REQUIRED_CONTRASTS,
     RESPONSE_EVENTS,
-    RESPONSE_WINDOW,
-    RESPONSE_WINDOWS, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
+    RESPONSE_MAGNITUDE_WINDOW,
+    RESPONSE_WINDOW, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
     SESSION_TYPES_TO_ANALYZE, SUBJECTS_TO_EXCLUDE, TARGETNMS_TO_ANALYZE,
     VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS, VIDEO_QC_PROBLEM_COLS,
     WHEEL_FS, WHEEL_RESPONSE_EVENTS, WHEEL_RESPONSE_WINDOW, POSE_FS,
@@ -3650,7 +3650,7 @@ class PhotometrySession(PhotometrySessionLoader):
         is_contra = (stim_side == contra_side)
 
         # Build conditions: event × contrast × side × feedback
-        win = RESPONSE_WINDOWS['early']
+        win = RESPONSE_MAGNITUDE_WINDOW
         condition_specs = []
         for event in events:
             for c in contrasts:
@@ -3749,7 +3749,7 @@ class PhotometrySession(PhotometrySessionLoader):
     def extract_response_magnitudes(
             self,
             events: Sequence[str] = RESPONSE_EVENTS,
-            window: tuple[float, float] = RESPONSE_WINDOWS['early'],
+            window: tuple[float, float] = RESPONSE_MAGNITUDE_WINDOW,
             mask_subsequent: bool = True,
             subtract_baseline: bool = True) -> pd.DataFrame:
         """Measure every fiber x event x trial response magnitude, once.

@@ -180,7 +180,7 @@ def _evoked_photometry(stim_levels, feedback_levels, stim_times, feedback_times,
     """Photometry dict whose LC signal is a known step in each response window.
 
     The signal is ``offset`` everywhere except the (0.1, 0.35) s after each event
-    — ``config.RESPONSE_WINDOWS['early']``, pinned here so the test fixes the
+    — ``config.RESPONSE_MAGNITUDE_WINDOW``, pinned here so the test fixes the
     window independently — where it holds that trial's level above ``offset``.
     The pre-event baseline window (-0.1, 0) is therefore flat at ``offset``, so a
     baseline-subtracted magnitude must come out as the level exactly, whatever
