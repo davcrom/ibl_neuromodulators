@@ -6815,38 +6815,35 @@ class TestFitResponsesOlsDropone:
         'peak_velocity': (0.13924412869844843, 0.11846606132164994),
     }
 
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
-
     def test_a_lone_session_produces_the_whole_column_set(self):
-        """No group anywhere: a session, a formulas dict and a donor mapping
-        give the output schema, `q_value` excepted — the group adds that after
-        collection, since the FDR families span sessions."""
+        """No group anywhere: a session, a formula with its term table and a
+        donor mapping give the output schema, `q_value` excepted — the group
+        adds that after collection, since the FDR families span sessions."""
         from iblnm.config import OLS_PERSESSION_COLUMNS, RESPONSE_EVENTS
         ps = _measured_session(_make_session_for_persession())
         donors = _donor_pool_for(
             _donorless_session(eid='donor-eid', subject='mouse2', seed=1))
 
-        fits = ps.fit_responses(self.formulas, donors, n_bootstrap=16)
+        formula, drops = _main_effect_model()
+        fits = ps.fit_responses(formula, drops, donors, n_bootstrap=4)
 
         assert list(fits.columns) == [column for column
                                       in OLS_PERSESSION_COLUMNS
                                       if column != 'q_value']
         assert set(fits['event']) == set(RESPONSE_EVENTS)
-        # One row per dropped regressor per (recording, event); no reference.
+        # One row per drop-one label per (recording, event); no reference.
         per_event = fits.groupby('event')['predictor'].agg(set)
-        assert (per_event == set(self.formulas) - {'full'}).all()
+        assert (per_event == set(drops)).all()
 
     def test_delta_r2_and_coefficients_match_the_fitted_family(self):
         ps = _measured_session(_make_session_for_persession())
-        fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16)
+        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4)
 
         for event in set(fits['event']):
             rows = fits[fits['event'] == event].set_index('predictor')
-            assert set(rows.index) == set(self._DELTA_R2)
+            assert set(rows.index) == _drop_labels()
             assert (rows['n_trials'] == 120).all()
+            assert rows['delta_r2'].notna().all()
             for predictor, delta in self._DELTA_R2.items():
                 assert rows.loc[predictor, 'r2_full'] == pytest.approx(
                     self._R2_FULL)
@@ -6863,7 +6860,7 @@ class TestFitResponsesOlsDropone:
         the family shares."""
         from iblnm.analysis import adjusted_r2
         ps = _measured_session(_make_session_for_persession())
-        fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16)
+        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4)
 
         n_trials = 120
         r2_adj_full = adjusted_r2(self._R2_FULL, n_trials,
@@ -6886,7 +6883,7 @@ class TestFitResponsesOlsDropone:
         on and that region's entry in the parallel target_NM column."""
         ps = _measured_session(_add_second_recording(
             _make_session_for_persession(eid='eid-0', subject='subj-0')))
-        fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16)
+        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4)
 
         assert set(fits['eid']) == {'eid-0'}
         assert set(fits['subject']) == {'subj-0'}
@@ -6894,14 +6891,14 @@ class TestFitResponsesOlsDropone:
             'VTA-r': 'VTA-DA', 'DR-l': 'DR-5HT'}
         assert 'full' not in set(fits['predictor'])
         per_cell = fits.groupby(['brain_region', 'event'])['predictor'].agg(set)
-        assert (per_cell == set(self.formulas) - {'full'}).all()
+        assert (per_cell == _drop_labels()).all()
 
     def test_no_scorable_cell_yields_an_empty_typed_frame(self):
         """Too few trials to fit anything, so no cell is scorable — the caller
         still gets the named columns rather than a bare empty frame."""
         from iblnm.config import OLS_PERSESSION_COLUMNS
         ps = _measured_session(_make_session_for_persession(n_trials=20))
-        fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16)
+        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4)
         assert list(fits.columns) == [column for column
                                       in OLS_PERSESSION_COLUMNS
                                       if column != 'q_value']
@@ -6910,13 +6907,14 @@ class TestFitResponsesOlsDropone:
     def test_degenerate_family_member_drops_the_whole_cell(self):
         """One unfittable member makes the cell's R² incomparable across the
         family, so the cell contributes no rows at all rather than partial
-        ones."""
+        ones. `probabilityLeft` is constant here and so collinear with the
+        intercept, which every member of this family carries."""
         ps = _measured_session(_make_session_for_persession())
-        formulas = dict(self.formulas)
-        # A constant predictor is collinear with the intercept, so this one
-        # reduced model cannot be fit while the rest of the family can.
-        formulas['side'] = '{response} ~ probabilityLeft'
-        fits = ps.fit_responses(formulas, {}, n_bootstrap=16)
+        fits = ps.fit_responses(
+            '{response} ~ contrast + probabilityLeft',
+            {'contrast': ['contrast'],
+             'probabilityLeft': ['probabilityLeft']},
+            {}, n_bootstrap=4)
         assert fits.empty
 
 
@@ -6932,6 +6930,36 @@ def _measured_session(ps):
     ps.add_trial_columns(ps.wheel_peak_velocity)
     ps.extract_response_magnitudes()
     return ps
+
+
+def _response_model():
+    """`config.RESPONSE_MODEL_FORMULA` and `config.RESPONSE_DROPPED_TERMS`.
+
+    The pair every drop-one fit takes, in call order, so a test spreads it with
+    ``*_response_model()``.
+    """
+    from iblnm.config import RESPONSE_DROPPED_TERMS, RESPONSE_MODEL_FORMULA
+    return RESPONSE_MODEL_FORMULA, RESPONSE_DROPPED_TERMS
+
+
+def _drop_labels():
+    """The drop-one labels one cell's fit produces a row for."""
+    from iblnm.config import RESPONSE_DROPPED_TERMS
+    return set(RESPONSE_DROPPED_TERMS)
+
+
+def _main_effect_model():
+    """`_response_model` with the term table narrowed to the six main effects.
+
+    The swap null draws a donor column named for the label it scores, so a
+    label naming an interaction term has no donor column to draw and cannot be
+    scored against a real donor pool. Tests that pass one narrow the table to
+    the labels that can.
+    """
+    from iblnm.config import PERSESSION_REGRESSORS
+    formula, dropped_terms = _response_model()
+    return formula, {label: dropped_terms[label]
+                     for label in PERSESSION_REGRESSORS}
 
 
 def _session_for_cell_fit(region='VTA-r', event='stimOnTrigger_times',
@@ -6956,23 +6984,21 @@ def _session_for_cell_fit(region='VTA-r', event='stimOnTrigger_times',
 class TestFitRegionResponses:
     """One fiber x event fitted on the rows the trial mask selects."""
 
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
-
-    def test_fit_region_responses_yields_one_row_per_dropped_predictor(self):
+    def test_fit_region_responses_yields_one_row_per_dropped_term_label(self):
         """The cell's whole result and nothing else: the session-level column
-        set, one row per family member but the reference, and no attribute
-        left behind — the mask, not a stored frame, is the state."""
+        set, one row per drop-one label — the formula's term table, so the
+        twelve interaction labels are scored alongside the six mains — and no
+        attribute left behind, since the mask rather than a stored frame is
+        the state."""
         from iblnm.data import _SESSION_OLS_COLUMNS
         ps = _session_for_cell_fit()
 
         rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                       self.formulas, {}, n_bootstrap=16)
+                                       *_response_model(), {}, n_bootstrap=4)
 
         assert list(rows.columns) == _SESSION_OLS_COLUMNS
-        assert set(rows['predictor']) == set(self.formulas) - {'full'}
+        assert set(rows['predictor']) == _drop_labels()
+        assert 'contrast:side' in _drop_labels()
         assert set(rows['brain_region']) == {'VTA-r'}
         assert set(rows['event']) == {'stimOnTrigger_times'}
         assert not hasattr(ps, 'response_ols')
@@ -6983,7 +7009,7 @@ class TestFitRegionResponses:
         ps = _session_for_cell_fit()
 
         rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                       self.formulas, {}, n_bootstrap=16)
+                                       *_response_model(), {}, n_bootstrap=4)
 
         assert len(ps.trials) == 120
         assert (rows['n_trials'] == len(ps.trials)).all()
@@ -6995,7 +7021,7 @@ class TestFitRegionResponses:
 
         with pytest.raises(ValueError) as excinfo:
             ps.fit_region_responses('DR-l', 'stimOnTrigger_times',
-                                    self.formulas, {}, n_bootstrap=16)
+                                    *_response_model(), {}, n_bootstrap=4)
 
         assert 'response_DR-l_stimOnTrigger_times' in str(excinfo.value)
 
@@ -7004,7 +7030,7 @@ class TestFitRegionResponses:
 
         with pytest.raises(ValueError) as excinfo:
             ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                    self.formulas, {}, n_bootstrap=16)
+                                    *_response_model(), {}, n_bootstrap=4)
 
         assert '20' in str(excinfo.value)
 
@@ -7017,8 +7043,8 @@ class TestFitRegionResponses:
 
         rows = {
             hemisphere: ps.fit_region_responses(
-                'VTA-r', 'stimOnTrigger_times', self.formulas, {},
-                n_bootstrap=16).set_index('predictor')
+                'VTA-r', 'stimOnTrigger_times', *_response_model(), {},
+                n_bootstrap=4).set_index('predictor')
             for hemisphere, ps in (('r', right), ('l', left))
         }
 
@@ -7033,24 +7059,27 @@ class TestFitRegionResponses:
             _donorless_session(eid='donor-eid', subject='mouse2', seed=1))
 
         rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                       self.formulas, donors, n_bootstrap=16)
+                                       *_main_effect_model(), donors,
+                                       n_bootstrap=16)
 
         assert (rows['n_donors'] == 1).all()
         assert rows['p_value'].notna().all()
         assert {len(null) for null in rows['null']} == {16}
 
-    def test_fit_region_responses_drops_a_cell_with_a_degenerate_member(self):
-        """One unfittable member makes the cell's ΔR² incomparable across the
-        family, so it contributes no rows rather than partial ones."""
+    def test_fit_region_responses_drops_a_degenerate_family(self):
+        """An unfittable member makes the cell's ΔR² incomparable across the
+        family, so it contributes no rows rather than partial ones.
+        `probabilityLeft` is constant here and so collinear with the intercept
+        every member carries."""
         from iblnm.data import _SESSION_OLS_COLUMNS
         ps = _session_for_cell_fit()
-        formulas = dict(self.formulas)
-        # A constant predictor is collinear with the intercept, so this one
-        # reduced model cannot be fit while the rest of the family can.
-        formulas['side'] = '{response} ~ probabilityLeft'
 
-        rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                       formulas, {}, n_bootstrap=16)
+        rows = ps.fit_region_responses(
+            'VTA-r', 'stimOnTrigger_times',
+            '{response} ~ contrast + probabilityLeft',
+            {'contrast': ['contrast'],
+             'probabilityLeft': ['probabilityLeft']},
+            {}, n_bootstrap=4)
 
         assert rows.empty
         assert list(rows.columns) == _SESSION_OLS_COLUMNS
@@ -7058,11 +7087,6 @@ class TestFitRegionResponses:
 
 class TestFitResponses:
     """The loop over this session's fibers and the named events."""
-
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
 
     @property
     def criteria(self):
@@ -7076,7 +7100,7 @@ class TestFitResponses:
         ps = _measured_session(
             _add_second_recording(_make_session_for_persession()))
 
-        fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16,
+        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4,
                                 **self.criteria)
 
         assert set(zip(fits['brain_region'], fits['event'])) == {
@@ -7090,7 +7114,7 @@ class TestFitResponses:
         ps = _measured_session(_add_second_recording(
             _make_session_for_persession(), n_missing=80))
 
-        fits = ps.fit_responses(self.formulas, {}, n_bootstrap=16,
+        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4,
                                 **self.criteria)
 
         assert set(fits['brain_region']) == {'VTA-r'}
@@ -7105,7 +7129,7 @@ class TestFitResponses:
         ps = _measured_session(_add_second_recording(
             _make_session_for_persession(), n_missing=30))
 
-        ps.fit_responses(self.formulas, {}, n_bootstrap=16, **self.criteria)
+        ps.fit_responses(*_response_model(), {}, n_bootstrap=4, **self.criteria)
 
         last = response_column('DR-l', RESPONSE_EVENTS[-1])
         assert len(ps.trials) == 90
@@ -7115,11 +7139,6 @@ class TestFitResponses:
 
 class TestModellingPass:
     """The two sequential passes over the store: donor pool, then fits."""
-
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
 
     def test_one_store_read_per_pass_and_frames_shared_by_fits_and_null(
             self, tmp_path, monkeypatch):
@@ -7170,7 +7189,9 @@ class TestModellingPass:
 
         with patch.object(PhotometrySession, 'load_h5', load_spy):
             donors = group.collect_donor_frames(group.process(prepare_donor))
-            group.process(fit, formulas=self.formulas, donors=donors,
+            formula, dropped_terms = _response_model()
+            group.process(fit, formula=formula,
+                          dropped_terms=dropped_terms, donors=donors,
                           n_bootstrap=10)
 
         assert list(donors) == ['eid-0', 'eid-1']
@@ -7599,8 +7620,8 @@ class TestGetGLMResponseFeatures:
 
     @staticmethod
     def _formula():
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']['full']
+        from iblnm.config import RESPONSE_MODEL_FORMULA
+        return RESPONSE_MODEL_FORMULA
 
     def test_returns_persession_coefficient_columns(self):
         """Columns are the persession model's coefficient names."""
@@ -7657,10 +7678,10 @@ class TestGLMFeaturesCCA:
     def test_cca_with_glm_features(self):
         """fit_cca works with persession_ols_features as X input."""
         import tempfile
-        from iblnm.config import LMM_FORMULAS
+        from iblnm.config import RESPONSE_MODEL_FORMULA
         group, magnitudes = _make_group_for_response_lmm()
         group.get_persession_ols_features(magnitudes, 
-            LMM_FORMULAS['persession']['full'], event_name='stimOnTrigger_times')
+            RESPONSE_MODEL_FORMULA, event_name='stimOnTrigger_times')
         group.response_features = group.persession_ols_features
         perf = _make_mock_performance(group)
         with tempfile.NamedTemporaryFile(suffix='.pqt', delete=False) as f:
@@ -8316,11 +8337,6 @@ class TestAssembleMousePvalueTable:
 class TestFitResponsesPermutation:
     """The swap null `PhotometrySession.fit_responses` scores its fits against."""
 
-    @property
-    def formulas(self):
-        from iblnm.config import LMM_FORMULAS
-        return LMM_FORMULAS['persession']
-
     @staticmethod
     def _focal():
         """The session being fitted: mouse1, one VTA-DA recording, measured."""
@@ -8360,7 +8376,7 @@ class TestFitResponsesPermutation:
         floors its p on it: a 1000-draw null that every observed ΔR² beats
         reports 1/4 for a three-donor pool, not 1/1001."""
         self._patch_null(monkeypatch)
-        fits = self._focal().fit_responses(self.formulas, self._pool(3))
+        fits = self._focal().fit_responses(*_response_model(), self._pool(3))
 
         assert (fits['n_donors'] == 3).all()
         assert fits['p_value'].tolist() == pytest.approx([1 / 4] * len(fits))
@@ -8369,20 +8385,20 @@ class TestFitResponsesPermutation:
     def test_every_predictor_of_a_cell_is_scored_in_one_call(self,
                                                              monkeypatch):
         """The donor loop sits inside the primitive, so one call per cell
-        serves all six dropped predictors rather than one call each."""
+        serves every drop-one label rather than one call each."""
         from iblnm.config import RESPONSE_EVENTS
         calls = self._patch_null(monkeypatch)
-        self._focal().fit_responses(self.formulas, self._pool(3))
+        self._focal().fit_responses(*_response_model(), self._pool(3))
 
         assert len(calls) == len(RESPONSE_EVENTS)
         for n_donor_frames, predictors in calls:
             assert n_donor_frames == 3
-            assert set(predictors) == set(self.formulas) - {'full'}
+            assert set(predictors) == _drop_labels()
 
     def test_empty_donor_pool_keeps_the_fit_and_nulls_the_significance(self):
         """A cell no donor was admitted for is still fitted; only its
         significance is missing."""
-        fits = self._focal().fit_responses(self.formulas, {}, n_bootstrap=16)
+        fits = self._focal().fit_responses(*_response_model(), {}, n_bootstrap=4)
 
         assert not fits.empty
         assert fits['delta_r2'].notna().all()
@@ -8391,8 +8407,8 @@ class TestFitResponsesPermutation:
         assert all(vector.size == 0 for vector in fits['null'])
 
     def test_null_vectors_are_float32_of_the_requested_length(self):
-        fits = self._focal().fit_responses(self.formulas, self._pool(2),
-                                           n_bootstrap=16)
+        fits = self._focal().fit_responses(
+            *_main_effect_model(), self._pool(2), n_bootstrap=16)
         for vector in fits['null']:
             assert vector.dtype == np.float32
             assert len(vector) == 16
@@ -8400,8 +8416,8 @@ class TestFitResponsesPermutation:
     def test_null_round_trips_through_parquet(self, tmp_path):
         """The vector is written and read back as an array, so the per-mouse
         pooling can be recomputed without refitting."""
-        fits = self._focal().fit_responses(self.formulas, self._pool(2),
-                                           n_bootstrap=16)
+        fits = self._focal().fit_responses(
+            *_main_effect_model(), self._pool(2), n_bootstrap=16)
         fpath = tmp_path / 'ols_persession.parquet'
         fits.to_parquet(fpath)
         restored = pd.read_parquet(fpath)
@@ -8428,11 +8444,11 @@ class TestFitResponsesPermutation:
                             fake_null)
 
         first = self._focal().fit_responses(
-            self.formulas, self._pool(2), n_bootstrap=32, random_state=7)
+            *_response_model(), self._pool(2), n_bootstrap=32, random_state=7)
         first_draws = list(draws)
         draws.clear()
         second = self._focal().fit_responses(
-            self.formulas, self._pool(2), n_bootstrap=32, random_state=7)
+            *_response_model(), self._pool(2), n_bootstrap=32, random_state=7)
 
         # One advancing rng: the per-cell draws are all distinct.
         assert len({tuple(draw) for draw in first_draws}) == len(first_draws)

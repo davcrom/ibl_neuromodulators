@@ -31,7 +31,7 @@ from iblnm.config import (
     DISPERSION_FIGURES_DIR, MIN_SESSIONS_DISPERSION,
     RESPONSE_EVENTS, FIGURE_DPI, TARGETNM_COLORS,
     ANALYSIS_QC_BLOCKERS, SESSION_TYPES_TO_ANALYZE, TARGETNMS_TO_ANALYZE,
-    LMM_FORMULAS, CCA_TASK_MAINS, CCA_MOVEMENT_MAINS,
+    RESPONSE_MODEL_FORMULA, CCA_TASK_MAINS, CCA_MOVEMENT_MAINS,
 )
 from iblnm.analysis import compute_feature_dispersion, select_block_terms
 from iblnm.data import PhotometrySessionGroup
@@ -217,7 +217,7 @@ def run_dispersion(group, magnitudes, events, args, fig_dir,
     for event in events:
         features = group.get_persession_ols_features(
             magnitudes,
-            formula=LMM_FORMULAS['persession']['full'], event_name=event,
+            formula=RESPONSE_MODEL_FORMULA, event_name=event,
             weight_by_se=args.weight_by_se, contrast_coding=args.contrast_coding,
         )
         neural_by_event[event] = _neural_long_with_subject(
@@ -486,7 +486,7 @@ def run_cca(group, magnitudes, event, args, data_dir, scatter_dir,
     # Fit per-session OLS for this event (CCA neural view), shared across blocks
     print("  Fitting per-session OLS for CCA neural features...")
     group.get_persession_ols_features(
-        magnitudes, formula=LMM_FORMULAS['persession']['full'],
+        magnitudes, formula=RESPONSE_MODEL_FORMULA,
         event_name=event, weight_by_se=args.weight_by_se,
         contrast_coding=args.contrast_coding,
     )

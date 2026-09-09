@@ -2588,6 +2588,30 @@ class TestFitOls:
         assert fit_ols('y ~ x + x2 - 1', df) is None
 
 
+class TestDroponeFormulas:
+    """The full model plus one reduced formula per dropped-term label."""
+
+    _FULL = '{response} ~ a + b + c + a:b + a:c'
+    _DROPPED = {'a': ['a', 'a:b', 'a:c'], 'a:b': ['a:b']}
+
+    def test_reference_carries_the_full_formula_unchanged(self):
+        from iblnm.analysis import dropone_formulas
+        family = dropone_formulas(self._FULL, self._DROPPED)
+        assert family['full'] == self._FULL
+
+    def test_a_label_drops_exactly_its_terms_in_the_full_order(self):
+        from iblnm.analysis import dropone_formulas
+        family = dropone_formulas(self._FULL, self._DROPPED)
+        assert family['a'] == '{response} ~ b + c'
+        assert family['a:b'] == '{response} ~ a + b + c + a:c'
+
+    def test_the_reference_key_is_the_callers(self):
+        from iblnm.analysis import dropone_formulas
+        family = dropone_formulas(self._FULL, self._DROPPED,
+                                  reference='reference')
+        assert set(family) == {'reference', 'a', 'a:b'}
+
+
 class TestDroponeDeltaR2:
     _COLUMNS = ['predictor', 'r2', 'r2_adj', 'delta_r2', 'delta_r2_adj']
 
@@ -2740,9 +2764,10 @@ class TestSubstitutableOLS:
         """The whole drop-one family the response analysis fits, on a frame
         shaped like a real recording's. The reference model's coefficients and
         standard errors reach the results table, and every member's R² reaches
-        the drop-one difference, so all seven have to agree."""
-        from iblnm.analysis import SubstitutableOLS, fit_ols
-        from iblnm.config import LMM_FORMULAS
+        the drop-one difference, so all nineteen have to agree."""
+        from iblnm.analysis import SubstitutableOLS, dropone_formulas, fit_ols
+        from iblnm.config import (RESPONSE_DROPPED_TERMS,
+                                  RESPONSE_MODEL_FORMULA)
         rng = np.random.default_rng(7)
         n = 400
         df = pd.DataFrame({
@@ -2757,7 +2782,9 @@ class TestSubstitutableOLS:
                           + 0.3 * df['contrast'] * df['side']
                           + rng.normal(0, 0.5, n))
 
-        for name, template in LMM_FORMULAS['persession'].items():
+        family = dropone_formulas(RESPONSE_MODEL_FORMULA,
+                                  RESPONSE_DROPPED_TERMS)
+        for name, template in family.items():
             formula = template.format(response='response')
             got, want = SubstitutableOLS(formula, df).fit(), fit_ols(formula, df)
             assert got.rsquared == pytest.approx(want.rsquared, abs=1e-10), name

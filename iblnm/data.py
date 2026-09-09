@@ -316,15 +316,18 @@ def _dropone_rows(fits: dict, n_trials: int,
     -------
     pandas.DataFrame
         ``predictor, r2_full, r2_full_adj, delta_r2, delta_r2_adj, coef,
-        coef_se, n_trials``, one row per dropped predictor.
+        coef_se, n_trials``, one row per dropped predictor. ``n_trials`` is
+        the cell's, so every row carries it; ``coef`` and ``coef_se`` are
+        blank for a predictor the reference model reports no weight for.
     """
     scores = analysis.dropone_delta_r2(
         {name: (fit.rsquared, fit.df_model) for name, fit in fits.items()},
         n_trials, reference)
-    weights = _coefficient_rows(fits[reference], n_trials).rename(
+    weights = _coefficient_rows(fits[reference]).rename(
         columns={'regressor': 'predictor'})
     return (scores.rename(columns={'r2': 'r2_full', 'r2_adj': 'r2_full_adj'})
-            .merge(weights, on='predictor', how='left'))
+            .merge(weights, on='predictor', how='left')
+            .assign(n_trials=n_trials))
 
 
 def _score_against_null(rows: pd.DataFrame, nulls: dict[str, np.ndarray],
@@ -365,7 +368,7 @@ def _score_against_null(rows: pd.DataFrame, nulls: dict[str, np.ndarray],
         p_value=p_value, n_donors=n_donors)
 
 
-def _coefficient_rows(fit, n_trials: int) -> pd.DataFrame:
+def _coefficient_rows(fit) -> pd.DataFrame:
     """Main-effect weight and SE per regressor from one fitted model.
 
     Reads ``fit.params`` / ``fit.bse`` for each bare regressor name in
@@ -379,7 +382,6 @@ def _coefficient_rows(fit, n_trials: int) -> pd.DataFrame:
         'regressor': present,
         'coef': fit.params[present].values,
         'coef_se': fit.bse[present].values,
-        'n_trials': n_trials,
     })
 
 
@@ -3947,7 +3949,8 @@ class PhotometrySession(PhotometrySessionLoader):
         admits = _SESSION_DONOR_SCOPES[donor_scope]
         return [donor.frame for donor in donors.values() if admits(self, donor)]
 
-    def fit_region_responses(self, region: str, event: str, formulas: dict,
+    def fit_region_responses(self, region: str, event: str, formula: str,
+                             dropped_terms: dict[str, list[str]],
                              donors: dict[str, DonorFrame],
                              reference: str = 'full',
                              response_col: str = 'response',
@@ -3979,16 +3982,20 @@ class PhotometrySession(PhotometrySessionLoader):
             The fiber and the event this cell measures, keying both
             ``self._response_magnitudes`` and the trials-table column
             :func:`response_column` names.
-        formulas : dict
-            Drop-one family, flat or event-keyed
-            (:func:`resolve_event_family`); ``reference`` names the full model
-            and every other key is a dropped predictor.
+        formula : str
+            Full-model Wilkinson formula, `{response}` unfilled
+            (`config.RESPONSE_MODEL_FORMULA`).
+        dropped_terms : dict[str, list[str]]
+            Drop-one label → the ``formula`` terms reduced out under it
+            (`config.RESPONSE_DROPPED_TERMS`). One row of the result per
+            label; :func:`iblnm.analysis.dropone_formulas` renders the family.
         donors : dict[str, DonorFrame]
             Every prepared donor of the pass, keyed by eid, this session's own
             included; ``donor_scope`` excludes it (:meth:`select_donors`). An
             empty mapping fits without scoring.
         reference : str
-            Full-model key each reduced model's ΔR² is measured against.
+            Key the unreduced ``formula`` is fitted under, and the baseline
+            each reduced model's ΔR² is measured against.
         response_col : str
             Name the magnitudes are modelled under, substituted into each
             formula. Not :func:`response_column`'s name, which carries the
@@ -4009,10 +4016,10 @@ class PhotometrySession(PhotometrySessionLoader):
         Returns
         -------
         pandas.DataFrame
-            `_SESSION_OLS_COLUMNS`, one row per dropped predictor, tagged with
-            this cell's identity. Empty when any family member's design is
-            degenerate, since the cell's R² is then incomparable across the
-            family. Assigns nothing.
+            `_SESSION_OLS_COLUMNS`, one row per ``dropped_terms`` label,
+            tagged with this cell's identity. Empty when any family member's
+            design is degenerate, since the cell's R² is then incomparable
+            across the family. Assigns nothing.
 
         Raises
         ------
@@ -4042,9 +4049,9 @@ class PhotometrySession(PhotometrySessionLoader):
         frame = frame.join(self.cell_magnitudes(region, event)
                            .rename(response_col), on='trial')
 
-        family = resolve_event_family(formulas, event)
-        fits = {name: self.fit_response_model(frame, formula, response_col)
-                for name, formula in family.items()}
+        family = analysis.dropone_formulas(formula, dropped_terms, reference)
+        fits = {name: self.fit_response_model(frame, member, response_col)
+                for name, member in family.items()}
         if any(fit is None for fit in fits.values()):
             return pd.DataFrame(columns=_SESSION_OLS_COLUMNS)
 
@@ -4053,7 +4060,7 @@ class PhotometrySession(PhotometrySessionLoader):
         donor_frames = self.select_donors(donors, donor_scope)
         nulls = analysis.permutation_null_delta_r2(
             frame, donor_frames, family[reference],
-            {name: formula for name, formula in family.items()
+            {name: member for name, member in family.items()
              if name != reference},
             response_col, rng=rng, n_bootstrap=n_bootstrap)
         rows = _dropone_rows(fits, len(frame), reference)
@@ -4064,7 +4071,9 @@ class PhotometrySession(PhotometrySessionLoader):
                         brain_region=region, event=event)
                 [_SESSION_OLS_COLUMNS])
 
-    def fit_responses(self, formulas: dict, donors: dict[str, DonorFrame],
+    def fit_responses(self, formula: str,
+                      dropped_terms: dict[str, list[str]],
+                      donors: dict[str, DonorFrame],
                       events: Sequence[str] = RESPONSE_EVENTS,
                       reference: str = 'full',
                       response_col: str = 'response',
@@ -4095,10 +4104,12 @@ class PhotometrySession(PhotometrySessionLoader):
 
         Parameters
         ----------
-        formulas : dict
-            Drop-one family, flat or event-keyed
-            (:func:`resolve_event_family`); ``reference`` names the full model
-            and every other key is a dropped predictor.
+        formula : str
+            Full-model Wilkinson formula, `{response}` unfilled
+            (`config.RESPONSE_MODEL_FORMULA`); shared by every event.
+        dropped_terms : dict[str, list[str]]
+            Drop-one label → the ``formula`` terms reduced out under it
+            (`config.RESPONSE_DROPPED_TERMS`).
         donors : dict[str, DonorFrame]
             Every prepared donor of the pass, keyed by eid, this session's own
             included; ``donor_scope`` excludes it (:meth:`select_donors`). An
@@ -4106,7 +4117,8 @@ class PhotometrySession(PhotometrySessionLoader):
         events : Sequence[str]
             Events to fit, crossed with `self.brain_region`.
         reference : str
-            Full-model key each reduced model's ΔR² is measured against.
+            Key the unreduced ``formula`` is fitted under, and the baseline
+            each reduced model's ΔR² is measured against.
         response_col : str
             Name the magnitudes are modelled under, substituted into each
             formula.
@@ -4124,8 +4136,9 @@ class PhotometrySession(PhotometrySessionLoader):
         Returns
         -------
         pandas.DataFrame
-            `_SESSION_OLS_COLUMNS`, one row per (region, event, dropped
-            predictor); the FDR correction spans sessions, so the group adds
+            `_SESSION_OLS_COLUMNS`, one row per (region, event,
+            ``dropped_terms`` label); the FDR correction spans sessions, so
+            the group adds
             ``q_value`` after collecting these. A combination the mask leaves
             under `config.MIN_TRIALS_PERSESSION` rows contributes none, as does
             one whose design is degenerate for any family member. Assigns
@@ -4150,7 +4163,8 @@ class PhotometrySession(PhotometrySessionLoader):
             if len(self.trials) < MIN_TRIALS_PERSESSION:
                 continue
             fits.append(self.fit_region_responses(
-                region, event, formulas, donors, reference=reference,
+                region, event, formula, dropped_terms, donors,
+                reference=reference,
                 response_col=response_col, donor_scope=donor_scope,
                 n_bootstrap=n_bootstrap, rng=rng))
         return _concat_frames(fits, _SESSION_OLS_COLUMNS)
@@ -5448,7 +5462,7 @@ class PhotometrySessionGroup:
         through :func:`iblnm.analysis.fit_ols`.
         The fitted coefficients (or t-statistics) become that recording's feature
         vector. The formula is the caller's, per the layering rules; this method
-        does no ``config.LMM_FORMULAS`` lookup.
+        reads no formula off `config`.
 
         Parameters
         ----------
@@ -5459,7 +5473,7 @@ class PhotometrySessionGroup:
             fit sees those rows as given.
         formula : str
             Wilkinson formula template with a ``{response}`` placeholder, e.g.
-            ``LMM_FORMULAS['persession']['full']``. Its coefficient names become
+            `config.RESPONSE_MODEL_FORMULA`. Its coefficient names become
             the output columns.
         event_name : str
             Event to model (default ``config.STIM_ONSET_EVENT``).

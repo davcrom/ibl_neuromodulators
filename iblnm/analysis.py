@@ -12,6 +12,7 @@ from tqdm import tqdm
 from brainbox.behavior.wheel import interpolate_position, velocity_filtered
 
 from iblnm.config import (
+    formula_terms,
     TARGET_FS,
     POSE_FS,
     LIKELIHOOD_THRESHOLD,
@@ -2137,6 +2138,42 @@ def adjusted_r2(r2: float, n_obs: int, n_params: int) -> float:
     model has as many parameters as it has rows.
     """
     return 1 - (1 - r2) * (n_obs - 1) / (n_obs - n_params - 1)
+
+
+def dropone_formulas(formula: str, dropped_terms: dict[str, list[str]],
+                     reference: str = 'full') -> dict[str, str]:
+    """The nested family one drop-one comparison is fitted over.
+
+    Variable-agnostic string operation: each label's reduced formula is
+    ``formula`` with that label's terms taken out, re-rendered in ``formula``'s
+    own term order so every member of the family builds its design columns in
+    the same sequence and their R² are comparable.
+
+    Parameters
+    ----------
+    formula : str
+        Full-model Wilkinson formula, its placeholders (e.g. ``{response}``)
+        left unfilled — substituting into the rendered family and rendering the
+        substituted formula give the same string.
+    dropped_terms : dict[str, list[str]]
+        Label → the ``formula`` terms removed under it. A term absent from
+        ``formula`` reduces nothing; :func:`iblnm.config.validate_dropped_terms`
+        is what rejects one.
+    reference : str
+        Key the unreduced ``formula`` is returned under.
+
+    Returns
+    -------
+    dict[str, str]
+        ``{reference: formula}`` plus one reduced formula per label.
+    """
+    lhs, terms = formula.split('~')[0].strip(), formula_terms(formula)
+    return {
+        reference: formula,
+        **{label: f"{lhs} ~ " + ' + '.join(term for term in terms
+                                           if term not in dropped)
+           for label, dropped in dropped_terms.items()},
+    }
 
 
 def dropone_delta_r2(r2_by_name, n_obs: int,

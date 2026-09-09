@@ -36,7 +36,8 @@ from iblnm.config import (
     RESPONSE_OLS_MOUSE_PVAL_FPATH,
     MASKING_DIAGNOSTICS_FPATH, MASKING_DIAGNOSTIC_GROUP_COLS,
     MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_MAGNITUDE_WINDOW,
-    RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS, TRACE_INSET_TARGETNMS,
+    RESPONSE_EVENTS, FIGURE_DPI, RESPONSE_MODEL_FORMULA,
+    RESPONSE_DROPPED_TERMS, TRACE_INSET_TARGETNMS,
     MIN_RESPONSE_TIME,
 )
 from iblnm import task
@@ -393,9 +394,9 @@ def _join_trials(magnitudes: pd.DataFrame,
     return task.add_relative_contrast(magnitudes.merge(trials, on='trial'))
 
 
-def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
-                                                           pd.DataFrame,
-                                                           pd.DataFrame]:
+def fit_session(ps, formula: str, dropped_terms: dict,
+                donors: dict) -> tuple[pd.DataFrame, pd.DataFrame,
+                                       pd.DataFrame]:
     """Second pass: fit one session's drop-one models against the donor pool.
 
     Sequences the loading and the measurement the fit reads — the trials with
@@ -409,8 +410,11 @@ def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
     ----------
     ps : PhotometrySession
         The session to fit.
-    formulas : dict
-        Drop-one family, ``config.LMM_FORMULAS['persession']``.
+    formula : str
+        Full-model Wilkinson formula, ``config.RESPONSE_MODEL_FORMULA``.
+    dropped_terms : dict
+        Drop-one label -> terms reduced out of ``formula`` under it,
+        ``config.RESPONSE_DROPPED_TERMS``.
     donors : dict
         The whole pass's donor pool, keyed by eid; the session narrows it to
         the sessions its ``donor_scope`` admits.
@@ -437,7 +441,8 @@ def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
     ps.load_responses('photometry')
     ps.extract_response_magnitudes()
     unfiltered = _join_trials(ps.masking_diagnostics(), ps.trials)
-    fits = ps.fit_responses(formulas, donors, **PERSESSION_TRIAL_CRITERIA)
+    fits = ps.fit_responses(formula, dropped_terms, donors,
+                            **PERSESSION_TRIAL_CRITERIA)
     ps.filter_trials(**PERSESSION_TRIAL_CRITERIA)
     magnitudes = _join_trials(ps.response_magnitudes, ps.trials)
     return magnitudes, fits, unfiltered
@@ -695,7 +700,8 @@ if __name__ == '__main__':
         print("Fitting per-session drop-one OLS models...")
         returns = [frames for frames in
                    group.process(fit_session,
-                                 formulas=LMM_FORMULAS['persession'],
+                                 formula=RESPONSE_MODEL_FORMULA,
+                                 dropped_terms=RESPONSE_DROPPED_TERMS,
                                  donors=donors)
                    if frames is not None]
 

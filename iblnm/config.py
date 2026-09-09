@@ -739,78 +739,118 @@ ENCODING_TERMS = {
 }
 
 
-# LMM formula templates: the single source of every model formula. Each family
-# maps a model name to a Wilkinson formula with `{response}` as the only
-# placeholder (filled with the response column at fit time). In a nested
-# comparison set, `full` is the reference model; every other key names the
-# predictor whose unique contribution is `r2(full) - r2(<key>)`, and its formula
-# is the full model with that predictor dropped.
-
-
-# Per-recording OLS drop-one regressors: the six the persession family below is
-# written over, and the regressors a coefficient is reported for.
+# Per-recording OLS drop-one regressors: the six main effects the response model
+# below is written over, and the figure row order the main-effect drops take.
 PERSESSION_REGRESSORS = ['contrast', 'side', 'reward', 'choice_side',
                          'log_reaction_time', 'peak_velocity']
 
 
-LMM_FORMULAS = {
-    # Per-session OLS drop-one over PERSESSION_REGRESSORS: `full` is the
-    # reference, carrying the six mains and every two-way except side:reward,
-    # choice_side:side and choice_side:reward — choice_side enters explicitly so
-    # its own interactions are visible, but it is collinear with the side and
-    # reward mains (choice_side ≈ 2·side·reward), and side:reward itself encodes
-    # choice. Each other key drops that regressor and every term containing it.
-    'persession': {
-        'full':
-            '{response} ~ contrast + side + reward + choice_side'
-            ' + log_reaction_time + peak_velocity + contrast:side'
-            ' + contrast:reward + contrast:choice_side'
-            ' + contrast:log_reaction_time + contrast:peak_velocity'
-            ' + side:log_reaction_time + side:peak_velocity'
-            ' + reward:log_reaction_time + reward:peak_velocity'
-            ' + choice_side:log_reaction_time + choice_side:peak_velocity'
-            ' + log_reaction_time:peak_velocity',
-        'contrast':
-            '{response} ~ side + reward + choice_side + log_reaction_time'
-            ' + peak_velocity + side:log_reaction_time + side:peak_velocity'
-            ' + reward:log_reaction_time + reward:peak_velocity'
-            ' + choice_side:log_reaction_time + choice_side:peak_velocity'
-            ' + log_reaction_time:peak_velocity',
-        'side':
-            '{response} ~ contrast + reward + choice_side + log_reaction_time'
-            ' + peak_velocity + contrast:reward + contrast:choice_side'
-            ' + contrast:log_reaction_time + contrast:peak_velocity'
-            ' + reward:log_reaction_time + reward:peak_velocity'
-            ' + choice_side:log_reaction_time + choice_side:peak_velocity'
-            ' + log_reaction_time:peak_velocity',
-        'reward':
-            '{response} ~ contrast + side + choice_side + log_reaction_time'
-            ' + peak_velocity + contrast:side + contrast:choice_side'
-            ' + contrast:log_reaction_time + contrast:peak_velocity'
-            ' + side:log_reaction_time + side:peak_velocity'
-            ' + choice_side:log_reaction_time + choice_side:peak_velocity'
-            ' + log_reaction_time:peak_velocity',
-        'choice_side':
-            '{response} ~ contrast + side + reward + log_reaction_time'
-            ' + peak_velocity + contrast:side + contrast:reward'
-            ' + contrast:log_reaction_time + contrast:peak_velocity'
-            ' + side:log_reaction_time + side:peak_velocity'
-            ' + reward:log_reaction_time + reward:peak_velocity'
-            ' + log_reaction_time:peak_velocity',
-        'log_reaction_time':
-            '{response} ~ contrast + side + reward + choice_side'
-            ' + peak_velocity + contrast:side + contrast:reward'
-            ' + contrast:choice_side + contrast:peak_velocity'
-            ' + side:peak_velocity + reward:peak_velocity'
-            ' + choice_side:peak_velocity',
-        'peak_velocity':
-            '{response} ~ contrast + side + reward + choice_side'
-            ' + log_reaction_time + contrast:side + contrast:reward'
-            ' + contrast:choice_side + contrast:log_reaction_time'
-            ' + side:log_reaction_time + reward:log_reaction_time'
-            ' + choice_side:log_reaction_time',
-    },
+# The per-session OLS response model: one Wilkinson formula with `{response}` as
+# the only placeholder, filled with the response column at fit time. It carries
+# the six PERSESSION_REGRESSORS mains and every two-way except side:reward,
+# choice_side:side and choice_side:reward — choice_side enters explicitly so its
+# own interactions are visible, but it is collinear with the side and reward
+# mains (choice_side ≈ 2·side·reward), and side:reward itself encodes choice.
+RESPONSE_MODEL_FORMULA = (
+    '{response} ~ contrast + side + reward + choice_side + log_reaction_time'
+    ' + peak_velocity + contrast:side + contrast:reward'
+    ' + contrast:choice_side + contrast:log_reaction_time'
+    ' + contrast:peak_velocity + side:log_reaction_time'
+    ' + side:peak_velocity + reward:log_reaction_time'
+    ' + reward:peak_velocity + choice_side:log_reaction_time'
+    ' + choice_side:peak_velocity + log_reaction_time:peak_velocity')
+
+# Drop-one labels: each maps to the RESPONSE_MODEL_FORMULA terms removed to build
+# that label's reduced model, whose ΔR² against the full model is the label's
+# unique contribution. The label is the unit of identity downstream — the
+# `predictor` value in the output tables, the figure filename and the plot label
+# — and nothing derives it from its term list, so a label may name any set of
+# terms. Written out rather than generated for that reason. A main-effect label
+# drops itself and every two-way it enters; an interaction label drops one term,
+# leaving its constituent mains standing.
+RESPONSE_DROPPED_TERMS = {
+    'contrast': ['contrast', 'contrast:side', 'contrast:reward',
+                 'contrast:choice_side', 'contrast:log_reaction_time',
+                 'contrast:peak_velocity'],
+    'side': ['side', 'contrast:side', 'side:log_reaction_time',
+             'side:peak_velocity'],
+    'reward': ['reward', 'contrast:reward', 'reward:log_reaction_time',
+               'reward:peak_velocity'],
+    'choice_side': ['choice_side', 'contrast:choice_side',
+                    'choice_side:log_reaction_time',
+                    'choice_side:peak_velocity'],
+    'log_reaction_time': ['log_reaction_time', 'contrast:log_reaction_time',
+                          'side:log_reaction_time', 'reward:log_reaction_time',
+                          'choice_side:log_reaction_time',
+                          'log_reaction_time:peak_velocity'],
+    'peak_velocity': ['peak_velocity', 'contrast:peak_velocity',
+                      'side:peak_velocity', 'reward:peak_velocity',
+                      'choice_side:peak_velocity',
+                      'log_reaction_time:peak_velocity'],
+    'contrast:side': ['contrast:side'],
+    'contrast:reward': ['contrast:reward'],
+    'contrast:choice_side': ['contrast:choice_side'],
+    'contrast:log_reaction_time': ['contrast:log_reaction_time'],
+    'contrast:peak_velocity': ['contrast:peak_velocity'],
+    'side:log_reaction_time': ['side:log_reaction_time'],
+    'side:peak_velocity': ['side:peak_velocity'],
+    'reward:log_reaction_time': ['reward:log_reaction_time'],
+    'reward:peak_velocity': ['reward:peak_velocity'],
+    'choice_side:log_reaction_time': ['choice_side:log_reaction_time'],
+    'choice_side:peak_velocity': ['choice_side:peak_velocity'],
+    'log_reaction_time:peak_velocity': ['log_reaction_time:peak_velocity'],
 }
+
+
+def formula_terms(formula: str) -> list[str]:
+    """Right-hand-side terms of a Wilkinson formula, in the order written.
+
+    The bottom-layer parser both the drop-one validation here and the reduced
+    formulas built at fit time read, so a term is split the same way wherever it
+    is named. Interaction terms keep their ``':'`` form, which is how patsy
+    names the design column they build.
+    """
+    return [term.strip() for term in formula.split('~')[1].split('+')]
+
+
+def validate_dropped_terms(formula: str,
+                           dropped_terms: dict[str, list[str]]) -> None:
+    """Check a drop-one term table against the model it drops terms from.
+
+    Raises rather than logging: a term that matches nothing in the formula
+    silently reduces nothing, and a formula term no label drops is a
+    contribution the analysis never measures. Both are configuration errors.
+
+    Parameters
+    ----------
+    formula : str
+        A RESPONSE_MODEL_FORMULA-shaped Wilkinson formula.
+    dropped_terms : dict[str, list[str]]
+        A RESPONSE_DROPPED_TERMS-shaped table, label → terms dropped under it.
+
+    Raises
+    ------
+    ValueError
+        Naming the offending label and term, when a listed term is not a term
+        of `formula`; or naming the term, when a formula term appears under no
+        label.
+    """
+    terms = formula_terms(formula)
+    for label, dropped in dropped_terms.items():
+        for term in dropped:
+            if term not in terms:
+                raise ValueError(
+                    f"drop-one label {label!r} drops term {term!r}, which is "
+                    'not a term of the response model formula')
+    covered = {term for dropped in dropped_terms.values() for term in dropped}
+    for term in terms:
+        if term not in covered:
+            raise ValueError(
+                f"response model term {term!r} is dropped under no drop-one "
+                'label, so its contribution is never measured')
+
+
+validate_dropped_terms(RESPONSE_MODEL_FORMULA, RESPONSE_DROPPED_TERMS)
 
 # False-start cutoff: a go trial whose response_time is at or below this is a
 # wheel turn already underway at stimulus onset, not a response to the stimulus.

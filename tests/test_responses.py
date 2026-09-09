@@ -267,8 +267,8 @@ class _LinkSession:
     def masking_diagnostics(self):
         return self._magnitudes
 
-    def fit_responses(self, formulas, donors, **criteria):
-        self.fitted = (formulas, donors, criteria)
+    def fit_responses(self, formula, dropped_terms, donors, **criteria):
+        self.fitted = (formula, dropped_terms, donors, criteria)
         return self.fits
 
     def filter_trials(self, **criteria):
@@ -285,12 +285,15 @@ class TestLinkFunctions:
     def test_fit_session_forwards_its_arguments_and_returns_three_frames(self):
         from scripts.responses import PERSESSION_TRIAL_CRITERIA, fit_session
         ps = _LinkSession()
-        formulas = {'full': '{response} ~ contrast'}
+        formula = '{response} ~ contrast'
+        dropped_terms = {'contrast': ['contrast']}
         donors = {'eid-1': 'donor'}
 
-        magnitudes, fits, unfiltered = fit_session(ps, formulas, donors)
+        magnitudes, fits, unfiltered = fit_session(ps, formula, dropped_terms,
+                                                   donors)
 
-        assert ps.fitted == (formulas, donors, PERSESSION_TRIAL_CRITERIA)
+        assert ps.fitted == (formula, dropped_terms, donors,
+                             PERSESSION_TRIAL_CRITERIA)
         assert fits is ps.fits
         # The fitting loop leaves the mask on one fiber x event; the same
         # criteria are re-applied without one before the view is read.
@@ -307,7 +310,7 @@ class TestLinkFunctions:
         ps = _LinkSession()
 
         magnitudes, _, unfiltered = fit_session(
-            ps, {'full': '{response} ~ contrast'}, {})
+            ps, '{response} ~ contrast', {'contrast': ['contrast']}, {})
 
         assert list(unfiltered['trial']) == [0, 1, 2]
         assert ps._MASKED_AWAY_TRIAL not in set(magnitudes['trial'])
@@ -763,19 +766,18 @@ class TestTwoPassRun:
 
     @staticmethod
     def _run(tmp_path):
-        from tests.test_data import _persession_group
+        from tests.test_data import _main_effect_model, _persession_group
         from scripts.responses import fit_session, prepare_donor
-        from iblnm.config import LMM_FORMULAS
         group = _persession_group(
             tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
                        ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')],
             unusable_trials=True)
 
         donors = group.collect_donor_frames(group.process(prepare_donor))
+        formula, dropped_terms = _main_effect_model()
         returns = [frames for frames in
-                   group.process(fit_session,
-                                 formulas=LMM_FORMULAS['persession'],
-                                 donors=donors)
+                   group.process(fit_session, formula=formula,
+                                 dropped_terms=dropped_terms, donors=donors)
                    if frames is not None]
         magnitudes = pd.concat([frames[0] for frames in returns],
                                ignore_index=True)

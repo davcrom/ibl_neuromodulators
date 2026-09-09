@@ -3,7 +3,6 @@
 import pytest
 
 from iblnm import config
-from iblnm.config import LMM_FORMULAS
 
 
 def test_pose_qc_scalar_constants():
@@ -137,6 +136,11 @@ def _format(family):
     return {name: tpl.format(response='response') for name, tpl in family.items()}
 
 
+def _dropped_terms(**overrides):
+    """The shipped drop-one table with labels replaced or added."""
+    return {**config.RESPONSE_DROPPED_TERMS, **overrides}
+
+
 # Per-variable predictor column: choice enters as the fiber-relative choice
 # side, reaction_time log-transformed (heavy right skew), peak_velocity raw.
 _EXPECTED_PREDICTORS = {
@@ -156,10 +160,12 @@ def _termsets(formula):
     return [frozenset(t.strip().split(':')) for t in rhs.split('+')]
 
 
-# The per-recording drop-one family, pinned as literal data: `full` carries the
+# The per-recording drop-one models, pinned as literal data: `full` carries the
 # six mains and every two-way except side:reward, choice_side:side and
-# choice_side:reward, and each other key drops its regressor and every term
-# containing it.
+# choice_side:reward, and each main-effect label's reduced model drops that
+# regressor and every term containing it. The reduced strings are the family the
+# analysis fitted before it was represented as a formula plus a term table, so
+# they pin that representation against what it replaced.
 _EXPECTED_PERSESSION = {
     'full':
         '{response} ~ contrast + side + reward + choice_side + log_reaction_time'
@@ -210,19 +216,15 @@ _EXPECTED_PERSESSION = {
 }
 
 
-def test_persession_formulas():
-    assert LMM_FORMULAS['persession'] == _EXPECTED_PERSESSION
+def test_response_model_formula():
+    assert config.RESPONSE_MODEL_FORMULA == _EXPECTED_PERSESSION['full']
 
 
-def test_persession_family_structure():
-    formulas = _format(LMM_FORMULAS['persession'])
-    regressors = list(config.PERSESSION_REGRESSORS)
-    assert set(formulas) == {'full', *regressors}
-
-    full = _termsets(formulas['full'])
+def test_response_model_structure():
+    full = _termsets(config.RESPONSE_MODEL_FORMULA.format(response='response'))
     assert len(full) == 18
-    for r in regressors:                       # all six mains present
-        assert frozenset({r}) in full
+    for regressor in config.PERSESSION_REGRESSORS:   # all six mains present
+        assert frozenset({regressor}) in full
     for pair in ({'side', 'reward'}, {'choice_side', 'side'},
                  {'choice_side', 'reward'}):   # collinear/choice two-ways out
         assert frozenset(pair) not in full
@@ -230,8 +232,74 @@ def test_persession_family_structure():
                  {'choice_side', 'log_reaction_time'},
                  {'choice_side', 'peak_velocity'}):
         assert frozenset(pair) in full
-    for reg in regressors:                     # drop-one omits the regressor
-        assert all(reg not in tv for tv in _termsets(formulas[reg]))
+
+
+def test_dropped_terms_label_set():
+    """Eighteen labels: the six mains, plus one per two-way term."""
+    terms = config.formula_terms(config.RESPONSE_MODEL_FORMULA)
+    interactions = [term for term in terms if ':' in term]
+    assert len(interactions) == 12
+    assert set(config.RESPONSE_DROPPED_TERMS) == {
+        *config.PERSESSION_REGRESSORS, *interactions}
+
+
+def test_dropped_terms_per_label():
+    """A main-effect label drops itself and every two-way it enters; an
+    interaction label drops that one term."""
+    dropped = config.RESPONSE_DROPPED_TERMS
+    assert {label: len(dropped[label])
+            for label in config.PERSESSION_REGRESSORS} == {
+        'contrast': 6, 'side': 4, 'reward': 4, 'choice_side': 4,
+        'log_reaction_time': 6, 'peak_velocity': 6}
+    assert dropped['contrast:side'] == ['contrast:side']
+    for label, terms in dropped.items():
+        if ':' in label:
+            assert terms == [label]
+        else:
+            assert all(label in term.split(':') for term in terms)
+
+
+def test_dropped_terms_reproduce_the_main_effect_family():
+    """The reduced formula each main-effect label builds is the string the
+    drop-one family used to hold, term order included."""
+    from iblnm.analysis import dropone_formulas
+    family = dropone_formulas(config.RESPONSE_MODEL_FORMULA,
+                              config.RESPONSE_DROPPED_TERMS)
+    for label, expected in _EXPECTED_PERSESSION.items():
+        assert family[label] == expected, label
+
+
+def test_an_interaction_label_leaves_its_constituent_mains_standing():
+    """`contrast:side` drops one term. Its reduced model keeps both mains and
+    every other two-way, so the ΔR² is the interaction's own contribution over
+    a model that already has the additive effects."""
+    from iblnm.analysis import dropone_formulas
+    family = dropone_formulas(config.RESPONSE_MODEL_FORMULA,
+                              config.RESPONSE_DROPPED_TERMS)
+    terms = config.formula_terms(family['contrast:side'])
+    assert 'contrast:side' not in terms
+    assert {'contrast', 'side', 'contrast:reward'} <= set(terms)
+
+
+def test_validate_dropped_terms_accepts_the_shipped_pair():
+    config.validate_dropped_terms(config.RESPONSE_MODEL_FORMULA,
+                                  config.RESPONSE_DROPPED_TERMS)
+
+
+def test_validate_dropped_terms_rejects_a_term_outside_the_formula():
+    with pytest.raises(ValueError, match="'side'.*'side:reward'"):
+        config.validate_dropped_terms(
+            config.RESPONSE_MODEL_FORMULA,
+            _dropped_terms(side=['side', 'side:reward']))
+
+
+def test_validate_dropped_terms_rejects_an_undropped_formula_term():
+    """Every term of the model has to be dropped under some label, or its
+    contribution is never measured."""
+    with pytest.raises(ValueError, match="'side:reward'"):
+        config.validate_dropped_terms(
+            config.RESPONSE_MODEL_FORMULA + ' + side:reward',
+            config.RESPONSE_DROPPED_TERMS)
 
 
 def test_persession_thresholds_and_path():
