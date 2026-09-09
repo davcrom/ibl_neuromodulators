@@ -6834,7 +6834,7 @@ class TestFitResponsesOlsDropone:
         donors = _donor_pool_for(
             _donorless_session(eid='donor-eid', subject='mouse2', seed=1))
 
-        formula, drops = _main_effect_model()
+        formula, drops = _response_model()
         fits = ps.fit_responses(formula, drops, donors, n_bootstrap=4)
 
         assert list(fits.columns) == [column for column
@@ -6958,20 +6958,6 @@ def _drop_labels():
     return set(RESPONSE_DROPPED_TERMS)
 
 
-def _main_effect_model():
-    """`_response_model` with the term table narrowed to the six main effects.
-
-    The swap null draws a donor column named for the label it scores, so a
-    label naming an interaction term has no donor column to draw and cannot be
-    scored against a real donor pool. Tests that pass one narrow the table to
-    the labels that can.
-    """
-    from iblnm.config import PERSESSION_REGRESSORS
-    formula, dropped_terms = _response_model()
-    return formula, {label: dropped_terms[label]
-                     for label in PERSESSION_REGRESSORS}
-
-
 def _session_for_cell_fit(region='VTA-r', event='stimOnTrigger_times',
                           **kwargs):
     """A measured session masked to one fiber x event's fittable rows.
@@ -7069,7 +7055,7 @@ class TestFitRegionResponses:
             _donorless_session(eid='donor-eid', subject='mouse2', seed=1))
 
         rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                       *_main_effect_model(), donors,
+                                       *_response_model(), donors,
                                        n_bootstrap=16)
 
         assert (rows['n_donors'] == 1).all()
@@ -8405,6 +8391,17 @@ class TestFitResponsesPermutation:
             assert n_donor_frames == 3
             assert set(predictors) == _drop_labels()
 
+    def test_interaction_labels_are_scored_against_a_real_donor_pool(self):
+        """The whole term table, interaction labels included, is scored through
+        the real null primitive: every label gets a p_value off a null of the
+        requested length, none of them raising for want of a donor column."""
+        fits = self._focal().fit_responses(
+            *_response_model(), self._pool(2), n_bootstrap=16)
+
+        assert set(fits['predictor']) == _drop_labels()
+        assert fits['p_value'].notna().all()
+        assert {len(null) for null in fits['null']} == {16}
+
     def test_empty_donor_pool_keeps_the_fit_and_nulls_the_significance(self):
         """A cell no donor was admitted for is still fitted; only its
         significance is missing."""
@@ -8418,7 +8415,7 @@ class TestFitResponsesPermutation:
 
     def test_null_vectors_are_float32_of_the_requested_length(self):
         fits = self._focal().fit_responses(
-            *_main_effect_model(), self._pool(2), n_bootstrap=16)
+            *_response_model(), self._pool(2), n_bootstrap=16)
         for vector in fits['null']:
             assert vector.dtype == np.float32
             assert len(vector) == 16
@@ -8427,7 +8424,7 @@ class TestFitResponsesPermutation:
         """The vector is written and read back as an array, so the per-mouse
         pooling can be recomputed without refitting."""
         fits = self._focal().fit_responses(
-            *_main_effect_model(), self._pool(2), n_bootstrap=16)
+            *_response_model(), self._pool(2), n_bootstrap=16)
         fpath = tmp_path / 'ols_persession.parquet'
         fits.to_parquet(fpath)
         restored = pd.read_parquet(fpath)

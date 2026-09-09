@@ -3060,6 +3060,63 @@ class TestPermutationNullDeltaR2:
             rng=np.random.default_rng(0), n_bootstrap=500)
         assert nulls['x'].shape == (0,)
 
+    def test_interaction_key_scores_like_a_main_effect_key(self):
+        """A `reduced_formulas` key naming an interaction term is scorable: its
+        donor values are built from the term's constituent columns, so the
+        returned null has the same length as a main-effect key's."""
+        from iblnm.analysis import permutation_null_delta_r2
+        rng = np.random.default_rng(3)
+        focal = self._focal_frame(120, rng)
+        donors = [self._donor_frame(120, rng) for _ in range(3)]
+        nulls = permutation_null_delta_r2(
+            focal, donors, '{response} ~ x + z + x:z',
+            {'x': '{response} ~ z', 'x:z': '{response} ~ x + z'},
+            rng=np.random.default_rng(0), n_bootstrap=200)
+        assert nulls['x:z'].shape == nulls['x'].shape == (200,)
+
+    def test_interaction_key_swaps_the_donor_product(self):
+        """The values swapped in for an interaction key are the elementwise
+        product of the donor's constituent columns, truncated to the shorter
+        length: the null matches a delta hand-built by writing that product
+        into the focal design's `x:z` column."""
+        from iblnm.analysis import fit_ols, permutation_null_delta_r2
+        rng = np.random.default_rng(4)
+        focal = self._focal_frame(100, rng)
+        donor = self._donor_frame(60, rng)
+        length = len(donor)
+        hand = focal.iloc[:length].assign(
+            xz=(donor['x'] * donor['z']).to_numpy())
+        expected = (fit_ols('response ~ x + z + xz', hand).rsquared
+                    - fit_ols('response ~ x + z', hand).rsquared)
+        nulls = permutation_null_delta_r2(
+            focal, [donor], '{response} ~ x + z + x:z',
+            {'x:z': '{response} ~ x + z'},
+            rng=np.random.default_rng(0), n_bootstrap=10)
+        assert nulls['x:z'] == pytest.approx(expected)
+
+    def test_interaction_reduced_fit_cached_per_length(self, monkeypatch):
+        """The reduced fit for an interaction key ignores the donor, so it is
+        computed once per row count however many donors share it: three donors
+        of two distinct lengths cost two donor-free `r2` calls."""
+        from iblnm import analysis
+        rng = np.random.default_rng(11)
+        focal = self._focal_frame(100, rng)
+        donors = [self._donor_frame(n, rng) for n in (60, 60, 40)]
+        donor_free = []
+        real_r2 = analysis.SubstitutableOLS.r2
+
+        def counting_r2(self, substitution=None, n_rows=None):
+            if substitution is None:
+                donor_free.append(n_rows)
+            return real_r2(self, substitution, n_rows)
+
+        monkeypatch.setattr(analysis.SubstitutableOLS, 'r2', counting_r2)
+        analysis.permutation_null_delta_r2(
+            focal, donors, '{response} ~ x + z + x:z',
+            {'x:z': '{response} ~ x + z'},
+            rng=np.random.default_rng(0), n_bootstrap=10)
+        assert donor_free == [60, 40]
+
     def test_seed_reproduces_vector(self):
         """The same rng seed reproduces the bootstrap vector; a different seed
         generally does not."""

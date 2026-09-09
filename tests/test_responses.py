@@ -766,7 +766,7 @@ class TestTwoPassRun:
 
     @staticmethod
     def _run(tmp_path):
-        from tests.test_data import _main_effect_model, _persession_group
+        from tests.test_data import _persession_group, _response_model
         from scripts.responses import fit_session, prepare_donor
         group = _persession_group(
             tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
@@ -774,7 +774,7 @@ class TestTwoPassRun:
             unusable_trials=True)
 
         donors = group.collect_donor_frames(group.process(prepare_donor))
-        formula, dropped_terms = _main_effect_model()
+        formula, dropped_terms = _response_model()
         returns = [frames for frames in
                    group.process(fit_session, formula=formula,
                                  dropped_terms=dropped_terms, donors=donors)

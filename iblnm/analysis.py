@@ -2259,8 +2259,8 @@ def permutation_null_delta_r2(
     """Cross-session swap null drop-one ΔR² for one focal recording-event.
 
     Variable-agnostic permutation primitive. For each donor session and each
-    dropped predictor, the focal frame's predictor column is swapped for that
-    donor's same-named coded column (truncating both to the shorter length), and
+    dropped key, the focal frame's column of that name is swapped for the
+    donor's values for it (truncating both to the shorter length), and
     the full and reduced models are refit via ``SubstitutableOLS`` engines built
     once from the focal frame — one full engine shared by every predictor, one
     reduced engine each. The dropped predictor's null unique contribution is
@@ -2285,9 +2285,15 @@ def permutation_null_delta_r2(
         Wilkinson formula template with a ``{response}`` placeholder for the
         full model, shared by every dropped predictor.
     reduced_formulas : dict[str, str]
-        Maps the name of each raw predictor column swapped in from the donors to
-        the reduced formula template dropping that predictor and all its
-        interactions.
+        Maps each swapped key to the reduced formula template dropping it. A
+        key naming a raw predictor column is swapped for the donor's column of
+        that name and propagates into every interaction it enters; a key naming
+        an interaction term — ``'contrast:side'`` — is swapped for the product
+        of the donor's ``':'``-split constituent columns and replaces that
+        design column alone, leaving the focal mains standing. The swapped
+        product is near-orthogonal to those retained mains where the real
+        product is collinear with them, so an interaction's test runs
+        conservative.
     response_col : str
         Response column substituted into every formula template.
     rng : np.random.Generator
@@ -2324,8 +2330,13 @@ def permutation_null_delta_r2(
             key = (predictor, length)
             if key not in reduced_r2:
                 reduced_r2[key] = engine.r2(n_rows=length)
-            swap = {predictor: donor_df[predictor].iloc[:length].to_numpy()}
-            full_r2 = full.r2(substitution=swap, n_rows=length)
+            # One token is the donor's own column; several are its product, the
+            # donor's values for that interaction's design column.
+            donor_values = np.prod(
+                [donor_df[token].iloc[:length].to_numpy()
+                 for token in predictor.split(':')], axis=0)
+            full_r2 = full.r2(substitution={predictor: donor_values},
+                              n_rows=length)
             if full_r2 is None or reduced_r2[key] is None:
                 continue
             null_deltas[predictor].append(full_r2 - reduced_r2[key])
