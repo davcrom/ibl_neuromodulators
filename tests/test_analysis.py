@@ -2809,6 +2809,23 @@ class TestSubstitutableOLS:
         swapped['x'] = vals
         assert got == pytest.approx(fit_ols(formula, swapped).rsquared, abs=1e-10)
 
+    def test_design_column_substitution_replaces_only_that_column(self):
+        """A key naming an interaction design column swaps that column alone:
+        the fit matches an OLS with x, s and the replacement as three separate
+        columns, so neither main effect was rebuilt."""
+        from iblnm.analysis import SubstitutableOLS, fit_ols
+        rng = np.random.default_rng(8)
+        df = self._frame(200, rng)
+        vals = rng.normal(0, 1, 200)
+
+        got = SubstitutableOLS('response ~ x + s + x:s', df).fit(
+            substitution={'x:s': vals})
+        want = fit_ols('response ~ x + s + z', df.assign(z=vals))
+
+        assert got.rsquared == pytest.approx(want.rsquared, abs=1e-10)
+        assert got.params['x'] == pytest.approx(want.params['x'], abs=1e-10)
+        assert got.params['s'] == pytest.approx(want.params['s'], abs=1e-10)
+
     def test_n_rows_fits_leading_prefix(self):
         """r2(n_rows=L) equals a fit_ols on the first L rows only."""
         from iblnm.analysis import SubstitutableOLS, fit_ols
@@ -2827,6 +2844,27 @@ class TestSubstitutableOLS:
         df = self._frame(120, rng)
         engine = SubstitutableOLS('response ~ x + s + x:s', df)
         assert engine.r2(substitution={'x': np.ones(120)}) is None
+
+    def test_rank_deficient_design_column_substitution_returns_none(self):
+        """Writing x into the x:s column duplicates the x column, so the
+        design is rank-deficient; the design-column key returns None like any
+        other degenerate refit rather than raising out of the solver."""
+        from iblnm.analysis import SubstitutableOLS
+        rng = np.random.default_rng(10)
+        df = self._frame(120, rng)
+        engine = SubstitutableOLS('response ~ x + s + x:s', df)
+        assert engine.r2(substitution={'x:s': df['x'].to_numpy()}) is None
+
+    def test_substituting_unknown_key_raises(self):
+        """A key that names neither a design column nor a stored factor has
+        nothing to replace; silently ignoring it would return the unswapped
+        R² as if the swap had happened."""
+        from iblnm.analysis import SubstitutableOLS
+        rng = np.random.default_rng(9)
+        df = self._frame(100, rng)
+        engine = SubstitutableOLS('response ~ x + s + x:s', df)
+        with pytest.raises(ValueError):
+            engine.r2(substitution={'nonexistent': rng.normal(0, 1, 100)})
 
     def test_substituting_transform_token_raises(self):
         """A predictor whose interaction partner is an in-formula transform is

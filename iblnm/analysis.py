@@ -1975,7 +1975,10 @@ class SubstitutableOLS:
     Builds the numeric design once from a Wilkinson formula, then answers
     ``r2`` queries that swap one or more raw predictor columns for new arrays
     and/or restrict the fit to a leading row-prefix, recomputing only the
-    design columns whose terms involve a swapped variable. Every design column
+    design columns whose terms involve a swapped variable. A key naming a
+    design column rather than a raw predictor swaps that column alone, which
+    is how an interaction is nulled without disturbing its main effects.
+    Every design column
     is assumed to be the elementwise product of its ``':'``-joined factor
     arrays (patsy's numeric product for continuous predictors and their
     interactions); a term whose factor is an in-formula transform or otherwise
@@ -2022,10 +2025,12 @@ class SubstitutableOLS:
         Parameters
         ----------
         substitution : dict of str to np.ndarray, optional
-            Maps a raw predictor name to a replacement array (length ``n_rows``
-            or the full data length) substituted for that variable everywhere it
-            appears, including interaction columns. A key that names no stored
-            factor raises ``ValueError``.
+            Maps a raw predictor name or a design-column name to a replacement
+            array (length ``n_rows`` or the full data length). A raw predictor
+            is substituted for that variable everywhere it appears, including
+            interaction columns; a design column — ``'x:s'``, say — is replaced
+            on its own, leaving the columns of its factors as they were. A key
+            that names neither raises ``ValueError``.
         n_rows : int, optional
             Fit only the first ``n_rows`` rows of the design. Defaults to all
             rows.
@@ -2043,13 +2048,25 @@ class SubstitutableOLS:
                 n_rows: int | None) -> tuple[np.ndarray, np.ndarray]:
         """The response and design matrix with `substitution` written in.
 
-        Only the columns whose terms involve a swapped variable are rebuilt;
-        every other column keeps its stored value. Each is the elementwise
-        product of its ':'-joined factors, so a swap propagates into every
-        interaction the variable enters.
+        A key naming a stored factor rebuilds every column whose ':'-joined
+        terms contain it, each as the elementwise product of its factors, so
+        the swap propagates into every interaction the variable enters. A key
+        naming a design column instead writes its array into that one column
+        and leaves the rest of the design alone. Every other column keeps its
+        stored value.
         """
+        columns = [key for key in substitution
+                   if key not in self._factors and key in self._column_names]
+        unplaceable = substitution.keys() - self._factors.keys() - set(columns)
+        if unplaceable:
+            raise ValueError(
+                f"cannot substitute {sorted(unplaceable)!r}: "
+                "neither a data column nor a design column"
+            )
         m = n_rows if n_rows is not None else len(self._y)
         Xm = self._X[:m].copy()
+        for key in columns:
+            Xm[:, self._column_names.index(key)] = substitution[key][:m]
         for j, terms in enumerate(self._column_terms):
             if not set(terms) & substitution.keys():
                 continue
