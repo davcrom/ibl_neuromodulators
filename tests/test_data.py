@@ -6339,16 +6339,22 @@ def _make_group_with_events():
     return group, magnitudes
 
 
+# The three-factor design of the `feedback` RESPONSES entry, every level kept.
+_ANOVA_SPEC = {'contrast': [], 'side': [], 'feedbackType': []}
+
+
 class TestAnovaResponseMagnitudes:
 
     def test_returns_dict(self):
         group, magnitudes = _make_group_with_events()
-        result = group.response_anovaRM_fit(magnitudes)
+        result = group.response_anovaRM_fit(
+            magnitudes, _ANOVA_SPEC, min_trials=5, min_subjects=2)
         assert isinstance(result, dict)
 
     def test_keys_are_target_event_tuples(self):
         group, magnitudes = _make_group_with_events()
-        result = group.response_anovaRM_fit(magnitudes)
+        result = group.response_anovaRM_fit(
+            magnitudes, _ANOVA_SPEC, min_trials=5, min_subjects=2)
         for key in result:
             assert len(key) == 2
             target_nm, event_label = key
@@ -6357,7 +6363,8 @@ class TestAnovaResponseMagnitudes:
 
     def test_values_are_anova_tables(self):
         group, magnitudes = _make_group_with_events()
-        result = group.response_anovaRM_fit(magnitudes)
+        result = group.response_anovaRM_fit(
+            magnitudes, _ANOVA_SPEC, min_trials=5, min_subjects=2)
         assert len(result) > 0
         for table in result.values():
             assert isinstance(table, pd.DataFrame)
@@ -6368,15 +6375,85 @@ class TestAnovaResponseMagnitudes:
     def test_seven_terms_per_group(self):
         """3 factors → 7 terms (3 main + 3 two-way + 1 three-way)."""
         group, magnitudes = _make_group_with_events()
-        result = group.response_anovaRM_fit(magnitudes)
+        result = group.response_anovaRM_fit(
+            magnitudes, _ANOVA_SPEC, min_trials=5, min_subjects=2)
         for table in result.values():
             assert len(table) == 7
 
     def test_stores_results_on_self(self):
         group, magnitudes = _make_group_with_events()
-        group.response_anovaRM_fit(magnitudes)
+        group.response_anovaRM_fit(
+            magnitudes, _ANOVA_SPEC, min_trials=5, min_subjects=2)
         assert hasattr(group, 'anova_results')
         assert isinstance(group.anova_results, dict)
+
+
+def _percent_contrast_magnitudes(seed=0):
+    """Magnitudes over the percent contrast levels, with one high-only subject.
+
+    Three subjects x one cohort x one event, every cell of
+    contrast x side x feedbackType filled with six trials. ``s2`` holds the
+    100% level alone, so a spec restricting contrast leaves it with nothing.
+    """
+    rng = np.random.default_rng(seed)
+    rows = [
+        {
+            'eid': f'eid-{subj}',
+            'subject': subj,
+            'target_NM': 'VTA-DA',
+            'brain_region': 'VTA',
+            'hemisphere': 'r',
+            'event': 'feedback_times',
+            'trial': i,
+            'contrast': contrast,
+            'side': side,
+            'feedbackType': fb,
+            'reaction_time': rng.uniform(0.1, 0.5),
+            'response': rng.normal(),
+        }
+        for subj in ['s0', 's1', 's2']
+        for contrast in ([100.0] if subj == 's2' else [0.0, 6.25, 100.0])
+        for side in ['contra', 'ipsi']
+        for fb in [1, -1]
+        for i in range(6)
+    ]
+    return pd.DataFrame(rows)
+
+
+class TestAnovaFactorSpec:
+    """The factors, their levels and the floors all come from the entry."""
+
+    def test_two_way_spec_fits_two_factors(self):
+        group, magnitudes = _make_group_with_events()
+        result = group.response_anovaRM_fit(
+            magnitudes, {'contrast': [], 'side': []},
+            min_trials=5, min_subjects=2)
+        assert len(result) > 0
+        for table in result.values():
+            assert set(table['Source']) == {'contrast', 'side',
+                                            'contrast:side'}
+
+    def test_level_filter_precedes_aggregation(self):
+        """Restricting contrast keeps two levels and drops a high-only mouse."""
+        group, _ = _make_group_with_events()
+        magnitudes = _percent_contrast_magnitudes()
+        result = group.response_anovaRM_fit(
+            magnitudes, {'contrast': [0, 6.25], 'side': [], 'feedbackType': []},
+            min_trials=5, min_subjects=2)
+        table = result[('VTA-DA', 'feedback')]
+        # 2 x 2 x 2 cells: one degree of freedom per factor
+        assert (table.set_index('Source')['Num DF'] == 1).all()
+        # s2 held only the excluded level, so it never reaches the fit and is
+        # not counted incomplete either
+        assert (table['n_subjects'] == 2).all()
+        assert (table['n_subjects_dropped'] == 0).all()
+
+    def test_unknown_factor_raises(self):
+        group, magnitudes = _make_group_with_events()
+        with pytest.raises(ValueError):
+            group.response_anovaRM_fit(
+                magnitudes, {'contrast': [], 'block_bias': []},
+                min_trials=5, min_subjects=2)
 
 
 # =============================================================================

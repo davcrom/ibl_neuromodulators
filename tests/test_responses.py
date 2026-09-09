@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from iblnm.config import STIM_ONSET_EVENT
+from iblnm.config import RESPONSES, STIM_ONSET_EVENT
 from iblnm.data import PhotometrySession
 
 
@@ -239,7 +239,8 @@ class _LinkSession:
              'hemisphere': ['r', 'r', 'r']})
         self._trials = pd.DataFrame(
             {'trial': [0, 1, 2], 'signed_contrast': [-25.0, 25.0, 100.0],
-             'stim_side': ['left', 'right', 'right'], 'choice': [1, -1, 1]})
+             'stim_side': ['left', 'right', 'right'], 'choice': [1, -1, 1],
+             'reaction_time': [0.15, 0.30, 0.45]})
         self.trials = self._trials
         self.wheel_peak_velocity = np.array([1.0, 2.0, 3.0])
         self.fits = pd.DataFrame({'predictor': ['contrast'],
@@ -316,6 +317,75 @@ class TestLinkFunctions:
         assert ps._MASKED_AWAY_TRIAL not in set(magnitudes['trial'])
         # Trial-level columns are joined on either side of the mask.
         assert 'side' in unfiltered.columns
+
+
+class TestAnovaBins:
+    """A ``<column>_bin`` ANOVA factor is that column's within-session
+    terciles, derived here because the binning is an analysis choice."""
+
+    @staticmethod
+    def _session_trials(n_trials=30, seed=0):
+        """One session's magnitude rows over two events, one reaction time each."""
+        rng = np.random.default_rng(seed)
+        return pd.DataFrame([
+            {'trial': i, 'event': event,
+             'reaction_time': rt, 'contrast': 6.25}
+            for i, rt in enumerate(rng.uniform(0.1, 0.5, n_trials))
+            for event in [STIM_ONSET_EVENT, 'feedback_times']
+        ])
+
+    def test_three_bins_of_near_equal_size(self):
+        from scripts.responses import add_anova_bins
+        trials = self._session_trials()
+
+        binned = add_anova_bins(trials, {'contrast': [],
+                                         'reaction_time_bin': []})
+
+        counts = binned['reaction_time_bin'].value_counts()
+        assert len(counts) == 3
+        assert counts.max() - counts.min() <= 2
+        # The bins are ordered by the column they came from
+        means = binned.groupby('reaction_time_bin')['reaction_time'].mean()
+        assert means['low'] < means['mid'] < means['high']
+
+    def test_existing_column_is_overwritten(self):
+        """The factor carries this run's binning, not a stale one."""
+        from scripts.responses import add_anova_bins
+        trials = self._session_trials().assign(reaction_time_bin='stale')
+
+        binned = add_anova_bins(trials, ['reaction_time_bin'])
+
+        assert 'stale' not in set(binned['reaction_time_bin'])
+
+    def test_fit_session_bins_before_fitting(self):
+        from scripts.responses import fit_session
+        ps = _LinkSession()
+        entry = {**RESPONSES['stimulus'],
+                 'ANOVA': {'side': [], 'reaction_time_bin': []}}
+
+        with patch('scripts.responses.RESPONSE_ENTRY', entry):
+            magnitudes, _, _ = fit_session(ps, '{response} ~ contrast',
+                                           {'contrast': ['contrast']}, {})
+
+        assert set(magnitudes['reaction_time_bin']) <= {'low', 'mid', 'high'}
+
+    def test_binned_factor_keeps_every_subject_complete(self):
+        """Each session yields all three bins, so no subject loses a cell."""
+        from scripts.responses import add_anova_bins
+        from tests.test_data import _make_group_with_events
+        group, magnitudes = _make_group_with_events()
+        binned = pd.concat(
+            [add_anova_bins(session, ['reaction_time_bin'])
+             for _, session in magnitudes.groupby('eid')], ignore_index=True)
+
+        result = group.response_anovaRM_fit(
+            binned, {'reaction_time_bin': [], 'side': []},
+            min_trials=5, min_subjects=2)
+
+        assert len(result) > 0
+        for table in result.values():
+            assert (table['n_subjects'] == 3).all()
+            assert (table['n_subjects_dropped'] == 0).all()
 
 
 class TestPrepareDonor:

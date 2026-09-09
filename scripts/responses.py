@@ -22,6 +22,7 @@ Usage:
     python scripts/responses.py --reprocess  # re-extract + re-fit, then plot
 """
 import argparse
+from typing import Iterable
 
 import matplotlib
 import pandas as pd
@@ -88,6 +89,12 @@ _TRACE_KEYS = ['eid', 'subject', 'target_NM', 'brain_region']
 # the window averaged into a magnitude, whether the pre-event baseline is
 # subtracted, and the events past which a trial's samples are blanked.
 RESPONSE_ENTRY = RESPONSES['stimulus']
+
+# An ANOVA factor named `<column>_bin` is that trials column cut into
+# within-session terciles, labelled low to high. Binning is an analysis choice,
+# so it lives here rather than in the fit.
+BIN_SUFFIX = '_bin'
+TERCILE_LABELS = ('low', 'mid', 'high')
 
 
 def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
@@ -400,6 +407,40 @@ def _join_trials(magnitudes: pd.DataFrame,
     return task.add_relative_contrast(magnitudes.merge(trials, on='trial'))
 
 
+def add_anova_bins(trials: pd.DataFrame,
+                   factors: Iterable[str]) -> pd.DataFrame:
+    """Cut one session's continuous ANOVA factors into within-session terciles.
+
+    Called with a single session's rows in hand, so the bin edges are that
+    session's own quantiles: every session yields all three bins and no subject
+    loses a cell to a binned factor. A column of the same name is overwritten,
+    so the factor always carries this run's binning.
+
+    Parameters
+    ----------
+    trials : pandas.DataFrame
+        One session's magnitude rows, one per recording x event x trial. The
+        binned column repeats across a trial's recordings and events, which
+        leaves the quantiles unchanged.
+    factors : iterable of str
+        The ANOVA factor names, e.g. a ``config.RESPONSES`` entry's ``ANOVA``
+        mapping. Names not ending in ``BIN_SUFFIX`` are left alone; the rest
+        name the column they are binned from.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy carrying one ``TERCILE_LABELS``-valued column per binned factor.
+    """
+    binned = trials.copy()
+    for factor in factors:
+        if factor.endswith(BIN_SUFFIX):
+            source = factor[:-len(BIN_SUFFIX)]
+            binned[factor] = pd.qcut(binned[source], 3,
+                                     labels=TERCILE_LABELS).astype(str)
+    return binned
+
+
 def fit_session(ps, formula: str, dropped_terms: dict,
                 donors: dict) -> tuple[pd.DataFrame, pd.DataFrame,
                                        pd.DataFrame]:
@@ -430,7 +471,8 @@ def fit_session(ps, formula: str, dropped_terms: dict,
     magnitudes : pandas.DataFrame
         The filtered magnitude view with its trials joined on and coded
         relative to each recording's hemisphere — one row per recording x event
-        x trial, carrying the rows the models were fitted on.
+        x trial, carrying the rows the models were fitted on, plus the entry's
+        binned ANOVA factors cut against this session's own quantiles.
     fits : pandas.DataFrame
         This session's rows of the population OLS table.
     unfiltered : pandas.DataFrame
@@ -452,7 +494,9 @@ def fit_session(ps, formula: str, dropped_terms: dict,
     fits = ps.fit_responses(formula, dropped_terms, donors,
                             **PERSESSION_TRIAL_CRITERIA)
     ps.filter_trials(**PERSESSION_TRIAL_CRITERIA)
-    magnitudes = _join_trials(ps.response_magnitudes, ps.trials)
+    magnitudes = add_anova_bins(
+        _join_trials(ps.response_magnitudes, ps.trials),
+        RESPONSE_ENTRY['ANOVA'])
     return magnitudes, fits, unfiltered
 
 
@@ -720,7 +764,12 @@ if __name__ == '__main__':
             print(f"No response magnitudes: all {len(group.sessions)} "
                   "sessions returned nothing. Check the logged errors.")
             raise SystemExit(1)
-        magnitudes = magnitudes[RESPONSE_MAGNITUDE_COLUMNS]
+        # Factors the entry names but the stored schema does not carry — the
+        # binned ones — ride along, so the ANOVA finds what this pass derived
+        # whether it runs now or off the parquet.
+        derived_factors = [factor for factor in RESPONSE_ENTRY['ANOVA']
+                           if factor not in RESPONSE_MAGNITUDE_COLUMNS]
+        magnitudes = magnitudes[RESPONSE_MAGNITUDE_COLUMNS + derived_factors]
 
         # The FDR correction and the per-mouse pooling both span sessions, so
         # they happen here rather than in either pass.
@@ -791,7 +840,11 @@ if __name__ == '__main__':
     # Repeated-measures ANOVA on subject means
     # =====================================================================
     print("\nRunning repeated-measures ANOVA on subject means...")
-    anova_results = group.response_anovaRM_fit(magnitudes)
+    print(f"  Factors (level filter, [] keeps all): {RESPONSE_ENTRY['ANOVA']}")
+    anova_results = group.response_anovaRM_fit(
+        magnitudes, RESPONSE_ENTRY['ANOVA'],
+        min_trials=RESPONSE_ENTRY['min_trials'],
+        min_subjects=RESPONSE_ENTRY['min_subjects'])
     if anova_results:
         all_tables = []
         for (tnm, ev), table in anova_results.items():

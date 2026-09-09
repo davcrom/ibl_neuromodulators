@@ -5894,13 +5894,15 @@ class PhotometrySessionGroup:
         self.cohort_cca_weight_similarities = df
         return df
 
-    def response_anovaRM_fit(self, trials, response_col='response',
-                             min_subjects=2, min_trials=10):
+    def response_anovaRM_fit(self, trials, factors, min_trials, min_subjects,
+                             response_col='response'):
         """Run repeated-measures ANOVA on subject-mean response magnitudes.
 
         For each (target_NM, event) group, aggregates trial-level data to
-        subject means by (contrast, side, feedbackType), then runs a 3-way
-        repeated-measures ANOVA via ``anova_rm``.
+        subject means over the entry's factors, then runs the repeated-measures
+        ANOVA via ``anova_rm``. Masking is forward-only, so a pre-event window
+        can carry the previous trial's feedback response into every cell of the
+        design; nothing here removes it.
 
         Parameters
         ----------
@@ -5908,22 +5910,46 @@ class PhotometrySessionGroup:
             The uncoded merged magnitude frame
             (``config.RESPONSE_MAGNITUDE_COLUMNS``), one row per recording x
             event x trial, carrying the selection it was stored under — every
-            fit sees those rows as given.
-        response_col : str
-            Column name for the response magnitude.
-        min_subjects : int
-            Minimum subjects per group to attempt the ANOVA.
+            fit sees those rows as given. Derived factor columns must already
+            be on it; the caller bins them.
+        factors : dict[str, list]
+            A ``config.RESPONSES`` entry's ``ANOVA`` mapping: factor column ->
+            the levels to keep, an empty list keeping all of them. Each
+            non-empty level list is an ``isin`` filter applied before
+            aggregation, so a filtered level never counts toward a subject's
+            completeness.
         min_trials : int
             Minimum trials per subject x condition cell. Cells with fewer
             trials are dropped before aggregation.
+        min_subjects : int
+            Minimum subjects per (target_NM, event) group to attempt the ANOVA.
+        response_col : str
+            Column name for the response magnitude.
 
         Returns
         -------
         dict
             Keys: (target_NM, event_label) tuples.
             Values: ANOVA result DataFrames (from ``anova_rm``).
+
+        Raises
+        ------
+        ValueError
+            If a named factor is not a column of ``trials`` — a silently
+            dropped factor would change the test without saying so.
         """
         from iblnm.analysis import anova_rm
+
+        missing = [factor for factor in factors
+                   if factor not in trials.columns]
+        if missing:
+            raise ValueError(
+                f'ANOVA factors {missing} are not columns of the magnitude '
+                'frame, and nothing derived them')
+
+        for factor, levels in factors.items():
+            if levels:
+                trials = trials[trials[factor].isin(levels)]
 
         results = {}
         for (target_nm, event), df_group in trials.groupby(['target_NM',
@@ -5933,7 +5959,7 @@ class PhotometrySessionGroup:
             event_label = event.replace('_times', '')
 
             # Aggregate to subject means per condition cell
-            group_cols = ['subject', 'contrast', 'side', 'feedbackType']
+            group_cols = ['subject', *factors]
             cell_counts = df_group.groupby(group_cols)[response_col].count()
             # Drop cells with too few trials
             valid_cells = cell_counts[cell_counts >= min_trials].reset_index()
@@ -5947,10 +5973,8 @@ class PhotometrySessionGroup:
             if subject_means['subject'].nunique() < min_subjects:
                 continue
 
-            table = anova_rm(
-                subject_means, response_col, 'subject',
-                ['contrast', 'side', 'feedbackType'],
-            )
+            table = anova_rm(subject_means, response_col, 'subject',
+                             list(factors))
             results[(target_nm, event_label)] = table
 
         self.anova_results = results
