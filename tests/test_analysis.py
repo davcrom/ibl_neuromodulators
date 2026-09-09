@@ -1917,7 +1917,8 @@ class TestAnovaRM:
         df = self._balanced_df()
         result = anova_rm(df, 'response', 'subject',
                           ['contrast', 'side', 'feedbackType'])
-        for col in ['Source', 'F', 'Num DF', 'Den DF', 'Pr(>F)', 'method']:
+        for col in ['Source', 'F', 'Num DF', 'Den DF', 'Pr(>F)',
+                    'n_subjects', 'n_subjects_dropped']:
             assert col in result.columns, f"Missing column: {col}"
 
     def test_all_main_effects_and_interactions(self):
@@ -1928,32 +1929,44 @@ class TestAnovaRM:
                           ['contrast', 'side', 'feedbackType'])
         assert len(result) == 7
 
-    def test_uses_rm_for_balanced_data(self):
+    def test_balanced_data_keeps_every_subject(self):
         from iblnm.analysis import anova_rm
-        df = self._balanced_df()
+        df = self._balanced_df(n_subjects=4)
         result = anova_rm(df, 'response', 'subject',
                           ['contrast', 'side', 'feedbackType'])
-        assert (result['method'] == 'rm').all()
+        assert (result['n_subjects'] == 4).all()
+        assert (result['n_subjects_dropped'] == 0).all()
 
-    def test_falls_back_to_ols_for_unbalanced(self):
-        """Drop one cell for one subject so the design is unbalanced."""
+    def test_raises_when_fewer_than_two_complete_subjects(self):
+        """Two of three subjects incomplete leaves one — no test to run."""
+        from iblnm.analysis import anova_rm
+        df = self._balanced_df(n_subjects=3)
+        incomplete = (
+            df['subject'].isin(['s0', 's1']) & (df['contrast'] == 1.0)
+        )
+        with pytest.raises(ValueError):
+            anova_rm(df[~incomplete], 'response', 'subject',
+                     ['contrast', 'side', 'feedbackType'])
+
+    def test_drops_incomplete_subject(self):
+        """A subject missing one cell is dropped; the rest are fitted."""
         from iblnm.analysis import anova_rm
         df = self._balanced_df()
-        # Remove s0's contra/correct/1.0 row → unbalanced
+        # Remove s0's contra/correct/1.0 row → s0 is incomplete
         mask = (
             (df['subject'] == 's0') &
             (df['side'] == 'contra') &
             (df['feedbackType'] == 1) &
             (df['contrast'] == 1.0)
         )
-        df = df[~mask]
-        import warnings as w
-        with w.catch_warnings(record=True) as caught:
-            w.simplefilter('always')
-            result = anova_rm(df, 'response', 'subject',
-                              ['contrast', 'side', 'feedbackType'])
-        assert (result['method'] == 'ols').all()
-        assert any('unbalanced' in str(m.message).lower() for m in caught)
+        result = anova_rm(df[~mask], 'response', 'subject',
+                          ['contrast', 'side', 'feedbackType'])
+        assert (result['n_subjects'] == 3).all()
+        assert (result['n_subjects_dropped'] == 1).all()
+        # Identical to fitting the three complete subjects directly
+        complete = anova_rm(df[df['subject'] != 's0'], 'response', 'subject',
+                            ['contrast', 'side', 'feedbackType'])
+        assert np.allclose(result['F'], complete['F'])
 
     def test_single_factor(self):
         """Works with a single within-subject factor."""

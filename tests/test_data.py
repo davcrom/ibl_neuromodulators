@@ -6361,7 +6361,8 @@ class TestAnovaResponseMagnitudes:
         assert len(result) > 0
         for table in result.values():
             assert isinstance(table, pd.DataFrame)
-            for col in ['Source', 'F', 'Pr(>F)', 'method']:
+            for col in ['Source', 'F', 'Pr(>F)', 'n_subjects',
+                        'n_subjects_dropped']:
                 assert col in table.columns
 
     def test_seven_terms_per_group(self):

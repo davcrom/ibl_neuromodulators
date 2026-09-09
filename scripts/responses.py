@@ -795,7 +795,10 @@ if __name__ == '__main__':
     if anova_results:
         all_tables = []
         for (tnm, ev), table in anova_results.items():
-            print(f"\n  {tnm} x {ev} (method: {table['method'].iloc[0]}):")
+            print(f"\n  {tnm} x {ev} "
+                  f"({table['n_subjects'].iloc[0]} subjects, "
+                  f"{table['n_subjects_dropped'].iloc[0]} incomplete "
+                  f"and dropped):")
             for _, row in table.iterrows():
                 sig = '*' if row['Pr(>F)'] < 0.05 else ''
                 print(f"    {row['Source']:40s} F={row['F']:.3f}  "

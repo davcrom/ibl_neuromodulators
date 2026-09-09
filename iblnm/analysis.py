@@ -2774,8 +2774,18 @@ def compute_recording_projection(n_analysis_ready, n_total, target_n,
     return df
 
 
-def anova_rm(df, depvar, subject, within):
-    """Repeated-measures ANOVA on a pre-aggregated DataFrame.
+def anova_rm(
+    df: pd.DataFrame,
+    depvar: str,
+    subject: str,
+    within: list[str],
+) -> pd.DataFrame:
+    """Repeated-measures ANOVA on the balanced subset of a pre-aggregated frame.
+
+    Subjects missing any condition cell are dropped, since a repeated-measures
+    test needs every subject in every cell. What remains is balanced by
+    construction and is fitted with ``AnovaRM``; the counts retained and dropped
+    ride on the returned table so an excluded subject is visible in the output.
 
     Parameters
     ----------
@@ -2792,70 +2802,44 @@ def anova_rm(df, depvar, subject, within):
     Returns
     -------
     pd.DataFrame
-        ANOVA table with columns Source, F, Num DF, Den DF, Pr(>F).
-        Includes an extra column ``method`` ('rm' or 'ols') indicating
-        which method was used.
+        ANOVA table with columns Source, F, Num DF, Den DF, Pr(>F), plus
+        ``n_subjects`` (fitted) and ``n_subjects_dropped`` (incomplete),
+        constant down the table.
+
+    Raises
+    ------
+    ValueError
+        If fewer than two subjects hold every cell. Callers guard on their own
+        subject minimum before calling, so this means the guard and the balance
+        requirement disagree.
     """
-    from itertools import combinations
     from statsmodels.stats.anova import AnovaRM
-    import statsmodels.api as sm
-    from statsmodels.formula.api import ols
 
     df = df.copy()
     for col in within:
         df[col] = df[col].astype(str)
 
-    # Check balance: every subject must appear in every cell exactly once
-    cells = df.groupby(within).ngroups
-    subject_cell_counts = df.groupby(subject)[within[0]].count()
-    balanced = (subject_cell_counts == cells).all() and len(subject_cell_counts) >= 2
+    # A subject is complete when it holds one row in every condition cell
+    n_cells = df.groupby(within).ngroups
+    cells_per_subject = df.groupby(subject)[within[0]].count()
+    complete = cells_per_subject.index[cells_per_subject == n_cells]
+    n_dropped = len(cells_per_subject) - len(complete)
+    if len(complete) < 2:
+        raise ValueError(
+            f"Need at least 2 subjects holding all {n_cells} cells, got "
+            f"{len(complete)} of {len(cells_per_subject)}"
+        )
 
-    if balanced:
-        aov = AnovaRM(df, depvar, subject, within=within).fit()
-        result = aov.anova_table.reset_index()
-        result = result.rename(columns={
-            result.columns[0]: 'Source',
-            'F Value': 'F',
-            'Pr > F': 'Pr(>F)',
-        })
-        result['method'] = 'rm'
-    else:
-        warnings.warn(
-            "Unbalanced repeated-measures design: not all subjects have data "
-            "in every condition cell. Falling back to between-subjects OLS "
-            "ANOVA (Type III).",
-            UserWarning,
-            stacklevel=2,
-        )
-        # Build formula with all main effects and interactions
-        # C() wraps each factor as categorical
-        terms = [f'C({w})' for w in within]
-        # All interactions: 2-way, 3-way, ...
-        interaction_terms = []
-        for r in range(2, len(within) + 1):
-            for combo in combinations(terms, r):
-                interaction_terms.append(':'.join(combo))
-        formula = f'{depvar} ~ {" + ".join(terms + interaction_terms)}'
-        model = ols(formula, data=df).fit()
-        aov_table = sm.stats.anova_lm(model, typ=3)
-        # Drop Intercept and Residual rows
-        aov_table = aov_table.drop(
-            index=[idx for idx in aov_table.index
-                   if idx in ('Intercept', 'Residual')],
-        )
-        result = aov_table.reset_index()
-        result.columns = ['Source', 'SS', 'Num DF', 'F', 'Pr(>F)']
-        # Clean source names: strip C() wrapping
-        result['Source'] = (
-            result['Source']
-            .str.replace(r'C\(([^)]+)\)', r'\1', regex=True)
-        )
-        # Compute Den DF from residual
-        den_df = model.df_resid
-        result['Den DF'] = den_df
-        result = result[['Source', 'F', 'Num DF', 'Den DF', 'Pr(>F)']]
-        result['method'] = 'ols'
-
+    aov = AnovaRM(df[df[subject].isin(complete)], depvar, subject,
+                  within=within).fit()
+    result = aov.anova_table.reset_index()
+    result = result.rename(columns={
+        result.columns[0]: 'Source',
+        'F Value': 'F',
+        'Pr > F': 'Pr(>F)',
+    })
+    result['n_subjects'] = len(complete)
+    result['n_subjects_dropped'] = n_dropped
     return result
 
 
