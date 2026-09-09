@@ -42,7 +42,6 @@ from iblnm.config import (
     VIDEO_QC_COLS, VIDEO_QC_QUALITY_COLS, VIDEO_QC_PROBLEM_COLS,
     WHEEL_FS, WHEEL_RESPONSE_EVENTS, WHEEL_RESPONSE_WINDOW, POSE_FS,
     store_raw,
-    PERSESSION_REGRESSORS,
 )
 from iblnm.analysis import (
     get_responses, compute_response_magnitude, compute_masked_fraction,
@@ -322,19 +321,20 @@ def _score_against_null(rows: pd.DataFrame, nulls: dict[str, np.ndarray],
 
 
 def _coefficient_rows(fit) -> pd.DataFrame:
-    """Main-effect weight and SE per regressor from one fitted model.
+    """Weight and SE per fitted term, interactions included.
 
-    Reads ``fit.params`` / ``fit.bse`` for each bare regressor name in
-    ``config.PERSESSION_REGRESSORS`` present in the design (a regressor absent
-    from this event's model contributes no row). No refit — ``fit`` is the
+    Reads every column of the fitted design but the intercept, so an
+    interaction's weight comes through under its patsy name
+    (``'contrast:side'``) — the same rendering the drop-one labels take, which
+    is what lets :func:`_dropone_rows` join the two on ``predictor``. A term
+    the model does not carry contributes no row. No refit — ``fit`` is the
     already-fitted reference model.
     """
-    present = [name for name in PERSESSION_REGRESSORS
-               if name in fit.params.index]
+    terms = [name for name in fit.params.index if name != 'Intercept']
     return pd.DataFrame({
-        'regressor': present,
-        'coef': fit.params[present].values,
-        'coef_se': fit.bse[present].values,
+        'regressor': terms,
+        'coef': fit.params[terms].values,
+        'coef_se': fit.bse[terms].values,
     })
 
 

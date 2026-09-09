@@ -6816,6 +6816,8 @@ class TestFitResponsesOlsDropone:
         'full': 18, 'contrast': 12, 'side': 14, 'reward': 14,
         'choice_side': 14, 'log_reaction_time': 12, 'peak_velocity': 12,
     }
+    # (coef, se) of the reference model, main effects and two of the twelve
+    # interactions, under the patsy names the drop-one labels also take.
     _COEFS = {
         'contrast': (0.27865316264859885, 0.0189256949702073),
         'side': (-0.05350821276594487, 0.07993740084354073),
@@ -6823,6 +6825,9 @@ class TestFitResponsesOlsDropone:
         'choice_side': (0.04330504643298431, 0.07845530557576474),
         'log_reaction_time': (0.22812126130251947, 0.2229829656629778),
         'peak_velocity': (0.13924412869844843, 0.11846606132164994),
+        'contrast:side': (-0.07966734726856738, 0.03978714942334508),
+        'log_reaction_time:peak_velocity': (-0.43541915578023205,
+                                            0.7006940107754007),
     }
 
     def test_a_lone_session_produces_the_whole_column_set(self):
@@ -6863,6 +6868,20 @@ class TestFitResponsesOlsDropone:
             for regressor, (coef, se) in self._COEFS.items():
                 assert rows.loc[regressor, 'coef'] == pytest.approx(coef)
                 assert rows.loc[regressor, 'coef_se'] == pytest.approx(se)
+
+    def test_every_dropped_term_carries_the_reference_weight(self):
+        """Interaction labels get a weight too: the reference model's design
+        names them exactly as the drop-one table does, so every one of the 18
+        rows reads its own column of `fit.params` rather than only the six
+        mains."""
+        ps = _measured_session(_make_session_for_persession())
+        fits = ps.fit_responses(*_response_model(), {})
+
+        for event in set(fits['event']):
+            rows = fits[fits['event'] == event].set_index('predictor')
+            assert len(rows) == 18
+            assert rows['coef'].notna().all()
+            assert rows['coef_se'].notna().all()
 
     def test_adjusted_delta_penalizes_the_reference_parameters(self):
         """Each row's delta_r2_adj differences the two models' adjusted R²,
