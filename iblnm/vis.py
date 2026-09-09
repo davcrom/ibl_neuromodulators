@@ -2100,63 +2100,6 @@ def plot_relative_contrast(agg_df, target_nm, event, fig=None,
     return fig
 
 
-def plot_movement_response(df_group, response_col, timing_col, target_nm,
-                           event=STIM_ONSET_EVENT, fig=None):
-    """Scatter response magnitude against a timing variable, colored by contrast.
-
-    The raw-data within-contrast check for the within-contrast model: one point
-    per trial (low alpha to show density), with contrast level mapped to a
-    continuous color scale, so the response-vs-timing relationship is readable
-    within each contrast band. Pools all sides into a single panel.
-
-    Parameters
-    ----------
-    df_group : pd.DataFrame
-        Rows for one (target_NM, event, timing variable) group with columns
-        ``subject``, ``contrast``, ``<response_col>``, and ``<timing_col>``
-        (already log10-transformed).
-    response_col : str
-        Column name for the response magnitude.
-    timing_col : str
-        Column name for the log-transformed timing variable.
-    target_nm : str
-        Target neuromodulator label; used for the title.
-    event : str
-        Alignment event label for the response magnitude; used for the title.
-    fig : plt.Figure or None
-        Figure with one existing axis to draw on. If None, a new figure is
-        created.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    if fig is None:
-        fig, _ = plt.subplots(1, 1, layout='constrained')
-    ax = fig.axes[0]
-
-    n_sessions = df_group['eid'].nunique() if 'eid' in df_group.columns else '?'
-    n_subjects = df_group['subject'].nunique() if len(df_group) > 0 else 0
-    timing_label = timing_col.replace('log_', '')
-    fig.suptitle(
-        f'{target_nm} — {event} ({timing_label})\n'
-        f'{n_sessions} sessions, {n_subjects} subjects',
-        fontsize=LABELFONTSIZE,
-    )
-
-    if len(df_group) == 0:
-        return fig
-
-    sc = ax.scatter(df_group[timing_col], df_group[response_col],
-                    c=df_group['contrast'], cmap='viridis', s=8, alpha=0.15,
-                    edgecolors='none')
-    fig.colorbar(sc, ax=ax, label='Contrast (%)')
-    ax.set_xlabel(f'{timing_label} (log₁₀ s)')
-    ax.set_ylabel(r'$\Delta$ activity (z-score)')
-    ax.axhline(0, ls='--', color='gray', lw=0.5)
-    return fig
-
-
 def plot_confusion_matrix(confusion, fig=None):
     """Plot a confusion matrix as an annotated heatmap.
 
@@ -2836,14 +2779,14 @@ def plot_lmm_summary(r2_df, coef_df, emm_frames, event, formula=None,
     Parameters
     ----------
     r2_df : pd.DataFrame
-        ``response_lmm_fit`` output for one model: ``target_NM``, ``event``,
-        ``marginal_r2``, ``conditional_r2``.
+        Per-fit variance explained: ``target_NM``, ``event``, ``marginal_r2``,
+        ``conditional_r2``.
     coef_df : pd.DataFrame
-        ``response_lmm_effects(name, 'coefficients')``: ``term``,
-        ``target_NM``, ``event``, ``Coef.``, ``P>|z|``.
+        Fixed-effects table: ``term``, ``target_NM``, ``event``, ``Coef.``,
+        ``P>|z|``.
     emm_frames : dict[str, pd.DataFrame]
         Maps each bottom-row factor (``'reward'``, ``'side'``, ``'contrast'``)
-        to its ``response_lmm_effects(name, 'emm', [factor])`` frame.
+        to its estimated-marginal-means frame for that factor.
     event : str
         Event to plot; selects rows from each frame.
     formula : str, optional
@@ -3909,11 +3852,11 @@ _MOVEMENT_R2_BARS = [
 def plot_movement_r2_bars(summary_df):
     """In-sample marginal R² of the three nested movement models, per target-NM.
 
-    Reads the in-sample R² frame from ``response_lmm_fit``: for each movement
-    variable, three nested models from the ``movement_<var>`` family — ``full``
-    (the revised per-event task base extended with the movement predictor at
-    2nd order), ``contrast`` (contrast dropped, the movement-family model), and
-    ``movement`` (the predictor dropped, the task base). One panel per movement
+    Reads an in-sample R² frame: for each movement variable, three nested
+    models — ``full`` (the per-event task base extended with the movement
+    predictor at 2nd order), ``contrast`` (contrast dropped, the movement-family
+    model), and ``movement`` (the predictor dropped, the task base). One panel
+    per movement
     variable; each target-NM gets three bars. Heights read two ways:
     contrast-family vs. movement-family = which predictor explains more; full
     vs. either = added value.

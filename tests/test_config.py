@@ -1,7 +1,7 @@
 """Tests for config constants and static config structures."""
 
 from iblnm import config
-from iblnm.config import LMM_FORMULAS, MOVEMENT_VARS
+from iblnm.config import LMM_FORMULAS
 
 
 def test_pose_qc_scalar_constants():
@@ -54,45 +54,6 @@ def _format(family):
     return {name: tpl.format(response='response') for name, tpl in family.items()}
 
 
-def test_task_reliability_formulas():
-    # Per-event sets: only stimOn and feedback are modeled (firstMovement is
-    # disabled). Reward is known only at feedback, so stimOn drops it
-    # (contrast*side only); feedback keeps it.
-    event_sets = LMM_FORMULAS['task_reliability']
-    assert set(event_sets) == {config.STIM_ONSET_EVENT, 'feedback_times'}
-    no_reward = {
-        'full': 'response ~ contrast * side',
-        'contrast': 'response ~ side',
-        'side': 'response ~ contrast',
-        'interactions': 'response ~ contrast + side',
-    }
-    assert _format(event_sets[config.STIM_ONSET_EVENT]) == no_reward
-    # 2nd-order only, no side:reward (that interaction encodes choice).
-    assert _format(event_sets['feedback_times']) == {
-        'full': 'response ~ contrast * side + contrast * reward',
-        'contrast': 'response ~ side + reward',
-        'side': 'response ~ contrast * reward',
-        'reward': 'response ~ contrast * side',
-        'interactions': 'response ~ contrast + side + reward',
-    }
-
-
-def test_movement_ceiling_formula():
-    # Saturated 3-way of the movement predictors; no task vars, no reward.
-    assert _format(LMM_FORMULAS['movement_ceiling']) == {
-        'ceiling': 'response ~ choice_side * log_reaction_time * peak_velocity'}
-
-
-def test_task_ceiling_formula():
-    # Per-event: reward only at feedback; side:reward dropped, 3-way kept.
-    ceiling = LMM_FORMULAS['task_ceiling']
-    no_reward = {'ceiling': 'response ~ C(contrast) * side'}
-    assert _format(ceiling[config.STIM_ONSET_EVENT]) == no_reward
-    assert _format(ceiling['firstMovement_times']) == no_reward
-    assert _format(ceiling['feedback_times']) == {
-        'ceiling': 'response ~ C(contrast) * side * reward - side:reward'}
-
-
 # Per-variable predictor column: choice enters as the fiber-relative choice
 # side, reaction_time log-transformed (heavy right skew), peak_velocity raw.
 _EXPECTED_PREDICTORS = {
@@ -102,68 +63,8 @@ _EXPECTED_PREDICTORS = {
 }
 
 
-def test_movement_vars_and_predictors():
-    assert config.MOVEMENT_VARS == ['choice', 'reaction_time', 'peak_velocity']
+def test_movement_predictors():
     assert config.MOVEMENT_PREDICTORS == _EXPECTED_PREDICTORS
-
-
-def test_movement_family_formulas_choice():
-    # choice interacts only with contrast (choice:side / choice:reward are
-    # collinear with the reward / side mains), so its family carries no
-    # choice:side or choice:reward terms. feedback carries reward (never
-    # side:reward); stimOn/firstMovement omit reward.
-    family = LMM_FORMULAS['movement_choice']
-    assert _format(family['feedback_times']) == {
-        'full': 'response ~ contrast + side + reward + contrast:side + contrast:reward + choice_side + contrast:choice_side',
-        'contrast': 'response ~ side + reward + choice_side',
-        'side': 'response ~ contrast + reward + contrast:reward + choice_side + contrast:choice_side',
-        'reward': 'response ~ contrast + side + contrast:side + choice_side + contrast:choice_side',
-        'movement': 'response ~ contrast + side + reward + contrast:side + contrast:reward',
-        'interactions': 'response ~ contrast + side + reward + contrast:side + contrast:reward + choice_side',
-    }
-    no_reward = {
-        'full': 'response ~ contrast + side + contrast:side + choice_side + contrast:choice_side',
-        'contrast': 'response ~ side + choice_side',
-        'side': 'response ~ contrast + choice_side + contrast:choice_side',
-        'movement': 'response ~ contrast + side + contrast:side',
-        'interactions': 'response ~ contrast + side + contrast:side + choice_side',
-    }
-    assert _format(family[config.STIM_ONSET_EVENT]) == no_reward
-    assert _format(family['firstMovement_times']) == no_reward
-
-
-def test_choice_omits_side_reward_interactions_unlike_continuous():
-    # Continuous predictors interact with side and reward; choice does not.
-    rt_full = LMM_FORMULAS['movement_reaction_time']['feedback_times']['full']
-    assert 'side:log_reaction_time' in rt_full
-    assert 'reward:log_reaction_time' in rt_full
-    choice_full = LMM_FORMULAS['movement_choice']['feedback_times']['full']
-    assert 'side:choice_side' not in choice_full
-    assert 'reward:choice_side' not in choice_full
-    assert 'contrast:choice_side' in choice_full
-
-
-def test_movement_families_per_event_reference_and_predictor():
-    # Every movement var has an event-keyed set; each event set has a reference
-    # `full` naming the predictor column. Pre-feedback events omit reward.
-    for var in MOVEMENT_VARS:
-        pred = _EXPECTED_PREDICTORS[var]
-        family = LMM_FORMULAS[f'movement_{var}']
-        assert set(family) == {
-            config.STIM_ONSET_EVENT, 'firstMovement_times', 'feedback_times'}
-        for event, event_set in family.items():
-            full = event_set['full'].format(response='response')
-            assert pred in full
-            assert ('reward' in full) == (event == 'feedback_times')
-
-
-def test_nested_sets_have_reference_key():
-    # task_reliability and the movement families are keyed by event; each
-    # event's set has the reference.
-    families = ['task_reliability'] + [f'movement_{v}' for v in MOVEMENT_VARS]
-    for family in families:
-        for event_set in LMM_FORMULAS[family].values():
-            assert 'full' in event_set
 
 
 def _termsets(formula):

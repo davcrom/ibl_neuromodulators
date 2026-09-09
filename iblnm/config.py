@@ -531,8 +531,7 @@ RESPONSE_WINDOWS = {
 }
 
 # Movement encoding analyses
-MOVEMENT_VARS = ['choice', 'reaction_time', 'peak_velocity']
-# Predictor column each movement variable enters the LMM as. choice enters as
+# Predictor column each movement variable enters the model as. choice enters as
 # the deviation-coded fiber-relative choice side; reaction_time is heavily
 # right-skewed (raw skew 7.7) so it enters log-transformed; peak_velocity is
 # already roughly symmetric (raw skew 0.9) and enters raw.
@@ -542,8 +541,6 @@ MOVEMENT_PREDICTORS = {
     'reaction_time': 'log_reaction_time',
     'peak_velocity': 'peak_velocity',
 }
-MIN_SUBJECTS_MOVEMENT = 2
-MIN_TRIALS_MOVEMENT = 20
 
 # Continuous predictor columns that PhotometrySession.code_predictors centers on
 # their mean within
@@ -661,56 +658,7 @@ ENCODING_TERMS = {
 # placeholder (filled with the response column at fit time). In a nested
 # comparison set, `full` is the reference model; every other key names the
 # predictor whose unique contribution is `r2(full) - r2(<key>)`, and its formula
-# is the full model with that predictor dropped. Movement families enumerate one
-# per-event set per `MOVEMENT_VARS` entry, the formula naming the real predictor
-# column (`choice_side`, `log_reaction_time`, `peak_velocity`).
-
-
-def _render_terms(terms: list) -> str:
-    """Render an ordered list of model terms as a Wilkinson right-hand side.
-
-    Each term is a tuple of variable names: a 1-tuple is a main effect, a
-    2-tuple an interaction (joined with ``:``).
-    """
-    return ' + '.join(':'.join(t) for t in terms)
-
-
-def _movement_family(pred: str, reward: bool) -> dict:
-    """One movement reliability family: the revised per-event task base extended
-    with a movement predictor at 2nd order.
-
-    The task base carries the task mains plus ``contrast``'s two-way
-    interactions (``contrast:side`` always, ``contrast:reward`` at feedback);
-    ``side:reward`` is never present. The predictor enters as a main effect plus
-    two-way interactions with the task variables — except ``choice_side``, whose
-    ``side``/``reward`` interactions are collinear with the ``reward``/``side``
-    mains (``choice_side`` ≈ ``2·side·reward``), so choice interacts only with
-    ``contrast``. Reference ``full``; each task key drops a task variable and
-    every term containing it; ``movement`` drops the predictor (leaving the task
-    base); ``interactions`` makes the predictor additive.
-
-    Parameters
-    ----------
-    pred : str
-        Movement predictor column (e.g. ``choice_side``, ``log_reaction_time``).
-    reward : bool
-        True at feedback (reward known): the base carries reward; False
-        pre-feedback (stimOn / firstMovement): no reward term or key.
-    """
-    task_vars = ['contrast', 'side'] + (['reward'] if reward else [])
-    base = [(v,) for v in task_vars] + \
-           [('contrast', v) for v in task_vars if v != 'contrast']
-    pred_x = ['contrast'] if pred == 'choice_side' else list(task_vars)
-    full = base + [(pred,)] + [(v, pred) for v in pred_x]
-
-    family = {
-        'full': full,
-        'movement': base,
-        'interactions': base + [(pred,)],
-        **{v: [t for t in full if v not in t] for v in task_vars},
-    }
-    return {name: '{response} ~ ' + _render_terms(terms)
-            for name, terms in family.items()}
+# is the full model with that predictor dropped.
 
 
 # Per-recording OLS drop-one regressors: the six the persession family below is
@@ -720,68 +668,6 @@ PERSESSION_REGRESSORS = ['contrast', 'side', 'reward', 'choice_side',
 
 
 LMM_FORMULAS = {
-    # Task reliability: full interaction model is the reference. Each predictor's
-    # ΔR² drops it and every interaction it participates in (so the two-way `*`
-    # of the remaining pair); `interactions` drops the whole interaction block
-    # (additive model), testing whether the coding is interactive at all. Keyed
-    # by event because the reward outcome is only known at feedback, so stimOn
-    # drops the reward predictor entirely (contrast*side only); the feedback set
-    # keeps it. firstMovement is currently disabled (see below).
-    'task_reliability': {
-        STIM_ONSET_EVENT: {
-            'full': '{response} ~ contrast * side',
-            'contrast': '{response} ~ side',
-            'side': '{response} ~ contrast',
-            'interactions': '{response} ~ contrast + side',
-        },
-        # ~ 'firstMovement_times': {
-            # ~ 'full': '{response} ~ contrast * side',
-            # ~ 'contrast': '{response} ~ side',
-            # ~ 'side': '{response} ~ contrast',
-            # ~ 'interactions': '{response} ~ contrast + side',
-        # ~ },
-        # 2nd-order only and no side:reward — that interaction encodes choice,
-        # which moves to the movement set. `full` is the two-way model minus
-        # side:reward; each drop-one removes a predictor and its surviving
-        # interactions; `interactions` is the additive model.
-        'feedback_times': {
-            'full': '{response} ~ contrast * side + contrast * reward',
-            'contrast': '{response} ~ side + reward',
-            'side': '{response} ~ contrast * reward',
-            'reward': '{response} ~ contrast * side',
-            'interactions': '{response} ~ contrast + side + reward',
-        },
-    },
-    # Task ceiling: per-event saturated upper-bound reporting model. Keyed by
-    # event like task_reliability — reward enters only at feedback. The 2-way
-    # side:reward is dropped everywhere (it encodes choice, studied in the
-    # movement set); the feedback 3-way C(contrast):side:reward is kept, so the
-    # ceiling sits just below a fully saturated cell-means model.
-    'task_ceiling': {
-        STIM_ONSET_EVENT: {'ceiling': '{response} ~ C(contrast) * side'},
-        'firstMovement_times': {'ceiling': '{response} ~ C(contrast) * side'},
-        'feedback_times': {
-            'ceiling': '{response} ~ C(contrast) * side * reward - side:reward'},
-    },
-    # Movement reliability: one per-event set per movement variable, each
-    # extending that event's revised task base (reward only at feedback,
-    # 2nd-order, no side:reward) with the movement predictor at 2nd order. See
-    # `_movement_family`. The three-bar r2 plot reads the
-    # `full`/`contrast`/`movement` subset.
-    **{
-        f'movement_{var}': {
-            STIM_ONSET_EVENT: _movement_family(pred, reward=False),
-            'firstMovement_times': _movement_family(pred, reward=False),
-            'feedback_times': _movement_family(pred, reward=True),
-        }
-        for var, pred in MOVEMENT_PREDICTORS.items()
-    },
-    # Movement ceiling: saturated upper bound for movement encoding — the full
-    # 3-way interaction of the movement predictors. No task variables and no
-    # reward, so a single model fit per event (the analog of task_ceiling).
-    'movement_ceiling': {
-        'ceiling': '{response} ~ choice_side * log_reaction_time * peak_velocity',
-    },
     # Per-session OLS drop-one over PERSESSION_REGRESSORS: `full` is the
     # reference, carrying the six mains and every two-way except side:reward,
     # choice_side:side and choice_side:reward — choice_side enters explicitly so
