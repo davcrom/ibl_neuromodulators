@@ -61,7 +61,7 @@ from iblnm.validation import (
     MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
     MissingMotionEnergy,
     InsufficientTrials, BlockStructureBug, MissingBlockInfo,
-    IncompleteEventTimes, MissingFormula, TrialsNotInPhotometryTime,
+    IncompleteEventTimes, TrialsNotInPhotometryTime,
     QCValidationError, AmbiguousRegionMapping,
     VideoLengthError,
 )
@@ -96,41 +96,6 @@ class DonorFrame(NamedTuple):
     subject: str
     target_NM: tuple[str, ...]
     frame: pd.DataFrame
-
-
-def resolve_event_family(formulas: dict, event: str) -> dict[str, str]:
-    """Select the formula family one event is fitted against.
-
-    Two family shapes are in use. A flat family maps model name to formula
-    template and is shared by every event (``LMM_FORMULAS['persession']``); an
-    event-keyed family nests one such mapping per event, because the predictors
-    available differ by event — reward is only known at feedback.
-
-    Parameters
-    ----------
-    formulas : dict
-        Either ``{name: formula_template}`` or ``{event: {name: template}}``.
-    event : str
-        Event whose family is wanted.
-
-    Returns
-    -------
-    dict[str, str]
-        That event's ``{name: formula_template}`` mapping. Resolving an
-        already-resolved flat family returns it unchanged, so the call is
-        idempotent and safe to repeat down a call chain.
-
-    Raises
-    ------
-    iblnm.validation.MissingFormula
-        ``formulas`` is event-keyed and does not name ``event``, which would
-        otherwise leave the event fitted against nothing.
-    """
-    if all(isinstance(template, str) for template in formulas.values()):
-        return formulas
-    if event not in formulas:
-        raise MissingFormula(event, formulas)
-    return formulas[event]
 
 
 def response_column(region: str, event: str) -> str:
