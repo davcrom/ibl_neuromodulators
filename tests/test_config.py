@@ -141,17 +141,28 @@ def _dropped_terms(**overrides):
     return {**config.RESPONSE_DROPPED_TERMS, **overrides}
 
 
-# Per-variable predictor column: choice enters as the fiber-relative choice
-# side, reaction_time log-transformed (heavy right skew), peak_velocity raw.
-_EXPECTED_PREDICTORS = {
-    'choice': 'choice_side',
+# Input trials column -> the column the model reads it under. reaction_time
+# enters log-transformed (heavy right skew), peak_velocity raw, feedbackType
+# under the name the formulas use.
+_EXPECTED_PREDICTOR_COLUMNS = {
+    'contrast': 'contrast',
+    'side': 'side',
+    'feedbackType': 'reward',
+    'choice_side': 'choice_side',
     'reaction_time': 'log_reaction_time',
     'peak_velocity': 'peak_velocity',
 }
 
 
-def test_movement_predictors():
-    assert config.MOVEMENT_PREDICTORS == _EXPECTED_PREDICTORS
+def test_predictor_transforms_output_columns():
+    assert {col: out for col, (_, out)
+            in config.PREDICTOR_TRANSFORMS.items()} == _EXPECTED_PREDICTOR_COLUMNS
+
+
+def test_predictor_transforms_every_regressor_is_produced():
+    """Every main effect the persession models fit has a transform behind it."""
+    produced = {out for _, out in config.PREDICTOR_TRANSFORMS.values()}
+    assert set(config.PERSESSION_REGRESSORS) <= produced
 
 
 def _termsets(formula):

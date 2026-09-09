@@ -193,7 +193,7 @@ def run_dispersion(group, magnitudes, events, args, fig_dir,
     events : list of str
         Events forming the figure columns.
     args : argparse.Namespace
-        Must have ``weight_by_se``, ``contrast_coding``, and ``params``.
+        Must have ``weight_by_se`` and ``params``.
     fig_dir : Path
         Output directory for the dispersion figure.
     block_mains : dict[str, list[str]]
@@ -218,7 +218,7 @@ def run_dispersion(group, magnitudes, events, args, fig_dir,
         features = group.get_persession_ols_features(
             magnitudes,
             formula=RESPONSE_MODEL_FORMULA, event_name=event,
-            weight_by_se=args.weight_by_se, contrast_coding=args.contrast_coding,
+            weight_by_se=args.weight_by_se,
         )
         neural_by_event[event] = _neural_long_with_subject(
             features, group.recordings)
@@ -472,7 +472,7 @@ def run_cca(group, magnitudes, event, args, data_dir, scatter_dir,
     event : str
         Event name (e.g. 'stimOnTrigger_times').
     args : argparse.Namespace
-        Must have: weight_by_se, contrast_coding, n_permutations, seed,
+        Must have: weight_by_se, n_permutations, seed,
         sparse, unit_norm, params.
     data_dir : Path
         Output directory for CSV files.
@@ -488,7 +488,6 @@ def run_cca(group, magnitudes, event, args, data_dir, scatter_dir,
     group.get_persession_ols_features(
         magnitudes, formula=RESPONSE_MODEL_FORMULA,
         event_name=event, weight_by_se=args.weight_by_se,
-        contrast_coding=args.contrast_coding,
     )
 
     # Align psychometric (behavioral) features to the neural features
@@ -538,10 +537,6 @@ def parse_args(argv=None) -> argparse.Namespace:
     # Shared
     parser.add_argument('--plot-only', action='store_true',
                         help='skip fitting; regenerate figures from saved data')
-    parser.add_argument('--contrast-coding',
-                        choices=['log', 'log2', 'linear', 'rank'],
-                        default='log2',
-                        help='contrast transform for GLM (default: log2)')
     parser.add_argument('--events', nargs='+', default=None,
                         help='events to analyze '
                         f'(default: {RESPONSE_EVENTS})')

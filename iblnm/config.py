@@ -616,27 +616,67 @@ def validate_responses(responses: dict[str, dict]) -> None:
 validate_responses(RESPONSES)   # a bad edit to the table fails at import
 
 
-# Movement encoding analyses
-# Predictor column each movement variable enters the model as. choice enters as
-# the deviation-coded fiber-relative choice side; reaction_time is heavily
+# Predictor coding
+def log2_contrast(contrast):
+    """Code contrast as log2, clamping zero contrast to zero.
+
+    Parameters
+    ----------
+    contrast : array_like
+        Contrast in percent units. Nonzero values below 1 raise: a
+        fraction-unit 100% (= 1.0) would land on the same 0 as a blank screen.
+
+    Returns
+    -------
+    numpy.ndarray
+        log2 of each nonzero value, 0.0 where the contrast is 0.
+    """
+    contrast = np.asarray(contrast, dtype=float)
+    nonzero = contrast != 0
+    if np.any(contrast[nonzero] < 1):
+        raise ValueError(
+            'log2 contrast coding expects contrast in percent units '
+            '(nonzero values >= 1); got fractional input. A fraction-unit '
+            '100% (=1.0) would collide with the 0->0 clamp.')
+    return np.where(nonzero, np.log2(np.where(nonzero, contrast, 1)), 0.0)
+
+
+def log2_contrast_inverse(coded):
+    """Map log2-coded contrast back to percent units; 0 stays 0."""
+    coded = np.asarray(coded, dtype=float)
+    return np.where(coded != 0, 2 ** coded, 0.0)
+
+
+def center(values):
+    """Subtract the mean, ignoring and preserving NaNs.
+
+    Returns the input type: a Series in, a Series out on its own index.
+    """
+    return values - np.nanmean(values)
+
+
+# Input trials column -> (transform, model column it is written to). Each
+# transform takes that one column and returns the coded values, so no entry
+# needs the frame; a column absent from the frame is simply not coded.
+# `contrast` is log2-coded (unconditionally: nothing fits another coding) and
+# `side`, `choice_side` and `feedbackType` are deviation-coded to +/-0.5, which
+# already puts them on their within-frame mean. reaction_time is heavily
 # right-skewed (raw skew 7.7) so it enters log-transformed; peak_velocity is
 # already roughly symmetric (raw skew 0.9) and enters raw.
-# `PhotometrySession.code_predictors` supplies the matching log_<var> columns.
-MOVEMENT_PREDICTORS = {
-    'choice': 'choice_side',
-    'reaction_time': 'log_reaction_time',
-    'peak_velocity': 'peak_velocity',
+# The continuous entries fold in their own mean-centering, over the frame
+# `code_predictors` is handed (one recording-event for the per-session fits),
+# so every main effect is read at that frame's own mean rather than at a raw
+# zero no go trial reaches -- a 1 s reaction time (log10 = 0) or a motionless
+# wheel. Centering after the log, never before it.
+PREDICTOR_TRANSFORMS = {
+    'contrast': (lambda s: center(log2_contrast(s)), 'contrast'),
+    'side': (lambda s: np.where(s == 'contra', 0.5, -0.5), 'side'),
+    'feedbackType': (lambda s: np.where(s == 1, 0.5, -0.5), 'reward'),
+    'choice_side': (lambda s: np.where(s == 'contra', 0.5, -0.5), 'choice_side'),
+    'reaction_time': (lambda s: center(np.log10(s.where(s > 0))),
+                      'log_reaction_time'),
+    'peak_velocity': (lambda s: center(s), 'peak_velocity'),
 }
-
-# Continuous predictor columns that PhotometrySession.code_predictors centers on
-# their mean within
-# the frame it is handed (one recording-event), so every main effect is read at
-# the recording's own mean rather than at a raw zero that no go trial reaches --
-# a 1 s reaction time (log10 = 0) or a motionless wheel. choice_side is a
-# MOVEMENT_PREDICTORS value but not listed here: it is categorical, and its
-# deviation coding to +/-0.5 already puts it on the within-recording mean.
-# A name absent from a frame is skipped, so listing one costs nothing.
-CONTINUOUS_PREDICTORS = ('contrast', 'log_reaction_time', 'peak_velocity')
 
 # Pose QC (LightningPose output verification)
 LIKELIHOOD_THRESHOLD = 0.9          # gate keypoint speed where confidence < this

@@ -6416,7 +6416,7 @@ class TestCodePredictors:
             'side': ['contra', 'ipsi', 'contra'],
             'choice_side': ['contra', 'ipsi', 'ipsi'],
             'feedbackType': [1, -1, 1],
-            'log_reaction_time': [-1.5, -0.5, -2.0],
+            'reaction_time': [0.03, 0.3, 0.01],
             'peak_velocity': [40.0, 55.0, 90.0],
         })
 
@@ -6439,13 +6439,13 @@ class TestCodePredictors:
         assert coded['contrast'].mean() == pytest.approx(0.0, abs=1e-12)
         np.testing.assert_allclose(coded['contrast'].values, expected)
 
-    def test_movement_predictors_centered(self):
+    def test_peak_velocity_centered(self):
         df = self._frame()
         coded = self._code(df)
-        for col in ('log_reaction_time', 'peak_velocity'):
-            assert coded[col].mean() == pytest.approx(0.0, abs=1e-12)
-            np.testing.assert_allclose(
-                coded[col].values, df[col].values - df[col].values.mean())
+        assert coded['peak_velocity'].mean() == pytest.approx(0.0, abs=1e-12)
+        np.testing.assert_allclose(
+            coded['peak_velocity'].values,
+            df['peak_velocity'].values - df['peak_velocity'].values.mean())
 
     def test_absent_continuous_predictor_is_harmless(self):
         df = self._frame().drop(columns=['peak_velocity'])
@@ -6454,18 +6454,28 @@ class TestCodePredictors:
         assert coded['log_reaction_time'].mean() == pytest.approx(0.0, abs=1e-12)
 
     def test_reaction_time_logged_and_centered(self):
-        df = self._frame().drop(columns=['log_reaction_time'])
+        # Raw reaction times are right-skewed, so centering before the log
+        # would leave a nonzero mean; the log runs first.
+        df = self._frame()
         df['reaction_time'] = [0.2, 2.0, 0.0]
         coded = self._code(df)
         logged = np.array([np.log10(0.2), np.log10(2.0), np.nan])
         np.testing.assert_allclose(
             coded['log_reaction_time'].values, logged - np.nanmean(logged))
+        assert coded['log_reaction_time'].mean() == pytest.approx(0.0, abs=1e-12)
 
     def test_input_frame_not_mutated(self):
         df = self._frame()
         before = df.copy(deep=True)
         self._code(df)
         pd.testing.assert_frame_equal(df, before)
+
+    def test_absent_predictor_column_is_skipped(self):
+        # A formula that reads none of these codes on a frame that carries
+        # none of them; coding is per column, so a missing one is not an error.
+        df = self._frame().drop(columns=['choice_side', 'feedbackType'])
+        coded = self._code(df)
+        assert coded['side'].tolist() == [0.5, -0.5, 0.5]
 
 
 def _make_group_for_response_lmm():

@@ -21,13 +21,14 @@ from iblphotometry.qc import qc_signals
 from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
-    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW, CONTINUOUS_PREDICTORS,
+    ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW,
     DDM_HMM_DIR, EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD, IBL_QC_VALUES,
     LABEL2EVENT, LENGTH_MISMATCH_THRESHOLD, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
-    MOVEMENT_EVENTS, MOVEMENT_PREDICTORS, MOVEMENT_RESPONSE_WINDOW,
+    MOVEMENT_EVENTS, MOVEMENT_RESPONSE_WINDOW,
     OLS_PERSESSION_COLUMNS, PERSESSION_FDR_GROUP_COLS,
+    PREDICTOR_TRANSFORMS,
     PERSESSION_PVAL_N_BOOTSTRAP, PERSESSION_PVAL_SEED,
     PHOTOMETRY_BANDS, PHOTOMETRY_QC_THRESHOLDS,
     POSE_MEASURES, QCVAL2NUM,
@@ -55,7 +56,7 @@ from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.util import (
     LOG_COLUMNS, deduplicate_log, enforce_schema, fix_catalog,
-    get_contrast_coding, resolve_duplicate_group, validate_parallel_lists,
+    resolve_duplicate_group, validate_parallel_lists,
 )
 from iblnm.validation import (
     MissingExtractedData, MissingRawData, MissingLP, MissingVideoTimestamps,
@@ -2873,7 +2874,7 @@ class PhotometrySession(PhotometrySessionLoader):
         name : str
             Column name for the payloads that carry none — an array, or an
             unnamed Series. Defaults to `peak_velocity`, the only such payload
-            in the pipeline and the name `config.MOVEMENT_PREDICTORS` uses.
+            in the pipeline and the name `config.PREDICTOR_TRANSFORMS` codes.
 
         Returns
         -------
@@ -3826,23 +3827,20 @@ class PhotometrySession(PhotometrySessionLoader):
             ], ignore_index=True)
 
     @staticmethod
-    def code_predictors(df: pd.DataFrame,
-                        contrast_coding: str = 'log2') -> pd.DataFrame:
+    def code_predictors(df: pd.DataFrame) -> pd.DataFrame:
         """Code a trial frame for model fitting; do not mutate the input.
 
-        Returns a copy with a base-10 ``log_<var>`` column added for each
-        ``config.MOVEMENT_PREDICTORS`` entry coded as one, ``contrast``
-        transformed (``contrast_coding``), ``side`` / ``choice_side`` /
-        ``reward`` deviation-coded to ±0.5 (``side`` and ``choice_side``:
-        contra = +0.5, ipsi = −0.5; ``reward``: ``feedbackType`` 1 = +0.5,
-        −1 = −0.5), and every ``config.CONTINUOUS_PREDICTORS`` column present
-        mean-centered. The log columns are added before the centering, since
-        ``log_reaction_time`` is itself a continuous predictor. Centering is
-        within the frame handed in, so the caller decides the grain — one
-        recording-event for the per-session fits, one cohort for the pooled
-        ones. NaNs are ignored by the mean and preserved in the output. Coding
-        a column a given formula does not use, or one absent from ``df``, is
-        harmless.
+        Runs every ``config.PREDICTOR_TRANSFORMS`` entry whose input column is
+        present and writes the result to that entry's output column: contrast
+        log2-coded and centered, ``side`` / ``choice_side`` / ``reward``
+        deviation-coded to ±0.5 (``side`` and ``choice_side``: contra = +0.5,
+        ipsi = −0.5; ``reward``: ``feedbackType`` 1 = +0.5, −1 = −0.5),
+        ``reaction_time`` logged then centered as ``log_reaction_time``, and
+        ``peak_velocity`` centered. Centering is within the frame handed in, so
+        the caller decides the grain — one recording-event for the per-session
+        fits, one cohort for the pooled ones. NaNs are ignored by the mean and
+        preserved in the output. Coding a column a given formula does not use,
+        or leaving one absent from ``df`` uncoded, is harmless.
 
         Static because the pooled models code cohorts spanning many sessions
         and have no session in hand.
@@ -3850,31 +3848,19 @@ class PhotometrySession(PhotometrySessionLoader):
         Parameters
         ----------
         df : pd.DataFrame
-            Trial-level frame with columns ``contrast``, ``side`` and
-            ``feedbackType``; optionally ``choice_side`` and the movement
-            columns behind ``config.MOVEMENT_PREDICTORS``.
-        contrast_coding : str
-            Coding passed to :func:`iblnm.util.get_contrast_coding`.
+            Trial-level frame carrying whichever
+            ``config.PREDICTOR_TRANSFORMS`` input columns the caller's formula
+            reads.
 
         Returns
         -------
         pd.DataFrame
             A coded copy; the input is not mutated.
         """
-        transform, _ = get_contrast_coding(contrast_coding)
         df = df.copy()
-        for var, pred in MOVEMENT_PREDICTORS.items():
-            if pred == f'log_{var}' and var in df.columns:
-                df[pred] = np.log10(df[var].where(df[var] > 0))
-        df['contrast'] = transform(df['contrast'])
-        df['side'] = np.where(df['side'] == 'contra', 0.5, -0.5)
-        df['reward'] = np.where(df['feedbackType'] == 1, 0.5, -0.5)
-        if 'choice_side' in df.columns:
-            df['choice_side'] = np.where(
-                df['choice_side'] == 'contra', 0.5, -0.5)
-        continuous = [col for col in CONTINUOUS_PREDICTORS
-                      if col in df.columns]
-        df[continuous] = df[continuous] - df[continuous].mean()
+        for column, (transform, coded) in PREDICTOR_TRANSFORMS.items():
+            if column in df.columns:
+                df[coded] = transform(df[column])
         return df
 
     def select_donors(self, donors: dict[str, DonorFrame],
@@ -3922,7 +3908,6 @@ class PhotometrySession(PhotometrySessionLoader):
                              donor_scope: str = 'exclude_subject',
                              n_bootstrap: int = PERSESSION_PVAL_N_BOOTSTRAP,
                              rng: np.random.Generator | None = None,
-                             contrast_coding: str = 'log2',
                              min_trials: int = MIN_TRIALS_PERSESSION,
                              ) -> pd.DataFrame:
         """Fit one fiber x event on the rows the trial mask currently selects.
@@ -3973,8 +3958,6 @@ class PhotometrySession(PhotometrySessionLoader):
             Swap rng. ``None`` seeds one from `config.PERSESSION_PVAL_SEED`;
             a loop over cells passes one rng so its cells do not resample the
             same donors.
-        contrast_coding : str
-            Passed to :meth:`code_predictors`.
         min_trials : int
             Fewer selected rows than this is not scorable and raises.
 
@@ -4009,8 +3992,7 @@ class PhotometrySession(PhotometrySessionLoader):
 
         hemisphere = dict(zip(self.brain_region, self.hemisphere))[region]
         frame = self.code_predictors(
-            task.add_relative_contrast(trials.assign(hemisphere=hemisphere)),
-            contrast_coding)
+            task.add_relative_contrast(trials.assign(hemisphere=hemisphere)))
         frame = frame.join(self.cell_magnitudes(region, event)
                            .rename(response_col), on='trial')
 
@@ -5417,7 +5399,6 @@ class PhotometrySessionGroup:
     def get_persession_ols_features(self, trials, formula,
                                     event_name=STIM_ONSET_EVENT,
                                     weight_by_se=False,
-                                    contrast_coding='log2',
                                     min_trials=MIN_TRIALS_PERSESSION):
         """Fit a caller-supplied response model per recording, return coefficients.
 
@@ -5445,8 +5426,6 @@ class PhotometrySessionGroup:
         weight_by_se : bool
             If True, store t-statistics (``coef / SE``) instead of raw
             coefficients.
-        contrast_coding : str
-            Coding passed to :meth:`PhotometrySession.code_predictors`.
         min_trials : int
             A recording with fewer complete-case rows for the event is skipped.
 
@@ -5466,7 +5445,7 @@ class PhotometrySessionGroup:
         group_keys = ['eid', 'target_NM', 'brain_region', 'fiber_idx']
         features = {}
         for keys, grp in df.groupby(group_keys):
-            coded = PhotometrySession.code_predictors(grp, contrast_coding)
+            coded = PhotometrySession.code_predictors(grp)
             coded = coded.dropna(
                 subset=analysis.formula_union_columns([formula], coded.columns))
             if len(coded) < min_trials:

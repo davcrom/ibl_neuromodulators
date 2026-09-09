@@ -8,6 +8,7 @@ from iblnm.config import (
     EXCLUDE_SESSION_TYPES, PROTOCOL_RED_FLAGS, SESSION_TYPES,
     SUBJECTS_TO_EXCLUDE,
     QC_VALUE_ORDER,
+    log2_contrast, log2_contrast_inverse,
 )
 from iblnm.validation import (
     exception_logger,
@@ -690,22 +691,7 @@ def get_contrast_coding(coding='log'):
         return contrast_transform, contrast_inverse
 
     if coding == 'log2':
-        def _log2_transform(c):
-            c = np.asarray(c, dtype=float)
-            nonzero = c != 0
-            if np.any(c[nonzero] < 1):
-                raise ValueError(
-                    "log2 contrast coding expects contrast in percent units "
-                    "(nonzero values >= 1); got fractional input. A "
-                    "fraction-unit 100% (=1.0) would collide with the 0->0 "
-                    "clamp.")
-            return np.where(nonzero, np.log2(np.where(nonzero, c, 1)), 0.0)
-
-        def _log2_inverse(x):
-            x = np.asarray(x, dtype=float)
-            return np.where(x != 0, 2 ** x, 0.0)
-
-        return _log2_transform, _log2_inverse
+        return log2_contrast, log2_contrast_inverse
 
     if coding == 'linear':
         def _identity(c):
