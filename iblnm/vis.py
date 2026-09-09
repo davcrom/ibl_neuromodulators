@@ -3203,16 +3203,21 @@ def _dropone_rows():
 def _total_r2_rows():
     """Grid rows + shared y-label for the per-session full-model R² figure.
 
+    Adjusted rather than raw R², matching ``_dropone_rows``: the full model
+    spends 18 parameters and each reduced model 12, so a raw R² would put the
+    two figures on different scales — the ΔR² panel charged for its parameters
+    and the total panel not.
+
     Returns
     -------
     rows : list[tuple[str, str, str]]
         A single ``(row_label, value_column, predictor)`` reading full-model
-        ``r2_full`` off one predictor (it repeats across predictors per
+        ``r2_full_adj`` off one predictor (it repeats across predictors per
         session).
     supylabel : str
     """
-    return ([('full model R²', 'r2_full', PERSESSION_REGRESSORS[0])],
-            'R² (per-session, in-sample)')
+    return ([('full model R²', 'r2_full_adj', PERSESSION_REGRESSORS[0])],
+            'adjusted R² (per-session, in-sample)')
 
 
 def _pool_by_target(df_cell, value_col, targets):
@@ -3442,8 +3447,8 @@ def plot_ols_total_r2(df, title):
     """Per-session full-model R² — single row × event columns.
 
     Same format as ``plot_ols_dropone`` but a separate figure (its own y-axis),
-    plotting the full-model ``r2`` (read off one predictor, since it repeats
-    across them). See ``_persession_subject_grid``.
+    plotting the full-model ``r2_full_adj`` (read off one predictor, since it
+    repeats across them). See ``_persession_subject_grid``.
     """
     rows, supylabel = _total_r2_rows()
     return _persession_subject_grid(df, title, rows, supylabel,

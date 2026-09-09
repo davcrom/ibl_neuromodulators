@@ -1140,7 +1140,7 @@ class TestPlotOlsDropone:
 
         ``delta_r2_adj`` is ``_EVENT_BASE[event] + 0.001 * predictor_index`` so
         a point's value pins down the (event, predictor) panel it belongs in;
-        ``r2_full`` is constant per event, repeated across predictors. Every
+        ``r2_full_adj`` is constant per event, repeated across predictors. Every
         recording is significant, so a color assertion elsewhere isolates the
         table it varies.
         """
@@ -1155,7 +1155,7 @@ class TestPlotOlsDropone:
                                 'brain_region': tnm.split('-')[0],
                                 'target_NM': tnm, 'event': event,
                                 'subject': subject, 'predictor': pred,
-                                'r2_full': self._EVENT_BASE[event] + 0.3,
+                                'r2_full_adj': self._EVENT_BASE[event] + 0.3,
                                 'delta_r2_adj':
                                     self._EVENT_BASE[event] + 0.001 * pi,
                                 'q_value': 0.001})
@@ -1171,7 +1171,7 @@ class TestPlotOlsDropone:
         return pd.DataFrame([
             {'eid': f'{subject}_{i}', 'brain_region': target_NM.split('-')[0],
              'target_NM': target_NM, 'event': 'stimOnTrigger_times',
-             'subject': subject, 'predictor': 'contrast', 'r2_full': 0.5,
+             'subject': subject, 'predictor': 'contrast', 'r2_full_adj': 0.5,
              'delta_r2_adj': value, 'q_value': q_value}
             for subject, values in values_by_subject
             for i, value in enumerate(values)
@@ -1223,14 +1223,14 @@ class TestPlotOlsDropone:
 
     def test_total_r2_figure_one_row_of_full_model_r2(self):
         """plot_ols_total_r2 is a separate single-row figure plotting the
-        full-model R² (column ``r2_full``), read once per session (not per
-        predictor).
+        adjusted full-model R² (column ``r2_full_adj``), read once per session
+        (not per predictor).
         """
         from iblnm.vis import plot_ols_total_r2
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
-             'predictor': pred, 'r2_full': r2, 'delta_r2': 0.05}
-            for pred in ('contrast', 'side')  # r2_full repeats across predictors
+             'predictor': pred, 'r2_full_adj': r2, 'delta_r2_adj': 0.05}
+            for pred in ('contrast', 'side')  # r2_full_adj repeats across predictors
             for r2 in (0.4, 0.6)               # two sessions
         ]
         fig = plot_ols_total_r2(pd.DataFrame(rows), 't')
@@ -1362,7 +1362,7 @@ class TestPlotOlsDropone:
         rows = [
             {'eid': eid, 'brain_region': 'VTA', 'target_NM': 'VTA-DA',
              'event': 'stimOnTrigger_times', 'subject': 'm_a',
-             'predictor': 'contrast', 'r2_full': 0.5, 'delta_r2_adj': v,
+             'predictor': 'contrast', 'r2_full_adj': 0.5, 'delta_r2_adj': v,
              'q_value': q}
             for eid, v, q in [('e_sig', 0.1, 0.01), ('e_ns', 0.3, 0.5)]
         ]
@@ -1379,7 +1379,7 @@ class TestPlotOlsDropone:
         return pd.DataFrame([
             {'eid': eid, 'brain_region': 'VTA', 'target_NM': 'VTA-DA',
              'event': 'stimOnTrigger_times', 'subject': 'm_a',
-             'predictor': 'contrast', 'r2_full': 0.5, 'delta_r2_adj': v,
+             'predictor': 'contrast', 'r2_full_adj': 0.5, 'delta_r2_adj': v,
              'q_value': q}
             for (eid, v), q in zip([('e_1', 0.1), ('e_2', 0.3)], q_values)
         ])
@@ -1557,13 +1557,13 @@ class TestPlotOlsDroponeTargetMode:
         plt.close(fig)
 
     def test_violin_mode_total_r2_single_row(self):
-        """``plot_ols_total_r2_violin`` is a one-row figure of full-model R²
-        violins, one per target-NM."""
+        """``plot_ols_total_r2_violin`` is a one-row figure of adjusted
+        full-model R² violins, one per target-NM."""
         from iblnm.vis import plot_ols_total_r2_violin
         from matplotlib.collections import PolyCollection
         rows = [
             {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times', 'subject': 'm_a',
-             'predictor': pred, 'r2_full': r2, 'delta_r2': 0.05}
+             'predictor': pred, 'r2_full_adj': r2, 'delta_r2_adj': 0.05}
             for pred in ('contrast', 'side')  # repeats across predictors
             for r2 in (0.4, 0.6)
         ]
