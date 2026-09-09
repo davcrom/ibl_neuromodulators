@@ -7,7 +7,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from iblnm.config import RESPONSES, STIM_ONSET_EVENT
+from iblnm.config import (RESPONSE_DROPPED_TERMS, RESPONSES,
+                          STIM_ONSET_EVENT)
 from iblnm.data import PhotometrySession
 
 
@@ -694,33 +695,54 @@ class TestPlotPersessionFigures:
     handed, at the grain the caller read it in."""
 
     def _stub_frame(self):
-        predictors = ['contrast', 'side', 'reward', 'choice_side',
-                      'log_reaction_time', 'peak_velocity']
+        """Per-recording OLS rows over all eighteen drop-one labels.
+
+        Main-effect ΔR² runs 0.10-0.20 and interaction ΔR² 0.001-0.002, the
+        order-of-magnitude gap the two shared y-scales exist for.
+        """
         rows = []
         for s in range(3):
-            for p in predictors:
+            for p in RESPONSE_DROPPED_TERMS:
+                delta = (0.001 if ':' in p else 0.1) * (1 + s / 2)
                 rows.append({
                     'eid': f'e{s}', 'subject': f's{s}', 'target_NM': 'VTA-DA',
                     'brain_region': 'VTA', 'event': 'stimOnTrigger_times',
                     'predictor': p, 'n_trials': 100, 'r2_full': 0.5,
-                    'r2_full_adj': 0.45, 'delta_r2': 0.05,
-                    'delta_r2_adj': 0.03,
+                    'r2_full_adj': 0.45, 'delta_r2': delta + 0.02,
+                    'delta_r2_adj': delta,
                     'coef': 0.2, 'coef_se': 0.05, 'p_value': 0.01,
                     'q_value': 0.02, 'n_donors': 700})
         return pd.DataFrame(rows)
 
-    def test_plots_from_a_bare_frame(self, tmp_path):
+    def test_ylim_padded_around_the_class_values(self):
+        """``dropone_ylim`` spans the class's values with a 5% pad, and has no
+        range to give when the values are absent or all equal."""
+        from scripts.responses import dropone_ylim
+        from iblnm.vis import DROPONE_TERM_CLASSES
+        frame = self._stub_frame()
+
+        low, high = dropone_ylim(frame, DROPONE_TERM_CLASSES['main'])
+        assert (low, high) == pytest.approx((0.1 - 0.005, 0.2 + 0.005))
+        flat = frame.assign(delta_r2_adj=0.03)
+        assert dropone_ylim(flat, ['contrast']) is None  # one value repeated
+        assert dropone_ylim(frame, ['no_such_term']) is None
+
+    def test_one_file_per_dropped_term(self, tmp_path):
         """The frame and the output directory are the whole input — no group.
-        The per-mouse table is absent here, so this exercises the real drop-one
-        figure reading a frame rather than a mock."""
+        One drop-one figure per label, named for it with the interaction colon
+        replaced, plus the single full-model R² figure. The per-mouse table is
+        absent here, so this exercises the real figures rather than a mock."""
         from scripts import responses
 
         fig_dir = tmp_path / 'persession'
         fig_dir.mkdir()
         responses.plot_persession_figures(self._stub_frame(), None, fig_dir)
 
-        svg = fig_dir / 'response_ols_persession_dropone.svg'
-        assert svg.exists() and svg.stat().st_size > 0
+        names = {p.name for p in fig_dir.glob('*.svg')}
+        assert len(names) == len(RESPONSE_DROPPED_TERMS) + 1
+        assert all(':' not in name for name in names)
+        assert {'contrast.svg', 'contrast-side.svg'} <= names
+        assert all(p.stat().st_size > 0 for p in fig_dir.glob('*.svg'))
 
     @pytest.mark.parametrize('display, dropone_name, total_r2_name', [
         ('session', 'plot_ols_dropone', 'plot_ols_total_r2'),
@@ -738,8 +760,9 @@ class TestPlotPersessionFigures:
         assert total_r2_fn is getattr(vis, total_r2_name)
 
     def test_invokes_mapped_pair_and_threads_pvalues(self, tmp_path):
-        """Each mode calls the pair from the dispatch table; the per-mouse
-        p-value table reaches the drop-one call only in ``session`` mode
+        """Each mode calls its dispatch-table pair — the drop-one function once
+        per dropped term, the full-model R² function once; the per-mouse
+        p-value table reaches the drop-one calls only in ``session`` mode
         (subject/violin take none)."""
         import matplotlib.pyplot as plt
         from scripts import responses
@@ -759,12 +782,47 @@ class TestPlotPersessionFigures:
                                                   fig_dir, display=mode)
 
         for mode, (dropone_mock, total_r2_mock) in mocks.items():
-            dropone_mock.assert_called_once()
+            assert dropone_mock.call_count == len(RESPONSE_DROPPED_TERMS)
             total_r2_mock.assert_called_once()
         session_kwargs = mocks['session'][0].call_args.kwargs
         assert session_kwargs['mouse_pvalues'] is mouse_pvalues
         for mode in ('subject', 'target'):
             assert 'mouse_pvalues' not in mocks[mode][0].call_args.kwargs
+
+    def test_ylim_shared_within_term_class_and_differs_between(self, tmp_path):
+        """Every main-effect figure carries one range and every interaction
+        figure another, so a term near zero renders on its class's range
+        rather than autoscaled to itself."""
+        import matplotlib.pyplot as plt
+        from scripts import responses
+        from iblnm.vis import DROPONE_TERM_CLASSES
+
+        fig_dir = tmp_path / 'persession'
+        fig_dir.mkdir()
+        # One interaction contributes nothing, so its figure's range can only
+        # come from the class rather than from its own values.
+        results = self._stub_frame()
+        flat = results['predictor'] == 'contrast:side'
+        results.loc[flat, 'delta_r2_adj'] = 0.0
+        dropone_mock = MagicMock(return_value=plt.figure())
+        with patch.dict(responses._PERSESSION_DISPLAY_FNS,
+                        {'session': (dropone_mock,
+                                     MagicMock(return_value=plt.figure()))}):
+            responses.plot_persession_figures(results, None, fig_dir)
+
+        ylim_by_term = {call.kwargs['predictor']: call.kwargs['ylim']
+                        for call in dropone_mock.call_args_list}
+        mains = {ylim_by_term[term] for term in DROPONE_TERM_CLASSES['main']}
+        interactions = {ylim_by_term[term]
+                        for term in DROPONE_TERM_CLASSES['interaction']}
+        assert len(mains) == 1 and len(interactions) == 1
+        assert mains != interactions
+        # The stub's mains span 0.10-0.20, the interactions 0.001-0.002: each
+        # class's range covers its own values and not the other's.
+        (main_low, main_high), = mains
+        (int_low, int_high), = interactions
+        assert main_low < 0.1 and main_high > 0.2
+        assert int_low < 0.001 and int_high > 0.002 and int_high < 0.1
 
 
 class TestReadResultFrames:

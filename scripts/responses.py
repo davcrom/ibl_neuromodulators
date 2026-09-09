@@ -45,6 +45,7 @@ from iblnm import task
 from iblnm.data import DonorFrame, PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.vis import (
+    DROPONE_TERM_CLASSES,
     plot_masking_diagnostics,
     plot_mean_response_traces,
     plot_relative_contrast,
@@ -588,19 +589,55 @@ _PERSESSION_DISPLAY_FNS = {
 }
 
 
+def dropone_ylim(results: pd.DataFrame, terms: list[str],
+                 margin: float = 0.05) -> tuple[float, float] | None:
+    """Y-limits spanning one term class's per-session ΔR², padded by ``margin``.
+
+    Every figure of a class carries this range, so a term contributing nothing
+    reads as nothing instead of being autoscaled to fill its own panel. The
+    padding, a fraction of the values' span, keeps the extreme marks off the
+    spines. A class with no values, or one value repeated, has no range to
+    share and returns None, leaving the panels to autoscale.
+
+    Parameters
+    ----------
+    results : pandas.DataFrame
+        The merged per-recording OLS frame; ``predictor`` and ``delta_r2_adj``
+        are the columns read. Every display mode reduces these same values, so
+        one range computed here covers all three.
+    terms : list of str
+        The class's drop-one labels — a ``vis.DROPONE_TERM_CLASSES`` entry.
+    margin : float
+        Padding at each end, as a fraction of the span.
+
+    Returns
+    -------
+    tuple[float, float] or None
+    """
+    values = results.loc[results['predictor'].isin(terms), 'delta_r2_adj']
+    low, high = (values.min(), values.max()) if len(values) else (0.0, 0.0)
+    if low == high:
+        return None
+    pad = margin * (high - low)
+    return low - pad, high + pad
+
+
 def plot_persession_figures(results: pd.DataFrame,
                             mouse_pvalues: pd.DataFrame | None, figures_dir,
                             display: str = 'session') -> None:
-    """Save the per-session drop-one ΔR² and full-model R² figures.
+    """Save one drop-one ΔR² figure per dropped term, plus full-model R².
 
-    Scopes the merged per-recording OLS frame to ``RESPONSE_EVENTS`` (a cached
-    frame may carry events since dropped from the analysis) and saves two
-    figures from it: a drop-one ΔR² grid (dropped-regressor rows × event
-    columns) and a full-model R² figure (its own y-axis). ``display`` selects
-    how each session's values are drawn — per-session dots (``session``),
-    per-subject median+IQR (``subject``), or a per-target violin (``target``) —
-    via ``_PERSESSION_DISPLAY_FNS``; the SVG filenames are the same in every
-    mode.
+    Each ``config.RESPONSE_DROPPED_TERMS`` label gets its own figure — event
+    columns, no predictor axis — written as ``{predictor}.svg`` with the
+    interaction colon replaced by a hyphen, which a shell and a non-Linux
+    filesystem both prefer. Y-limits are shared within a term class and differ
+    between the two (``vis.DROPONE_TERM_CLASSES``): main-effect ΔR² runs an
+    order of magnitude above interaction ΔR², so one common axis flattens the
+    interactions, and autoscaling each figure to itself removes the comparison
+    across terms. The full-model R² figure has no predictor axis and stays one
+    per display mode. ``display`` selects how each session's values are drawn —
+    per-session dots (``session``), per-subject median+IQR (``subject``), or a
+    per-target violin (``target``) — via ``_PERSESSION_DISPLAY_FNS``.
 
     Parameters
     ----------
@@ -619,17 +656,20 @@ def plot_persession_figures(results: pd.DataFrame,
         Per-session value display mode.
     """
     dropone_fn, total_r2_fn = _PERSESSION_DISPLAY_FNS[display]
-    results = results[results['event'].isin(RESPONSE_EVENTS)]
-
     dropone_kwargs = ({'mouse_pvalues': mouse_pvalues}
                       if display == 'session' else {})
-    fig = dropone_fn(
-        results,
-        title='Per-session OLS drop-one ΔR²\nevery session is a point',
-        **dropone_kwargs)
-    fig.savefig(figures_dir / 'response_ols_persession_dropone.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
+
+    for terms in DROPONE_TERM_CLASSES.values():
+        ylim = dropone_ylim(results, terms)
+        for term in terms:
+            fig = dropone_fn(
+                results,
+                title=f'Per-session OLS drop-one ΔR²: {term}'
+                      '\nevery session is a point',
+                predictor=term, ylim=ylim, **dropone_kwargs)
+            fig.savefig(figures_dir / f"{term.replace(':', '-')}.svg",
+                        dpi=FIGURE_DPI, bbox_inches='tight')
+            plt.close(fig)
 
     fig = total_r2_fn(
         results,
@@ -637,7 +677,8 @@ def plot_persession_figures(results: pd.DataFrame,
     fig.savefig(figures_dir / 'response_ols_persession_total_r2.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
-    print("  Per-session OLS drop-one and full-model R² figures saved")
+    print(f"  {len(RESPONSE_DROPPED_TERMS)} per-session OLS drop-one figures "
+          "and the full-model R² figure saved")
 
 
 # The frames --reprocess writes and the no-flag branch reads back, each under

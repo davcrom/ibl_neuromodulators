@@ -1126,10 +1126,9 @@ class TestPlotLmmReliability:
 
 
 class TestPlotOlsDropone:
-    """Per-session ΔR² scatter grid: dropped-regressor rows × event columns."""
+    """Per-session ΔR² scatter figure: one dropped term × event columns."""
 
-    # Sourced from config so the row-label assertion below guards vis's figure
-    # rows against drift from the canonical drop-one regressor list.
+    # Sourced from config so the frame carries the canonical drop-one labels.
     _PREDICTORS = tuple(PERSESSION_REGRESSORS)
     # Per-event delta_r2_adj base so a point's value identifies its event row.
     _EVENT_BASE = {'stimOnTrigger_times': 0.1, 'feedback_times': 0.5}
@@ -1185,18 +1184,44 @@ class TestPlotOlsDropone:
                                if isinstance(c, PathCollection)
                                and len(c.get_offsets())])
 
-    def test_grid_rows_predictors_cols_events(self):
-        """6 regressor rows × 2 event columns; titles/labels name the axes."""
+    def test_one_row_for_the_named_term_by_event_columns(self):
+        """A figure covers one dropped term: a single row × 2 event columns,
+        labelled with the term and reading only its rows of the frame."""
         from iblnm.vis import plot_ols_dropone
-        fig = plot_ols_dropone(self._df(), 'Per-session ΔR²')
+        fig = plot_ols_dropone(self._df(), 'Per-session ΔR²', 'reward')
         assert isinstance(fig, plt.Figure)
-        assert len(fig.axes) == 6 * 2
-        # fig.axes is row-major: col 0 = stimOn (sorts first), col 1 = feedback.
-        assert [ax.get_title() for ax in fig.axes[:2]] == [
+        assert len(fig.axes) == 2
+        # col 0 = stimOn (sorts first), col 1 = feedback.
+        assert [ax.get_title() for ax in fig.axes] == [
             'stimOnTrigger_times', 'feedback_times']
-        col0 = [fig.axes[r * 2].get_ylabel() for r in range(6)]
-        assert col0 == list(self._PREDICTORS)
+        assert fig.axes[0].get_ylabel() == 'reward'
+        # 'reward' is predictor index 2, so its cell value is base + 0.002.
+        assert np.allclose(self._points(fig.axes[1])[:, 1],
+                           self._EVENT_BASE['feedback_times'] + 0.002)
         plt.close(fig)
+
+    def test_term_classes_partition_the_dropone_labels(self):
+        """The two y-scale classes cover every ``RESPONSE_DROPPED_TERMS`` label
+        exactly once: the mains in ``PERSESSION_REGRESSORS`` order, then the
+        two-way interactions. A label landing in neither would go unplotted."""
+        from iblnm.config import RESPONSE_DROPPED_TERMS
+        from iblnm.vis import DROPONE_TERM_CLASSES
+        mains = DROPONE_TERM_CLASSES['main']
+        interactions = DROPONE_TERM_CLASSES['interaction']
+        assert mains == list(PERSESSION_REGRESSORS)
+        assert all(':' in term for term in interactions)
+        assert mains + interactions == list(RESPONSE_DROPPED_TERMS)
+
+    def test_ylim_sets_the_shared_axis_and_none_autoscales(self):
+        """``ylim`` fixes the shared y-axis to the range given — wider than the
+        data — while ``ylim=None`` leaves matplotlib to autoscale to the data."""
+        from iblnm.vis import plot_ols_dropone
+        fixed = plot_ols_dropone(self._df(), 't', 'contrast', ylim=(-2.0, 3.0))
+        assert all(ax.get_ylim() == (-2.0, 3.0) for ax in fixed.axes)
+        auto = plot_ols_dropone(self._df(), 't', 'contrast')
+        assert auto.axes[0].get_ylim()[1] < 3.0  # data-scaled, not the range
+        plt.close(fixed)
+        plt.close(auto)
 
     def test_points_read_the_adjusted_delta_not_the_raw_one(self):
         """The figure plots ``delta_r2_adj``: with both columns present and
@@ -1204,21 +1229,10 @@ class TestPlotOlsDropone:
         from iblnm.vis import plot_ols_dropone
         df = self._df()
         df['delta_r2'] = df['delta_r2_adj'] + 0.5
-        fig = plot_ols_dropone(df, 't')
-        ax = fig.axes[2 * 2 + 1]  # 'reward' row × feedback column
+        fig = plot_ols_dropone(df, 't', 'reward')
+        ax = fig.axes[1]  # feedback column
         expected = self._EVENT_BASE['feedback_times'] + 0.001 * 2
         assert np.allclose(self._points(ax)[:, 1], expected)
-        plt.close(fig)
-
-    def test_point_y_is_delta_r2_in_matching_cell(self):
-        """A point's y equals its cell's ΔR², in the (predictor, event) panel."""
-        from iblnm.vis import plot_ols_dropone
-        fig = plot_ols_dropone(self._df(), 't')
-        # 'reward' row (index 2) × feedback column (index 1) → axes[2*2 + 1].
-        ax = fig.axes[2 * 2 + 1]
-        expected = self._EVENT_BASE['feedback_times'] + 0.001 * 2
-        ys = self._points(ax)[:, 1]
-        assert np.allclose(ys, expected)
         plt.close(fig)
 
     def test_total_r2_figure_one_row_of_full_model_r2(self):
@@ -1246,13 +1260,14 @@ class TestPlotOlsDropone:
         wider than within-group spacing, and one tick per target-NM sits at the
         centre of its subjects."""
         from iblnm.vis import plot_ols_dropone
-        fig = plot_ols_dropone(self._df(), 't')  # VTA-DA then DR-5HT, 2 mice each
+        # VTA-DA then DR-5HT, 2 mice each.
+        fig = plot_ols_dropone(self._df(), 't', 'contrast')
         xs = np.unique(np.round(self._points(fig.axes[0])[:, 0], 6))
         assert len(xs) == 4  # one x per subject
         within = xs[1] - xs[0]   # two VTA-DA subjects
         between = xs[2] - xs[1]  # gap to the DR-5HT group
         assert between > within  # groups separated by a wider gap
-        bottom_left = fig.axes[(6 - 1) * 2]  # last row, stimOn column
+        bottom_left = fig.axes[0]  # single row, stimOn column
         assert np.allclose(bottom_left.get_xticks(),
                            [(xs[0] + xs[1]) / 2, (xs[2] + xs[3]) / 2])
         assert [t.get_text().split('\n')[0]
@@ -1267,7 +1282,8 @@ class TestPlotOlsDropone:
         # Name order ('hi' < 'lo') is the opposite of mean order, so a pass
         # proves ordering is by name, not mean.
         fig = plot_ols_dropone(
-            self._cell_rows([('hi', [0.3, 0.5]), ('lo', [0.0, 0.2])]), 't')
+            self._cell_rows([('hi', [0.3, 0.5]), ('lo', [0.0, 0.2])]), 't',
+            'contrast')
         ax = fig.axes[0]  # contrast ΔR² row, one event
         means = sorted((c.get_offsets()[0][0], c.get_offsets()[0][1])
                        for c in ax.collections
@@ -1285,7 +1301,8 @@ class TestPlotOlsDropone:
         from matplotlib.collections import PathCollection
         import matplotlib.colors as mcolors
         fig = plot_ols_dropone(
-            self._cell_rows([('m_a', [0.1, 0.3]), ('m_b', [0.4, 0.6])]), 't')
+            self._cell_rows([('m_a', [0.1, 0.3]), ('m_b', [0.4, 0.6])]), 't',
+            'contrast')
         ax = fig.axes[0]  # one event → 1 column; contrast ΔR² row (row 0)
         # Mean markers carry a single point (sessions come in 2s here).
         means = [c for c in ax.collections
@@ -1300,7 +1317,7 @@ class TestPlotOlsDropone:
 
     def test_empty_frame_returns_titled_figure(self):
         from iblnm.vis import plot_ols_dropone
-        fig = plot_ols_dropone(self._df().iloc[0:0], 'Empty')
+        fig = plot_ols_dropone(self._df().iloc[0:0], 'Empty', 'contrast')
         assert isinstance(fig, plt.Figure)
         assert fig._suptitle.get_text() == 'Empty'
         plt.close(fig)
@@ -1313,7 +1330,8 @@ class TestPlotOlsDropone:
         """
         from iblnm.vis import plot_ols_dropone
         from matplotlib.collections import PathCollection
-        fig = plot_ols_dropone(self._cell_rows([('m_a', [0.0, 0.0, 0.3])]), 't')
+        fig = plot_ols_dropone(self._cell_rows([('m_a', [0.0, 0.0, 0.3])]), 't',
+                               'contrast')
         ax = fig.axes[0]  # contrast ΔR² row, one event
         marker = [c for c in ax.collections
                   if isinstance(c, PathCollection) and len(c.get_offsets()) == 1]
@@ -1366,7 +1384,7 @@ class TestPlotOlsDropone:
              'q_value': q}
             for eid, v, q in [('e_sig', 0.1, 0.01), ('e_ns', 0.3, 0.5)]
         ]
-        fig = plot_ols_dropone(pd.DataFrame(rows), 't', alpha=0.05)
+        fig = plot_ols_dropone(pd.DataFrame(rows), 't', 'contrast', alpha=0.05)
         colors = self._dot_color_by_y(fig.axes[0])
         assert np.allclose(colors[0.1],
                            mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))
@@ -1405,7 +1423,8 @@ class TestPlotOlsDropone:
 
         # Sessions significant, mouse not: dots colored, dash gray.
         fig = plot_ols_dropone(
-            self._two_session_rows(q_values=(0.01, 0.01)), 't', alpha=0.05,
+            self._two_session_rows(q_values=(0.01, 0.01)), 't', 'contrast',
+            alpha=0.05,
             mouse_pvalues=self._pvalue_frame({'m_a': 0.5}, 'subject'))
         dots = self._dot_color_by_y(fig.axes[0])
         assert np.allclose(dots[0.1], vta) and np.allclose(dots[0.3], vta)
@@ -1414,7 +1433,8 @@ class TestPlotOlsDropone:
 
         # Mouse significant, sessions not: dots gray, dash colored.
         fig = plot_ols_dropone(
-            self._two_session_rows(q_values=(0.5, 0.5)), 't', alpha=0.05,
+            self._two_session_rows(q_values=(0.5, 0.5)), 't', 'contrast',
+            alpha=0.05,
             mouse_pvalues=self._pvalue_frame({'m_a': 0.01}, 'subject'))
         dots = self._dot_color_by_y(fig.axes[0])
         assert np.allclose(dots[0.1], gray) and np.allclose(dots[0.3], gray)
@@ -1428,7 +1448,8 @@ class TestPlotOlsDropone:
         from iblnm.config import TARGETNM_COLORS
         import matplotlib.colors as mcolors
         fig = plot_ols_dropone(
-            self._two_session_rows(q_values=(0.01, np.nan)), 't', alpha=0.05)
+            self._two_session_rows(q_values=(0.01, np.nan)), 't', 'contrast',
+            alpha=0.05)
         dots = self._dot_color_by_y(fig.axes[0])
         assert np.allclose(dots[0.1],
                            mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))
@@ -1449,7 +1470,7 @@ class TestPlotOlsDropone:
         ])
         fig = plot_ols_dropone(
             self._cell_rows([('m_sig', [0.1, 0.3]), ('m_ns', [0.4, 0.6])]),
-            't', mouse_pvalues=mouse_pvalues, alpha=0.05)
+            't', 'contrast', mouse_pvalues=mouse_pvalues, alpha=0.05)
         colors = self._marker_color_by_y(fig.axes[0])
         assert np.allclose(colors[0.2],
                            mcolors.to_rgb(TARGETNM_COLORS['VTA-DA']))  # m_sig
@@ -1458,7 +1479,7 @@ class TestPlotOlsDropone:
 
 
 class TestPlotOlsDroponeSubjectMode:
-    """Subject-mode per-session grid: each subject a median + Q1–Q3 whisker."""
+    """Subject-mode per-session figure: each subject a median + Q1–Q3 whisker."""
 
     def test_median_iqr_reduction(self):
         """``_median_iqr`` returns the median and the 25th/75th percentiles."""
@@ -1478,8 +1499,8 @@ class TestPlotOlsDroponeSubjectMode:
              'predictor': 'contrast', 'r2': 0.5, 'delta_r2_adj': v}
             for v in (0.0, 0.0, 0.3)
         ]
-        fig = plot_ols_dropone_subject(pd.DataFrame(rows), 't')
-        ax = fig.axes[0]  # contrast ΔR² row, one event
+        fig = plot_ols_dropone_subject(pd.DataFrame(rows), 't', 'contrast')
+        ax = fig.axes[0]  # the contrast ΔR² figure, one event
         bars = [c for c in ax.containers if isinstance(c, ErrorbarContainer)]
         assert len(bars) == 1  # one subject
         data_line = bars[0].lines[0]
@@ -1490,7 +1511,7 @@ class TestPlotOlsDroponeSubjectMode:
 
 
 class TestPlotOlsDroponeTargetMode:
-    """Target-mode per-session grid: each target a violin of pooled sessions."""
+    """Target-mode per-session figure: each target a violin of pooled sessions."""
 
     def test_pool_by_target_maps_sessions_to_targets(self):
         """``_pool_by_target`` pools every subject's per-session values under the
@@ -1529,9 +1550,9 @@ class TestPlotOlsDroponeTargetMode:
         from iblnm.config import TARGETNM_COLORS
         from matplotlib.collections import PolyCollection
         import matplotlib.colors as mcolors
-        fig = plot_ols_dropone_violin(self._two_target_cell(), 't')
-        assert len(fig.axes) == 6  # 6 predictor rows × 1 event column
-        ax = fig.axes[0]  # 'contrast' row (index 0), stimOn column
+        fig = plot_ols_dropone_violin(self._two_target_cell(), 't', 'contrast')
+        assert len(fig.axes) == 1  # one dropped term × 1 event column
+        ax = fig.axes[0]  # the 'contrast' figure, stimOn column
         bodies = [c for c in ax.collections if isinstance(c, PolyCollection)]
         assert len(bodies) == 2  # one violin per target, not per subject
         # x order follows TARGETNM2POSITION: VTA-DA at slot 0, DR-5HT at slot 1.
@@ -1543,12 +1564,21 @@ class TestPlotOlsDroponeTargetMode:
         assert np.allclose(face_by_slot[1][1], mcolors.to_rgb(TARGETNM_COLORS['DR-5HT']))
         plt.close(fig)
 
+    def test_violin_mode_ylim_sets_the_shared_axis(self):
+        """The violin mode takes the same shared range as the other modes, so a
+        term's figure is comparable across them."""
+        from iblnm.vis import plot_ols_dropone_violin
+        fig = plot_ols_dropone_violin(self._two_target_cell(), 't', 'contrast',
+                                      ylim=(-2.0, 3.0))
+        assert all(ax.get_ylim() == (-2.0, 3.0) for ax in fig.axes)
+        plt.close(fig)
+
     def test_violin_mode_pools_sessions_across_subjects(self):
         """A target's violin spans the pooled per-session values of all its
         subjects — VTA-DA's body covers m_b's 0.5, not just m_a's [0.1, 0.3]."""
         from iblnm.vis import plot_ols_dropone_violin
         from matplotlib.collections import PolyCollection
-        fig = plot_ols_dropone_violin(self._two_target_cell(), 't')
+        fig = plot_ols_dropone_violin(self._two_target_cell(), 't', 'contrast')
         ax = fig.axes[0]
         vta = min((c for c in ax.collections if isinstance(c, PolyCollection)),
                   key=lambda b: b.get_paths()[0].vertices[:, 0].mean())  # slot 0
@@ -1577,7 +1607,8 @@ class TestPlotOlsDroponeTargetMode:
 
     def test_violin_mode_empty_frame_returns_titled_figure(self):
         from iblnm.vis import plot_ols_dropone_violin
-        fig = plot_ols_dropone_violin(self._two_target_cell().iloc[0:0], 'Empty')
+        fig = plot_ols_dropone_violin(self._two_target_cell().iloc[0:0], 'Empty',
+                                      'contrast')
         assert isinstance(fig, plt.Figure)
         assert fig._suptitle.get_text() == 'Empty'
         plt.close(fig)
@@ -3092,8 +3123,8 @@ class TestPlotOlsDroponeCounts:
         """Recordings are distinct ``(eid, brain_region)`` pairs, so a bilateral
         session counts twice; mice are distinct subjects."""
         from iblnm.vis import plot_ols_dropone
-        fig = plot_ols_dropone(self._df(), 'title')
-        # Bottom-row panel of the single event column carries the target ticks.
+        fig = plot_ols_dropone(self._df(), 'title', 'contrast')
+        # The single event column's panel carries the target ticks.
         labels = [t.get_text() for t in fig.axes[-1].get_xticklabels()]
         vta = next(text for text in labels if text.startswith('VTA-DA'))
         dr = next(text for text in labels if text.startswith('DR-5HT'))
@@ -3107,8 +3138,8 @@ class TestPlotOlsDroponeCounts:
         df = self._df()
         extra = df.iloc[[0]].assign(event='feedback_times', eid='E')
         fig = plot_ols_dropone(pd.concat([df, extra], ignore_index=True),
-                               'title')
-        # Two event columns; the bottom row's last panel is feedback_times.
+                               'title', 'contrast')
+        # Two event columns; the last panel is feedback_times.
         stimon = [t.get_text() for t in fig.axes[-2].get_xticklabels()]
         feedback = [t.get_text() for t in fig.axes[-1].get_xticklabels()]
         assert any('n=3' in text for text in stimon)
