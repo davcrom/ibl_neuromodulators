@@ -2908,16 +2908,9 @@ class TestPermutationNullDeltaR2:
                           - fit_ols(reduced, swapped).rsquared)
         return deltas
 
-    @staticmethod
-    def _drawn_from(values, expected, tol=1e-9):
-        """Every distinct value in ``values`` matches some ``expected`` within
-        ``tol`` (bootstrap draws are copies of the scorable-donor deltas)."""
-        return all(min(abs(v - e) for e in expected) < tol
-                   for v in np.unique(values))
-
-    def test_bootstrap_length_and_membership(self):
-        """With two scorable donors and n_bootstrap=500 the returned vector has
-        length 500 and every value is one of the two scorable-donor ΔR²."""
+    def test_null_is_one_entry_per_donor(self):
+        """Two scorable donors give a length-2 null holding those two donors'
+        ΔR² in donor order — the pool as computed, unresampled."""
         from iblnm.analysis import permutation_null_delta_r2
         rng = np.random.default_rng(0)
         focal = self._focal_frame(100, rng)
@@ -2925,13 +2918,12 @@ class TestPermutationNullDeltaR2:
         expected = self._scorable_deltas(focal, donors)
         nulls = permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z', {'x': '{response} ~ z'},
-            rng=np.random.default_rng(5), n_bootstrap=500)
-        assert nulls['x'].shape == (500,)
-        assert self._drawn_from(nulls['x'], expected)
+            rng=np.random.default_rng(5))
+        assert nulls['x'] == pytest.approx(expected)
 
     def test_returns_one_null_per_predictor(self):
-        """Two dropped predictors scored over one donor list: one key each, each
-        a length-n_bootstrap vector drawn from that predictor's own deltas."""
+        """Two dropped predictors scored over one donor list: one key each,
+        each holding that predictor's own three donor deltas."""
         from iblnm.analysis import permutation_null_delta_r2
         rng = np.random.default_rng(6)
         focal = self._focal_frame(100, rng)
@@ -2939,14 +2931,11 @@ class TestPermutationNullDeltaR2:
         nulls = permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z',
             {'x': '{response} ~ z', 'z': '{response} ~ x'},
-            rng=np.random.default_rng(0), n_bootstrap=250)
+            rng=np.random.default_rng(0))
         assert set(nulls) == {'x', 'z'}
         for predictor, reduced in [('x', 'response ~ z'), ('z', 'response ~ x')]:
-            assert nulls[predictor].shape == (250,)
-            assert self._drawn_from(nulls[predictor], self._scorable_deltas(
+            assert nulls[predictor] == pytest.approx(self._scorable_deltas(
                 focal, donors, predictor, reduced=reduced))
-            # All three donors are scorable, so all three deltas are drawn.
-            assert len(np.unique(nulls[predictor])) == 3
 
     def test_degenerate_donor_is_skipped_per_predictor(self):
         """A donor whose x is constant is rank-deficient for the dropped x and
@@ -2960,9 +2949,9 @@ class TestPermutationNullDeltaR2:
         nulls = permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z',
             {'x': '{response} ~ z', 'z': '{response} ~ x'},
-            rng=np.random.default_rng(0), n_bootstrap=500)
-        assert len(np.unique(nulls['x'])) == 2
-        assert len(np.unique(nulls['z'])) == 3
+            rng=np.random.default_rng(0))
+        assert nulls['x'].shape == (2,)
+        assert nulls['z'].shape == (3,)
 
     def test_predictor_without_scorable_donor_is_empty_alone(self):
         """Every donor's x is constant, so the dropped x gets an empty null
@@ -2975,9 +2964,9 @@ class TestPermutationNullDeltaR2:
         nulls = permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z',
             {'x': '{response} ~ z', 'z': '{response} ~ x'},
-            rng=np.random.default_rng(0), n_bootstrap=500)
+            rng=np.random.default_rng(0))
         assert nulls['x'].shape == (0,)
-        assert nulls['z'].shape == (500,)
+        assert nulls['z'].shape == (2,)
 
     def test_engines_built_once_each(self, monkeypatch):
         """The full engine is built once for all predictors and each reduced
@@ -2998,12 +2987,12 @@ class TestPermutationNullDeltaR2:
         analysis.permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z',
             {'x': '{response} ~ z', 'z': '{response} ~ x'},
-            rng=np.random.default_rng(0), n_bootstrap=50)
+            rng=np.random.default_rng(0))
         assert len(built) == 3
 
     def test_truncates_to_min_length(self):
         """A donor longer and a donor shorter than the focal both fit on the
-        first L = min rows: every returned value matches a scorable delta built
+        first L = min rows: each returned value matches a scorable delta built
         on those L rows (proving the fit saw exactly L rows, no length error)."""
         from iblnm.analysis import permutation_null_delta_r2
         rng = np.random.default_rng(1)
@@ -3013,9 +3002,8 @@ class TestPermutationNullDeltaR2:
         expected = self._scorable_deltas(focal, donors)
         nulls = permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z', {'x': '{response} ~ z'},
-            rng=np.random.default_rng(0), n_bootstrap=300)
-        assert nulls['x'].shape == (300,)
-        assert self._drawn_from(nulls['x'], expected)
+            rng=np.random.default_rng(0))
+        assert nulls['x'] == pytest.approx(expected)
 
     def test_unrelated_donors_give_small_null_well_below_focal(self):
         """Donors whose x is unrelated to the focal response yield a null whose
@@ -3028,13 +3016,13 @@ class TestPermutationNullDeltaR2:
                        - fit_ols('response ~ z', focal).rsquared)
         nulls = permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z', {'x': '{response} ~ z'},
-            rng=np.random.default_rng(0), n_bootstrap=500)
-        assert nulls['x'].shape == (500,)
+            rng=np.random.default_rng(0))
+        assert nulls['x'].shape == (3,)
         assert (nulls['x'] < 0.1 * focal_delta).all()
 
     def test_degenerate_donor_adds_no_value(self):
         """A donor whose swapped predictor column is constant is rank-deficient
-        and dropped, so the bootstrap draws only from the two scorable donors."""
+        and dropped, so the null holds the two scorable donors alone."""
         from iblnm.analysis import permutation_null_delta_r2
         rng = np.random.default_rng(2)
         focal = self._focal_frame(120, rng)
@@ -3043,9 +3031,8 @@ class TestPermutationNullDeltaR2:
         expected = self._scorable_deltas(focal, scorable)
         nulls = permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z', {'x': '{response} ~ z'},
-            rng=np.random.default_rng(0), n_bootstrap=500)
-        assert len(np.unique(nulls['x'])) == 2
-        assert self._drawn_from(nulls['x'], expected)
+            rng=np.random.default_rng(0))
+        assert nulls['x'] == pytest.approx(expected)
 
     def test_no_scorable_donor_returns_empty(self):
         """When every donor's swapped column is constant (all rank-deficient),
@@ -3057,7 +3044,7 @@ class TestPermutationNullDeltaR2:
                   pd.DataFrame({'x': np.full(120, 3.0)})]
         nulls = permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z', {'x': '{response} ~ z'},
-            rng=np.random.default_rng(0), n_bootstrap=500)
+            rng=np.random.default_rng(0))
         assert nulls['x'].shape == (0,)
 
     def test_interaction_key_scores_like_a_main_effect_key(self):
@@ -3071,8 +3058,8 @@ class TestPermutationNullDeltaR2:
         nulls = permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z + x:z',
             {'x': '{response} ~ z', 'x:z': '{response} ~ x + z'},
-            rng=np.random.default_rng(0), n_bootstrap=200)
-        assert nulls['x:z'].shape == nulls['x'].shape == (200,)
+            rng=np.random.default_rng(0))
+        assert nulls['x:z'].shape == nulls['x'].shape == (3,)
 
     def test_interaction_key_swaps_the_donor_product(self):
         """The values swapped in for an interaction key are the elementwise
@@ -3091,7 +3078,7 @@ class TestPermutationNullDeltaR2:
         nulls = permutation_null_delta_r2(
             focal, [donor], '{response} ~ x + z + x:z',
             {'x:z': '{response} ~ x + z'},
-            rng=np.random.default_rng(0), n_bootstrap=10)
+            rng=np.random.default_rng(0))
         assert nulls['x:z'] == pytest.approx(expected)
 
     def test_interaction_reduced_fit_cached_per_length(self, monkeypatch):
@@ -3114,25 +3101,8 @@ class TestPermutationNullDeltaR2:
         analysis.permutation_null_delta_r2(
             focal, donors, '{response} ~ x + z + x:z',
             {'x:z': '{response} ~ x + z'},
-            rng=np.random.default_rng(0), n_bootstrap=10)
+            rng=np.random.default_rng(0))
         assert donor_free == [60, 40]
-
-    def test_seed_reproduces_vector(self):
-        """The same rng seed reproduces the bootstrap vector; a different seed
-        generally does not."""
-        from iblnm.analysis import permutation_null_delta_r2
-        rng = np.random.default_rng(1)
-        focal = self._focal_frame(100, rng)
-        donors = [pd.DataFrame({'x': rng.normal(0, 1, 100)}) for _ in range(3)]
-        args = (focal, donors, '{response} ~ x + z', {'x': '{response} ~ z'})
-        first = permutation_null_delta_r2(
-            *args, rng=np.random.default_rng(7), n_bootstrap=200)
-        same = permutation_null_delta_r2(
-            *args, rng=np.random.default_rng(7), n_bootstrap=200)
-        other = permutation_null_delta_r2(
-            *args, rng=np.random.default_rng(8), n_bootstrap=200)
-        assert np.array_equal(first['x'], same['x'])
-        assert not np.array_equal(first['x'], other['x'])
 
 
 class TestComputeFeatureDispersion:

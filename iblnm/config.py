@@ -62,10 +62,10 @@ RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 # permutation significance and the donor-pool size all key on that grain, so
 # they are one frame. The reference-model quantities (n_trials, r2_full,
 # r2_full_adj) repeat across a recording-event's predictor rows. `null` is the
-# cell's whole permutation null vector, a `PERSESSION_PVAL_N_BOOTSTRAP`-long
-# float32 array in an object-dtype column: parquet stores it as a list column,
-# a reader naming other columns pays nothing for it, and holding it makes the
-# per-mouse pooling recomputable without refitting. Its median — the old
+# cell's whole permutation null vector, one float32 entry per scorable donor in
+# an object-dtype column: parquet stores it as a list column, a reader naming
+# other columns pays nothing for it, and holding it makes the per-mouse
+# pooling recomputable without refitting. Its median — the old
 # `delta_r2_null_median` — is derivable from it and so is no longer stored.
 OLS_PERSESSION_FPATH = RESPONSES_DIR / 'ols_persession.parquet'
 OLS_PERSESSION_COLUMNS = ['eid', 'subject', 'target_NM', 'brain_region',
@@ -907,9 +907,7 @@ PERSESSION_SIGNIFICANCE_ALPHA = 0.05
 # Correction families for that threshold: each (event, predictor) cell of the
 # grid is its own question, so each is corrected on its own.
 PERSESSION_FDR_GROUP_COLS = ('event', 'predictor')
-# Per-mouse drop-one p-value: bootstrap draws for the pooled donor null (one
-# draw resampled per session per iteration) and the rng seed for reproducibility.
-PERSESSION_PVAL_N_BOOTSTRAP = 1000
+# Rng seed for the drop-one significance pass, its reproducibility contract.
 PERSESSION_PVAL_SEED = 0
 
 # Coefficient-dispersion-vs-behavior scatter: a (subject, target_NM) unit is

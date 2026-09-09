@@ -833,16 +833,17 @@ class TestTwoPassRun:
     def test_ols_carries_the_whole_null_vector(self, tmp_path):
         """`null` survives the parquet round trip as an array of its own,
         which is what makes the per-mouse pooling recomputable without
-        refitting — parquet stores it as a list column."""
-        from iblnm.config import PERSESSION_PVAL_N_BOOTSTRAP
+        refitting — parquet stores it as a list column. One entry per donor:
+        the other session is this one's only admitted donor."""
         _, _, ols, _, _ = self._run(tmp_path)
         path = tmp_path / 'ols_persession.parquet'
         ols.to_parquet(path, index=False)
         read = pd.read_parquet(path)
 
-        vector = read['null'].iloc[0]
-        assert isinstance(vector, np.ndarray)
-        assert len(vector) == PERSESSION_PVAL_N_BOOTSTRAP
+        row = read.iloc[0]
+        assert isinstance(row['null'], np.ndarray)
+        assert row['n_donors'] == 1
+        assert len(row['null']) == row['n_donors']
 
 
 class TestReprocessWiring:

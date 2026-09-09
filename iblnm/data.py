@@ -29,7 +29,7 @@ from iblnm.config import (
     MOVEMENT_EVENTS, MOVEMENT_RESPONSE_WINDOW,
     OLS_PERSESSION_COLUMNS, PERSESSION_FDR_GROUP_COLS,
     PREDICTOR_TRANSFORMS,
-    PERSESSION_PVAL_N_BOOTSTRAP, PERSESSION_PVAL_SEED,
+    PERSESSION_PVAL_SEED,
     PHOTOMETRY_BANDS, PHOTOMETRY_QC_THRESHOLDS,
     POSE_MEASURES, QCVAL2NUM,
     PREPROCESSING_PIPELINES, QC_METRICS_KWARGS, QC_RAW_METRICS,
@@ -157,12 +157,11 @@ def assemble_mouse_pvalue_table(
         and the ``n_donors`` that null was built from. Vector lengths may differ
         across sessions — each is an arbitrarily ordered donor set — and a row
         whose ``null`` is empty was not scorable and is dropped from its group.
-        The pooled null draws one value per session, so it is no better resolved
-        than its coarsest session and the cell's p-value floor comes from the
-        smallest pooled ``n_donors`` (:func:`_floor_pvalue`).
+        Each session's null holds its whole donor pool, unresampled, so a
+        pooled draw combines distinct donors across sessions and the cell's
+        p-value floor is the pooling bootstrap's own 1 / (``n_bootstrap`` + 1).
     n_bootstrap : int
-        Pooled-null draws per cell. It does not set the p-value floor; the
-        donor counts do.
+        Pooled-null draws per cell, which set the cell's p-value floor.
     random_state : int or None
         Seed for the bootstrap rng, created once and reused across cells.
 
@@ -172,8 +171,8 @@ def assemble_mouse_pvalue_table(
         One row per scorable ``(target_NM, event, predictor, subject)`` cell in
         ``RESPONSE_OLS_MOUSE_PVAL_COLUMNS`` order. ``mean_delta_r2`` is the
         pooled observed statistic, ``p_value`` the one-sided (greater) bootstrap
-        p floored on the donor counts, and ``n_sessions`` the pooled session
-        count. ``q_value`` is present but NaN — the caller fills it with
+        p, and ``n_sessions`` the pooled session count. ``q_value`` is present
+        but NaN — the caller fills it with
         :func:`iblnm.analysis.add_fdr_qvalues`, which chooses the correction
         families.
     """
@@ -183,37 +182,23 @@ def assemble_mouse_pvalue_table(
     for (target_NM, event, predictor, subject), group in observed.groupby(
             group_keys, sort=True):
         scorable = [
-            (row['delta_r2'], np.asarray(row['null']), row['n_donors'])
+            (row['delta_r2'], np.asarray(row['null']))
             for _, row in group.iterrows()
             if np.size(row['null'])
         ]
         if not scorable:
             continue
-        observed_by_stratum = [delta_r2 for delta_r2, _, _ in scorable]
-        null_by_stratum = [null for _, null, _ in scorable]
+        observed_by_stratum = [delta_r2 for delta_r2, _ in scorable]
+        null_by_stratum = [null for _, null in scorable]
         mean_delta_r2, p_value = analysis.bootstrap_pooled_pvalue(
             observed_by_stratum, null_by_stratum, rng=rng,
             n_bootstrap=n_bootstrap, alternative='greater')
         rows.append({
             'target_NM': target_NM, 'event': event, 'predictor': predictor,
             'subject': subject, 'mean_delta_r2': mean_delta_r2,
-            'p_value': _floor_pvalue(
-                p_value, min(count for _, _, count in scorable)),
-            'n_sessions': len(scorable),
+            'p_value': p_value, 'n_sessions': len(scorable),
         })
     return pd.DataFrame(rows, columns=RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
-
-
-def _floor_pvalue(p_value: float, n_donors: int) -> float:
-    """Lift a permutation p-value to the resolution its donor pool supports.
-
-    A donor null is bootstrap-resampled to a fixed length, so the add-one
-    correction inside :func:`iblnm.analysis.permutation_pvalue` floors at
-    1 / (n_draws + 1) — a resolution the resampling manufactured. The pool of
-    ``n_donors`` distinct donors behind those draws is what the null actually
-    resolves, so the reported p is floored at 1 / (n_donors + 1) instead.
-    """
-    return max(p_value, 1 / (n_donors + 1))
 
 
 # =============================================================================
@@ -310,8 +295,10 @@ def _score_against_null(rows: pd.DataFrame, nulls: dict[str, np.ndarray],
         :func:`iblnm.analysis.permutation_null_delta_r2`. A predictor no donor
         was scorable for has an empty vector.
     n_donors : int
-        Size of the donor pool the nulls were built from, which sets the
-        p-value floor (:func:`_floor_pvalue`).
+        Size of the donor pool the nulls were built from, recorded on every
+        row. A predictor's own null is one entry shorter for each donor its
+        swapped fit was degenerate for, so this is the pool offered rather
+        than the null's length.
 
     Returns
     -------
@@ -325,8 +312,8 @@ def _score_against_null(rows: pd.DataFrame, nulls: dict[str, np.ndarray],
     null = [np.asarray(nulls[predictor], dtype=np.float32)
             for predictor in rows['predictor']]
     p_value = [
-        _floor_pvalue(analysis.permutation_pvalue(delta_r2, vector, 'greater'),
-                      n_donors) if vector.size else np.nan
+        analysis.permutation_pvalue(delta_r2, vector, 'greater')
+        if vector.size else np.nan
         for delta_r2, vector in zip(rows['delta_r2'], null)
     ]
     return rows.assign(
@@ -3906,7 +3893,6 @@ class PhotometrySession(PhotometrySessionLoader):
                              reference: str = 'full',
                              response_col: str = 'response',
                              donor_scope: str = 'exclude_subject',
-                             n_bootstrap: int = PERSESSION_PVAL_N_BOOTSTRAP,
                              rng: np.random.Generator | None = None,
                              min_trials: int = MIN_TRIALS_PERSESSION,
                              ) -> pd.DataFrame:
@@ -3952,12 +3938,9 @@ class PhotometrySession(PhotometrySessionLoader):
             region and so is no valid formula term.
         donor_scope : {'exclude_subject', 'exclude_session', 'same_target'}
             Which sessions may donate a swapped predictor column.
-        n_bootstrap : int
-            Length of the null vector.
         rng : numpy.random.Generator or None
-            Swap rng. ``None`` seeds one from `config.PERSESSION_PVAL_SEED`;
-            a loop over cells passes one rng so its cells do not resample the
-            same donors.
+            Passed to the null primitive as the pass's reproducibility
+            contract. ``None`` seeds one from `config.PERSESSION_PVAL_SEED`.
         min_trials : int
             Fewer selected rows than this is not scorable and raises.
 
@@ -4009,7 +3992,7 @@ class PhotometrySession(PhotometrySessionLoader):
             frame, donor_frames, family[reference],
             {name: member for name, member in family.items()
              if name != reference},
-            response_col, rng=rng, n_bootstrap=n_bootstrap)
+            response_col, rng=rng)
         rows = _dropone_rows(fits, len(frame), reference)
         return (_score_against_null(rows, nulls, len(donor_frames))
                 .assign(eid=self.eid, subject=self.subject,
@@ -4025,7 +4008,6 @@ class PhotometrySession(PhotometrySessionLoader):
                       reference: str = 'full',
                       response_col: str = 'response',
                       donor_scope: str = 'exclude_subject',
-                      n_bootstrap: int = PERSESSION_PVAL_N_BOOTSTRAP,
                       random_state: int = PERSESSION_PVAL_SEED,
                       **criteria) -> pd.DataFrame:
         """This session's complete drop-one OLS result, every fiber x event.
@@ -4071,11 +4053,9 @@ class PhotometrySession(PhotometrySessionLoader):
             formula.
         donor_scope : {'exclude_subject', 'exclude_session', 'same_target'}
             Which sessions may donate a swapped predictor column.
-        n_bootstrap : int
-            Length of each cell's null vector.
         random_state : int
-            Seed for the swap rng, created once per session and shared by every
-            combination so they do not resample the same donors.
+            Seed for the swap rng, created once per session and shared by
+            every combination.
         **criteria
             Passed to :meth:`filter_trials`. A ``complete`` list is extended
             with the combination's response column rather than replaced.
@@ -4112,8 +4092,7 @@ class PhotometrySession(PhotometrySessionLoader):
             fits.append(self.fit_region_responses(
                 region, event, formula, dropped_terms, donors,
                 reference=reference,
-                response_col=response_col, donor_scope=donor_scope,
-                n_bootstrap=n_bootstrap, rng=rng))
+                response_col=response_col, donor_scope=donor_scope, rng=rng))
         return _concat_frames(fits, _SESSION_OLS_COLUMNS)
 
     @staticmethod
@@ -4941,7 +4920,7 @@ class PhotometrySessionGroup:
                 if frame is not None}
 
     def collect_fits(self, fits: list[pd.DataFrame | None],
-                     n_bootstrap: int = PERSESSION_PVAL_N_BOOTSTRAP,
+                     n_bootstrap: int = 1000,
                      random_state: int = PERSESSION_PVAL_SEED,
                      ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Assemble the fitting pass's returns into the population tables.
@@ -4959,8 +4938,9 @@ class PhotometrySessionGroup:
             `self.sessions` order. `process` returns None for a session whose
             function raised; it contributes no rows.
         n_bootstrap : int
-            Pooled-null draws per per-mouse cell. It does not set the p-value
-            floor; the sessions' donor counts do.
+            Pooled-null draws per per-mouse cell, which set that grain's
+            p-value floor. Only the pooling resamples — a session's own null
+            is its whole donor pool.
         random_state : int
             Seed for the pooling bootstrap.
 

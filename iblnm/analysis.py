@@ -2254,7 +2254,6 @@ def permutation_null_delta_r2(
     response_col: str = 'response',
     *,
     rng: np.random.Generator,
-    n_bootstrap: int = 1000,
 ) -> dict[str, np.ndarray]:
     """Cross-session swap null drop-one ΔR² for one focal recording-event.
 
@@ -2297,22 +2296,20 @@ def permutation_null_delta_r2(
     response_col : str
         Response column substituted into every formula template.
     rng : np.random.Generator
-        Source of the donor-pool bootstrap draws, drawn from once per predictor;
-        the caller owns the seed.
-    n_bootstrap : int
-        Length of each returned bootstrap vector. The scorable-donor ΔR² set is
-        resampled with replacement to this fixed length so every session's null
-        has a uniform length; resampling adds no donor information.
+        Kept on the signature as the pass's reproducibility contract — the
+        caller seeds one generator per session — though nothing here draws
+        from it now that the null is the pool itself.
 
     Returns
     -------
     dict[str, np.ndarray]
-        One length-``n_bootstrap`` bootstrap resample (with replacement) of the
-        scorable-donor ΔR² set per ``reduced_formulas`` key, giving every
-        session a uniform-length, smoothed null. A donor whose swapped full or
-        reduced fit is degenerate (``SubstitutableOLS.r2`` returns ``None``) is
-        skipped for that predictor alone. A predictor with no scorable donor
-        gets an empty array (the caller drops such a session).
+        The scorable-donor ΔR² set per ``reduced_formulas`` key, one entry per
+        donor in ``donor_dfs`` order and nothing resampled, so the p-value
+        floor 1 / (n + 1) from :func:`permutation_pvalue` is the resolution the
+        pool actually supports. A donor whose swapped full or reduced fit is
+        degenerate (``SubstitutableOLS.r2`` returns ``None``) is skipped for
+        that predictor alone, shortening its null by one. A predictor with no
+        scorable donor gets an empty array (the caller drops such a session).
     """
     full = SubstitutableOLS(full_formula.format(response=response_col),
                             focal_df)
@@ -2340,12 +2337,8 @@ def permutation_null_delta_r2(
             if full_r2 is None or reduced_r2[key] is None:
                 continue
             null_deltas[predictor].append(full_r2 - reduced_r2[key])
-    return {
-        predictor: (rng.choice(np.asarray(deltas), size=n_bootstrap,
-                               replace=True)
-                    if deltas else np.array([]))
-        for predictor, deltas in null_deltas.items()
-    }
+    return {predictor: np.asarray(deltas, dtype=float)
+            for predictor, deltas in null_deltas.items()}
 
 
 def compute_feature_dispersion(

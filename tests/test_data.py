@@ -6835,7 +6835,7 @@ class TestFitResponsesOlsDropone:
             _donorless_session(eid='donor-eid', subject='mouse2', seed=1))
 
         formula, drops = _response_model()
-        fits = ps.fit_responses(formula, drops, donors, n_bootstrap=4)
+        fits = ps.fit_responses(formula, drops, donors)
 
         assert list(fits.columns) == [column for column
                                       in OLS_PERSESSION_COLUMNS
@@ -6847,7 +6847,7 @@ class TestFitResponsesOlsDropone:
 
     def test_delta_r2_and_coefficients_match_the_fitted_family(self):
         ps = _measured_session(_make_session_for_persession())
-        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4)
+        fits = ps.fit_responses(*_response_model(), {})
 
         for event in set(fits['event']):
             rows = fits[fits['event'] == event].set_index('predictor')
@@ -6870,7 +6870,7 @@ class TestFitResponsesOlsDropone:
         the family shares."""
         from iblnm.analysis import adjusted_r2
         ps = _measured_session(_make_session_for_persession())
-        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4)
+        fits = ps.fit_responses(*_response_model(), {})
 
         n_trials = 120
         r2_adj_full = adjusted_r2(self._R2_FULL, n_trials,
@@ -6893,7 +6893,7 @@ class TestFitResponsesOlsDropone:
         on and that region's entry in the parallel target_NM column."""
         ps = _measured_session(_add_second_recording(
             _make_session_for_persession(eid='eid-0', subject='subj-0')))
-        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4)
+        fits = ps.fit_responses(*_response_model(), {})
 
         assert set(fits['eid']) == {'eid-0'}
         assert set(fits['subject']) == {'subj-0'}
@@ -6908,7 +6908,7 @@ class TestFitResponsesOlsDropone:
         still gets the named columns rather than a bare empty frame."""
         from iblnm.config import OLS_PERSESSION_COLUMNS
         ps = _measured_session(_make_session_for_persession(n_trials=20))
-        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4)
+        fits = ps.fit_responses(*_response_model(), {})
         assert list(fits.columns) == [column for column
                                       in OLS_PERSESSION_COLUMNS
                                       if column != 'q_value']
@@ -6924,7 +6924,7 @@ class TestFitResponsesOlsDropone:
             '{response} ~ contrast + probabilityLeft',
             {'contrast': ['contrast'],
              'probabilityLeft': ['probabilityLeft']},
-            {}, n_bootstrap=4)
+            {})
         assert fits.empty
 
 
@@ -6990,7 +6990,7 @@ class TestFitRegionResponses:
         ps = _session_for_cell_fit()
 
         rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                       *_response_model(), {}, n_bootstrap=4)
+                                       *_response_model(), {})
 
         assert list(rows.columns) == _SESSION_OLS_COLUMNS
         assert set(rows['predictor']) == _drop_labels()
@@ -7005,7 +7005,7 @@ class TestFitRegionResponses:
         ps = _session_for_cell_fit()
 
         rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                       *_response_model(), {}, n_bootstrap=4)
+                                       *_response_model(), {})
 
         assert len(ps.trials) == 120
         assert (rows['n_trials'] == len(ps.trials)).all()
@@ -7017,7 +7017,7 @@ class TestFitRegionResponses:
 
         with pytest.raises(ValueError) as excinfo:
             ps.fit_region_responses('DR-l', 'stimOnTrigger_times',
-                                    *_response_model(), {}, n_bootstrap=4)
+                                    *_response_model(), {})
 
         assert 'response_DR-l_stimOnTrigger_times' in str(excinfo.value)
 
@@ -7026,7 +7026,7 @@ class TestFitRegionResponses:
 
         with pytest.raises(ValueError) as excinfo:
             ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                    *_response_model(), {}, n_bootstrap=4)
+                                    *_response_model(), {})
 
         assert '20' in str(excinfo.value)
 
@@ -7039,8 +7039,8 @@ class TestFitRegionResponses:
 
         rows = {
             hemisphere: ps.fit_region_responses(
-                'VTA-r', 'stimOnTrigger_times', *_response_model(), {},
-                n_bootstrap=4).set_index('predictor')
+                'VTA-r', 'stimOnTrigger_times', *_response_model(),
+                {}).set_index('predictor')
             for hemisphere, ps in (('r', right), ('l', left))
         }
 
@@ -7049,18 +7049,33 @@ class TestFitRegionResponses:
 
     def test_fit_region_responses_scores_against_the_admitted_donors(self):
         """One donor from another subject, so `exclude_subject` admits it and
-        every predictor is scored against a null of the requested length."""
+        every predictor is scored against a null holding that one donor."""
         ps = _session_for_cell_fit(eid='focal-eid', subject='mouse1')
         donors = _donor_pool_for(
             _donorless_session(eid='donor-eid', subject='mouse2', seed=1))
 
         rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
-                                       *_response_model(), donors,
-                                       n_bootstrap=16)
+                                       *_response_model(), donors)
 
         assert (rows['n_donors'] == 1).all()
         assert rows['p_value'].notna().all()
-        assert {len(null) for null in rows['null']} == {16}
+        assert {len(null) for null in rows['null']} == {1}
+
+    def test_fit_region_responses_p_is_its_stored_nulls_permutation_p(self):
+        """Every row's p is the add-one permutation p of the vector it carries,
+        recomputable from the stored table without refitting."""
+        from iblnm import analysis
+        ps = _session_for_cell_fit(eid='focal-eid', subject='mouse1')
+        donors = _donor_pool_for(*[
+            _donorless_session(eid=f'donor-{i}', subject=f'mouse{i + 2}',
+                               seed=i + 1) for i in range(3)])
+
+        rows = ps.fit_region_responses('VTA-r', 'stimOnTrigger_times',
+                                       *_response_model(), donors)
+
+        for _, row in rows.iterrows():
+            assert row['p_value'] == analysis.permutation_pvalue(
+                row['delta_r2'], row['null'], 'greater')
 
     def test_fit_region_responses_drops_a_degenerate_family(self):
         """An unfittable member makes the cell's ΔR² incomparable across the
@@ -7075,7 +7090,7 @@ class TestFitRegionResponses:
             '{response} ~ contrast + probabilityLeft',
             {'contrast': ['contrast'],
              'probabilityLeft': ['probabilityLeft']},
-            {}, n_bootstrap=4)
+            {})
 
         assert rows.empty
         assert list(rows.columns) == _SESSION_OLS_COLUMNS
@@ -7096,8 +7111,7 @@ class TestFitResponses:
         ps = _measured_session(
             _add_second_recording(_make_session_for_persession()))
 
-        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4,
-                                **self.criteria)
+        fits = ps.fit_responses(*_response_model(), {}, **self.criteria)
 
         assert set(zip(fits['brain_region'], fits['event'])) == {
             (region, event) for region in ('VTA-r', 'DR-l')
@@ -7110,8 +7124,7 @@ class TestFitResponses:
         ps = _measured_session(_add_second_recording(
             _make_session_for_persession(), n_missing=80))
 
-        fits = ps.fit_responses(*_response_model(), {}, n_bootstrap=4,
-                                **self.criteria)
+        fits = ps.fit_responses(*_response_model(), {}, **self.criteria)
 
         assert set(fits['brain_region']) == {'VTA-r'}
 
@@ -7125,7 +7138,7 @@ class TestFitResponses:
         ps = _measured_session(_add_second_recording(
             _make_session_for_persession(), n_missing=30))
 
-        ps.fit_responses(*_response_model(), {}, n_bootstrap=4, **self.criteria)
+        ps.fit_responses(*_response_model(), {}, **self.criteria)
 
         last = response_column('DR-l', RESPONSE_EVENTS[-1])
         assert len(ps.trials) == 90
@@ -7163,9 +7176,9 @@ class TestModellingPass:
             return real_engine(formula, df)
 
         def null_spy(focal_df, donor_dfs, full_formula, reduced_formulas,
-                     *args, n_bootstrap=1000, **kwargs):
+                     *args, **kwargs):
             permuted.append(focal_df)
-            return {predictor: np.full(n_bootstrap, 0.01)
+            return {predictor: np.full(len(donor_dfs), 0.01)
                     for predictor in reduced_formulas}
 
         monkeypatch.setattr('iblnm.analysis.SubstitutableOLS', engine_spy)
@@ -7187,8 +7200,7 @@ class TestModellingPass:
             donors = group.collect_donor_frames(group.process(prepare_donor))
             formula, dropped_terms = _response_model()
             group.process(fit, formula=formula,
-                          dropped_terms=dropped_terms, donors=donors,
-                          n_bootstrap=10)
+                          dropped_terms=dropped_terms, donors=donors)
 
         assert list(donors) == ['eid-0', 'eid-1']
         # Two sessions, two passes, one open each.
@@ -8294,11 +8306,10 @@ class TestAssembleMousePvalueTable:
             RESPONSE_OLS_MOUSE_PVAL_COLUMNS.index('p_value') + 1)
         assert table['q_value'].isna().all()
 
-    def test_pooled_pvalue_floored_at_the_smallest_donor_count(self):
-        """The pooled null draws one value per session, so it is no better
-        resolved than its coarsest session: a mouse pooling a 500-donor and a
-        4-donor session reports at most the 4-donor floor, 1/5, where the
-        bootstrap alone would have given 1/100."""
+    def test_pooled_pvalue_floor_is_the_bootstrap_draws(self):
+        """The p-value floor at this grain is the pooling bootstrap's own
+        1/(n_bootstrap+1), whatever the sessions' donor counts: a mouse pooling
+        a 500-donor and a 4-donor session reports 1/100 off 99 draws."""
         from iblnm.data import assemble_mouse_pvalue_table
 
         null_vectors = {
@@ -8313,7 +8324,7 @@ class TestAssembleMousePvalueTable:
         table = assemble_mouse_pvalue_table(
             observed, n_bootstrap=99, random_state=0)
 
-        assert table.iloc[0]['p_value'] == pytest.approx(1 / 5)
+        assert table.iloc[0]['p_value'] == pytest.approx(1 / 100)
 
     def test_group_with_no_null_vectors_is_skipped(self):
         """A cell whose sessions have no null vectors produces no row; sessions
@@ -8348,35 +8359,48 @@ class TestFitResponsesPermutation:
         ])
 
     @staticmethod
-    def _patch_null(monkeypatch, delta=-1.0):
+    def _patch_null(monkeypatch, delta=-1.0, n_entries=None):
         """Stub the null primitive so statsmodels is never invoked.
 
-        Every null draw is ``delta``, which the observed ΔR² beats. Returns the
+        Every null entry is ``delta``, which the observed ΔR² beats. The
+        vector is one entry per donor unless ``n_entries`` names a length,
+        which decouples it from the pool size the row reports. Returns the
         list each call records: ``(n_donor_frames, predictors)``.
         """
         calls = []
 
         def fake_null(focal_df, donor_dfs, full_formula, reduced_formulas,
-                      response_col='response', *, rng, n_bootstrap=1000):
+                      response_col='response', *, rng):
             calls.append((len(donor_dfs), tuple(reduced_formulas)))
-            return {predictor: np.full(n_bootstrap, delta)
+            length = len(donor_dfs) if n_entries is None else n_entries
+            return {predictor: np.full(length, delta)
                     for predictor in reduced_formulas}
 
         monkeypatch.setattr('iblnm.analysis.permutation_null_delta_r2',
                             fake_null)
         return calls
 
-    def test_n_donors_records_the_pool_and_floors_the_p_value(
+    def test_p_value_is_the_permutation_p_of_the_null_it_holds(
             self, monkeypatch):
-        """Each row carries the size of the pool its null was built from and
-        floors its p on it: a 1000-draw null that every observed ΔR² beats
-        reports 1/4 for a three-donor pool, not 1/1001."""
+        """No post-hoc lift: a ten-entry null that every observed ΔR² beats
+        reports the add-one p 1/11, not the 1/4 a three-donor pool would floor
+        it to. The row still records the pool it was built from."""
+        self._patch_null(monkeypatch, n_entries=10)
+        fits = self._focal().fit_responses(*_response_model(), self._pool(3))
+
+        assert (fits['n_donors'] == 3).all()
+        assert fits['p_value'].tolist() == pytest.approx([1 / 11] * len(fits))
+
+    def test_n_donors_records_the_pool_the_null_was_built_from(
+            self, monkeypatch):
+        """One null entry per donor, so the pool size the row carries is the
+        p-value's own resolution: three donors the observed beats give 1/4."""
         self._patch_null(monkeypatch)
         fits = self._focal().fit_responses(*_response_model(), self._pool(3))
 
         assert (fits['n_donors'] == 3).all()
+        assert {len(vector) for vector in fits['null']} == {3}
         assert fits['p_value'].tolist() == pytest.approx([1 / 4] * len(fits))
-        assert (fits['p_value'] >= 1 / (fits['n_donors'] + 1)).all()
 
     def test_every_predictor_of_a_cell_is_scored_in_one_call(self,
                                                              monkeypatch):
@@ -8393,19 +8417,18 @@ class TestFitResponsesPermutation:
 
     def test_interaction_labels_are_scored_against_a_real_donor_pool(self):
         """The whole term table, interaction labels included, is scored through
-        the real null primitive: every label gets a p_value off a null of the
-        requested length, none of them raising for want of a donor column."""
-        fits = self._focal().fit_responses(
-            *_response_model(), self._pool(2), n_bootstrap=16)
+        the real null primitive: every label gets a p_value off a null holding
+        the two donors, none of them raising for want of a donor column."""
+        fits = self._focal().fit_responses(*_response_model(), self._pool(2))
 
         assert set(fits['predictor']) == _drop_labels()
         assert fits['p_value'].notna().all()
-        assert {len(null) for null in fits['null']} == {16}
+        assert {len(null) for null in fits['null']} == {2}
 
     def test_empty_donor_pool_keeps_the_fit_and_nulls_the_significance(self):
         """A cell no donor was admitted for is still fitted; only its
         significance is missing."""
-        fits = self._focal().fit_responses(*_response_model(), {}, n_bootstrap=4)
+        fits = self._focal().fit_responses(*_response_model(), {})
 
         assert not fits.empty
         assert fits['delta_r2'].notna().all()
@@ -8413,18 +8436,16 @@ class TestFitResponsesPermutation:
         assert (fits['n_donors'] == 0).all()
         assert all(vector.size == 0 for vector in fits['null'])
 
-    def test_null_vectors_are_float32_of_the_requested_length(self):
-        fits = self._focal().fit_responses(
-            *_response_model(), self._pool(2), n_bootstrap=16)
+    def test_null_vectors_are_float32_of_the_donor_pool_length(self):
+        fits = self._focal().fit_responses(*_response_model(), self._pool(2))
         for vector in fits['null']:
             assert vector.dtype == np.float32
-            assert len(vector) == 16
+            assert len(vector) == 2
 
     def test_null_round_trips_through_parquet(self, tmp_path):
         """The vector is written and read back as an array, so the per-mouse
         pooling can be recomputed without refitting."""
-        fits = self._focal().fit_responses(
-            *_response_model(), self._pool(2), n_bootstrap=16)
+        fits = self._focal().fit_responses(*_response_model(), self._pool(2))
         fpath = tmp_path / 'ols_persession.parquet'
         fits.to_parquet(fpath)
         restored = pd.read_parquet(fpath)
@@ -8432,17 +8453,18 @@ class TestFitResponsesPermutation:
         for original, vector in zip(fits['null'], restored['null']):
             assert isinstance(vector, np.ndarray)
             assert vector.dtype == np.float32
-            assert len(vector) == 16
+            assert len(vector) == 2
             np.testing.assert_array_equal(vector, original)
 
     def test_rng_created_once_and_reproducible(self, monkeypatch):
-        """A single rng is threaded through every primitive call — so per-cell
-        draws differ — and reruns with the same seed reproduce the frame."""
+        """A single rng is threaded through every primitive call — so a stub
+        drawing from it sees a different draw per cell — and reruns with the
+        same seed reproduce the frame."""
         draws = []
 
         def fake_null(focal_df, donor_dfs, full_formula, reduced_formulas,
-                      response_col='response', *, rng, n_bootstrap=1000):
-            nulls = {predictor: rng.random(n_bootstrap)
+                      response_col='response', *, rng):
+            nulls = {predictor: rng.random(len(donor_dfs))
                      for predictor in reduced_formulas}
             draws.append(next(iter(nulls.values())))
             return nulls
@@ -8451,11 +8473,11 @@ class TestFitResponsesPermutation:
                             fake_null)
 
         first = self._focal().fit_responses(
-            *_response_model(), self._pool(2), n_bootstrap=32, random_state=7)
+            *_response_model(), self._pool(2), random_state=7)
         first_draws = list(draws)
         draws.clear()
         second = self._focal().fit_responses(
-            *_response_model(), self._pool(2), n_bootstrap=32, random_state=7)
+            *_response_model(), self._pool(2), random_state=7)
 
         # One advancing rng: the per-cell draws are all distinct.
         assert len({tuple(draw) for draw in first_draws}) == len(first_draws)
