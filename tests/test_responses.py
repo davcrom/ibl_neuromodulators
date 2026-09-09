@@ -529,48 +529,6 @@ class TestPrepareDonor:
         assert set(trial) <= every_trial
 
 
-class TestVarcompCoefficients:
-    """The variance-components stage takes its per-session coefficients out of
-    the merged per-recording OLS frame, rather than a coefficients frame of its
-    own."""
-
-    _REGRESSORS = ['contrast', 'side']
-
-    def _coefficients(self):
-        """The coefficients frame the varcomp stage used to be fed directly."""
-        return pd.DataFrame([
-            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
-             'brain_region': region, 'event': 'feedback_times',
-             'regressor': regressor, 'coef': coef, 'coef_se': 0.1,
-             'n_trials': 200}
-            for eid, region in [('e1', 'VTA'), ('e2', 'SNc')]
-            for coef, regressor in zip([0.3, -0.4], self._REGRESSORS)
-        ])
-
-    def _ols_persession(self):
-        """The same weights as ticket-12's merged frame carries them: keyed by
-        ``predictor``, with the drop-one and significance columns alongside."""
-        return pd.DataFrame([
-            {'eid': eid, 'subject': 'm1', 'target_NM': 'VTA-DA',
-             'brain_region': region, 'event': 'feedback_times',
-             'predictor': regressor, 'n_trials': 200, 'r2_full': 0.4,
-             'r2_full_adj': 0.35, 'delta_r2': 0.05, 'delta_r2_adj': 0.03,
-             'coef': coef, 'coef_se': 0.1,
-             'p_value': 0.01, 'q_value': 0.02, 'n_donors': 700}
-            for eid, region in [('e1', 'VTA'), ('e2', 'SNc')]
-            for coef, regressor in zip([0.3, -0.4], self._REGRESSORS)
-        ])
-
-    def test_view_matches_the_standalone_coefficients_frame(self):
-        """The view is the coefficients frame the stage used to read: same
-        columns, same grain, same weights — so the posteriors it feeds are
-        unchanged."""
-        from scripts.responses import varcomp_coefficients
-        pd.testing.assert_frame_equal(
-            varcomp_coefficients(self._ols_persession()),
-            self._coefficients())
-
-
 class TestComputeMaskingDiagnostics:
     """How much of the response window the masking removed, per trial type and
     cohort, reported alongside every contrast-dependent result."""
@@ -886,25 +844,26 @@ class TestReadResultFrames:
         keyed = pd.DataFrame({'eid': ['eid-0', 'eid-1'],
                               'brain_region': ['VTA-r', 'DR-l'],
                               'value': [1.0, 2.0]})
-        unkeyed = pd.DataFrame({'target_NM': ['VTA-DA', 'DR-5HT'],
-                                'regressor': ['contrast', 'contrast'],
-                                'mean': [0.3, 0.4]})
+        unkeyed = pd.DataFrame({'subject': ['subj-0', 'subj-1'],
+                                'target_NM': ['VTA-DA', 'DR-5HT'],
+                                'predictor': ['contrast', 'contrast'],
+                                'p_value': [0.3, 0.4]})
         paths = {}
-        for name, frame in (('ols', keyed), ('varcomp_summary', unkeyed)):
+        for name, frame in (('ols', keyed), ('ols_mouse', unkeyed)):
             paths[name] = tmp_path / f'{name}.parquet'
             frame.to_parquet(paths[name], index=False)
         return paths
 
     def test_narrows_keyed_frames_and_passes_the_others_whole(self, tmp_path):
         """A file covering a session the group's filters dropped is narrowed on
-        load; the varcomp table, keyed by cell with no ``eid``, keeps every
+        load; the per-mouse table, keyed by cell with no ``eid``, keeps every
         row rather than matching nothing."""
         from scripts.responses import read_result_frames
         frames = read_result_frames(self._group(tmp_path),
                                     self._write(tmp_path))
 
         assert list(frames['ols']['eid']) == ['eid-0']
-        assert len(frames['varcomp_summary']) == 2
+        assert len(frames['ols_mouse']) == 2
 
     def test_neither_pass_runs(self, tmp_path):
         """Both passes go through ``process``; reading the cached files runs
@@ -1057,30 +1016,3 @@ def _reprocess_and_default_branches():
     _, main_block = _responses_source()
     reprocess, default = main_block.split('\n    else:', 1)
     return reprocess, default
-
-
-class TestVarcompWiring:
-    """Source-level wiring: --reprocess fits and caches the variance-components
-    tables, default mode loads them, and the violin figure is plotted in both."""
-
-    def test_reprocess_fits_and_caches_varcomp(self):
-        reprocess, _ = _reprocess_and_default_branches()
-        assert 'response_varcomp(' in reprocess
-        # Its coefficients come out of the merged per-recording OLS frame the
-        # collection returned, not a coefficients frame of its own.
-        assert 'varcomp_coefficients(ols)' in reprocess
-        assert 'RESPONSE_VARCOMP_SUMMARY_FPATH' in reprocess
-        assert 'RESPONSE_VARCOMP_VIOLIN_FPATH' in reprocess
-        assert reprocess.count('.to_parquet(') >= 2
-
-    def test_default_reads_the_cached_varcomp_files(self):
-        """The no-flag branch reads every cached frame through one call, the
-        varcomp tables among them, rather than a loader method per file."""
-        _, default = _reprocess_and_default_branches()
-        assert 'read_result_frames(group)' in default
-        assert "frames['varcomp_violin']" in default
-
-    def test_violin_figure_plotted(self):
-        _, main_block = _responses_source()
-        assert 'plot_varcomp_violins(' in main_block
-        assert 'response_varcomp_violins.svg' in main_block

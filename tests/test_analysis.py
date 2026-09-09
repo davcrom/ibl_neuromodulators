@@ -9,78 +9,14 @@ from iblnm.analysis import (
     add_fdr_qvalues,
     align_traces_at_transitions,
     transition_delta_stats,
-    fit_measurement_error_varcomp,
     get_responses,
     normalize_responses,
     resample_signal,
     pca_2d,
     state_dwell_times,
-    summarize_posterior,
     tercile_split_curves,
 )
 from iblnm.util import contrast_transform
-
-
-def _synthetic_varcomp_data(mouse_sd, session_sd, n_mice=30, n_sessions=8, se=0.1, seed=0):
-    """Per-session estimates with injected mouse-SD and session-SD.
-
-    Returns ``(estimates, ses, mouse_ids, v_mouse_true, v_session_true)`` for
-    ``n_mice`` mice each contributing ``n_sessions`` sessions. Each estimate is a
-    mouse effect + session effect + measurement noise of known SD ``se``. The two
-    ``*_true`` values are the *realized* between-mouse and between-session
-    variances standardized by the estimate variance — the quantities the
-    standardized model recovers, which differ from the injected SDs by
-    finite-sample sampling. ``n_mice`` is large enough that the between-mouse
-    component is identifiable.
-    """
-    rng = np.random.default_rng(seed)
-    mouse_ids = np.repeat(np.arange(n_mice), n_sessions)
-    mouse_effect = rng.normal(0, mouse_sd, n_mice)
-    session_effect = rng.normal(0, session_sd, mouse_ids.size)
-    noise = rng.normal(0, se, mouse_ids.size)
-    estimates = mouse_effect[mouse_ids] + session_effect + noise
-    ses = np.full(mouse_ids.size, se)
-    scale_sq = estimates.var()
-    return (estimates, ses, mouse_ids,
-            mouse_effect.var() / scale_sq, session_effect.var() / scale_sq)
-
-
-class TestVarcompFit:
-    def test_recovers_realized_variances(self):
-        estimates, ses, mouse_ids, v_mouse_true, v_session_true = (
-            _synthetic_varcomp_data(0.6, 0.3))
-        v_mouse, v_session = fit_measurement_error_varcomp(
-            estimates, ses, mouse_ids, draws=500, tune=500, chains=2, random_seed=0
-        )
-        # the standardized model recovers the realized component variances
-        np.testing.assert_allclose(v_mouse.mean(), v_mouse_true, atol=0.25)
-        np.testing.assert_allclose(v_session.mean(), v_session_true, atol=0.25)
-        # mouse component clearly exceeds session component here
-        assert v_mouse.mean() > v_session.mean()
-
-    def test_scaling_invariance(self):
-        estimates, ses, mouse_ids, *_ = _synthetic_varcomp_data(0.6, 0.3)
-        vm1, vs1 = fit_measurement_error_varcomp(
-            estimates, ses, mouse_ids, draws=500, tune=500, chains=2, random_seed=0
-        )
-        vm2, vs2 = fit_measurement_error_varcomp(
-            10 * estimates, 10 * ses, mouse_ids,
-            draws=500, tune=500, chains=2, random_seed=0,
-        )
-        np.testing.assert_allclose(vm1.mean(), vm2.mean(), atol=0.05)
-        np.testing.assert_allclose(vs1.mean(), vs2.mean(), atol=0.05)
-
-
-class TestSummarizePosterior:
-    def test_summary_and_grid(self):
-        samples = np.random.default_rng(0).normal(2.0, 1.0, 5000)
-        mean, hdi_low, hdi_high, x_grid, density = summarize_posterior(
-            samples, grid_size=150
-        )
-        assert hdi_low <= mean <= hdi_high
-        assert len(x_grid) == 150
-        assert len(density) == 150
-        assert np.all(density >= 0)
 
 
 class TestContrastTransform:

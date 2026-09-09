@@ -33,10 +33,7 @@ from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
     RESPONSES_DIR, RESPONSE_MAGNITUDES_FPATH, RESPONSE_MAGNITUDE_COLUMNS,
     OLS_PERSESSION_FPATH,
-    RESPONSE_OLS_MOUSE_PVAL_FPATH, RESPONSE_OLS_COEFS_COLUMNS,
-    RESPONSE_VARCOMP_SUMMARY_FPATH, RESPONSE_VARCOMP_VIOLIN_FPATH,
-    VARCOMP_MCMC, VARCOMP_TAU_PRIOR, VARCOMP_MIN_MICE,
-    VARCOMP_MIN_SESSIONS_PER_MOUSE, VARCOMP_KDE_GRID, VARCOMP_HDI_PROB,
+    RESPONSE_OLS_MOUSE_PVAL_FPATH,
     MASKING_DIAGNOSTICS_FPATH, MASKING_DIAGNOSTIC_GROUP_COLS,
     MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_WINDOWS,
     RESPONSE_EVENTS, FIGURE_DPI, LMM_FORMULAS, TRACE_INSET_TARGETNMS,
@@ -60,7 +57,6 @@ from iblnm.vis import (
     plot_ols_total_r2,
     plot_ols_total_r2_subject,
     plot_ols_total_r2_violin,
-    plot_varcomp_violins,
 )
 from iblnm.analysis import aggregate_conditions
 
@@ -710,30 +706,6 @@ def fit_session(ps, formulas: dict, donors: dict) -> tuple[pd.DataFrame,
     return magnitudes, fits, unfiltered
 
 
-def varcomp_coefficients(ols_persession: pd.DataFrame) -> pd.DataFrame:
-    """Per-session coefficients view of the merged per-recording OLS frame.
-
-    The variance-components stage models one weight per session, which the
-    merged frame already carries: the drop-one grain is one row per dropped
-    predictor, and the reference model's weight for that same regressor sits on
-    it. So the view is a rename and a column subset, no aggregation — the
-    dropped ``predictor`` is the ``regressor`` whose weight the row holds.
-
-    Parameters
-    ----------
-    ols_persession : pandas.DataFrame
-        The merged per-recording OLS results, ``config.OLS_PERSESSION_COLUMNS``.
-
-    Returns
-    -------
-    pandas.DataFrame
-        ``config.RESPONSE_OLS_COEFS_COLUMNS``, the grain and schema
-        :meth:`PhotometrySessionGroup.response_varcomp` consumes.
-    """
-    return (ols_persession.rename(columns={'predictor': 'regressor'})
-            [RESPONSE_OLS_COEFS_COLUMNS])
-
-
 def compute_masking_diagnostics(
     magnitudes: pd.DataFrame,
     window: tuple[float, float] = RESPONSE_WINDOWS['early'],
@@ -880,8 +852,6 @@ RESULT_FPATHS = {
     'magnitudes': RESPONSE_MAGNITUDES_FPATH,
     'ols': OLS_PERSESSION_FPATH,
     'ols_mouse': RESPONSE_OLS_MOUSE_PVAL_FPATH,
-    'varcomp_summary': RESPONSE_VARCOMP_SUMMARY_FPATH,
-    'varcomp_violin': RESPONSE_VARCOMP_VIOLIN_FPATH,
     # Cached like the rest, because the frame it is reduced from is the
     # unfiltered one only the fitting pass holds.
     'masking_diagnostics': MASKING_DIAGNOSTICS_FPATH,
@@ -896,9 +866,8 @@ def read_result_frames(group, paths: dict = RESULT_FPATHS,
     these files over whatever sessions it analysed, and this run's own filters
     decide which of those rows are in scope.
     :meth:`PhotometrySessionGroup.filter_to_recordings` does the narrowing at
-    whichever grain each frame is keyed on, so the per-mouse and
-    variance-components tables — keyed by cell, with no ``eid`` — come back
-    whole.
+    whichever grain each frame is keyed on, so the per-mouse table — keyed by
+    cell, with no ``eid`` — comes back whole.
 
     Parameters
     ----------
@@ -1028,19 +997,6 @@ if __name__ == '__main__':
                 index=False))
         print(f"Saved masking diagnostics to {MASKING_DIAGNOSTICS_FPATH}")
 
-        # --- Per-cell variance components (mouse vs session) ---
-        print("Fitting per-cell variance-components model (PyMC sampling)...")
-        varcomp_summary, varcomp_violin = group.response_varcomp(
-            varcomp_coefficients(ols),
-            mcmc=VARCOMP_MCMC, tau_prior=VARCOMP_TAU_PRIOR,
-            min_mice=VARCOMP_MIN_MICE,
-            min_sessions_per_mouse=VARCOMP_MIN_SESSIONS_PER_MOUSE,
-            grid_size=VARCOMP_KDE_GRID, hdi_prob=VARCOMP_HDI_PROB)
-        varcomp_summary.to_parquet(RESPONSE_VARCOMP_SUMMARY_FPATH, index=False)
-        varcomp_violin.to_parquet(RESPONSE_VARCOMP_VIOLIN_FPATH, index=False)
-        print(f"Saved variance components to {RESPONSE_VARCOMP_SUMMARY_FPATH} "
-              f"and {RESPONSE_VARCOMP_VIOLIN_FPATH}")
-
     else:
         # =================================================================
         # Default: load pre-existing parquet files
@@ -1053,7 +1009,6 @@ if __name__ == '__main__':
         frames = read_result_frames(group)
         magnitudes = frames['magnitudes']
         ols, ols_mouse = frames['ols'], frames['ols_mouse']
-        varcomp_violin = frames['varcomp_violin']
         diagnostics = frames['masking_diagnostics']
 
     # =====================================================================
@@ -1112,15 +1067,3 @@ if __name__ == '__main__':
     plot_persession_figures(ols, ols_mouse, fig_dirs['persession'],
                             display=args.persession_display)
     print(f"Per-session OLS figures saved to {fig_dirs['persession']}")
-
-    # =====================================================================
-    # Variance components: mouse vs session posterior violins
-    # =====================================================================
-    print("\nGenerating variance-components violin figure...")
-    fig = plot_varcomp_violins(
-        varcomp_violin,
-        title='Per-cell variance components\nmouse (left) vs session (right)')
-    fig.savefig(fig_dirs['persession'] / 'response_varcomp_violins.svg',
-                dpi=FIGURE_DPI, bbox_inches='tight')
-    plt.close(fig)
-    print(f"Variance-components figure saved to {fig_dirs['persession']}")

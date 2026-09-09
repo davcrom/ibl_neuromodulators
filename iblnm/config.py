@@ -74,31 +74,6 @@ OLS_PERSESSION_COLUMNS = ['eid', 'subject', 'target_NM', 'brain_region',
                           'coef', 'coef_se', 'p_value', 'q_value', 'n_donors']
 # Per-mouse permutation significance — a coarser grain, so its own frame.
 RESPONSE_OLS_MOUSE_PVAL_FPATH = RESPONSES_DIR / 'ols_persession_mouse.parquet'
-# Group-level per-session coefficients frame: one row per (session, event,
-# regressor) carrying the full model's main-effect weight and its SE.
-RESPONSE_OLS_COEFS_COLUMNS = ['eid', 'subject', 'target_NM', 'brain_region',
-                              'event', 'regressor', 'coef', 'coef_se',
-                              'n_trials']
-# Variance-components stage-2 outputs (keyed by cell, no eid column).
-RESPONSE_VARCOMP_SUMMARY_FPATH = RESPONSES_DIR / 'varcomp_summary.parquet'
-RESPONSE_VARCOMP_VIOLIN_FPATH = RESPONSES_DIR / 'varcomp_violin.parquet'
-RESPONSE_VARCOMP_SUMMARY_COLUMNS = ['target_NM', 'event', 'regressor',
-                                    'component', 'mean', 'hdi_low', 'hdi_high',
-                                    'n_mice', 'n_sessions']
-RESPONSE_VARCOMP_VIOLIN_COLUMNS = ['target_NM', 'event', 'regressor',
-                                   'component', 'x', 'density']
-# Cell inclusion thresholds: drop mice with fewer than
-# VARCOMP_MIN_SESSIONS_PER_MOUSE sessions in a cell, then require at least
-# VARCOMP_MIN_MICE surviving mice.
-VARCOMP_MIN_MICE = 4
-VARCOMP_MIN_SESSIONS_PER_MOUSE = 5
-# PyMC sampler settings for the stage-2 fit.
-VARCOMP_MCMC = {'draws': 1000, 'tune': 1000, 'chains': 4,
-                'target_accept': 0.9, 'random_seed': 0}
-# tau prior selector; 'halfcauchy' and 'uniform' also accepted.
-VARCOMP_TAU_PRIOR = ('halfnormal', 1.0)
-VARCOMP_KDE_GRID = 200
-VARCOMP_HDI_PROB = 0.94
 TASK_ENCODING_DIR = RESULTS_DIR / 'task_encoding'
 DISPERSION_FIGURES_DIR = PROJECT_ROOT / 'figures/task_encoding/dispersion'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
