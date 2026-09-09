@@ -3856,35 +3856,58 @@ class TestMaskSubsequentEvents:
         })
         return session, responses
 
-    def test_masks_times_after_next_event(self, mock_session_series):
+    def test_masks_times_after_each_named_event(self, mock_session_series):
         session, responses = self._make_session_and_responses(mock_session_series)
         result = session.mask_subsequent_events(
-            responses,
-            event_order=['stimOnTrigger_times', 'firstMovement_times', 'feedback_times'],
-        )
+            responses, ['firstMovement_times'])
         mat = result.sel(event='stimOnTrigger_times').values
         assert np.isnan(mat[0, 3])       # trial 0, t=0.5 > 0.3 → NaN
         assert np.isnan(mat[0, 4])       # trial 0, t=1.0 > 0.3 → NaN
         assert not np.isnan(mat[0, 2])   # trial 0, t=0.0 ≤ 0.3 → kept
         assert not np.isnan(mat[1, 3])   # trial 1, NaN dt → not masked
 
-    def test_last_event_not_masked(self, mock_session_series):
-        """firstMovement event matrix is unchanged (no event after it in responses)."""
+    def test_two_masking_events_keep_only_what_both_keep(self,
+                                                         mock_session_series):
+        """The earliest named event decides, so the two masks intersect."""
         session, responses = self._make_session_and_responses(mock_session_series)
         result = session.mask_subsequent_events(
-            responses,
-            event_order=['stimOnTrigger_times', 'firstMovement_times'],
+            responses, ['firstMovement_times', 'feedback_times'])
+        mat = result.sel(event='stimOnTrigger_times').values
+        assert np.isnan(mat[0, 3])       # trial 0, t=0.5 > 0.3 (firstMovement)
+        assert not np.isnan(mat[0, 2])   # trial 0, t=0.0 ≤ 0.3 → kept
+        assert not np.isnan(mat[1, 4])   # trial 1, NaN dt and t=1.0 ≤ 1.5
+
+    def test_no_masking_events_blanks_nothing(self, mock_session_series):
+        """The `baseline` entry names none, so its cut comes back whole."""
+        session, responses = self._make_session_and_responses(mock_session_series)
+        result = session.mask_subsequent_events(responses, [])
+        np.testing.assert_array_equal(result.values, responses.values)
+
+    def test_an_event_is_not_masked_at_itself(self, mock_session_series):
+        """`feedback_times` blanks the stimulus plane and leaves its own whole.
+
+        Masking a plane at its own event would blank every post-event sample,
+        so the plane an entry is aligned to keeps its window.
+        """
+        import xarray as xr
+        session, _ = self._make_session_and_responses(mock_session_series)
+        session.trials['feedback_times'] = [0.3, 0.3]
+        responses = xr.DataArray(
+            np.ones((2, 2, 5)),
+            dims=['event', 'trial', 'time'],
+            coords={'event': ['stimOnTrigger_times', 'feedback_times'],
+                    'trial': [0, 1],
+                    'time': np.array([-1.0, -0.5, 0.0, 0.5, 1.0])},
         )
-        mat = result.sel(event='firstMovement_times').values
-        assert not np.any(np.isnan(mat))
+        result = session.mask_subsequent_events(responses, ['feedback_times'])
+        assert np.isnan(result.sel(event='stimOnTrigger_times').values[0, 3])
+        assert not np.any(np.isnan(result.sel(event='feedback_times').values))
 
     def test_nan_dt_not_masked(self, mock_session_series):
         """Trial 1 has NaN firstMovement → stimOn response fully intact."""
         session, responses = self._make_session_and_responses(mock_session_series)
         result = session.mask_subsequent_events(
-            responses,
-            event_order=['stimOnTrigger_times', 'firstMovement_times', 'feedback_times'],
-        )
+            responses, ['firstMovement_times'])
         mat = result.sel(event='stimOnTrigger_times').values
         assert not np.any(np.isnan(mat[1]))
 
@@ -3896,11 +3919,11 @@ class TestMaskSubsequentEvents:
         tpts = np.array([-1.0, 0.0, 1.0])
         vals = np.array([1., 2., 3.])
         responses = _make_responses(tpts, vals)
-        result = session.mask_subsequent_events(responses)
+        result = session.mask_subsequent_events(responses, ['feedback_times'])
         np.testing.assert_array_equal(result.values, responses.values)
 
-    def test_event_not_in_responses_skipped(self, mock_session_series):
-        """Event in event_order but not in DataArray coords → no error."""
+    def test_event_absent_from_trials_skipped(self, mock_session_series):
+        """A cut event the trials table has no column for → no error."""
         from iblnm.data import PhotometrySession
         import xarray as xr
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
@@ -3909,7 +3932,7 @@ class TestMaskSubsequentEvents:
         responses = xr.DataArray(
             data,
             dims=['event', 'trial', 'time'],
-            coords={'event': ['feedback_times'],
+            coords={'event': ['goCueTrigger_times'],
                     'trial': [0, 1], 'time': tpts},
         )
         session.trials = pd.DataFrame({
@@ -3917,16 +3940,32 @@ class TestMaskSubsequentEvents:
             'firstMovement_times': [0.3, 0.4],
             'feedback_times':      [1.5, 1.5],
         })
-        # stimOnTrigger_times not in responses → skip without error
-        result = session.mask_subsequent_events(
-            responses,
-            event_order=['stimOnTrigger_times', 'firstMovement_times', 'feedback_times'],
-        )
+        # goCueTrigger_times is not a trials column → skip without error
+        result = session.mask_subsequent_events(responses, ['feedback_times'])
         np.testing.assert_array_equal(result.values, responses.values)
 
-    def test_default_event_order_masks_stimon_at_feedback(self, mock_session_series):
-        """With the default event_order (RESPONSE_EVENTS), stimOn is masked at
-        feedback: firstMovement is no longer the event between them."""
+    def test_masking_event_absent_from_trials_masks_nothing(
+            self, mock_session_series):
+        """A named masking event with no trials column → no error."""
+        from iblnm.data import PhotometrySession
+        import xarray as xr
+        session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
+        tpts = np.array([-1.0, 0.0, 1.0])
+        responses = xr.DataArray(
+            np.ones((1, 2, 3)),
+            dims=['event', 'trial', 'time'],
+            coords={'event': ['stimOnTrigger_times'],
+                    'trial': [0, 1], 'time': tpts},
+        )
+        session.trials = pd.DataFrame({
+            'stimOnTrigger_times': [0.0, 0.0],
+            'feedback_times':      [0.3, 0.3],
+        })
+        result = session.mask_subsequent_events(responses, ['errorCue_times'])
+        np.testing.assert_array_equal(result.values, responses.values)
+
+    def test_masks_stimon_at_feedback(self, mock_session_series):
+        """The `stimulus` entry's masking: stimOn blanked past feedback."""
         from iblnm.data import PhotometrySession
         import xarray as xr
         session = PhotometrySession(mock_session_series, one=MagicMock(), load_data=False)
@@ -3941,7 +3980,7 @@ class TestMaskSubsequentEvents:
             'firstMovement_times': [np.nan, np.nan],
             'feedback_times':      [0.3, np.nan],
         })
-        result = session.mask_subsequent_events(responses)  # default event_order
+        result = session.mask_subsequent_events(responses, ['feedback_times'])
         mat = result.sel(event='stimOnTrigger_times').values
         assert np.isnan(mat[0, 3])      # t=0.5 > feedback-stimOn=0.3 → masked
         assert np.isnan(mat[0, 4])      # t=1.0 > 0.3 → masked
@@ -6957,8 +6996,22 @@ def _measured_session(ps):
     """
     ps.extract_trial_timings()
     ps.add_trial_columns(ps.wheel_peak_velocity)
-    ps.extract_response_magnitudes()
+    ps.extract_response_magnitudes(**_measurement())
     return ps
+
+
+def _measurement(key: str = 'stimulus') -> dict:
+    """The measurement arguments a `config.RESPONSES` entry supplies.
+
+    The three fields `extract_response_magnitudes` takes, spread into the call
+    as the script spreads them, so a test names the analysis window rather than
+    three loose values.
+    """
+    from iblnm.config import RESPONSES
+    entry = RESPONSES[key]
+    return {'window': entry['window'],
+            'masking_events': entry['masking_events'],
+            'baseline_correct': entry['baseline_correct']}
 
 
 def _response_model():
@@ -7212,7 +7265,7 @@ class TestModellingPass:
             ps.load_peak_velocity()
             ps.add_trial_columns(ps.wheel_peak_velocity)
             ps.load_responses('photometry')
-            ps.extract_response_magnitudes()
+            ps.extract_response_magnitudes(**_measurement())
             return ps.fit_responses(**kwargs)
 
         with patch.object(PhotometrySession, 'load_h5', load_spy):
@@ -8629,7 +8682,7 @@ class TestExtractResponseMagnitudes:
         from iblnm.data import _RECORDING_MAGNITUDE_COLUMNS
         ps = _session_with_planted_trials(n_regions=2)
 
-        magnitudes = ps.extract_response_magnitudes()
+        magnitudes = ps.extract_response_magnitudes(**_measurement())
 
         assert list(magnitudes.columns) == _RECORDING_MAGNITUDE_COLUMNS
         assert len(magnitudes) == 2 * len(RESPONSE_EVENTS) * 4
@@ -8650,24 +8703,48 @@ class TestExtractResponseMagnitudes:
 
         # Trial 1's false start masks its stimulus window away, so its
         # magnitude is NaN either way and carries no level to compare.
-        subtracted = ps.extract_response_magnitudes()['response'].dropna()
+        subtracted = ps.extract_response_magnitudes(
+            **_measurement())['response'].dropna()
         raw = ps.extract_response_magnitudes(
-            subtract_baseline=False)['response'].dropna()
+            **_measurement() | {'baseline_correct': False})['response'].dropna()
 
         np.testing.assert_allclose(subtracted.values, 0.5, atol=1e-9)
         np.testing.assert_allclose(raw.values, 1.0, atol=1e-9)
 
-    def test_response_magnitudes_mask_nothing_when_the_switch_is_off(self):
-        """Every choice lands 10 ms after stimulus onset, so masking blanks the
-        stimulus-locked window end to end; switched off, no sample is lost."""
+    def test_response_magnitudes_mask_nothing_when_no_event_is_named(self):
+        """Every choice lands 10 ms after stimulus onset, so feedback masking
+        blanks the stimulus-locked window end to end; naming no masking event,
+        as the `baseline` entry does, loses no sample."""
         ps = _session_with_planted_trials(fast_response=True)
 
-        masked = ps.extract_response_magnitudes()
-        unmasked = ps.extract_response_magnitudes(mask_subsequent=False)
+        masked = ps.extract_response_magnitudes(**_measurement())
+        unmasked = ps.extract_response_magnitudes(
+            **_measurement() | {'masking_events': []})
 
         assert masked['masked_fraction'].max() == 1.0
         np.testing.assert_allclose(unmasked['masked_fraction'].values, 0.0)
         assert unmasked['response'].notna().all()
+
+    def test_baseline_entry_measures_the_raw_pre_stimulus_window(self):
+        """The `baseline` entry subtracts nothing and masks nothing.
+
+        The signal is its own sample time, so the magnitude is the mean of the
+        seven samples the (-0.35, -0.1) window covers on the 30 Hz cut:
+        -1/3 s to -2/15 s in 1/30 s steps, i.e. -7/30 s.
+        """
+        from iblnm.config import RESPONSES
+        ps = _session_with_planted_trials()
+        ps.photometry_responses = {
+            region: responses * 0 + responses.coords['time']
+            for region, responses in ps.photometry_responses.items()}
+
+        magnitudes = ps.extract_response_magnitudes(
+            **_measurement('baseline'))
+
+        assert RESPONSES['baseline']['window'] == (-0.35, -0.1)
+        np.testing.assert_allclose(magnitudes['response'].values, -7 / 30,
+                                   atol=1e-9)
+        np.testing.assert_allclose(magnitudes['masked_fraction'].values, 0.0)
 
     def test_response_magnitudes_narrow_under_the_trial_mask(self):
         """The mask is one entry per trial and the frame many rows per trial.
@@ -8677,7 +8754,7 @@ class TestExtractResponseMagnitudes:
         the stored frame rather than the property.
         """
         ps = _session_with_planted_trials()
-        ps.extract_response_magnitudes()
+        ps.extract_response_magnitudes(**_measurement())
 
         ps.filter_trials(exclude_nogo=True)
 
@@ -8689,6 +8766,6 @@ class TestExtractResponseMagnitudes:
         ps = _session_with_planted_trials(n_regions=2)
         del ps.photometry_responses[ps.brain_region[0]]
 
-        magnitudes = ps.extract_response_magnitudes()
+        magnitudes = ps.extract_response_magnitudes(**_measurement())
 
         assert set(magnitudes['brain_region']) == {ps.brain_region[1]}

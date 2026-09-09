@@ -340,11 +340,9 @@ region_responses = ps.photometry_responses['VTA']  # dims: (event, trial, time)
 # Baseline subtraction (mean of [-0.1, 0] window)
 responses = ps.subtract_baseline(region_responses)
 
-# Mask time points after the next event in a trial sequence
-responses = ps.mask_subsequent_events(
-    region_responses,
-    event_order=['stimOn_times', 'firstMovement_times', 'feedback_times']
-)
+# Blank each event's samples from every named following event onward. A plane
+# is never masked at its own event, so the feedback-locked cut stays whole.
+responses = ps.mask_subsequent_events(region_responses, ['feedback_times'])
 ```
 
 ### Task performance

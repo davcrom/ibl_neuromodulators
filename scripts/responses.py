@@ -36,7 +36,7 @@ from iblnm.config import (
     RESPONSE_OLS_MOUSE_PVAL_FPATH,
     MASKING_DIAGNOSTICS_FPATH, MASKING_DIAGNOSTIC_GROUP_COLS,
     MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_MAGNITUDE_WINDOW,
-    RESPONSE_EVENTS, FIGURE_DPI, RESPONSE_MODEL_FORMULA,
+    RESPONSE_EVENTS, RESPONSES, FIGURE_DPI, RESPONSE_MODEL_FORMULA,
     RESPONSE_DROPPED_TERMS, TRACE_INSET_TARGETNMS,
     MIN_RESPONSE_TIME,
 )
@@ -84,6 +84,11 @@ CONTRAST_GROUP_COLS = ['target_NM', 'event', 'side', 'contrast', 'feedbackType']
 # the long frame so the aggregation can average over recordings or subjects.
 _TRACE_KEYS = ['eid', 'subject', 'target_NM', 'brain_region']
 
+# The `config.RESPONSES` entry this pass measures and corrects its traces by:
+# the window averaged into a magnitude, whether the pre-event baseline is
+# subtracted, and the events past which a trial's samples are blanked.
+RESPONSE_ENTRY = RESPONSES['stimulus']
+
 
 def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
                       correct: bool = True) -> pd.DataFrame:
@@ -114,7 +119,8 @@ def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
     """
     responses = ps.photometry_responses[rec['brain_region']]
     if correct:
-        responses = ps.subtract_baseline(ps.mask_subsequent_events(responses))
+        responses = ps.subtract_baseline(ps.mask_subsequent_events(
+            responses, RESPONSE_ENTRY['masking_events']))
     samples = (responses.to_dataframe(name='value').reset_index()
                .astype({'value': 'float32'}))
     keys = trials[trials['eid'] == rec['eid']]
@@ -439,7 +445,9 @@ def fit_session(ps, formula: str, dropped_terms: dict,
     ps.load_peak_velocity()
     ps.add_trial_columns(ps.wheel_peak_velocity)
     ps.load_responses('photometry')
-    ps.extract_response_magnitudes()
+    ps.extract_response_magnitudes(
+        RESPONSE_ENTRY['window'], RESPONSE_ENTRY['masking_events'],
+        RESPONSE_ENTRY['baseline_correct'])
     unfiltered = _join_trials(ps.masking_diagnostics(), ps.trials)
     fits = ps.fit_responses(formula, dropped_terms, donors,
                             **PERSESSION_TRIAL_CRITERIA)

@@ -89,8 +89,9 @@ def _evoked_magnitudes(
     Runs the project's canonical evoked path on ``signals[column]``: peri-event
     matrices over ``RESPONSE_WINDOW``, samples later than the trial's next event
     masked out, per-trial pre-event baseline subtracted, then averaged over
-    ``RESPONSE_MAGNITUDE_WINDOW``. ``mask_subsequent_events`` masks only the
-    non-terminal events, so a trial whose feedback lands inside that window
+    ``RESPONSE_MAGNITUDE_WINDOW``. ``mask_subsequent_events`` blanks samples
+    past feedback and leaves the feedback-locked plane whole, so a trial whose
+    feedback lands inside that window
     averages the surviving samples only, and one whose feedback precedes the
     window start leaves it empty and yields NaN — hence the suppressed
     all-NaN-slice ``RuntimeWarning``.
@@ -104,7 +105,8 @@ def _evoked_magnitudes(
     """
     responses = ps.extract_responses(
         signals, events=RESPONSE_EVENTS, window=RESPONSE_WINDOW)[column]
-    evoked = ps.subtract_baseline(ps.mask_subsequent_events(responses))
+    evoked = ps.subtract_baseline(
+        ps.mask_subsequent_events(responses, ['feedback_times']))
     tpts = evoked.coords['time'].values
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', category=RuntimeWarning)

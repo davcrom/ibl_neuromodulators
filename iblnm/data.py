@@ -2763,42 +2763,53 @@ class PhotometrySession(PhotometrySessionLoader):
         baseline = responses.isel(time=slice(i0, i1)).mean(dim='time', skipna=True)
         return responses - baseline
 
-    def mask_subsequent_events(self, responses, event_order=None):
-        """Mask response times that fall after the next event onset.
+    def mask_subsequent_events(self, responses, masking_events: Sequence[str]):
+        """Blank each event's samples from every named following event onward.
 
-        For each consecutive pair (e0, e1) in event_order, per-trial times
-        t > (trials[e1] - trials[e0]) are replaced with NaN in the e0
-        response matrix. Trials where the next event time is NaN are not masked.
+        For an event plane ``e`` and a masking event ``m``, the per-trial times
+        ``t > trials[m] - trials[e]`` are replaced with NaN. A plane is never
+        masked at its own event, so naming ``feedback_times`` blanks the
+        stimulus-locked plane past feedback and leaves the feedback-locked one
+        whole. A trial whose ``m`` time is NaN keeps its samples, as does every
+        trial when ``masking_events`` is empty.
+
+        Masking is forward-only: samples are blanked from a named event onward,
+        never before the plane's own event. A window opening before its event is
+        therefore unmasked against the preceding trial — a pre-stimulus window
+        can carry the previous trial's feedback response, and nothing here
+        removes it.
 
         Parameters
         ----------
         responses : xr.DataArray
             Single-region DataArray with dims (event, trial, time).
-        event_order : list[str], optional
-            Chronologically ordered event names. Defaults to RESPONSE_EVENTS.
+        masking_events : Sequence[str]
+            Trials-table columns naming the events past which samples are
+            blanked, e.g. a ``config.RESPONSES`` entry's ``masking_events``.
+            Names absent from the trials table mask nothing.
 
         Returns
         -------
         xr.DataArray
             Masked responses, same shape and coords as input.
         """
-
-        if event_order is None:
-            event_order = list(RESPONSE_EVENTS)
-        if not hasattr(self, 'trials'):
+        if getattr(self, 'trials', None) is None:
             return responses
-        events_present = list(responses.coords['event'].values)
         sample_times = responses.coords['time'].values
         result = responses.copy()
-        for i, event in enumerate(event_order[:-1]):
-            next_event = event_order[i + 1]
-            if event not in events_present:
+        for event in responses.coords['event'].values:
+            if event not in self.trials.columns:
                 continue
-            if event not in self.trials.columns or next_event not in self.trials.columns:
-                continue
-            dt = self.trials[next_event].values - self.trials[event].values
-            nan_dt = np.isnan(dt)
-            keep = (sample_times[None, :] <= dt[:, None]) | nan_dt[:, None]
+            keep = np.ones((responses.sizes['trial'], sample_times.size),
+                           dtype=bool)
+            for masking_event in masking_events:
+                if (masking_event == event
+                        or masking_event not in self.trials.columns):
+                    continue
+                dt = (self.trials[masking_event].values
+                      - self.trials[event].values)
+                keep &= ((sample_times[None, :] <= dt[:, None])
+                         | np.isnan(dt)[:, None])
             keep_da = xr.DataArray(
                 keep, dims=['trial', 'time'],
                 coords={'trial': responses.coords['trial'],
@@ -3580,7 +3591,8 @@ class PhotometrySession(PhotometrySessionLoader):
         if normalize not in (None, 'minmax'):
             raise ValueError(f"normalize must be None or 'minmax', got {normalize!r}")
 
-        responses = self.mask_subsequent_events(self.photometry_responses[brain_region])
+        responses = self.mask_subsequent_events(
+            self.photometry_responses[brain_region], ['feedback_times'])
         responses = self.subtract_baseline(responses)
         sample_times = responses.coords['time'].values
 
@@ -3703,10 +3715,10 @@ class PhotometrySession(PhotometrySessionLoader):
 
     def extract_response_magnitudes(
             self,
-            events: Sequence[str] = RESPONSE_EVENTS,
-            window: tuple[float, float] = RESPONSE_MAGNITUDE_WINDOW,
-            mask_subsequent: bool = True,
-            subtract_baseline: bool = True) -> pd.DataFrame:
+            window: tuple[float, float],
+            masking_events: Sequence[str],
+            baseline_correct: bool,
+            events: Sequence[str] = RESPONSE_EVENTS) -> pd.DataFrame:
         """Measure every fiber x event x trial response magnitude, once.
 
         The measurement half of the session's state: identity columns and the
@@ -3714,19 +3726,28 @@ class PhotometrySession(PhotometrySessionLoader):
         mask applied and no coding done. The trial-level regressors live on the
         trials table and are joined by whatever fits them.
 
+        The first three arguments are one ``config.RESPONSES`` entry's — the
+        analysis window is the caller's choice, not this method's, and nothing
+        here reads that table. Masking is forward-only, so a window opening
+        before its event is unmasked against the preceding trial: the
+        ``baseline`` window can carry the previous trial's feedback response,
+        and nothing removes it.
+
         Parameters
         ----------
+        window : tuple of float
+            Seconds relative to the event, averaged into ``response``, and the
+            support ``masked_fraction`` is scored over.
+        masking_events : Sequence[str]
+            Events past which each trial's samples are blanked, so a window
+            running past the event that follows measures the evoked component
+            alone rather than the next one's. Empty blanks nothing.
+        baseline_correct : bool
+            Subtract each trial's `config.BASELINE_WINDOW` mean before the
+            window is averaged.
         events : Sequence[str]
             Events to measure, in the order the rows are emitted. A fiber whose
             stored cut holds none of them contributes nothing.
-        window : tuple of float
-            Seconds relative to the event, averaged into ``response``.
-        mask_subsequent : bool
-            Blank each trial's samples from the next event onward, so a window
-            running past the event that follows measures the evoked component
-            alone rather than the next one's.
-        subtract_baseline : bool
-            Subtract each trial's pre-event mean before the window is averaged.
 
         Returns
         -------
@@ -3735,8 +3756,8 @@ class PhotometrySession(PhotometrySessionLoader):
             ``self._response_magnitudes``. The parameters are not stored.
         """
         self.response_magnitudes = _concat_frames(
-            [self._recording_magnitudes(recording, events, window,
-                                        mask_subsequent, subtract_baseline)
+            [self._recording_magnitudes(recording, window, masking_events,
+                                        baseline_correct, events)
              for recording in zip(self.brain_region, self.hemisphere,
                                   self.target_NM)
              if recording[0] in self.photometry_responses],
@@ -3744,17 +3765,17 @@ class PhotometrySession(PhotometrySessionLoader):
         return self._response_magnitudes
 
     def _recording_magnitudes(self, recording: tuple[str, str, str],
-                              events: Sequence[str],
                               window: tuple[float, float],
-                              mask_subsequent: bool,
-                              subtract_baseline: bool) -> pd.DataFrame:
+                              masking_events: Sequence[str],
+                              baseline_correct: bool,
+                              events: Sequence[str]) -> pd.DataFrame:
         """One region's per-trial response magnitudes, one row per event x trial.
 
-        The stored cut is masked at the next event and baseline-subtracted
-        before the ``window`` mean is taken, so the magnitude carries the
-        evoked component alone. Empty when the region's cut holds none of
-        ``events``, so a region the analysis does not model drops out of the
-        concatenation rather than raising.
+        The stored cut is masked at ``masking_events`` and, where the entry
+        asks for it, baseline-subtracted before the ``window`` mean is taken.
+        Empty when the region's cut holds none of ``events``, so a region the
+        analysis does not model drops out of the concatenation rather than
+        raising.
 
         Parameters
         ----------
@@ -3762,13 +3783,12 @@ class PhotometrySession(PhotometrySessionLoader):
             ``(region, hemisphere, target_NM)``, the recording's entries in the
             session's parallel list columns. ``region`` also keys
             ``self.photometry_responses``.
+        window, masking_events, baseline_correct
+            The measuring entry's, as :meth:`extract_response_magnitudes`
+            documents them.
         events : Sequence[str]
             Events to cut, in the order the rows are emitted. Events the stored
             cut does not carry are skipped.
-        window : tuple of float
-            Seconds relative to the event, averaged into ``response``.
-        mask_subsequent, subtract_baseline : bool
-            The two transforms applied to the cut before it is averaged.
 
         Returns
         -------
@@ -3778,10 +3798,9 @@ class PhotometrySession(PhotometrySessionLoader):
             joins to the trial regressors.
         """
         region, hemisphere, target_nm = recording
-        responses = self.photometry_responses[region]
-        if mask_subsequent:
-            responses = self.mask_subsequent_events(responses)
-        if subtract_baseline:
+        responses = self.mask_subsequent_events(
+            self.photometry_responses[region], masking_events)
+        if baseline_correct:
             responses = self.subtract_baseline(responses)
         tpts = responses.coords['time'].values
         trials = responses.coords['trial'].values

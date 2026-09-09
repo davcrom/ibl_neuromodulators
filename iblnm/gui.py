@@ -243,7 +243,7 @@ class PhotometrySessionViewer:
         """Return responses for `region` with active transforms applied."""
         resp = self.session.photometry_responses[region]
         if self._mask_on:
-            resp = self.session.mask_subsequent_events(resp)
+            resp = self.session.mask_subsequent_events(resp, ['feedback_times'])
         if self._baseline_on:
             resp = self.session.subtract_baseline(resp)
         return resp

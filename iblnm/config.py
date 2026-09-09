@@ -21,8 +21,8 @@ RESPONSE_MAGNITUDES_FPATH = RESPONSES_DIR / 'response_magnitudes.parquet'
 # One row per recording x event x trial. `trial` is the trials table's own
 # trial number, so a session's trial-level values are identifiable across its
 # recordings and events.
-# `masked_fraction` is the proportion of RESPONSE_MAGNITUDE_WINDOW that
-# `mask_subsequent_events` removed before the mean was taken — the masking
+# `masked_fraction` is the proportion of the measuring entry's own `window`
+# that `mask_subsequent_events` removed before the mean was taken — the masking
 # diagnostic's per-trial quantity, carried here because it describes exactly
 # the samples `response` was averaged over.
 # The trial-level columns follow the magnitude they were measured beside, so
