@@ -528,6 +528,94 @@ RESPONSE_WINDOW = (-1, 1)          # the stored peri-event cut
 BASELINE_WINDOW = (-0.1, 0)        # pre-event baseline, subtracted per trial
 RESPONSE_MAGNITUDE_WINDOW = (0.1, 0.35)  # averaged for a scalar magnitude
 
+# One entry per analysis window, keyed by the analysis unit downstream. `event`
+# is the trials-table column the cut is aligned to, `window` the interval
+# measured off it, `masking_events` the following events past which samples are
+# blanked, `ANOVA` the repeated-measures factors mapped to the levels kept ([]
+# keeps all), and `min_trials` / `min_subjects` the cell occupancy a subject and
+# a (target_NM, event) cell must reach.
+#
+# Masking is forward-only: samples are blanked from a following event onward,
+# never before the entry's own event. A window opening before its event is
+# therefore unmasked against the preceding trial -- `baseline` can contain the
+# previous trial's feedback response, and nothing removes it.
+RESPONSES = {
+    'baseline': {
+        'event': STIM_ONSET_EVENT,
+        'window': (-0.35, -0.1),
+        'baseline_correct': False,
+        'masking_events': [],
+        'ANOVA': {'contrast': [], 'side': []},
+        'min_trials': 5,
+        'min_subjects': 2,
+    },
+    'stimulus': {
+        'event': STIM_ONSET_EVENT,
+        'window': RESPONSE_MAGNITUDE_WINDOW,
+        'baseline_correct': True,
+        'masking_events': ['feedback_times'],
+        'ANOVA': {'contrast': [], 'side': []},
+        'min_trials': 5,
+        'min_subjects': 2,
+    },
+    'feedback': {
+        'event': 'feedback_times',
+        'window': RESPONSE_MAGNITUDE_WINDOW,
+        'baseline_correct': True,
+        'masking_events': [],
+        # 100% contrast is dropped: mice rarely err on easy trials, so its
+        # error cells are structurally empty.
+        'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [], 'feedbackType': []},
+        'min_trials': 5,
+        'min_subjects': 2,
+    },
+}
+
+
+def validate_responses(responses: dict[str, dict]) -> None:
+    """Check every RESPONSES entry against the stored cut it is measured off.
+
+    Raises rather than logging: a bad edit here is a configuration error, not a
+    per-session failure, so it must not be swallowed by `@exception_logger`.
+
+    Parameters
+    ----------
+    responses : dict[str, dict]
+        A RESPONSES-shaped table, keyed by analysis window.
+
+    Raises
+    ------
+    ValueError
+        Naming the offending entry and field, when its `event` is not a cut
+        event, its `window` falls outside RESPONSE_WINDOW, a masking event
+        precedes its own event, or `signed_contrast` is an ANOVA factor.
+    """
+    for key, entry in responses.items():
+        if entry['event'] not in RESPONSE_EVENTS:
+            raise ValueError(
+                f"RESPONSES['{key}'] event {entry['event']!r} is not in "
+                'RESPONSE_EVENTS')
+        t0, t1 = entry['window']
+        if not RESPONSE_WINDOW[0] <= t0 < t1 <= RESPONSE_WINDOW[1]:
+            raise ValueError(
+                f"RESPONSES['{key}'] window {entry['window']} is not an "
+                f'increasing interval inside RESPONSE_WINDOW {RESPONSE_WINDOW}')
+        for event in entry['masking_events']:
+            if (event not in RESPONSE_EVENTS
+                    or RESPONSE_EVENTS.index(event)
+                    <= RESPONSE_EVENTS.index(entry['event'])):
+                raise ValueError(
+                    f"RESPONSES['{key}'] masking event {event!r} does not "
+                    f"follow {entry['event']!r} in RESPONSE_EVENTS")
+        if 'signed_contrast' in entry['ANOVA']:
+            raise ValueError(
+                f"RESPONSES['{key}'] ANOVA factor 'signed_contrast' collapses "
+                'its signed-zero levels; use contrast and side')
+
+
+validate_responses(RESPONSES)   # a bad edit to the table fails at import
+
+
 # Movement encoding analyses
 # Predictor column each movement variable enters the model as. choice enters as
 # the deviation-coded fiber-relative choice side; reaction_time is heavily

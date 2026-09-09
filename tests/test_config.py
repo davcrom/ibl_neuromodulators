@@ -1,5 +1,7 @@
 """Tests for config constants and static config structures."""
 
+import pytest
+
 from iblnm import config
 from iblnm.config import LMM_FORMULAS
 
@@ -20,6 +22,77 @@ def test_response_windows_are_distinct_constants():
     """
     assert config.RESPONSE_WINDOW == (-1, 1)
     assert config.RESPONSE_MAGNITUDE_WINDOW == (0.1, 0.35)
+
+
+def test_responses_table():
+    """The three shipped analysis windows, pinned as literal data."""
+    assert list(config.RESPONSES) == ['baseline', 'stimulus', 'feedback']
+    assert config.RESPONSES['baseline'] == {
+        'event': config.STIM_ONSET_EVENT,
+        'window': (-0.35, -0.1),
+        'baseline_correct': False,
+        'masking_events': [],
+        'ANOVA': {'contrast': [], 'side': []},
+        'min_trials': 5,
+        'min_subjects': 2,
+    }
+    assert config.RESPONSES['stimulus'] == {
+        'event': config.STIM_ONSET_EVENT,
+        'window': config.RESPONSE_MAGNITUDE_WINDOW,
+        'baseline_correct': True,
+        'masking_events': ['feedback_times'],
+        'ANOVA': {'contrast': [], 'side': []},
+        'min_trials': 5,
+        'min_subjects': 2,
+    }
+    assert config.RESPONSES['feedback'] == {
+        'event': 'feedback_times',
+        'window': config.RESPONSE_MAGNITUDE_WINDOW,
+        'baseline_correct': True,
+        'masking_events': [],
+        'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [], 'feedbackType': []},
+        'min_trials': 5,
+        'min_subjects': 2,
+    }
+    # the measurement window is the constant itself, not a copy of its values
+    assert config.RESPONSES['stimulus']['window'] is config.RESPONSE_MAGNITUDE_WINDOW
+    assert config.RESPONSES['feedback']['window'] is config.RESPONSE_MAGNITUDE_WINDOW
+
+
+def _responses_entry(**overrides):
+    """One-entry RESPONSES table: the shipped `stimulus` entry, fields replaced."""
+    return {'stimulus': {**config.RESPONSES['stimulus'], **overrides}}
+
+
+def test_validate_responses_accepts_shipped_table():
+    config.validate_responses(config.RESPONSES)
+
+
+def test_validate_responses_rejects_uncut_event():
+    with pytest.raises(ValueError, match='stimulus.*event'):
+        config.validate_responses(_responses_entry(event='goCue_times'))
+
+
+@pytest.mark.parametrize('window', [(-2, -1), (0.5, 1.5), (0.35, 0.1)])
+def test_validate_responses_rejects_window_outside_cut(window):
+    """A window must open and close inside RESPONSE_WINDOW, in that order."""
+    with pytest.raises(ValueError, match='stimulus.*window'):
+        config.validate_responses(_responses_entry(window=window))
+
+
+@pytest.mark.parametrize('masking_events', [['goCue_times'], [config.STIM_ONSET_EVENT]])
+def test_validate_responses_rejects_backward_masking(masking_events):
+    """Masking is forward-only, so a masking event must follow the entry's own."""
+    entry = _responses_entry(event='feedback_times', masking_events=masking_events)
+    with pytest.raises(ValueError, match='stimulus.*mask'):
+        config.validate_responses(entry)
+
+
+def test_validate_responses_rejects_signed_contrast_factor():
+    """`signed_contrast` collapses its two zero levels, so it cannot be a factor."""
+    entry = _responses_entry(ANOVA={'signed_contrast': [], 'feedbackType': []})
+    with pytest.raises(ValueError, match='stimulus.*signed_contrast'):
+        config.validate_responses(entry)
 
 
 def test_pose_qc_path_constants():
