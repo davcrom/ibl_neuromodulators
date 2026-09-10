@@ -342,9 +342,27 @@ def fill_parallel_lists_from_group(df, columns, group_col='subject'):
     All specified columns are filled together from the same source row, so they
     stay in sync — a column is never filled on its own.
 
-    A source row is valid only if all specified columns are non-empty AND have
-    the same length. A group is consistent if all valid source rows are identical
+    A source row is valid only if all specified columns are non-empty and the
+    same length. A group is consistent if all valid source rows are identical
     across the specified columns.
+
+    A row is filled only where the assignment is forced, never where list
+    order would decide it. Filling copies the source's entries onto the empty
+    row by position, and position carries no identity of its own: a source
+    recording two fibers names the two regions and sides the subject was
+    implanted in, never which of them each of the empty row's own ROI channels
+    is. Two cases leave no choice, and are the only ones filled:
+
+    - every entry in the column is identical, so which position each goes to
+      cannot matter (a subject with two fibers in one region, its sides
+      unrecorded, fills its regions and leaves its hemispheres blank)
+    - the row already carries one of the parallel columns, and it matches the
+      source's exactly, so that column pins the order the rest are filled in
+      (a row naming its two regions takes the source's hemispheres against
+      them)
+
+    Anything else is left empty. A session with no hemisphere still joins the
+    analyses that do not read one, and is dropped by those that do.
 
     Parameters
     ----------
@@ -375,39 +393,44 @@ def fill_parallel_lists_from_group(df, columns, group_col='subject'):
     def _is_empty_list(x):
         return isinstance(x, (list, np.ndarray)) and len(x) == 0
 
-    def _is_valid_source(row):
-        # A source row needs every column non-empty with matching lengths
-        lengths = []
-        for col in columns:
-            val = row[col]
-            if not _is_nonempty_list(val):
-                return False
-            lengths.append(len(val))
-        return len(set(lengths)) == 1
+    def _is_populated(row):
+        # Every column non-empty and the same length: a row that describes the
+        # subject's implant, whatever the fiber count.
+        return (all(_is_nonempty_list(row[col]) for col in columns)
+                and len({len(row[col]) for col in columns}) == 1)
 
     def _needs_fill(row):
         return any(_is_empty_list(row[col]) for col in columns)
 
     for idx in df.groupby(group_col).groups.values():
         group = df.loc[idx, columns]
-        valid_rows = group[group.apply(_is_valid_source, axis=1)]
-        if valid_rows.empty:
+        # Consistency is judged over every populated row, single-fiber or not:
+        # a subject whose sessions disagree about its implant has no source at
+        # all, and a multi-fiber row disagreeing with a single-fiber one is
+        # exactly that disagreement.
+        populated = group[group.apply(_is_populated, axis=1)]
+        if populated.empty:
             continue
 
-        # Consistency: all valid source rows must agree across columns
-        first = valid_rows.iloc[0]
+        first = populated.iloc[0]
         consistent = all(
             np.array_equal(row[col], first[col])
-            for _, row in valid_rows.iloc[1:].iterrows()
+            for _, row in populated.iloc[1:].iterrows()
             for col in columns
         )
         if not consistent:
             continue
 
-        # Fill every column of any row that has at least one empty column
+        # Fill every column of any row that has at least one empty column,
+        # where the source leaves no choice about which entry goes where.
         source_vals = {col: first[col] for col in columns}
+        unordered = all(len(set(first[col])) == 1 for col in columns)
         needs_fill = group.apply(_needs_fill, axis=1)
         for i in group.index[needs_fill.to_numpy()]:
+            pinned = any(np.array_equal(group.at[i, col], first[col])
+                         for col in columns)
+            if not (unordered or pinned):
+                continue
             for col in columns:
                 df.at[i, col] = source_vals[col]
 

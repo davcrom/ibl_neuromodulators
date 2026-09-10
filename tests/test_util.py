@@ -663,14 +663,15 @@ class TestFillParallelListsFromGroup:
         from iblnm.util import fill_parallel_lists_from_group
         df = pd.DataFrame({
             'subject': ['mouse1', 'mouse1'],
-            'brain_region': [['VTA', 'DR'], []],
-            'hemisphere': [['r', 'l'], []],
+            'brain_region': [['VTA'], []],
+            'hemisphere': [['r'], []],
         })
         result = fill_parallel_lists_from_group(
             df, ['brain_region', 'hemisphere'],
         )
-        assert result['brain_region'].iloc[1] == ['VTA', 'DR']
-        assert result['hemisphere'].iloc[1] == ['r', 'l']
+        assert result['brain_region'].iloc[0] == ['VTA']
+        assert result['brain_region'].iloc[1] == ['VTA']
+        assert result['hemisphere'].iloc[1] == ['r']
 
     def test_does_not_fill_from_inconsistent_group(self):
         """If sessions in a group disagree, don't fill."""
@@ -764,6 +765,34 @@ class TestFillParallelListsFromGroup:
             df, ['brain_region', 'hemisphere'],
         )
         # Source row has mismatched lengths, so no fill
+        assert result['brain_region'].iloc[1] == []
+        assert result['hemisphere'].iloc[1] == []
+
+    def test_fills_identical_entries_from_multi_fiber_source(self):
+        """Two fibers in one region, no sides: which slot each takes is moot."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['LC', 'LC'], []],
+            'hemisphere': [['', ''], []],
+        })
+        result = fill_parallel_lists_from_group(
+            df, ['brain_region', 'hemisphere'],
+        )
+        assert result['brain_region'].iloc[1] == ['LC', 'LC']
+        assert result['hemisphere'].iloc[1] == ['', '']
+
+    def test_does_not_fill_from_multi_fiber_source(self):
+        """A source recording two fibers cannot fill: position names no side."""
+        from iblnm.util import fill_parallel_lists_from_group
+        df = pd.DataFrame({
+            'subject': ['mouse1', 'mouse1'],
+            'brain_region': [['LC-l', 'LC-r'], []],
+            'hemisphere': [['l', 'r'], []],
+        })
+        result = fill_parallel_lists_from_group(
+            df, ['brain_region', 'hemisphere'],
+        )
         assert result['brain_region'].iloc[1] == []
         assert result['hemisphere'].iloc[1] == []
 
