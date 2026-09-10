@@ -5970,7 +5970,12 @@ class PhotometrySessionGroup:
                 .groupby(group_cols, as_index=False)[response_col]
                 .mean()
             )
-            if subject_means['subject'].nunique() < min_subjects:
+            # The balance requirement, not just the subject count: the fit
+            # drops a subject missing any cell, so a cohort too sparse to
+            # leave two complete ones is skipped rather than ending the run.
+            cells_per_subject = subject_means.groupby('subject').size()
+            n_cells = subject_means.groupby(list(factors)).ngroups
+            if (cells_per_subject == n_cells).sum() < min_subjects:
                 continue
 
             table = anova_rm(subject_means, response_col, 'subject',

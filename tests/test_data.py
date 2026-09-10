@@ -6455,6 +6455,22 @@ class TestAnovaFactorSpec:
                 magnitudes, {'contrast': [], 'block_bias': []},
                 min_trials=5, min_subjects=2)
 
+    def test_cohort_without_two_complete_subjects_is_skipped(self):
+        """A cohort too sparse to balance drops out of the results rather than
+        ending the run: the repeated-measures fit needs two subjects holding
+        every cell, and a subject missing one is dropped inside it."""
+        group, magnitudes = _make_group_with_events()
+        # Leave one subject holding a single contrast, so only it is complete
+        # once the other subjects lose their cells to the trial minimum.
+        thin = magnitudes[(magnitudes['subject'] == 's1')
+                          | (magnitudes['contrast'] == 0)]
+
+        result = group.response_anovaRM_fit(
+            thin, {'contrast': [], 'side': []},
+            min_trials=5, min_subjects=2)
+
+        assert all(len(table) for table in result.values())
+
 
 # =============================================================================
 # Per-session model frame tests

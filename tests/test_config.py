@@ -31,8 +31,8 @@ def test_responses_table():
         'window': (-0.35, -0.1),
         'baseline_correct': False,
         'masking_events': [],
-        'ANOVA': {'contrast': [], 'side': [], 'feedbackType': [],
-                  'reaction_time_bin': []},
+        'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [],
+                  'feedbackType': [], 'reaction_time_bin': []},
         'min_trials': 5,
         'min_subjects': 2,
     }
@@ -41,8 +41,8 @@ def test_responses_table():
         'window': config.RESPONSE_MAGNITUDE_WINDOW,
         'baseline_correct': True,
         'masking_events': ['feedback_times'],
-        'ANOVA': {'contrast': [], 'side': [], 'feedbackType': [],
-                  'reaction_time_bin': []},
+        'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [],
+                  'feedbackType': [], 'reaction_time_bin': []},
         'min_trials': 5,
         'min_subjects': 2,
     }

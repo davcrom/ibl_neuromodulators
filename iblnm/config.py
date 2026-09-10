@@ -541,14 +541,17 @@ RESPONSE_MAGNITUDE_WINDOW = (0.1, 0.35)  # averaged for a scalar magnitude
 # never before the entry's own event. A window opening before its event is
 # therefore unmasked against the preceding trial -- `baseline` can contain the
 # previous trial's feedback response, and nothing removes it.
+# 100% contrast is dropped from every window's ANOVA: mice rarely err on easy
+# trials, so crossing it with `feedbackType` leaves structurally empty cells
+# and the repeated-measures fit loses every subject that misses one.
 RESPONSES = {
     'baseline': {
         'event': STIM_ONSET_EVENT,
         'window': (-0.35, -0.1),
         'baseline_correct': False,
         'masking_events': [],
-        'ANOVA': {'contrast': [], 'side': [], 'feedbackType': [],
-                  'reaction_time_bin': []},
+        'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [],
+                  'feedbackType': [], 'reaction_time_bin': []},
         'min_trials': 5,
         'min_subjects': 2,
     },
@@ -557,8 +560,8 @@ RESPONSES = {
         'window': RESPONSE_MAGNITUDE_WINDOW,
         'baseline_correct': True,
         'masking_events': ['feedback_times'],
-        'ANOVA': {'contrast': [], 'side': [], 'feedbackType': [],
-                  'reaction_time_bin': []},
+        'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [],
+                  'feedbackType': [], 'reaction_time_bin': []},
         'min_trials': 5,
         'min_subjects': 2,
     },
@@ -567,8 +570,6 @@ RESPONSES = {
         'window': RESPONSE_MAGNITUDE_WINDOW,
         'baseline_correct': True,
         'masking_events': [],
-        # 100% contrast is dropped: mice rarely err on easy trials, so its
-        # error cells are structurally empty.
         'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [],
                   'feedbackType': [], 'reaction_time_bin': []},
         'min_trials': 5,
