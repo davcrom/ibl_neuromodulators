@@ -288,9 +288,20 @@ class _LinkSession:
         ordering, not for computing; the stub plants the frames those steps
         would have produced.
         """
-        if name.startswith(('load_', 'extract_', 'add_trial_columns')):
+        if name.startswith(('load_', 'extract_')):
             return lambda *args, **kwargs: self.called.append((name, args))
         raise AttributeError(name)
+
+    def add_trial_columns(self, frame, name='peak_velocity'):
+        """Assign by position, the real method's ndarray branch.
+
+        Unlike the load and extract steps, this one leaves something the fit
+        reads back — the reaction-time bin — so the stub does the work rather
+        than only recording the call.
+        """
+        self.called.append(('add_trial_columns', (frame,)))
+        self.trials[name] = frame
+        return self.trials
 
     @property
     def response_magnitudes(self):
@@ -369,43 +380,16 @@ class TestLinkFunctions:
                              entry['baseline_correct'])]
 
 
-class TestAnovaBins:
-    """A ``<column>_bin`` ANOVA factor is that column's within-session
-    terciles, derived here because the binning is an analysis choice."""
+class TestReactionTimeBins:
+    """``reaction_time_bin`` is the session's own reaction-time terciles, cut
+    onto the trials table by the fitting pass."""
 
     @staticmethod
-    def _session_trials(n_trials=30, seed=0):
-        """One session's magnitude rows over two events, one reaction time each."""
-        rng = np.random.default_rng(seed)
-        return pd.DataFrame([
-            {'trial': i, 'event': event,
-             'reaction_time': rt, 'contrast': 6.25}
-            for i, rt in enumerate(rng.uniform(0.1, 0.5, n_trials))
-            for event in [STIM_ONSET_EVENT, 'feedback_times']
-        ])
-
-    def test_three_bins_of_near_equal_size(self):
-        from scripts.responses import add_anova_bins
-        trials = self._session_trials()
-
-        binned = add_anova_bins(trials, {'contrast': [],
-                                         'reaction_time_bin': []})
-
-        counts = binned['reaction_time_bin'].value_counts()
-        assert len(counts) == 3
-        assert counts.max() - counts.min() <= 2
-        # The bins are ordered by the column they came from
-        means = binned.groupby('reaction_time_bin')['reaction_time'].mean()
-        assert means['low'] < means['mid'] < means['high']
-
-    def test_existing_column_is_overwritten(self):
-        """The factor carries this run's binning, not a stale one."""
-        from scripts.responses import add_anova_bins
-        trials = self._session_trials().assign(reaction_time_bin='stale')
-
-        binned = add_anova_bins(trials, ['reaction_time_bin'])
-
-        assert 'stale' not in set(binned['reaction_time_bin'])
+    def _bin(reaction_times):
+        """The binning as ``fit_session`` applies it, for a bare array."""
+        from scripts.responses import TERCILE_LABELS
+        return pd.qcut(pd.Series(reaction_times), 3,
+                       labels=TERCILE_LABELS).astype(str)
 
     def test_fit_session_bins_before_fitting(self):
         from scripts.responses import fit_session
@@ -418,13 +402,26 @@ class TestAnovaBins:
 
         assert set(magnitudes['reaction_time_bin']) <= {'low', 'mid', 'high'}
 
+    def test_bins_are_ordered_terciles_of_the_session(self):
+        """Three near-equal bins, ordered low to high by reaction time."""
+        rng = np.random.default_rng(0)
+        reaction_times = rng.uniform(0.1, 0.5, 30)
+
+        binned = self._bin(reaction_times)
+
+        counts = binned.value_counts()
+        assert len(counts) == 3
+        assert counts.max() - counts.min() <= 2
+        means = pd.Series(reaction_times).groupby(binned).mean()
+        assert means['low'] < means['mid'] < means['high']
+
     def test_binned_factor_keeps_every_subject_complete(self):
         """Each session yields all three bins, so no subject loses a cell."""
-        from scripts.responses import add_anova_bins
         from tests.test_data import _make_group_with_events
         group, magnitudes = _make_group_with_events()
         binned = pd.concat(
-            [add_anova_bins(session, ['reaction_time_bin'])
+            [session.assign(
+                reaction_time_bin=self._bin(session['reaction_time']).values)
              for _, session in magnitudes.groupby('eid')], ignore_index=True)
 
         result = group.response_anovaRM_fit(

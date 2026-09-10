@@ -32,7 +32,6 @@ Usage:
 import argparse
 import json
 from pathlib import Path
-from typing import Iterable
 
 import matplotlib
 import pandas as pd
@@ -94,10 +93,8 @@ CONTRAST_GROUP_COLS = ['target_NM', 'event', 'side', 'contrast', 'feedbackType']
 # the long frame so the aggregation can average over recordings or subjects.
 _TRACE_KEYS = ['eid', 'subject', 'target_NM', 'brain_region']
 
-# An ANOVA factor named `<column>_bin` is that trials column cut into
-# within-session terciles, labelled low to high. Binning is an analysis choice,
-# so it lives here rather than in the fit.
-BIN_SUFFIX = '_bin'
+# A `<column>_bin` trials column is that column cut into within-session
+# terciles, labelled low to high.
 TERCILE_LABELS = ('low', 'mid', 'high')
 
 
@@ -438,40 +435,6 @@ def _join_trials(magnitudes: pd.DataFrame,
     return task.add_relative_contrast(magnitudes.merge(trials, on='trial'))
 
 
-def add_anova_bins(trials: pd.DataFrame,
-                   factors: Iterable[str]) -> pd.DataFrame:
-    """Cut one session's continuous ANOVA factors into within-session terciles.
-
-    Called with a single session's rows in hand, so the bin edges are that
-    session's own quantiles: every session yields all three bins and no subject
-    loses a cell to a binned factor. A column of the same name is overwritten,
-    so the factor always carries this run's binning.
-
-    Parameters
-    ----------
-    trials : pandas.DataFrame
-        One session's magnitude rows, one per recording x event x trial. The
-        binned column repeats across a trial's recordings and events, which
-        leaves the quantiles unchanged.
-    factors : iterable of str
-        The ANOVA factor names, e.g. a ``config.RESPONSES`` entry's ``ANOVA``
-        mapping. Names not ending in ``BIN_SUFFIX`` are left alone; the rest
-        name the column they are binned from.
-
-    Returns
-    -------
-    pandas.DataFrame
-        A copy carrying one ``TERCILE_LABELS``-valued column per binned factor.
-    """
-    binned = trials.copy()
-    for factor in factors:
-        if factor.endswith(BIN_SUFFIX):
-            source = factor[:-len(BIN_SUFFIX)]
-            binned[factor] = pd.qcut(binned[source], 3,
-                                     labels=TERCILE_LABELS).astype(str)
-    return binned
-
-
 def fit_session(ps, entry: dict, formula: str, dropped_terms: dict,
                 donors: dict) -> tuple[pd.DataFrame, pd.DataFrame,
                                        pd.DataFrame]:
@@ -522,6 +485,12 @@ def fit_session(ps, entry: dict, formula: str, dropped_terms: dict,
     ps.extract_trial_timings()
     ps.load_peak_velocity()
     ps.add_trial_columns(ps.wheel_peak_velocity)
+    # Terciles of this session's own reaction times, so every session yields
+    # all three bins and no subject loses a cell to the binning.
+    ps.add_trial_columns(
+        pd.qcut(ps.trials['reaction_time'], 3,
+                labels=TERCILE_LABELS).astype(str).values,
+        name='reaction_time_bin')
     ps.load_responses('photometry')
     ps.extract_response_magnitudes(
         entry['window'], entry['masking_events'], entry['baseline_correct'])
@@ -529,8 +498,7 @@ def fit_session(ps, entry: dict, formula: str, dropped_terms: dict,
     fits = ps.fit_responses(formula, dropped_terms, donors,
                             **PERSESSION_TRIAL_CRITERIA)
     ps.filter_trials(**PERSESSION_TRIAL_CRITERIA)
-    magnitudes = add_anova_bins(
-        _join_trials(ps.response_magnitudes, ps.trials), entry['ANOVA'])
+    magnitudes = _join_trials(ps.response_magnitudes, ps.trials)
     return magnitudes, fits, unfiltered
 
 
