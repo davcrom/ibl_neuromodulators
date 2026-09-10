@@ -217,6 +217,22 @@ class TestConditionTraces:
         assert agg['mean'].tolist() == pytest.approx([expected] * 5)
         assert agg['n'].tolist() == [n] * 5
 
+    def test_reduces_each_recording_before_reading_the_next(self):
+        """Peak memory is what bounds this pass, so no per-trial sample
+        survives the recording that produced it: the frame handed to the
+        reduction carries one row per condition per recording — here 3
+        recordings x 5 time points — not one per trial x time point."""
+        import scripts.responses as responses
+        from scripts.responses import condition_traces
+        recordings, trials = self._uneven_cohort()
+
+        with patch.object(responses, 'aggregate_conditions') as reduce_:
+            condition_traces(recordings, trials, ['feedback_times'],
+                             mode='subject_centered', correct=False)
+
+        cells = reduce_.call_args.args[0]
+        assert len(cells) == 15
+
     def test_averages_the_trials_the_models_are_fitted_on(self):
         """The frame handed in is the trial set, with no selection re-derived:
         the stored magnitudes already carry the trials the models fitted, so

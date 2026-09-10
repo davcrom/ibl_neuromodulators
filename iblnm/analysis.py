@@ -1687,6 +1687,22 @@ def peak_velocity(wheel_vel, n_trials):
         return np.nanmax(np.abs(wheel_vel), axis=1)
 
 
+def aggregation_keys(group_cols: Sequence[str],
+                     unit_cols: Sequence[str] | None = None,
+                     center_by: str | None = None) -> list[str]:
+    """The columns a :func:`aggregate_conditions` call distinguishes.
+
+    Its condition keys, the columns identifying an averaging unit, and the
+    column it centers over. Pre-aggregating a frame to exactly these keys
+    loses nothing the reduction would have used, which is what lets a caller
+    reduce its input in pieces and hand over cells instead of observations.
+    """
+    keys = list(group_cols) + list(unit_cols or [])
+    if center_by is not None and center_by not in keys:
+        keys.append(center_by)
+    return keys
+
+
 def _pool_cells(df: pd.DataFrame, value_col: str, group_cols: list[str],
                 count_col: str, sumsq_col: str | None) -> pd.DataFrame:
     """Pool pre-aggregated cells back to trial-level means, SEMs and counts.
@@ -1817,10 +1833,9 @@ def aggregate_conditions(
         return _pool_cells(df, value_col, group_cols, count_col, sumsq_col)
     units = df
     if unit_cols is not None:
-        unit_keys = group_cols + list(unit_cols)
-        if center_by is not None and center_by not in unit_keys:
-            unit_keys.append(center_by)
-        units = _unit_means(df, value_col, unit_keys, count_col)
+        units = _unit_means(
+            df, value_col, aggregation_keys(group_cols, unit_cols, center_by),
+            count_col)
     if center_by is not None:
         by_group = units.groupby(group_cols, dropna=False,
                                  observed=True)[value_col]

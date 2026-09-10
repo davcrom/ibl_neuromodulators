@@ -64,7 +64,7 @@ from iblnm.vis import (
     plot_ols_total_r2_subject,
     plot_ols_total_r2_violin,
 )
-from iblnm.analysis import aggregate_conditions
+from iblnm.analysis import aggregate_conditions, aggregation_keys
 
 
 # =========================================================================
@@ -101,10 +101,14 @@ BIN_SUFFIX = '_bin'
 TERCILE_LABELS = ('low', 'mid', 'high')
 
 
-def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
-                      masking_events: list[str],
-                      correct: bool = True) -> pd.DataFrame:
-    """One recording's per-trial trace samples, long, restricted to ``trials``.
+def _recording_cells(rec: pd.Series, ps, trials: pd.DataFrame,
+                     masking_events: list[str], cell_keys: list[str],
+                     correct: bool = True) -> pd.DataFrame:
+    """One recording's per-trial traces, reduced to per-condition cells.
+
+    The per-trial samples exist only inside this call: a recording is read,
+    corrected, restricted to ``trials`` and reduced before the next one is
+    touched, so the pass never holds a cohort's worth of them.
 
     Parameters
     ----------
@@ -115,22 +119,28 @@ def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
         Session with ``photometry_responses`` and ``trials`` loaded.
     trials : pandas.DataFrame
         The already-selected trials, one row per recording x event x trial,
-        carrying the condition columns the aggregation groups on.
+        carrying the condition columns the cells are keyed on.
     masking_events : list of str
         The run's ``config.RESPONSES`` entry's masking chronology: the events
         past which a trial's samples are blanked. Empty masks nothing.
+    cell_keys : list of str
+        Columns the samples are reduced within, from
+        :func:`iblnm.analysis.aggregation_keys`.
     correct : bool
         Apply the response definition's two corrections — mask the samples
         past ``masking_events``, then subtract the ``config.BASELINE_WINDOW``
-        baseline — before flattening. False leaves the stored cut as it is.
+        baseline — before reducing. False leaves the stored cut as it is.
 
     Returns
     -------
     pandas.DataFrame
-        One row per event x trial x time sample, columns ``_TRACE_KEYS`` plus
-        ``event``, ``time``, ``value`` and the condition columns ``trials``
-        carries. The join is an inner one on (event, trial), so a trial the
-        selection dropped contributes no samples.
+        ``cell_keys`` plus ``value``, the cell's mean, ``n_trials``, the trials
+        behind it, and ``sumsq``, their sum of squared values. ``time`` is one
+        of ``cell_keys``, so masking shows up as a count that falls across the
+        window rather than as a null cell: a trial blanked partway through
+        contributes to the samples before its mask and not to those after.
+        The join onto ``trials`` is inner, so a trial the selection dropped
+        contributes nothing.
     """
     responses = ps.photometry_responses[rec['brain_region']]
     if correct:
@@ -140,23 +150,28 @@ def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
                .astype({'value': 'float32'}))
     keys = trials[trials['eid'] == rec['eid']]
     keys = keys[keys['brain_region'] == rec['brain_region']]
-    return samples.merge(keys.drop(columns=_TRACE_KEYS), on=['event', 'trial'],
-                         how='inner').assign(**{key: rec[key]
-                                                for key in _TRACE_KEYS})
+    selected = samples.merge(keys.drop(columns=_TRACE_KEYS),
+                             on=['event', 'trial'], how='inner').assign(
+        **{key: rec[key] for key in _TRACE_KEYS})
+    return (selected.assign(sumsq=selected['value'] ** 2)
+            .groupby(cell_keys, dropna=False, observed=True)
+            .agg(value=('value', 'mean'), n_trials=('value', 'count'),
+                 sumsq=('sumsq', 'sum'))
+            .reset_index())
 
 
 def condition_traces(recordings, trials: pd.DataFrame,
                      masking_events: list[str],
                      mode: str = 'subject_centered', correct: bool = True,
-                     group_cols=TRACE_GROUP_COLS,
-                     response_col: str = 'response') -> pd.DataFrame:
+                     group_cols=TRACE_GROUP_COLS) -> pd.DataFrame:
     """Correct, select and condition-average per-trial traces.
 
-    The plotting pass's whole computation: each recording's stored peri-event
-    cut is corrected, restricted to the trials the models are fitted on, and
-    reduced to one mean and SEM per condition. No trace frame is written and
-    nothing is retained per trial — the caller hands the result straight to
-    ``iblnm.vis``.
+    The plotting pass's whole computation. Each recording is reduced to cells
+    as it is read (:func:`_recording_cells`) and only the cells are kept, so
+    what the pass holds scales with conditions x recordings rather than with
+    the cohort's trials. The cells are then reduced to one mean and SEM per
+    condition, weighted by the trials behind each — the same answer the
+    per-trial reduction gave.
 
     Parameters
     ----------
@@ -175,12 +190,10 @@ def condition_traces(recordings, trials: pd.DataFrame,
         Averaging unit, via ``AGGREGATION_MODES``.
     correct : bool
         Apply the masking and baseline subtraction (see
-        :func:`_recording_traces`). False plots the uncorrected trace.
+        :func:`_recording_cells`). False plots the uncorrected trace.
     group_cols : sequence of str
         Condition keys the means are taken within; ``time`` is one of them, so
         each condition comes back as a trace.
-    response_col : str
-        Magnitude column whose null rows the trial selection drops.
 
     Returns
     -------
@@ -188,11 +201,14 @@ def condition_traces(recordings, trials: pd.DataFrame,
         ``group_cols`` plus ``mean``, ``sem`` and ``n``, the
         :func:`iblnm.analysis.aggregate_conditions` output shape.
     """
-    traces = pd.concat([_recording_traces(rec, ps, trials, masking_events,
-                                          correct)
-                        for rec, ps in recordings], ignore_index=True)
-    return aggregate_conditions(traces, 'value', group_cols,
-                                **AGGREGATION_MODES[mode])
+    reduction = AGGREGATION_MODES[mode]
+    cell_keys = aggregation_keys(group_cols, **reduction)
+    cells = pd.concat([_recording_cells(rec, ps, trials, masking_events,
+                                        cell_keys, correct)
+                       for rec, ps in recordings], ignore_index=True)
+    return aggregate_conditions(cells, 'value', group_cols,
+                                count_col='n_trials', sumsq_col='sumsq',
+                                **reduction)
 
 
 def _cohort_recordings(group, cohort: pd.DataFrame):
