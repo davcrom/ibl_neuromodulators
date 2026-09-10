@@ -32,7 +32,7 @@ def test_responses_table():
         'baseline_correct': False,
         'masking_events': [],
         'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [],
-                  'feedbackType': [], 'reaction_time_bin': []},
+                  'feedbackType': []},
         'min_trials': 5,
         'min_subjects': 2,
     }
@@ -42,7 +42,7 @@ def test_responses_table():
         'baseline_correct': True,
         'masking_events': ['feedback_times'],
         'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [],
-                  'feedbackType': [], 'reaction_time_bin': []},
+                  'feedbackType': []},
         'min_trials': 5,
         'min_subjects': 2,
     }
@@ -52,7 +52,7 @@ def test_responses_table():
         'baseline_correct': True,
         'masking_events': [],
         'ANOVA': {'contrast': [0, 6.25, 12.5, 25], 'side': [],
-                  'feedbackType': [], 'reaction_time_bin': []},
+                  'feedbackType': []},
         'min_trials': 5,
         'min_subjects': 2,
     }
