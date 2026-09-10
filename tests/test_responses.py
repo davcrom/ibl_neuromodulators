@@ -139,6 +139,7 @@ class TestConditionTraces:
             'contrast': contrast, 'feedbackType': feedback_type,
             'choice': 1, 'response_time': 1.0, 'reaction_time': 0.2,
             'probabilityLeft': probability_left,
+            'side': 'contra', 'reaction_time_bin': 'mid',
         })
 
     def test_uncorrected_means_are_the_raw_trace_means(self):
@@ -216,6 +217,24 @@ class TestConditionTraces:
 
         assert agg['mean'].tolist() == pytest.approx([expected] * 5)
         assert agg['n'].tolist() == [n] * 5
+
+    def test_the_stored_averages_do_not_depend_on_the_mode(self):
+        """Each session's per-condition averages are the same table whichever
+        average is asked for, so one pass over the store answers both: only
+        how they are combined afterwards differs."""
+        import scripts.responses as responses
+        from scripts.responses import condition_traces
+        recordings, trials = self._uneven_cohort()
+
+        stored = []
+        for mode in ('pool', 'subject', 'subject_centered'):
+            with patch.object(responses, 'aggregate_conditions') as reduce_:
+                condition_traces(recordings, trials, ['feedback_times'],
+                                 mode=mode, correct=False)
+            stored.append(reduce_.call_args.args[0])
+
+        for other in stored[1:]:
+            pd.testing.assert_frame_equal(stored[0], other)
 
     def test_reduces_each_recording_before_reading_the_next(self):
         """Peak memory is what bounds this pass, so no per-trial sample

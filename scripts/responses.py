@@ -63,7 +63,7 @@ from iblnm.vis import (
     plot_ols_total_r2_subject,
     plot_ols_total_r2_violin,
 )
-from iblnm.analysis import aggregate_conditions, aggregation_keys
+from iblnm.analysis import aggregate_conditions
 
 
 # =========================================================================
@@ -93,6 +93,13 @@ CONTRAST_GROUP_COLS = ['target_NM', 'event', 'side', 'contrast', 'feedbackType']
 # the long frame so the aggregation can average over recordings or subjects.
 _TRACE_KEYS = ['eid', 'subject', 'target_NM', 'brain_region']
 
+# The trial conditions each recording's traces are averaged within, on top of
+# whichever keys the figure itself groups on. Finer than any figure's own
+# grouping, so a single pass over the store answers all of them: the averages
+# stored are the same whichever way they are later combined.
+TRACE_CELL_FACTORS = ['side', 'feedbackType', 'contrast', 'reaction_time_bin',
+                      'probabilityLeft', 'eid', 'brain_region', 'subject']
+
 # A `<column>_bin` trials column is that column cut into within-session
 # terciles, labelled low to high.
 TERCILE_LABELS = ('low', 'mid', 'high')
@@ -121,8 +128,8 @@ def _recording_cells(rec: pd.Series, ps, trials: pd.DataFrame,
         The run's ``config.RESPONSES`` entry's masking chronology: the events
         past which a trial's samples are blanked. Empty masks nothing.
     cell_keys : list of str
-        Columns the samples are reduced within, from
-        :func:`iblnm.analysis.aggregation_keys`.
+        Columns the samples are averaged within — the figure's own keys plus
+        ``TRACE_CELL_FACTORS``.
     correct : bool
         Apply the response definition's two corrections — mask the samples
         past ``masking_events``, then subtract the ``config.BASELINE_WINDOW``
@@ -163,12 +170,17 @@ def condition_traces(recordings, trials: pd.DataFrame,
                      group_cols=TRACE_GROUP_COLS) -> pd.DataFrame:
     """Correct, select and condition-average per-trial traces.
 
-    The plotting pass's whole computation. Each recording is reduced to cells
-    as it is read (:func:`_recording_cells`) and only the cells are kept, so
-    what the pass holds scales with conditions x recordings rather than with
-    the cohort's trials. The cells are then reduced to one mean and SEM per
-    condition, weighted by the trials behind each — the same answer the
-    per-trial reduction gave.
+    The plotting pass's whole computation. Each recording is averaged within
+    trial conditions as it is read (:func:`_recording_cells`) and only those
+    averages are kept, so what the pass holds scales with conditions x
+    recordings rather than with the cohort's trials.
+
+    What is stored does not depend on ``mode``: the cells are always cut at
+    ``TRACE_CELL_FACTORS``, finer than any figure's own grouping, and each
+    carries the trials behind it. Only their combination differs — pooling
+    weights every recording's cells by those counts, and the two unit modes
+    weight them into a unit mean before averaging units equally. Both give
+    the answer the per-trial reduction gave.
 
     Parameters
     ----------
@@ -198,14 +210,13 @@ def condition_traces(recordings, trials: pd.DataFrame,
         ``group_cols`` plus ``mean``, ``sem`` and ``n``, the
         :func:`iblnm.analysis.aggregate_conditions` output shape.
     """
-    reduction = AGGREGATION_MODES[mode]
-    cell_keys = aggregation_keys(group_cols, **reduction)
+    cell_keys = list(dict.fromkeys(list(group_cols) + TRACE_CELL_FACTORS))
     cells = pd.concat([_recording_cells(rec, ps, trials, masking_events,
                                         cell_keys, correct)
                        for rec, ps in recordings], ignore_index=True)
     return aggregate_conditions(cells, 'value', group_cols,
                                 count_col='n_trials', sumsq_col='sumsq',
-                                **reduction)
+                                **AGGREGATION_MODES[mode])
 
 
 def _cohort_recordings(group, cohort: pd.DataFrame):
