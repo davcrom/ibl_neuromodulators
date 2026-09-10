@@ -1687,12 +1687,74 @@ def peak_velocity(wheel_vel, n_trials):
         return np.nanmax(np.abs(wheel_vel), axis=1)
 
 
+def _pool_cells(df: pd.DataFrame, value_col: str, group_cols: list[str],
+                count_col: str, sumsq_col: str | None) -> pd.DataFrame:
+    """Pool pre-aggregated cells back to trial-level means, SEMs and counts.
+
+    Each cell carries a mean, a trial count and a within-cell sum of squares,
+    which are the sufficient statistics for the pooled moments: the count and
+    the mean give the pooled mean, and the sum of squares recovers the spread
+    the cell means themselves have already averaged away. ``n`` counts trials,
+    not cells. A condition with one trial yields a null SEM, matching the
+    unpooled reduction.
+    """
+    if sumsq_col is None:
+        raise ValueError(
+            "pooling pre-aggregated cells needs the within-cell sum of "
+            "squares: pass sumsq_col, or reduce over units with unit_cols")
+    valid = df[value_col].notna()
+    totals = (
+        df.assign(_weighted=df[value_col] * df[count_col],
+                  _weight=df[count_col].where(valid),
+                  _sumsq=df[sumsq_col].where(valid))
+        .groupby(group_cols, dropna=False, observed=True)[['_weighted',
+                                                           '_weight',
+                                                           '_sumsq']]
+        .sum(min_count=1)
+    )
+    n = totals['_weight']
+    variance = ((totals['_sumsq'] - totals['_weighted'] ** 2 / n)
+                / (n - 1)).where(n > 1).clip(lower=0)
+    return pd.DataFrame({
+        'mean': totals['_weighted'] / n,
+        'sem': np.sqrt(variance / n),
+        'n': n.fillna(0).astype(int),
+    }).reset_index()
+
+
+def _unit_means(df: pd.DataFrame, value_col: str, unit_keys: list[str],
+                count_col: str | None) -> pd.DataFrame:
+    """Average ``value_col`` within each ``unit_keys`` combination.
+
+    ``count_col`` names the trial count behind each row, for a frame of
+    pre-aggregated cells: the unit mean then weights each cell by it, which
+    reproduces the mean over the underlying trials. ``None`` weights rows
+    equally. Rows with a null value are excluded from both the numerator and
+    the weight total, so a unit with no value at all comes back null rather
+    than zero.
+    """
+    grouped = df.groupby(unit_keys, dropna=False, observed=True)
+    if count_col is None:
+        return grouped[value_col].mean().reset_index()
+    totals = (
+        df.assign(_weighted=df[value_col] * df[count_col],
+                  _weight=df[count_col].where(df[value_col].notna()))
+        .groupby(unit_keys, dropna=False, observed=True)[['_weighted',
+                                                          '_weight']]
+        .sum(min_count=1)
+    )
+    return (totals['_weighted'] / totals['_weight']).rename(
+        value_col).reset_index()
+
+
 def aggregate_conditions(
     df: pd.DataFrame,
     value_col: str,
     group_cols: Sequence[str],
     unit_cols: Sequence[str] | None = None,
     center_by: str | None = None,
+    count_col: str | None = None,
+    sumsq_col: str | None = None,
 ) -> pd.DataFrame:
     """Reduce a long frame to per-condition means, SEMs and unit counts.
 
@@ -1723,6 +1785,17 @@ def aggregate_conditions(
         mean added back. This is the Cousineau-style within-subject correction,
         and it leaves each condition's mean unchanged while removing the
         between-``center_by`` component from its SEM.
+    count_col : str, optional
+        Trial count behind each row, for a frame of pre-aggregated cells
+        rather than one row per trial. Each cell then weights by it, so the
+        result matches the reduction over the underlying trials. ``None``
+        treats every row as one observation.
+    sumsq_col : str, optional
+        Within-cell sum of squared values, required with ``count_col`` when
+        ``unit_cols`` is ``None`` and ignored otherwise: pooling reduces over
+        trials, and the cell means alone have averaged their spread away.
+        Reducing over units needs no such term, because a unit mean is a mean
+        of cell means either way.
 
     Returns
     -------
@@ -1732,18 +1805,22 @@ def aggregate_conditions(
         recordings, depending on ``unit_cols``. A condition with fewer than two
         units yields a NaN SEM, and one with no non-NaN values a NaN mean,
         rather than raising.
+
+    Raises
+    ------
+    ValueError
+        Pooling pre-aggregated cells (``count_col`` with no ``unit_cols``)
+        without ``sumsq_col``.
     """
     group_cols = list(group_cols)
+    if count_col is not None and unit_cols is None:
+        return _pool_cells(df, value_col, group_cols, count_col, sumsq_col)
     units = df
     if unit_cols is not None:
         unit_keys = group_cols + list(unit_cols)
         if center_by is not None and center_by not in unit_keys:
             unit_keys.append(center_by)
-        units = (
-            df.groupby(unit_keys, dropna=False, observed=True)[value_col]
-            .mean()
-            .reset_index()
-        )
+        units = _unit_means(df, value_col, unit_keys, count_col)
     if center_by is not None:
         by_group = units.groupby(group_cols, dropna=False,
                                  observed=True)[value_col]

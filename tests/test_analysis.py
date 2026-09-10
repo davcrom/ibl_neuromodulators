@@ -2366,6 +2366,62 @@ class TestAggregateConditions:
         pd.testing.assert_frame_equal(df, before)
 
 
+    def _cells(self):
+        """``_frame`` pre-aggregated: subject A's four trials as a cell of
+        three and a cell of one, subject B's single trial as a cell of one.
+
+        The two A cells hold different counts, so weighting by them (4.0, the
+        trial mean) and ignoring them (5.0) give different answers.
+        """
+        return pd.DataFrame({
+            'subject': ['A', 'A', 'B'],
+            'eid': ['e1', 'e2', 'e3'],
+            'brain_region': ['VTA'] * 3,
+            'contrast': [0.0] * 3,
+            'response': [3.0, 7.0, 10.0],
+            'n_trials': [3, 1, 1],
+            'sumsq': [35.0, 49.0, 100.0],
+        })
+
+    def test_pool_over_cells_matches_pool_over_trials(self):
+        """Pooling pre-aggregated cells reproduces the trial-level mean, SEM
+        and count, which needs the within-cell sum of squares as well as the
+        count — the cell means alone do not carry the within-cell spread."""
+        from iblnm.analysis import aggregate_conditions
+        out = aggregate_conditions(
+            self._cells(), 'response', ['contrast'], count_col='n_trials',
+            sumsq_col='sumsq').iloc[0]
+        reference = aggregate_conditions(
+            self._frame(), 'response', ['contrast']).iloc[0]
+
+        assert out['mean'] == pytest.approx(reference['mean'])
+        assert out['sem'] == pytest.approx(reference['sem'])
+        assert out['n'] == reference['n']
+
+    def test_pooling_cells_without_sumsq_is_rejected(self):
+        """The within-cell spread cannot be recovered from cell means, so
+        pooling without it raises rather than returning an SEM over cells."""
+        from iblnm.analysis import aggregate_conditions
+        with pytest.raises(ValueError, match='sum of squares'):
+            aggregate_conditions(self._cells(), 'response', ['contrast'],
+                                 count_col='n_trials')
+
+    def test_count_col_weights_cells_into_unit_means(self):
+        """A unit mean over pre-aggregated cells weights each cell by its trial
+        count, so it equals the unit mean over the trials themselves."""
+        from iblnm.analysis import aggregate_conditions
+        out = aggregate_conditions(
+            self._cells(), 'response', ['contrast'], unit_cols=['subject'],
+            count_col='n_trials').iloc[0]
+        reference = aggregate_conditions(
+            self._frame(), 'response', ['contrast'],
+            unit_cols=['subject']).iloc[0]
+
+        assert out['mean'] == pytest.approx(reference['mean'])
+        assert out['sem'] == pytest.approx(reference['sem'])
+        assert out['n'] == reference['n']
+
+
 class TestFitLMMNaNHandling:
     def test_drops_nan_rows_in_formula_columns(self):
         """A NaN in a formula column must not misalign statsmodels' groups
