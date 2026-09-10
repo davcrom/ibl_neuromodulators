@@ -313,7 +313,6 @@ def test_validate_dropped_terms_rejects_an_undropped_formula_term():
             config.RESPONSE_DROPPED_TERMS)
 
 
-def test_persession_thresholds_and_path():
+def test_persession_thresholds():
     assert config.MIN_TRIALS_PERSESSION == 50
     assert config.MIN_RECORDINGS_PERMOUSE == 3
-    assert config.OLS_PERSESSION_FPATH.name == 'ols_persession.parquet'

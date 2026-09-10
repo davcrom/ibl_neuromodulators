@@ -1,27 +1,37 @@
 """
 Response Analysis Pipeline
 
+One `config.RESPONSES` window per invocation, named on the command line: the
+entry supplies the event, the measured window, the baseline correction, the
+masking chronology and the ANOVA design, and its outputs go under a directory
+of its own name. Nothing here compares windows, so a run touches one window's
+outputs and no other's.
+
 Three passes over the biased and ephys sessions. The first prepares each
 session's donor frame, the pool the cross-session swap null draws from; the
 second fits each session's drop-one OLS models against that pool and returns
 its trial-level magnitudes with them, twice over — once as the models saw
 them and once with no trial filter applied, which is what the masking
 diagnostic counts. The group collects both passes' returns into the population
-tables — adding the FDR q-values and the per-mouse pooling — fits the per-cell
-variance components, and caches every frame. The plotting pass reads those
-frames, condition-averages the store's peri-event cuts, and draws the figures.
+tables — adding the FDR q-values and the per-mouse pooling — and caches every
+frame. The plotting pass reads those frames, condition-averages the store's
+peri-event cuts, and draws the figures.
 
 Output:
-    results/responses/             — one parquet per result frame, plus the
-                                     repeated-measures ANOVA table as CSV
-    figures/responses/             — contrast_curves/, event_triggered_averages/,
+    results/responses/{window}/    — one parquet per result frame, the
+                                     repeated-measures ANOVA table as CSV, and
+                                     config.json, the entry the run used
+    figures/responses/{window}/    — contrast_curves/, event_triggered_averages/,
                                      diagnostics/, persession/
 
 Usage:
-    python scripts/responses.py              # plot from existing parquet files
-    python scripts/responses.py --reprocess  # re-extract + re-fit, then plot
+    python scripts/responses.py stimulus              # plot from existing parquet files
+    python scripts/responses.py stimulus --reprocess  # re-extract + re-fit, then plot
+    python scripts/responses.py baseline --reprocess  # the pre-stimulus window
 """
 import argparse
+import json
+from pathlib import Path
 from typing import Iterable
 
 import matplotlib
@@ -31,12 +41,10 @@ matplotlib.use('Agg')  # batch figure generation; never open interactive windows
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR,
-    RESPONSES_DIR, RESPONSE_MAGNITUDES_FPATH, RESPONSE_MAGNITUDE_COLUMNS,
-    OLS_PERSESSION_FPATH,
-    RESPONSE_OLS_MOUSE_PVAL_FPATH,
-    MASKING_DIAGNOSTICS_FPATH, MASKING_DIAGNOSTIC_GROUP_COLS,
-    MASKING_DIAGNOSTIC_STATISTICS, RESPONSE_MAGNITUDE_WINDOW,
+    SESSIONS_FPATH, SESSIONS_H5_DIR,
+    RESPONSES_DIR, RESPONSE_FIGURES_DIR, RESPONSE_MAGNITUDE_COLUMNS,
+    MASKING_DIAGNOSTIC_GROUP_COLS,
+    MASKING_DIAGNOSTIC_STATISTICS,
     RESPONSE_EVENTS, RESPONSES, FIGURE_DPI, RESPONSE_MODEL_FORMULA,
     RESPONSE_DROPPED_TERMS, TRACE_INSET_TARGETNMS,
     MIN_RESPONSE_TIME,
@@ -86,11 +94,6 @@ CONTRAST_GROUP_COLS = ['target_NM', 'event', 'side', 'contrast', 'feedbackType']
 # the long frame so the aggregation can average over recordings or subjects.
 _TRACE_KEYS = ['eid', 'subject', 'target_NM', 'brain_region']
 
-# The `config.RESPONSES` entry this pass measures and corrects its traces by:
-# the window averaged into a magnitude, whether the pre-event baseline is
-# subtracted, and the events past which a trial's samples are blanked.
-RESPONSE_ENTRY = RESPONSES['stimulus']
-
 # An ANOVA factor named `<column>_bin` is that trials column cut into
 # within-session terciles, labelled low to high. Binning is an analysis choice,
 # so it lives here rather than in the fit.
@@ -99,6 +102,7 @@ TERCILE_LABELS = ('low', 'mid', 'high')
 
 
 def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
+                      masking_events: list[str],
                       correct: bool = True) -> pd.DataFrame:
     """One recording's per-trial trace samples, long, restricted to ``trials``.
 
@@ -112,9 +116,12 @@ def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
     trials : pandas.DataFrame
         The already-selected trials, one row per recording x event x trial,
         carrying the condition columns the aggregation groups on.
+    masking_events : list of str
+        The run's ``config.RESPONSES`` entry's masking chronology: the events
+        past which a trial's samples are blanked. Empty masks nothing.
     correct : bool
         Apply the response definition's two corrections — mask the samples
-        past the next event, then subtract the ``config.BASELINE_WINDOW``
+        past ``masking_events``, then subtract the ``config.BASELINE_WINDOW``
         baseline — before flattening. False leaves the stored cut as it is.
 
     Returns
@@ -127,8 +134,8 @@ def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
     """
     responses = ps.photometry_responses[rec['brain_region']]
     if correct:
-        responses = ps.subtract_baseline(ps.mask_subsequent_events(
-            responses, RESPONSE_ENTRY['masking_events']))
+        responses = ps.subtract_baseline(
+            ps.mask_subsequent_events(responses, masking_events))
     samples = (responses.to_dataframe(name='value').reset_index()
                .astype({'value': 'float32'}))
     keys = trials[trials['eid'] == rec['eid']]
@@ -139,6 +146,7 @@ def _recording_traces(rec: pd.Series, ps, trials: pd.DataFrame,
 
 
 def condition_traces(recordings, trials: pd.DataFrame,
+                     masking_events: list[str],
                      mode: str = 'subject_centered', correct: bool = True,
                      group_cols=TRACE_GROUP_COLS,
                      response_col: str = 'response') -> pd.DataFrame:
@@ -160,6 +168,9 @@ def condition_traces(recordings, trials: pd.DataFrame,
         one row per recording x event x trial. It carries the fitted
         selection already, so the traces average the trials the models fit
         without re-deriving one here.
+    masking_events : list of str
+        The run's ``config.RESPONSES`` entry's masking chronology, so the
+        traces are corrected the way the magnitudes were measured.
     mode : {'pool', 'subject', 'subject_centered'}
         Averaging unit, via ``AGGREGATION_MODES``.
     correct : bool
@@ -177,7 +188,8 @@ def condition_traces(recordings, trials: pd.DataFrame,
         ``group_cols`` plus ``mean``, ``sem`` and ``n``, the
         :func:`iblnm.analysis.aggregate_conditions` output shape.
     """
-    traces = pd.concat([_recording_traces(rec, ps, trials, correct)
+    traces = pd.concat([_recording_traces(rec, ps, trials, masking_events,
+                                          correct)
                         for rec, ps in recordings], ignore_index=True)
     return aggregate_conditions(traces, 'value', group_cols,
                                 **AGGREGATION_MODES[mode])
@@ -205,8 +217,8 @@ def _cohort_recordings(group, cohort: pd.DataFrame):
         group._sessions.pop(eid, None)
 
 
-def plot_trace_figures(group, trials, figures_dir, mode='subject_centered',
-                       correct=True):
+def plot_trace_figures(group, trials, masking_events, figures_dir,
+                       mode='subject_centered', correct=True):
     """Save one event-triggered average figure per cohort, from the store.
 
     The plotting pass: one cohort at a time, each recording's stored peri-event
@@ -222,17 +234,19 @@ def plot_trace_figures(group, trials, figures_dir, mode='subject_centered',
     trials : pandas.DataFrame
         The stored magnitude frame, whose rows name the trials averaged
         (:func:`condition_traces`).
+    masking_events : list of str
+        The run's ``config.RESPONSES`` entry's masking chronology.
     figures_dir : Path
         Output directory for the SVG figures.
     mode : {'pool', 'subject', 'subject_centered'}
         Averaging unit, via ``AGGREGATION_MODES``.
     correct : bool
-        Mask each trace past the next event and subtract its baseline. False
-        plots the uncorrected average.
+        Mask each trace past ``masking_events`` and subtract its baseline.
+        False plots the uncorrected average.
     """
     for target_nm, cohort in group.recordings.groupby('target_NM'):
         cells = condition_traces(_cohort_recordings(group, cohort), trials,
-                                 mode=mode, correct=correct)
+                                 masking_events, mode=mode, correct=correct)
         fig = plot_mean_response_traces(
             cells, target_nm, inset=target_nm in TRACE_INSET_TARGETNMS,
             count_label=f"{cohort['eid'].nunique()} sessions, "
@@ -442,7 +456,7 @@ def add_anova_bins(trials: pd.DataFrame,
     return binned
 
 
-def fit_session(ps, formula: str, dropped_terms: dict,
+def fit_session(ps, entry: dict, formula: str, dropped_terms: dict,
                 donors: dict) -> tuple[pd.DataFrame, pd.DataFrame,
                                        pd.DataFrame]:
     """Second pass: fit one session's drop-one models against the donor pool.
@@ -458,6 +472,11 @@ def fit_session(ps, formula: str, dropped_terms: dict,
     ----------
     ps : PhotometrySession
         The session to fit.
+    entry : dict
+        The run's ``config.RESPONSES`` entry: the window averaged into a
+        magnitude, whether the pre-event baseline is subtracted, the events
+        past which a trial's samples are blanked, and the ANOVA factors whose
+        binned members are cut against this session's own quantiles.
     formula : str
         Full-model Wilkinson formula, ``config.RESPONSE_MODEL_FORMULA``.
     dropped_terms : dict
@@ -489,21 +508,19 @@ def fit_session(ps, formula: str, dropped_terms: dict,
     ps.add_trial_columns(ps.wheel_peak_velocity)
     ps.load_responses('photometry')
     ps.extract_response_magnitudes(
-        RESPONSE_ENTRY['window'], RESPONSE_ENTRY['masking_events'],
-        RESPONSE_ENTRY['baseline_correct'])
+        entry['window'], entry['masking_events'], entry['baseline_correct'])
     unfiltered = _join_trials(ps.masking_diagnostics(), ps.trials)
     fits = ps.fit_responses(formula, dropped_terms, donors,
                             **PERSESSION_TRIAL_CRITERIA)
     ps.filter_trials(**PERSESSION_TRIAL_CRITERIA)
     magnitudes = add_anova_bins(
-        _join_trials(ps.response_magnitudes, ps.trials),
-        RESPONSE_ENTRY['ANOVA'])
+        _join_trials(ps.response_magnitudes, ps.trials), entry['ANOVA'])
     return magnitudes, fits, unfiltered
 
 
 def compute_masking_diagnostics(
     magnitudes: pd.DataFrame,
-    window: tuple[float, float] = RESPONSE_MAGNITUDE_WINDOW,
+    window: tuple[float, float],
     group_cols: list[str] = MASKING_DIAGNOSTIC_GROUP_COLS,
 ) -> pd.DataFrame:
     """How much of the response window the event masking removed, per cell.
@@ -528,9 +545,9 @@ def compute_masking_diagnostics(
         carrying ``masked_fraction`` beside the ``contrast``/``feedbackType``/
         ``reaction_time`` the cells are keyed and counted on.
     window : tuple of float
-        The response window, in seconds relative to the event, that
-        ``masked_fraction`` was measured over. Only ``pct_move_in_window``
-        reads it; the fractions were computed upstream.
+        The run's ``config.RESPONSES`` window, in seconds relative to the
+        event, that ``masked_fraction`` was measured over. Only
+        ``pct_move_in_window`` reads it; the fractions were computed upstream.
     group_cols : sequence of str
         Cell keys. One output row per observed combination.
 
@@ -682,19 +699,71 @@ def plot_persession_figures(results: pd.DataFrame,
 
 
 # The frames --reprocess writes and the no-flag branch reads back, each under
-# the name the plotting steps take it by.
+# the name the plotting steps take it by. The names are relative: a run writes
+# them inside its own window's directory, which is chosen from the CLI at run
+# time.
 RESULT_FPATHS = {
-    'magnitudes': RESPONSE_MAGNITUDES_FPATH,
-    'ols': OLS_PERSESSION_FPATH,
-    'ols_mouse': RESPONSE_OLS_MOUSE_PVAL_FPATH,
+    'magnitudes': 'response_magnitudes.parquet',
+    'ols': 'ols_persession.parquet',
+    'ols_mouse': 'ols_persession_mouse.parquet',
     # Cached like the rest, because the frame it is reduced from is the
     # unfiltered one only the fitting pass holds.
-    'masking_diagnostics': MASKING_DIAGNOSTICS_FPATH,
+    'masking_diagnostics': 'masking_diagnostics.parquet',
 }
 
 
-def read_result_frames(group, paths: dict = RESULT_FPATHS,
-                       ) -> dict[str, pd.DataFrame]:
+def output_dirs(window: str) -> tuple[Path, dict[str, Path]]:
+    """Create this window's results and figure directories, and return them.
+
+    A run touches one window's outputs and nothing else, so every path it
+    writes hangs off ``{window}``: the tables under ``RESPONSES_DIR`` and the
+    four figure sets under ``RESPONSE_FIGURES_DIR``.
+
+    Parameters
+    ----------
+    window : str
+        A ``config.RESPONSES`` key.
+
+    Returns
+    -------
+    data_dir : Path
+        Where this window's tables and its run config are written.
+    fig_dirs : dict[str, Path]
+        Figure set name to directory.
+    """
+    data_dir = RESPONSES_DIR / window
+    fig_dirs = {name: RESPONSE_FIGURES_DIR / window / name
+                for name in ('contrast_curves', 'diagnostics',
+                             'event_triggered_averages', 'persession')}
+    for directory in (data_dir, *fig_dirs.values()):
+        directory.mkdir(parents=True, exist_ok=True)
+    return data_dir, fig_dirs
+
+
+def result_paths(data_dir: Path) -> dict[str, Path]:
+    """``RESULT_FPATHS`` resolved inside one window's results directory."""
+    return {name: data_dir / fname for name, fname in RESULT_FPATHS.items()}
+
+
+def write_run_config(entry: dict, data_dir: Path) -> Path:
+    """Write the ``config.RESPONSES`` entry this run used beside its tables.
+
+    The entry is the whole analysis definition — event, window, baseline
+    correction, masking chronology, ANOVA design and cell floors — so the
+    tables in the directory are readable without knowing which revision of
+    ``config.py`` produced them. The window tuple serializes as a list.
+
+    Returns
+    -------
+    Path
+        The written ``config.json``.
+    """
+    path = data_dir / 'config.json'
+    path.write_text(json.dumps(entry, indent=2))
+    return path
+
+
+def read_result_frames(group, paths: dict) -> dict[str, pd.DataFrame]:
     """Read the cached result frames, each narrowed to the group's recordings.
 
     The no-flag branch's whole data step: an earlier ``--reprocess`` run wrote
@@ -726,6 +795,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument('window', choices=list(RESPONSES),
+                        help='the config.RESPONSES entry to analyse: its '
+                             'event, window, baseline correction, masking and '
+                             'ANOVA design. Its outputs go under a directory '
+                             'of the same name')
     parser.add_argument('--reprocess', action='store_true',
                         help='re-extract responses and re-fit per-session models; '
                              'default plots from existing parquet files')
@@ -741,19 +815,14 @@ def parse_args(argv=None) -> argparse.Namespace:
 if __name__ == '__main__':
     args = parse_args()
 
-    # Create output directories
-    data_dir = RESPONSES_DIR
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    fig_base = PROJECT_ROOT / 'figures/responses'
-    fig_dirs = {
-        'contrast_curves': fig_base / 'contrast_curves',
-        'diagnostics': fig_base / 'diagnostics',
-        'event_triggered_averages': fig_base / 'event_triggered_averages',
-        'persession': fig_base / 'persession',
-    }
-    for d in fig_dirs.values():
-        d.mkdir(parents=True, exist_ok=True)
+    # The run's whole analysis definition, and the directories it writes to.
+    # Nothing compares windows, so this run touches one window's outputs and
+    # no other's; the entry is written beside them.
+    entry = RESPONSES[args.window]
+    data_dir, fig_dirs = output_dirs(args.window)
+    paths = result_paths(data_dir)
+    print(f"Response window {args.window!r}: {entry}")
+    print(f"  Run config saved to {write_run_config(entry, data_dir)}")
 
     # =====================================================================
     # Load sessions and create group
@@ -792,7 +861,7 @@ if __name__ == '__main__':
         # --- Pass 2: each session's drop-one fits, scored against that pool ---
         print("Fitting per-session drop-one OLS models...")
         returns = [frames for frames in
-                   group.process(fit_session,
+                   group.process(fit_session, entry=entry,
                                  formula=RESPONSE_MODEL_FORMULA,
                                  dropped_terms=RESPONSE_DROPPED_TERMS,
                                  donors=donors)
@@ -808,7 +877,7 @@ if __name__ == '__main__':
         # Factors the entry names but the stored schema does not carry — the
         # binned ones — ride along, so the ANOVA finds what this pass derived
         # whether it runs now or off the parquet.
-        derived_factors = [factor for factor in RESPONSE_ENTRY['ANOVA']
+        derived_factors = [factor for factor in entry['ANOVA']
                            if factor not in RESPONSE_MAGNITUDE_COLUMNS]
         magnitudes = magnitudes[RESPONSE_MAGNITUDE_COLUMNS + derived_factors]
 
@@ -816,12 +885,12 @@ if __name__ == '__main__':
         # they happen here rather than in either pass.
         ols, ols_mouse = group.collect_fits([frames[1] for frames in returns])
 
-        magnitudes.to_parquet(RESPONSE_MAGNITUDES_FPATH, index=False)
-        ols.to_parquet(OLS_PERSESSION_FPATH, index=False)
-        ols_mouse.to_parquet(RESPONSE_OLS_MOUSE_PVAL_FPATH, index=False)
-        print(f"Saved response magnitudes to {RESPONSE_MAGNITUDES_FPATH}")
-        print(f"Saved per-recording OLS results to {OLS_PERSESSION_FPATH} "
-              f"and per-mouse p-values to {RESPONSE_OLS_MOUSE_PVAL_FPATH}")
+        magnitudes.to_parquet(paths['magnitudes'], index=False)
+        ols.to_parquet(paths['ols'], index=False)
+        ols_mouse.to_parquet(paths['ols_mouse'], index=False)
+        print(f"Saved response magnitudes to {paths['magnitudes']}")
+        print(f"Saved per-recording OLS results to {paths['ols']} "
+              f"and per-mouse p-values to {paths['ols_mouse']}")
 
         # --- Masking diagnostics: how much window each trial type kept ---
         # From the third frame, the one no mask was applied to: the trials the
@@ -830,24 +899,27 @@ if __name__ == '__main__':
         print("\nComputing masking diagnostics...")
         unfiltered = pd.concat([frames[2] for frames in returns],
                                ignore_index=True)
-        diagnostics = compute_masking_diagnostics(unfiltered)
-        diagnostics.to_parquet(MASKING_DIAGNOSTICS_FPATH, index=False)
+        diagnostics = compute_masking_diagnostics(unfiltered, entry['window'])
+        diagnostics.to_parquet(paths['masking_diagnostics'], index=False)
         # The same statistics at cohort grain, small enough to read in the log.
         print(compute_masking_diagnostics(
-            unfiltered, group_cols=['target_NM', 'event']).to_string(
-                index=False))
-        print(f"Saved masking diagnostics to {MASKING_DIAGNOSTICS_FPATH}")
+            unfiltered, entry['window'],
+            group_cols=['target_NM', 'event']).to_string(index=False))
+        print("Saved masking diagnostics to "
+              f"{paths['masking_diagnostics']}")
 
     else:
         # =================================================================
         # Default: load pre-existing parquet files
         # =================================================================
-        for fpath in RESULT_FPATHS.values():
+        for fpath in paths.values():
             if not fpath.exists():
-                print(f"Error: {fpath} not found. Run with --reprocess first.")
+                print(f"Error: {fpath} not found. Run "
+                      f"`python scripts/responses.py {args.window} "
+                      "--reprocess` first.")
                 raise SystemExit(1)
 
-        frames = read_result_frames(group)
+        frames = read_result_frames(group, paths)
         magnitudes = frames['magnitudes']
         ols, ols_mouse = frames['ols'], frames['ols_mouse']
         diagnostics = frames['masking_diagnostics']
@@ -865,7 +937,7 @@ if __name__ == '__main__':
     # Event-triggered averages — one pass over the store's per-trial traces
     # =====================================================================
     print("\nGenerating event-triggered averages (reading the store)...")
-    plot_trace_figures(group, magnitudes,
+    plot_trace_figures(group, magnitudes, entry['masking_events'],
                        fig_dirs['event_triggered_averages'])
     print("Event-triggered averages saved to "
           f"{fig_dirs['event_triggered_averages']}")
@@ -881,11 +953,10 @@ if __name__ == '__main__':
     # Repeated-measures ANOVA on subject means
     # =====================================================================
     print("\nRunning repeated-measures ANOVA on subject means...")
-    print(f"  Factors (level filter, [] keeps all): {RESPONSE_ENTRY['ANOVA']}")
+    print(f"  Factors (level filter, [] keeps all): {entry['ANOVA']}")
     anova_results = group.response_anovaRM_fit(
-        magnitudes, RESPONSE_ENTRY['ANOVA'],
-        min_trials=RESPONSE_ENTRY['min_trials'],
-        min_subjects=RESPONSE_ENTRY['min_subjects'])
+        magnitudes, entry['ANOVA'], min_trials=entry['min_trials'],
+        min_subjects=entry['min_subjects'])
     if anova_results:
         all_tables = []
         for (tnm, ev), table in anova_results.items():

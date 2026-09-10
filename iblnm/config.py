@@ -17,6 +17,11 @@ PERFORMANCE_FPATH = PROJECT_ROOT / 'data/performance.pqt'
 TRIALS_DIR = PROJECT_ROOT / 'data/trials'  # one {subject}.csv per mouse
 RESULTS_DIR = PROJECT_ROOT / 'results'
 RESPONSES_DIR = RESULTS_DIR / 'responses'
+RESPONSE_FIGURES_DIR = PROJECT_ROOT / 'figures/responses'
+# `scripts/responses.py` runs one RESPONSES window per invocation and writes
+# its tables and figures under a subdirectory of each of those two, named for
+# the window. This path is the pre-window layout, kept for the scripts that
+# read the magnitude table without choosing a window.
 RESPONSE_MAGNITUDES_FPATH = RESPONSES_DIR / 'response_magnitudes.parquet'
 # One row per recording x event x trial. `trial` is the trials table's own
 # trial number, so a session's trial-level values are identifiable across its
@@ -45,7 +50,6 @@ RESPONSE_MAGNITUDE_COLUMNS = ['eid', 'subject', 'session_type', 'NM',
 # trial type within a cohort. Reported alongside every contrast-dependent
 # result, because masking removes fast trials and does so more often at high
 # contrast.
-MASKING_DIAGNOSTICS_FPATH = RESPONSES_DIR / 'masking_diagnostics.parquet'
 MASKING_DIAGNOSTIC_GROUP_COLS = ['target_NM', 'event', 'contrast',
                                  'feedbackType']
 # The statistics, kept apart from the cell keys because the same reduction is
@@ -67,13 +71,11 @@ RESPONSE_SIMILARITY_FPATH = RESPONSES_DIR / 'response_similarity_matrix.pqt'
 # other columns pays nothing for it, and holding it makes the per-mouse
 # pooling recomputable without refitting. Its median — the old
 # `delta_r2_null_median` — is derivable from it and so is no longer stored.
-OLS_PERSESSION_FPATH = RESPONSES_DIR / 'ols_persession.parquet'
 OLS_PERSESSION_COLUMNS = ['eid', 'subject', 'target_NM', 'brain_region',
                           'event', 'predictor', 'n_trials', 'r2_full',
                           'r2_full_adj', 'delta_r2', 'delta_r2_adj', 'null',
                           'coef', 'coef_se', 'p_value', 'q_value', 'n_donors']
 # Per-mouse permutation significance — a coarser grain, so its own frame.
-RESPONSE_OLS_MOUSE_PVAL_FPATH = RESPONSES_DIR / 'ols_persession_mouse.parquet'
 TASK_ENCODING_DIR = RESULTS_DIR / 'task_encoding'
 DISPERSION_FIGURES_DIR = PROJECT_ROOT / 'figures/task_encoding/dispersion'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'

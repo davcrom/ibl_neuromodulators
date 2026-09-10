@@ -161,7 +161,7 @@ Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and the errors sca
 
 | Script | Purpose |
 |---|---|
-| `responses.py` | Trial-level response magnitudes, LMM fits, response feature vectors, similarity, decoding, and movement-variable encoding (descriptive, LOSO ΔR², per-contrast timing slopes) |
+| `responses.py` | Trial-level response magnitudes, per-recording drop-one OLS with a cross-session swap null, repeated-measures ANOVA on subject means, and the condition-averaged traces — one `config.RESPONSES` window per run |
 | `task_encoding.py` | Per-session GLM encoding decomposed via PCA/ICA, per-cohort CCA |
 | `task_performance.py` | Learning curves, psychometric trajectories per target |
 | `qc_overview.py` | QC metric distributions (histograms, violins, PCA, temporal trends) |
@@ -508,7 +508,24 @@ types are present, rather than re-validating.
 
 `brain_region`, `hemisphere`, and `target_NM` are parallel lists that must always have matching lengths. To get one row per recording, explode all three together: `df.explode(['brain_region', 'hemisphere', 'target_NM'])`.
 
-### `results/responses/response_magnitudes.parquet` — one row per (recording x event x trial)
+### `results/responses/{window}/` — one directory per analysis window
+
+`scripts/responses.py` takes a mandatory `config.RESPONSES` key — `baseline`,
+`stimulus` or `feedback` — and analyses that window alone:
+
+```bash
+python scripts/responses.py stimulus --reprocess  # re-extract + re-fit, then plot
+python scripts/responses.py stimulus              # re-plot from what that wrote
+```
+
+The entry supplies the event, the measured window, whether the pre-event
+baseline is subtracted, the events past which samples are masked, and the
+ANOVA design. Its tables, its `anova_subject_means.csv` and a `config.json`
+holding the entry itself go to `results/responses/{window}/`; its figures to
+`figures/responses/{window}/`. Nothing compares windows, so a run leaves every
+other window's outputs untouched.
+
+### `results/responses/{window}/response_magnitudes.parquet` — one row per (recording x event x trial)
 
 Recording keys and the response magnitude, with the trial-level task and
 movement columns beside them: there is no second trial-level table and no join
@@ -528,7 +545,7 @@ values repeat across a session's recordings and events.
 | `hemisphere` | str | l / r |
 | `event` | str | stimOnTrigger_times / feedback_times |
 | `trial` | int | Trial index |
-| `response` | float | Mean response in early window (0.1-0.35s) |
+| `response` | float | Mean signal over the run's window, as `{window}/config.json` records it |
 | `masked_fraction` | float | Fraction of that window masked at the next event |
 | `contrast` | float | Unsigned stimulus contrast |
 | `stim_side` | str | left / right |
@@ -541,7 +558,7 @@ values repeat across a session's recordings and events.
 | `probabilityLeft` | float | Block probability |
 | `peak_velocity` | float | Max abs wheel velocity per trial |
 
-### `results/responses/masking_diagnostics.parquet` — one row per (target_NM x event x contrast x feedbackType)
+### `results/responses/{window}/masking_diagnostics.parquet` — one row per (target_NM x event x contrast x feedbackType)
 
 How much of the response window each trial type kept. Masking removes the
 samples after the next event, so it takes more of the window on fast trials,

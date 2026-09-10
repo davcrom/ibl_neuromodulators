@@ -147,8 +147,8 @@ class TestConditionTraces:
         from scripts.responses import condition_traces
         rec, ps = self._recording([[0., 1., 2., 3., 4.],
                                    [2., 3., 4., 5., 6.]])
-        agg = condition_traces([(rec, ps)], self._trials(2), mode='pool',
-                               correct=False)
+        agg = condition_traces([(rec, ps)], self._trials(2),
+                               ['feedback_times'], mode='pool', correct=False)
 
         assert agg['mean'].tolist() == [1., 2., 3., 4., 5.]
         assert agg['time'].tolist() == self._TIMES.tolist()
@@ -164,11 +164,24 @@ class TestConditionTraces:
         rec, ps = self._recording([[0., 1., 2., 3., 4.],
                                    [2., 3., 4., 5., 6.]],
                                   feedback_lags=[0.15, 10.0])
-        agg = condition_traces([(rec, ps)], self._trials(2), mode='pool',
-                               correct=True)
+        agg = condition_traces([(rec, ps)], self._trials(2), ['feedback_times'],
+                               mode='pool', correct=True)
 
         assert agg['mean'].tolist() == [-1., 0., 1., 2., 3.]
         assert agg['n'].tolist() == [2, 2, 2, 2, 1]
+
+    def test_the_runs_masking_chronology_is_the_traces(self):
+        """The masking events come from the run's ``config.RESPONSES`` entry,
+        so a window with none — the pre-stimulus ``baseline`` — averages every
+        sample the cut holds, feedback included."""
+        from scripts.responses import condition_traces
+        rec, ps = self._recording([[0., 1., 2., 3., 4.],
+                                   [2., 3., 4., 5., 6.]],
+                                  feedback_lags=[0.15, 10.0])
+        agg = condition_traces([(rec, ps)], self._trials(2), [],
+                               mode='pool', correct=True)
+
+        assert agg['n'].tolist() == [2, 2, 2, 2, 2]
 
     def _uneven_cohort(self):
         """Three recordings, flat traces, deliberately unbalanced.
@@ -198,7 +211,8 @@ class TestConditionTraces:
         from scripts.responses import condition_traces
         recordings, trials = self._uneven_cohort()
 
-        agg = condition_traces(recordings, trials, mode=mode, correct=False)
+        agg = condition_traces(recordings, trials, ['feedback_times'],
+                               mode=mode, correct=False)
 
         assert agg['mean'].tolist() == pytest.approx([expected] * 5)
         assert agg['n'].tolist() == [n] * 5
@@ -213,7 +227,8 @@ class TestConditionTraces:
         trials['probabilityLeft'] = [0.5, 0.8, 0.5]
         trials['choice'] = [1, 1, 0]
 
-        agg = condition_traces([(rec, ps)], trials, mode='pool', correct=False)
+        agg = condition_traces([(rec, ps)], trials, ['feedback_times'],
+                               mode='pool', correct=False)
 
         assert agg['mean'].tolist() == [pytest.approx(110 / 3)] * 5
         assert agg['n'].tolist() == [3] * 5
@@ -258,7 +273,7 @@ class _LinkSession:
         would have produced.
         """
         if name.startswith(('load_', 'extract_', 'add_trial_columns')):
-            return lambda *args, **kwargs: self.called.append(name)
+            return lambda *args, **kwargs: self.called.append((name, args))
         raise AttributeError(name)
 
     @property
@@ -291,8 +306,8 @@ class TestLinkFunctions:
         dropped_terms = {'contrast': ['contrast']}
         donors = {'eid-1': 'donor'}
 
-        magnitudes, fits, unfiltered = fit_session(ps, formula, dropped_terms,
-                                                   donors)
+        magnitudes, fits, unfiltered = fit_session(
+            ps, RESPONSES['stimulus'], formula, dropped_terms, donors)
 
         assert ps.fitted == (formula, dropped_terms, donors,
                              PERSESSION_TRIAL_CRITERIA)
@@ -312,12 +327,30 @@ class TestLinkFunctions:
         ps = _LinkSession()
 
         magnitudes, _, unfiltered = fit_session(
-            ps, '{response} ~ contrast', {'contrast': ['contrast']}, {})
+            ps, RESPONSES['stimulus'], '{response} ~ contrast',
+            {'contrast': ['contrast']}, {})
 
         assert list(unfiltered['trial']) == [0, 1, 2]
         assert ps._MASKED_AWAY_TRIAL not in set(magnitudes['trial'])
         # Trial-level columns are joined on either side of the mask.
         assert 'side' in unfiltered.columns
+
+    @pytest.mark.parametrize('window', list(RESPONSES))
+    def test_the_entry_defines_the_measurement(self, window):
+        """The run's entry — not a module-level default — supplies the window
+        averaged, the events masked past and whether the baseline is
+        subtracted, so a `baseline` run measures the pre-stimulus interval."""
+        from scripts.responses import fit_session
+        ps = _LinkSession()
+        entry = RESPONSES[window]
+
+        fit_session(ps, entry, '{response} ~ contrast',
+                    {'contrast': ['contrast']}, {})
+
+        measured = [args for name, args in ps.called
+                    if name == 'extract_response_magnitudes']
+        assert measured == [(entry['window'], entry['masking_events'],
+                             entry['baseline_correct'])]
 
 
 class TestAnovaBins:
@@ -364,9 +397,8 @@ class TestAnovaBins:
         entry = {**RESPONSES['stimulus'],
                  'ANOVA': {'side': [], 'reaction_time_bin': []}}
 
-        with patch('scripts.responses.RESPONSE_ENTRY', entry):
-            magnitudes, _, _ = fit_session(ps, '{response} ~ contrast',
-                                           {'contrast': ['contrast']}, {})
+        magnitudes, _, _ = fit_session(ps, entry, '{response} ~ contrast',
+                                       {'contrast': ['contrast']}, {})
 
         assert set(magnitudes['reaction_time_bin']) <= {'low', 'mid', 'high'}
 
@@ -612,7 +644,7 @@ class TestPlotTraceFigures:
         with patch.object(responses, 'condition_traces',
                           return_value=self._aggregate()):
             responses.plot_trace_figures(
-                self._group(), pd.DataFrame(), tmp_path)
+                self._group(), pd.DataFrame(), ['feedback_times'], tmp_path)
 
         assert {p.name for p in tmp_path.glob('*.svg')} == {
             'VTA-DA_traces.svg', 'DR-5HT_traces.svg'}
@@ -628,7 +660,7 @@ class TestPlotTraceFigures:
             drawer = stack.enter_context(
                 patch.object(responses, 'plot_mean_response_traces'))
             responses.plot_trace_figures(
-                self._group(), pd.DataFrame(), tmp_path)
+                self._group(), pd.DataFrame(), ['feedback_times'], tmp_path)
 
         insets = {call.args[1]: call.kwargs['inset']
                   for call in drawer.call_args_list}
@@ -825,6 +857,79 @@ class TestPlotPersessionFigures:
         assert int_low < 0.001 and int_high > 0.002 and int_high < 0.1
 
 
+class TestWindowOutputs:
+    """One window per run, one directory tree per window."""
+
+    def test_directories_are_created_under_the_window(self, tmp_path,
+                                                      monkeypatch):
+        from scripts import responses
+        monkeypatch.setattr(responses, 'RESPONSES_DIR', tmp_path / 'results')
+        monkeypatch.setattr(responses, 'RESPONSE_FIGURES_DIR',
+                            tmp_path / 'figures')
+
+        data_dir, fig_dirs = responses.output_dirs('baseline')
+
+        assert data_dir == tmp_path / 'results/baseline'
+        assert fig_dirs['persession'] == (tmp_path
+                                          / 'figures/baseline/persession')
+        assert data_dir.is_dir()
+        assert all(d.is_dir() for d in fig_dirs.values())
+
+    def test_result_paths_sit_in_the_window_directory(self, tmp_path):
+        """The frame names are relative, so the run's directory decides where
+        they are written and read back."""
+        from scripts.responses import RESULT_FPATHS, result_paths
+        paths = result_paths(tmp_path / 'stimulus')
+
+        assert set(paths) == set(RESULT_FPATHS)
+        assert paths['magnitudes'] == (tmp_path / 'stimulus'
+                                       / 'response_magnitudes.parquet')
+
+    @pytest.mark.parametrize('window', list(RESPONSES))
+    def test_run_config_round_trips(self, tmp_path, window):
+        """The entry the run used is written beside its tables; the tuple
+        window comes back as a list, and every other value unchanged."""
+        import json
+        from scripts.responses import write_run_config
+        entry = RESPONSES[window]
+
+        path = write_run_config(entry, tmp_path)
+        read = json.loads(path.read_text())
+
+        assert read['window'] == list(entry['window'])
+        assert {k: v for k, v in read.items() if k != 'window'} == {
+            k: v for k, v in entry.items() if k != 'window'}
+
+
+class TestParseArgs:
+    """The CLI: one ``config.RESPONSES`` window per invocation, named."""
+
+    @pytest.mark.parametrize('window', list(RESPONSES))
+    def test_each_window_is_accepted(self, window):
+        from scripts.responses import parse_args
+        args = parse_args([window])
+
+        assert args.window == window
+
+    def test_unknown_window_is_rejected(self):
+        from scripts.responses import parse_args
+        with pytest.raises(SystemExit):
+            parse_args(['no_such_window'])
+
+    def test_window_is_mandatory(self):
+        """No window means no analysis unit, so the run cannot be inferred."""
+        from scripts.responses import parse_args
+        with pytest.raises(SystemExit):
+            parse_args([])
+
+    def test_the_other_flags_are_unchanged(self):
+        from scripts.responses import parse_args
+        args = parse_args(['feedback', '--reprocess',
+                           '--persession-display', 'target'])
+
+        assert (args.reprocess, args.persession_display) == (True, 'target')
+
+
 class TestReadResultFrames:
     """The no-flag branch's read: written parquet in, narrowed frames out,
     with neither fitting pass touched."""
@@ -904,7 +1009,8 @@ class TestTwoPassRun:
         donors = group.collect_donor_frames(group.process(prepare_donor))
         formula, dropped_terms = _response_model()
         returns = [frames for frames in
-                   group.process(fit_session, formula=formula,
+                   group.process(fit_session, entry=RESPONSES['stimulus'],
+                                 formula=formula,
                                  dropped_terms=dropped_terms, donors=donors)
                    if frames is not None]
         magnitudes = pd.concat([frames[0] for frames in returns],

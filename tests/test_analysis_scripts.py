@@ -15,7 +15,7 @@ ANALYSIS_SCRIPTS = {
     'ddm_hmm_overview': [],
     'encoding': ['some-eid', 'SNc'],
     'example_session': [],
-    'responses': [],
+    'responses': ['stimulus'],
     'task_encoding': [],
     'task_performance': [],
 }
