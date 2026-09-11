@@ -4132,16 +4132,48 @@ class TestMatchPhotometryToMetadata:
         with pytest.raises(AmbiguousRegionMapping, match='multiple'):
             session._match_photometry_to_metadata()
 
-    def test_no_match_raises(self, mock_session_series):
-        """Column with no matching metadata entry raises AmbiguousRegionMapping."""
-        from iblnm.validation import AmbiguousRegionMapping
-        session = self._make_session(mock_session_series, ['VTA-r'], ['r'])
+    def test_complete_label_stands_against_other_metadata(self, mock_session_series):
+        """Column 'VTA' with metadata ['DR'] → unchanged: the photometry is the authority."""
+        session = self._make_session(mock_session_series, ['DR'], [''])
         t = np.linspace(0, 10, 100)
         session.photometry = {
-            'GCaMP': pd.DataFrame({'XYZ': np.ones(100)}, index=t),
+            'GCaMP': pd.DataFrame({'VTA': np.ones(100)}, index=t),
         }
-        with pytest.raises(AmbiguousRegionMapping, match='no match'):
-            session._match_photometry_to_metadata()
+        session._match_photometry_to_metadata()
+
+        assert list(session.photometry['GCaMP'].columns) == ['VTA']
+
+    @pytest.mark.parametrize('label, metadata, expected', [
+        ('DRN', ['DR'], 'DR'),
+        ('NMB', ['NBM-l'], 'NBM-l'),
+        ('SNC-r', ['SNc-r'], 'SNc-r'),
+        ('DRN', [], 'DR'),
+    ])
+    def test_non_standard_label_corrected(self, mock_session_series, label, metadata, expected):
+        """A misspelled region is corrected through REGION_NAME_FIXES, then completed."""
+        session = self._make_session(mock_session_series, metadata, [''] * len(metadata))
+        t = np.linspace(0, 10, 100)
+        session.photometry = {
+            'GCaMP': pd.DataFrame({label: np.ones(100)}, index=t),
+            'Isosbestic': pd.DataFrame({label: np.ones(100)}, index=t),
+        }
+        session._match_photometry_to_metadata()
+
+        assert list(session.photometry['GCaMP'].columns) == [expected]
+        assert list(session.photometry['Isosbestic'].columns) == [expected]
+
+    def test_shared_region_label_keeps_both(self, mock_session_series):
+        """Two fibers labelled 'LC' are one region, hemisphere unrecorded: both kept."""
+        session = self._make_session(mock_session_series, ['LC', 'LC'], ['', ''])
+        t = np.linspace(0, 10, 100)
+        signal = np.column_stack([np.zeros(100), np.ones(100)])
+        session.photometry = {
+            'GCaMP': pd.DataFrame(signal, columns=['LC', 'LC'], index=t),
+        }
+        session._match_photometry_to_metadata()
+
+        assert list(session.photometry['GCaMP'].columns) == ['LC', 'LC']
+        np.testing.assert_array_equal(session.photometry['GCaMP'].values, signal)
 
     def test_mixed_regions_rename(self, mock_session_series):
         """Multi-region: bare 'VTA' → 'VTA-r', midline 'DR' stays."""

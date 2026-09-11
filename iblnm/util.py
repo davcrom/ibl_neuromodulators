@@ -7,7 +7,7 @@ from iblnm.config import (
     VALID_TARGETNMS, DATASET_CATEGORIES,
     EXCLUDE_SESSION_TYPES, PROTOCOL_RED_FLAGS, SESSION_TYPES,
     SUBJECTS_TO_EXCLUDE,
-    QC_VALUE_ORDER,
+    QC_VALUE_ORDER, REGION_NAME_FIXES,
     log2_contrast, log2_contrast_inverse,
 )
 from iblnm.validation import (
@@ -171,6 +171,16 @@ def get_session_type(session):
 def bare_region(region: str) -> str:
     """Drop a trailing `-l`/`-r` hemisphere suffix from a brain region name."""
     return region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
+
+
+def fix_region_name(region: str) -> str:
+    """Correct a misspelled brain region name, keeping its hemisphere suffix.
+
+    TEMPFIX: applies REGION_NAME_FIXES (e.g. DRN→DR, SNC-r→SNc-r).
+    Remove once corrected upstream in Alyx.
+    """
+    bare = bare_region(region)
+    return REGION_NAME_FIXES.get(bare, bare) + region[len(bare):]
 
 
 @exception_logger
@@ -560,7 +570,7 @@ def traj2coord(x, y, z, depth, theta, phi, **kwargs):
 def fix_brain_regions(df):
     """Normalize brain_region naming errors from Alyx metadata.
 
-    TEMPFIX: applies REGION_NAME_FIXES (e.g. DRN→DR, SNC→SNc).
+    TEMPFIX: applies `fix_region_name` to every entry.
     Remove once corrected upstream in Alyx.
 
     Parameters
@@ -573,17 +583,10 @@ def fix_brain_regions(df):
     pd.DataFrame
         Copy with corrected brain_region names.
     """
-    from iblnm.config import REGION_NAME_FIXES
-
     def _fix(regions):
         if not isinstance(regions, (list, np.ndarray)):
             return regions
-        fixed = []
-        for r in regions:
-            bare = r.rsplit('-', 1)[0] if r.endswith(('-l', '-r')) else r
-            suffix = r[len(bare):]
-            fixed.append(REGION_NAME_FIXES.get(bare, bare) + suffix)
-        return fixed
+        return [fix_region_name(r) for r in regions]
 
     df = df.copy()
     df['brain_region'] = df['brain_region'].apply(_fix)

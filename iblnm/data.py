@@ -54,7 +54,8 @@ from iblnm import analysis
 from iblnm import task
 from iblnm.task import compute_trial_contrasts
 from iblnm.util import (
-    LOG_COLUMNS, deduplicate_log, enforce_schema, fix_catalog,
+    LOG_COLUMNS, bare_region, deduplicate_log, enforce_schema, fix_catalog,
+    fix_region_name,
     resolve_duplicate_group, validate_parallel_lists,
 )
 from iblnm.validation import (
@@ -2112,9 +2113,10 @@ class PhotometrySession(PhotometrySessionLoader):
         """Fetch the raw signal and reference bands from Alyx.
 
         Populates ``self.photometry`` with one DataFrame per band (``'GCaMP'``,
-        ``'Isosbestic'``), brain regions as columns, renamed to the session's
-        `brain_region` metadata. Clears the photometry manual QC verdicts: they
-        were passed on the samples this fetch has just replaced.
+        ``'Isosbestic'``), brain regions as columns, their labels repaired
+        against the session's `brain_region` metadata. Clears the photometry
+        manual QC verdicts: they were passed on the samples this fetch has just
+        replaced.
 
         Parameters
         ----------
@@ -2146,47 +2148,43 @@ class PhotometrySession(PhotometrySessionLoader):
         self._clear_manual_qc('photometry')
 
     def _match_photometry_to_metadata(self):
-        """Rename photometry columns to match brain_region metadata.
+        """Repair non-standard and incomplete photometry region labels.
 
-        Photometry columns from brainbox may use bare names ('VTA') while
-        brain_region metadata includes hemisphere suffixes ('VTA-r').
-        This method renames columns to match metadata names.
+        The columns arrive named from the session's locations file, so a label
+        either names its region or carries one of two defects. A non-standard
+        name ('DRN') is corrected through `config.REGION_NAME_FIXES`; a bare
+        name whose hemisphere the metadata records ('NBM' against 'NBM-l')
+        takes the metadata's entry. Every other label stands, including one the
+        metadata disagrees with: the photometry is the authority on what was
+        recorded. Two columns sharing a label are one region with its
+        hemisphere unrecorded, and both are kept.
 
-        Raises AmbiguousRegionMapping if any column matches zero or multiple
-        metadata entries (e.g. bare 'NBM' with metadata ['NBM-l', 'NBM-r']).
+        Raises
+        ------
+        AmbiguousRegionMapping
+            A label matches several metadata entries, e.g. bare 'NBM' against
+            ['NBM-l', 'NBM-r'].
         """
-        if not self.photometry or not self.brain_region:
+        if not self.photometry:
             return
 
-        ref_band = next(iter(self.photometry))
-        phot_cols = list(self.photometry[ref_band].columns)
-
-        # If columns already match metadata, nothing to do
-        if sorted(phot_cols) == sorted(self.brain_region):
-            return
-
-        # Build rename map: each photometry column must match exactly one
-        # metadata entry by name (exact match or bare→suffixed)
-        rename = {}
-        for col in phot_cols:
-            if col in self.brain_region:
-                continue  # exact match, no rename needed
-            matches = [r for r in self.brain_region if r.rsplit('-', 1)[0] == col]
-            if len(matches) == 1:
-                rename[col] = matches[0]
-            elif len(matches) == 0:
-                raise AmbiguousRegionMapping(
-                    f"Photometry column '{col}' has no match in "
-                    f"brain_region {self.brain_region}"
-                )
-            else:
-                raise AmbiguousRegionMapping(
-                    f"Photometry column '{col}' matches multiple entries in "
-                    f"brain_region {self.brain_region}: {matches}"
-                )
-
+        labels = next(iter(self.photometry.values())).columns
+        rename = {label: self._repair_region_label(label) for label in labels}
         for band_df in self.photometry.values():
             band_df.rename(columns=rename, inplace=True)
+
+    def _repair_region_label(self, label: str) -> str:
+        """Return `label` spelled correctly, with the hemisphere the metadata records for it."""
+        label = fix_region_name(label)
+        if label in self.brain_region:
+            return label
+        matches = [r for r in self.brain_region if bare_region(r) == label]
+        if len(matches) > 1:
+            raise AmbiguousRegionMapping(
+                f"Photometry column '{label}' matches multiple entries in "
+                f"brain_region {self.brain_region}: {matches}"
+            )
+        return matches[0] if matches else label
 
     def validate_n_trials(self):
         """Raises InsufficientTrials if n_trials < MIN_NTRIALS."""
