@@ -308,7 +308,8 @@ class _LinkSession:
         would have produced.
         """
         if name.startswith(('load_', 'extract_')):
-            return lambda *args, **kwargs: self.called.append((name, args))
+            return lambda *args, **kwargs: self.called.append(
+                (name, args, kwargs))
         raise AttributeError(name)
 
     def add_trial_columns(self, frame, name='peak_velocity'):
@@ -318,7 +319,7 @@ class _LinkSession:
         reads back — the reaction-time bin — so the stub does the work rather
         than only recording the call.
         """
-        self.called.append(('add_trial_columns', (frame,)))
+        self.called.append(('add_trial_columns', (frame,), {}))
         self.trials[name] = frame
         return self.trials
 
@@ -384,8 +385,9 @@ class TestLinkFunctions:
     @pytest.mark.parametrize('window', list(RESPONSES))
     def test_the_entry_defines_the_measurement(self, window):
         """The run's entry — not a module-level default — supplies the window
-        averaged, the events masked past and whether the baseline is
-        subtracted, so a `baseline` run measures the pre-stimulus interval."""
+        averaged, the events masked past, whether the baseline is subtracted
+        and the one event measured, so a `baseline` run measures the
+        pre-stimulus interval and a run carries a single event throughout."""
         from scripts.responses import fit_session
         ps = _LinkSession()
         entry = RESPONSES[window]
@@ -393,10 +395,11 @@ class TestLinkFunctions:
         fit_session(ps, entry, '{response} ~ contrast',
                     {'contrast': ['contrast']}, {})
 
-        measured = [args for name, args in ps.called
+        measured = [(args, kwargs) for name, args, kwargs in ps.called
                     if name == 'extract_response_magnitudes']
-        assert measured == [(entry['window'], entry['masking_events'],
-                             entry['baseline_correct'])]
+        assert measured == [((entry['window'], entry['masking_events'],
+                              entry['baseline_correct']),
+                             {'events': [entry['event']]})]
 
 
 class TestReactionTimeBins:

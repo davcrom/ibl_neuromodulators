@@ -452,8 +452,8 @@ def fit_session(ps, entry: dict, formula: str, dropped_terms: dict,
     """Second pass: fit one session's drop-one models against the donor pool.
 
     Sequences the loading and the measurement the fit reads — the trials with
-    their timings, the wheel regressor onto the trials table, and every fiber x
-    event magnitude — then fits, then re-applies
+    their timings, the wheel regressor onto the trials table, and every fiber's
+    magnitude at the entry's one event — then fits, then re-applies
     ``PERSESSION_TRIAL_CRITERIA`` with no fiber or event named so the
     magnitudes read back span every recording the session holds rather than the
     last combination the loop happened to mask.
@@ -463,10 +463,11 @@ def fit_session(ps, entry: dict, formula: str, dropped_terms: dict,
     ps : PhotometrySession
         The session to fit.
     entry : dict
-        The run's ``config.RESPONSES`` entry: the window averaged into a
-        magnitude, whether the pre-event baseline is subtracted, the events
-        past which a trial's samples are blanked, and the ANOVA factors whose
-        binned members are cut against this session's own quantiles.
+        The run's ``config.RESPONSES`` entry: the event measured, the window
+        averaged into a magnitude, whether the pre-event baseline is
+        subtracted, the events past which a trial's samples are blanked, and
+        the ANOVA factors whose binned members are cut against this session's
+        own quantiles.
     formula : str
         Full-model Wilkinson formula, ``config.RESPONSE_MODEL_FORMULA``.
     dropped_terms : dict
@@ -503,8 +504,12 @@ def fit_session(ps, entry: dict, formula: str, dropped_terms: dict,
                 labels=TERCILE_LABELS).astype(str).values,
         name='reaction_time_bin')
     ps.load_responses('photometry')
+    # The entry's window, masking chronology and baseline rule are defined for
+    # its own event, so only that event is measured: applying them to the other
+    # cut event produces values no table or figure of the run should carry.
     ps.extract_response_magnitudes(
-        entry['window'], entry['masking_events'], entry['baseline_correct'])
+        entry['window'], entry['masking_events'], entry['baseline_correct'],
+        events=[entry['event']])
     unfiltered = _join_trials(ps.masking_diagnostics(), ps.trials)
     fits = ps.fit_responses(formula, dropped_terms, donors,
                             **PERSESSION_TRIAL_CRITERIA)
