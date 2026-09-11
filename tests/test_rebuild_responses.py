@@ -8,7 +8,7 @@ import pytest
 
 import scripts.rebuild_responses as rebuild
 from iblnm.config import RESPONSE_EVENTS, WHEEL_FS, WHEEL_RESPONSE_EVENTS
-from iblnm.data import PhotometrySession
+from iblnm.data import PhotometrySession, read_error_tree
 
 N_TRIALS = 5
 TRIAL_SPACING = 4.0  # seconds between stimulus onsets, wide enough for the cut
@@ -249,6 +249,33 @@ class TestRebuildResponses:
         # The rebuild persists its own log: `process` no longer flushes for it.
         with h5py.File(session.filepath, 'r') as h5:
             assert sorted(h5['errors']) == ['photometry', 'wheel']
+
+    def test_keeps_the_errors_of_the_products_it_does_not_rebuild(
+            self, session_series, stored_session):
+        """The re-cut owns two products' entries; the other two are preserved.
+
+        `process` builds the session from its catalog row, so it arrives holding
+        no errors at all: a pass that rewrites part of the tree has to read the
+        rest of it back before it writes.
+        """
+        from iblnm.validation import MissingRawData
+
+        written = _reload(stored_session)
+        written.log_error(MissingRawData('_ibl_trials.table.pqt'),
+                          product='trials')
+        written.log_error(MissingRawData('_ibl_photometry.signal.pqt'),
+                          product='photometry')
+        written.save_h5(groups=['errors'])
+
+        session = PhotometrySession(session_series, one=MagicMock(),
+                                    load_data=False)
+        session.filepath = stored_session
+        rebuild.rebuild_responses(session)
+
+        with h5py.File(stored_session, 'r') as h5:
+            assert [e['error_message'] for e in read_error_tree(h5)] == [
+                '_ibl_trials.table.pqt']
+        assert [e['product'] for e in session.errors] == ['trials']
 
     def test_builds_the_band_when_the_file_holds_none(self, trials_only_session):
         """With no stored preprocessed signal, the raw bands come from Alyx."""

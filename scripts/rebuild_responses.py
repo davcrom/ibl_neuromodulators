@@ -63,7 +63,11 @@ def rebuild_responses(ps: PhotometrySession) -> None:
     pass that rebuilds a product owns that product's error log, and writes it
     with the same call that writes the product. Each block clears its own
     product first, so a cut that succeeds this time drops the entry its last
-    attempt left; the products this pass does not touch keep theirs.
+    attempt left; the products this pass does not touch keep theirs. That is
+    what the opening `load_h5(groups=['errors'])` is for — the session arrives
+    from its catalog row holding no errors, and `_save_errors` replaces the
+    whole tree, so the `trials` and `video` entries have to be in memory or the
+    write erases them. A session whose file does not exist yet has none to read.
 
     Parameters
     ----------
@@ -71,6 +75,9 @@ def rebuild_responses(ps: PhotometrySession) -> None:
         The session to re-cut. Top-level so `PhotometrySessionGroup.process`
         can hand it to parallel workers.
     """
+    if ps.filepath.exists():
+        ps.load_h5(groups=['errors'])
+
     try:
         ps.clear_errors('photometry')
         ps.load_trials()
