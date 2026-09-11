@@ -655,12 +655,16 @@ dict.
 |---|---|---|
 | `contrast:reward` | Difficulty-graded covariation with the trial's eventual outcome; no outcome has occurred. | Reward prediction error: a signed error predicts no such term, an unsigned error predicts one. |
 | `contrast:side` | Lateralized visual drive. | |
-| `contrast:choice_side` | Credit is assigned in proportion to the evidence behind the action: strongly-supported choices get updated more than guesses. | |
+| `contrast:choice_side` | Marking the action with the evidence behind it, before the outcome arrives. | Credit is assigned in proportion to the evidence behind the action: strongly-supported choices get updated more than guesses. |
 | `contrast:log_reaction_time` | Confidence in the action being taken. | Confidence scaling the update: an error after a confident choice is informative, an error after a guess is not. |
 | `contrast:peak_velocity` | Effort spent in proportion to expected payoff: move fast when the evidence says the reward is likely, conserve effort when it's a guess. | |
 | `side:log_reaction_time` | Spatial attention: gain applied to one hemifield, so stimuli there are detected sooner. | |
 | `side:peak_velocity` | Orienting: a stimulus in one hemifield mobilizes a more vigorous movement. | |
 | `reward:log_reaction_time` | | Payoff of deliberation; speed-accuracy tradeoff; a signal that could drive post-error slowing. |
+| `reward:peak_velocity` | | Payoff of vigor: the outcome weighed against how hard the animal worked. |
+| `choice_side:log_reaction_time` | Motor preparation: gain applied to one turn direction, so movements that way are released sooner. | |
+| `choice_side:peak_velocity` | Direction-specific vigor: the signal scales movement energy for one turn direction. | |
+| `log_reaction_time:peak_velocity` | Engagement: fast commits paired with hard turns give more than the sum of each, marking one whole-trial movement state rather than two. | |
 
 Why signed and unsigned coding separate here: expected value rises with
 contrast, so with p = p(correct | contrast), a signed prediction error is
