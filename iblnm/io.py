@@ -118,41 +118,65 @@ def _hemisphere_from_regions(regions):
     return [r[-1] if r.endswith(('-l', '-r')) else '' for r in regions]
 
 
+def _regions_from_locations(session: pd.Series, one) -> list:
+    """Region per ROI from photometryROI.locations.pqt, in the file's row order.
+
+    That order is the order of the photometry signal columns, since both are
+    named off the same table's ROI index.
+    """
+    locations = one.load_dataset(session['eid'], 'photometryROI.locations.pqt')
+    return list(locations['brain_region'].values)
+
+
+def _regions_from_description(session: pd.Series, one) -> list:
+    """Region per fiber from the experiment description's neurophotometrics device.
+
+    The `fibers` entry is present but empty for some sessions, which is why the
+    caller treats an empty list as no answer rather than as no fibers.
+    """
+    description = one.load_dataset(session['eid'], '_ibl_experiment.description.yaml')
+    fibers = description.get('devices', {}).get('neurophotometrics', {}).get('fibers', {})
+    return [fiber.get('location', '') for fiber in fibers.values()]
+
+
+# Region sources, most to least authoritative. The locations file leads because
+# it is the only one naming the region and the signal it describes in the same
+# table, against the same ROI channel; the experiment description is a separate
+# record that can drift from what was recorded. `metadata/fibers.csv` is the
+# third source and is applied over the whole catalog at once, by
+# `util.fill_brain_region_from_fibers`.
+_REGION_SOURCES = (_regions_from_locations, _regions_from_description)
+
+
 @exception_logger
 def get_brain_region(session, one=None):
-    """Populate brain_region and hemisphere from experiment description or locations file.
+    """Populate brain_region and hemisphere from the first source that names a region.
 
-    Tries the experiment description first. If missing, falls back to
-    photometryROI.locations.pqt. Raises ALFObjectNotFound if neither source
-    has brain region data.
+    Sources are tried in `_REGION_SOURCES` order. A source falls through when
+    its dataset is absent *and* when it yields no region, so a session whose
+    experiment description lists no fibers still takes its regions from the
+    locations file. Raises ALFObjectNotFound when no source names one.
+
+    `hemisphere` is parsed out of the region strings themselves — neither
+    source carries a hemisphere field.
     """
     if one is None:
         one = _get_default_connection()
 
-    # Try experiment description
-    try:
-        session_desc = one.load_dataset(session['eid'], '_ibl_experiment.description.yaml')
-        fibers = session_desc.get('devices', {}).get('neurophotometrics', {}).get('fibers', {})
-        regions = [fiber.get('location', '') for fiber in fibers.values()]
+    for source in _REGION_SOURCES:
+        try:
+            regions = source(session, one)
+        except ALFObjectNotFound:
+            continue
+        if not regions:
+            continue
         session['brain_region'] = regions
         session['hemisphere'] = _hemisphere_from_regions(regions)
         return session
-    except ALFObjectNotFound:
-        pass
-
-    # Fallback: photometry locations file
-    try:
-        loc = one.load_dataset(session['eid'], 'photometryROI.locations.pqt')
-        regions = list(loc['brain_region'].values)
-        session['brain_region'] = regions
-        session['hemisphere'] = _hemisphere_from_regions(regions)
-        return session
-    except ALFObjectNotFound:
-        pass
 
     raise ALFObjectNotFound(
         f"No brain_region source for {session['eid']}: "
-        f"experiment description and photometryROI.locations.pqt both missing"
+        f"photometryROI.locations.pqt and the experiment description named none"
     )
 
 

@@ -1254,12 +1254,18 @@ class TestFromAlyx:
                 }
             return []
         mock_one.alyx.rest.side_effect = rest_side_effect
-        # get_brain_region: load_dataset
-        mock_one.load_dataset.return_value = {
-            'devices': {'neurophotometrics': {'fibers': {
+        # get_brain_region: load_dataset, the locations file before the
+        # experiment description
+        def load_dataset_side_effect(eid, dataset, **kwargs):
+            if dataset == 'photometryROI.locations.pqt':
+                return pd.DataFrame(
+                    {'fiber': ['fiber_VTA'], 'brain_region': ['VTA-l']},
+                    index=pd.Index(['Region3G'], name='ROI'),
+                )
+            return {'devices': {'neurophotometrics': {'fibers': {
                 'G0': {'location': 'VTA-l'},
-            }}}
-        }
+            }}}}
+        mock_one.load_dataset.side_effect = load_dataset_side_effect
         # get_datasets: list_datasets
         mock_one.list_datasets.return_value = [
             '_ibl_trials.table.pqt',

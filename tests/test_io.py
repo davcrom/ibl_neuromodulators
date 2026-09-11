@@ -23,6 +23,28 @@ def mock_one():
     return MagicMock()
 
 
+def load_dataset_by_name(datasets):
+    """Build a ``one.load_dataset`` stub that answers by dataset name.
+
+    Parameters
+    ----------
+    datasets : dict
+        Dataset name -> the loaded object. A name absent from the mapping
+        raises ``ALFObjectNotFound``, as ONE does for a session lacking it.
+
+    Returns
+    -------
+    callable
+        Stub with ONE's ``(eid, dataset)`` signature, for use as a
+        ``MagicMock.side_effect``.
+    """
+    def _load(eid, dataset, **kwargs):
+        if dataset not in datasets:
+            raise ALFObjectNotFound(dataset)
+        return datasets[dataset]
+    return _load
+
+
 class TestGetSessionDict:
     """get_session_dict populates metadata from the Alyx session dict."""
 
@@ -55,27 +77,60 @@ class TestGetSessionDict:
 class TestGetBrainRegion:
     """get_brain_region populates brain_region/hemisphere from experiment desc or locations."""
 
-    def test_from_experiment_description(self, mock_session, mock_one):
-        """Experiment description with fibers → brain_region and hemisphere."""
-        mock_one.load_dataset.return_value = {
-            'devices': {'neurophotometrics': {'fibers': {
-                'G0': {'location': 'VTA-r'},
-                'G1': {'location': 'DR'},
-            }}}
-        }
+    def test_empty_fibers_falls_through_to_locations(self, mock_session, mock_one):
+        """Description present but listing no fibers → region from the locations file."""
+        mock_one.load_dataset.side_effect = load_dataset_by_name({
+            '_ibl_experiment.description.yaml': {
+                'devices': {'neurophotometrics': {'fibers': {}}}
+            },
+            'photometryROI.locations.pqt': pd.DataFrame(
+                {'fiber': ['fiber_LC', 'fiber_LC'], 'brain_region': ['LC-r', 'LC-l']},
+                index=pd.Index(['Region3G', 'Region6G'], name='ROI'),
+            ),
+        })
+        result = get_brain_region(mock_session, one=mock_one)
+        assert result['brain_region'] == ['LC-r', 'LC-l']
+        assert result['hemisphere'] == ['r', 'l']
+
+    def test_locations_file_wins_over_description(self, mock_session, mock_one):
+        """Both sources name fibers → the locations file supplies the regions."""
+        mock_one.load_dataset.side_effect = load_dataset_by_name({
+            '_ibl_experiment.description.yaml': {
+                'devices': {'neurophotometrics': {'fibers': {
+                    'G0': {'location': 'NBM'},
+                    'G1': {'location': 'NBM'},
+                }}}
+            },
+            'photometryROI.locations.pqt': pd.DataFrame(
+                {'fiber': ['fiber_NBM', 'fiber_NBM'], 'brain_region': ['NBM-r', 'NBM-l']},
+                index=pd.Index(['Region3G', 'Region5G'], name='ROI'),
+            ),
+        })
+        result = get_brain_region(mock_session, one=mock_one)
+        assert result['brain_region'] == ['NBM-r', 'NBM-l']
+        assert result['hemisphere'] == ['r', 'l']
+
+    def test_falls_back_to_experiment_description(self, mock_session, mock_one):
+        """No locations file → regions come from the experiment description."""
+        mock_one.load_dataset.side_effect = load_dataset_by_name({
+            '_ibl_experiment.description.yaml': {
+                'devices': {'neurophotometrics': {'fibers': {
+                    'G0': {'location': 'VTA-r'},
+                    'G1': {'location': 'DR'},
+                }}}
+            },
+        })
         result = get_brain_region(mock_session, one=mock_one)
         assert result['brain_region'] == ['VTA-r', 'DR']
         assert result['hemisphere'] == ['r', '']
 
-    def test_fallback_to_locations_file(self, mock_session, mock_one):
-        """Experiment desc missing → falls back to photometryROI.locations.pqt."""
-        mock_one.load_dataset.side_effect = [
-            ALFObjectNotFound("experiment description not found"),
-            pd.DataFrame({'brain_region': ['VTA-r', 'DR']}, index=['G0', 'G1']),
-        ]
-        result = get_brain_region(mock_session, one=mock_one)
-        assert result['brain_region'] == ['VTA-r', 'DR']
-        assert result['hemisphere'] == ['r', '']
+    def test_no_source_names_a_region_raises(self, mock_session, mock_one):
+        """No locations file and an empty fibers dict → raises, naming both sources."""
+        mock_one.load_dataset.side_effect = load_dataset_by_name({
+            '_ibl_experiment.description.yaml': {'devices': {}},
+        })
+        with pytest.raises(ALFObjectNotFound, match="brain_region"):
+            get_brain_region(mock_session, one=mock_one)
 
     def test_both_missing_raises(self, mock_session, mock_one):
         """Both sources missing → raises ALFObjectNotFound."""
@@ -92,19 +147,13 @@ class TestGetBrainRegion:
         assert exlog[0]['error_type'] == 'ALFObjectNotFound'
         assert 'brain_region' in exlog[0]['error_message']
 
-    def test_experiment_desc_no_fibers(self, mock_session, mock_one):
-        """Experiment desc exists but has no neurophotometrics fibers → empty lists."""
-        mock_one.load_dataset.return_value = {'devices': {}}
-        result = get_brain_region(mock_session, one=mock_one)
-        assert result['brain_region'] == []
-        assert result['hemisphere'] == []
-
-    def test_experiment_desc_uses_exact_filename(self, mock_session, mock_one):
-        """load_dataset is called with the exact filename, not a wildcard pattern."""
-        mock_one.load_dataset.return_value = {'devices': {}}
-        get_brain_region(mock_session, one=mock_one)
-        first_call_dataset = mock_one.load_dataset.call_args_list[0][0][1]
-        assert first_call_dataset == '_ibl_experiment.description.yaml'
+    def test_sources_use_exact_filenames_in_order(self, mock_session, mock_one):
+        """Both datasets are requested by exact name, locations file first."""
+        mock_one.load_dataset.side_effect = ALFObjectNotFound("not found")
+        get_brain_region(mock_session, one=mock_one, exlog=[])
+        requested = [call[0][1] for call in mock_one.load_dataset.call_args_list]
+        assert requested == [
+            'photometryROI.locations.pqt', '_ibl_experiment.description.yaml']
 
 
 class TestGetExtendedQC:
