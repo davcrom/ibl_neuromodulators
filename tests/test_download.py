@@ -376,8 +376,12 @@ class TestVideoSourcesFailSeparately:
         assert {e['product'] for e in session.errors} == {'video/pose', 'video'}
 
 
-def _write_metadata(h5_dir, eid, regions, one):
-    """Write one session's `metadata` group, as the Alyx query pass does."""
+def _write_metadata(h5_dir, eid, regions, one, **fields):
+    """Write one session's `metadata` group, as the Alyx query pass does.
+
+    `fields` override or add row entries, for a session whose stored metadata
+    carries more than regions.
+    """
     from iblnm.data import PhotometrySession
 
     row = pd.Series({
@@ -393,6 +397,7 @@ def _write_metadata(h5_dir, eid, regions, one):
         'brain_region': regions,
         'hemisphere': ['l'] * len(regions),
         'target_NM': ['VTA-DA'] * len(regions),
+        **fields,
     })
     ps = PhotometrySession(row, one=one, load_data=False)
     ps.save_h5(h5_dir / f'{eid}.h5', groups=['metadata'], mode='w')
@@ -473,6 +478,72 @@ class TestCatalogPhase:
         monkeypatch.setattr(PhotometrySessionGroup, 'complete_catalog', refuse)
 
         download.main([])
+
+
+def _stored_metadata(h5_dir, eid):
+    from iblnm.data import _read_metadata
+
+    with h5py.File(h5_dir / f'{eid}.h5', 'r') as h5:
+        return _read_metadata(h5)
+
+
+class TestMetadataWriteBack:
+    """The catalog's repaired regions reach each session's stored metadata."""
+
+    def test_a_filled_region_reaches_the_file(self, tmp_path, monkeypatch):
+        """The empty session takes `LC` from its sibling, and nothing else moves."""
+        eids, _ = _stub_store(tmp_path, monkeypatch, (['LC'], []))
+        extra = {'datasets': ['alf/photometry/photometry.signal.pqt'],
+                 'url': 'https://alyx.example/sessions/eid-catalog-2',
+                 'session_length': 3600.0}
+        _write_metadata(tmp_path, eids[1], [], None, **extra)
+
+        download.main([])
+
+        stored = _stored_metadata(tmp_path, eids[1])
+        assert stored['brain_region'] == ['LC']
+        assert stored['hemisphere'] == ['l']
+        assert stored['target_NM'] == ['LC-NE']
+        assert stored['NM'] == 'NE'
+        assert {field: stored[field] for field in extra} == extra
+
+    def test_a_second_run_writes_nothing(self, tmp_path, monkeypatch):
+        """Every file already matches its catalog row, so no byte changes."""
+        eids, _ = _stub_store(tmp_path, monkeypatch, (['LC'], []))
+        download.main([])
+        first = {eid: (tmp_path / f'{eid}.h5').read_bytes() for eid in eids}
+
+        download.main([])
+
+        assert {eid: (tmp_path / f'{eid}.h5').read_bytes()
+                for eid in eids} == first
+
+    def test_an_off_target_fiber_keeps_its_label(self, tmp_path, monkeypatch):
+        """`CP` is outside `config.VALID_TARGETS`; the session's `NM` names it."""
+        eids, _ = _stub_store(tmp_path, monkeypatch, (['LC', 'CP'],))
+        _write_metadata(tmp_path, eids[0], ['LC', 'CP'], None, NM='NE')
+
+        download.main([])
+
+        assert _stored_metadata(tmp_path, eids[0])['target_NM'] == \
+            ['LC-NE', 'CP-NE']
+
+    def test_an_unlabelled_fiber_is_written_and_left(self, tmp_path,
+                                                     monkeypatch):
+        """A region with no `NM` to name it derives a None label.
+
+        h5py cannot store None in a string dataset, so it is written empty,
+        and the empty label counts as a match on the next run.
+        """
+        eids, _ = _stub_store(tmp_path, monkeypatch, (['A'],))
+        fpath = tmp_path / f'{eids[0]}.h5'
+
+        download.main([])
+        first = fpath.read_bytes()
+        download.main([])
+
+        assert _stored_metadata(tmp_path, eids[0])['target_NM'] == ['']
+        assert fpath.read_bytes() == first
 
 
 class TestTargetNMFilter:

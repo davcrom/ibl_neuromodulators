@@ -246,8 +246,14 @@ sessions, from `metadata/fibers.csv`, correcting region names and deriving
 photometry columns; a group built from an unrepaired catalog cannot map its own
 signal. The whole function is a TEMPFIX and goes when the upstream Alyx
 metadata is corrected. `scripts/download.py → fetch_catalog` is the caller:
-read the store, fix, write `sessions.pqt`, then filter — one group through the
-whole phase, validated once, after the fixups rather than before them.
+read the store, fix, write the repairs back, write `sessions.pqt`, then filter
+— one group through the whole phase, validated once, after the fixups rather
+than before them. The write-back is `data.write_repaired_metadata`, part of the
+same TEMPFIX: it writes only `brain_region`, `hemisphere`, `target_NM` and `NM`
+into each file's `metadata` group, in place, and skips a file already matching.
+Not `save_h5(groups=['metadata'])`, which rewrites every field from the row and
+blanks the ones the catalog does not carry (`datasets`, `url`,
+`session_length`).
 
 ### 2b. The Download Build
 

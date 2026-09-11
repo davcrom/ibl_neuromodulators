@@ -433,6 +433,50 @@ def _save_metadata(session, h5_file):
             grp.attrs[attr] = _METADATA_NONE_SENTINEL if value is None else value
 
 
+def write_repaired_metadata(h5_path: Path, row: pd.Series) -> bool:
+    """Write a repaired catalog row's regions into its stored `metadata` group.
+
+    TEMPFIX, with `util.fix_catalog`: that function repairs the catalog in
+    memory only, so this carries its repairs into the store, and both go once
+    the upstream Alyx metadata is corrected. Only the four fields it repairs —
+    `brain_region`, `hemisphere`, `target_NM` and `NM` — are written, in place.
+    `_save_metadata` is not usable here: it rewrites every `_METADATA_FIELDS`
+    entry, and a catalog row carries no `session_length`, `url`, `day_n`,
+    `session_n` or `datasets` to rewrite them from.
+
+    Parameters
+    ----------
+    h5_path : Path
+        The session's file, which must already hold a `metadata` group.
+    row : pd.Series
+        The session's repaired catalog row.
+
+    Returns
+    -------
+    bool
+        Whether the file was written. A file whose four fields already match
+        the row is not opened for writing, so a second run changes no byte.
+        A None label, derived for a region no `NM` names, is stored as `''`
+        because h5py cannot store None in a string dataset, and compared in
+        that form.
+    """
+    lists = {field: ['' if item is None else item for item in row[field]]
+             for field in PARALLEL_COLS}
+    with h5py.File(h5_path, 'r') as h5:
+        stored = _read_metadata(h5)
+    if (all(stored[field] == items for field, items in lists.items())
+            and stored['NM'] == row['NM']):
+        return False
+    with h5py.File(h5_path, 'r+') as h5:
+        grp = h5['metadata']
+        for field, items in lists.items():
+            del grp[field]
+            grp.create_dataset(field, data=items, dtype=h5py.string_dtype())
+        grp.attrs['NM'] = (_METADATA_NONE_SENTINEL if row['NM'] is None
+                           else row['NM'])
+    return True
+
+
 def _read_metadata(h5_file) -> dict:
     """Read the `metadata` group into the session row it was written from.
 

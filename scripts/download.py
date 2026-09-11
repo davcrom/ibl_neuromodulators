@@ -35,6 +35,7 @@ from iblnm.config import (  # noqa: E402
 )
 from iblnm.data import (  # noqa: E402
     PREPROCESSED_BAND, WHEEL_LABEL, PhotometrySession, PhotometrySessionGroup,
+    write_repaired_metadata,
 )
 from iblnm.io import _get_default_connection  # noqa: E402
 from iblnm.validation import (  # noqa: E402
@@ -72,6 +73,10 @@ def fetch_catalog(one) -> PhotometrySessionGroup:
     `metadata` group and its catalog repaired in place, so what the build
     iterates carries the fixed brain regions rather than a copy of them.
 
+    The repaired regions are then written back into each file's `metadata`
+    group, so the store agrees with the catalog. TEMPFIX, with
+    `util.fix_catalog`: it goes once the upstream Alyx metadata is corrected.
+
     The catalog is also written to `config.SESSIONS_FPATH` for the analysis
     scripts that read it; the store's `metadata` groups remain the source, so
     that file is a convenience, not a second source.
@@ -98,6 +103,11 @@ def fetch_catalog(one) -> PhotometrySessionGroup:
                                                scan_h5=False)
     group.fix_catalog()
     # No filter has run yet, so this is the whole catalog.
+    # TEMPFIX: goes with `util.fix_catalog`.
+    written = sum(write_repaired_metadata(SESSIONS_H5_DIR / f"{row['eid']}.h5",
+                                          row)
+                  for _, row in group.sessions.iterrows())
+    print(f'Wrote repaired metadata into {written} session files')
     group.sessions.to_parquet(SESSIONS_FPATH, index=False)
     print(f'Catalogued {len(group.sessions)} sessions in {SESSIONS_FPATH}')
     return group
