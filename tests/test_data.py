@@ -760,10 +760,75 @@ class TestH5Metadata:
 
         ps.save_h5(fpath, groups=['metadata'])
         ps2 = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
-        ps2.strain = 'should_be_overwritten'
         ps2.load_h5(fpath, groups=['metadata'])
         assert ps2.strain is None
         assert ps2.brain_region == []
+
+    def test_load_metadata_keeps_session_value_when_file_empty(
+            self, minimal_session_series, tmp_path):
+        """An empty stored field leaves the session's own value standing."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        ps2.strain = 'Thy1-GCaMP6s'
+        ps2.brain_region = ['LC']
+        ps2.load_h5(fpath, groups=['metadata'])
+
+        assert ps2.strain == 'Thy1-GCaMP6s'
+        assert ps2.brain_region == ['LC']
+
+    def test_load_metadata_fills_empty_session_field(
+            self, minimal_session_series, tmp_path):
+        """An empty session field takes the stored value."""
+        from iblnm.data import PhotometrySession
+        mock_one = MagicMock()
+        ps = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        ps.strain = 'Thy1-GCaMP6s'
+        ps.brain_region = ['LC']
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        ps2.load_h5(fpath, groups=['metadata'])
+
+        assert ps2.strain == 'Thy1-GCaMP6s'
+        assert ps2.brain_region == ['LC']
+
+    def test_load_metadata_raises_on_list_conflict(
+            self, minimal_session_series, tmp_path):
+        """Two populated, disagreeing list fields are a conflict, not a fill."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import MetadataMismatch
+        mock_one = MagicMock()
+        ps = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        ps.brain_region = ['VTA']
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        ps2.brain_region = ['DR']
+        with pytest.raises(MetadataMismatch):
+            ps2.load_h5(fpath, groups=['metadata'])
+
+    def test_load_metadata_raises_on_scalar_conflict(
+            self, minimal_session_series, tmp_path):
+        """Two populated, disagreeing scalar fields are a conflict."""
+        from iblnm.data import PhotometrySession
+        from iblnm.validation import MetadataMismatch
+        mock_one = MagicMock()
+        ps = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        ps.NM = 'DA'
+        fpath = tmp_path / f'{ps.eid}.h5'
+        ps.save_h5(fpath, groups=['metadata'])
+
+        ps2 = PhotometrySession(minimal_session_series, one=mock_one, load_data=False)
+        ps2.NM = 'NE'
+        with pytest.raises(MetadataMismatch):
+            ps2.load_h5(fpath, groups=['metadata'])
 
     def test_genotype_list_roundtrip(self, tmp_path):
         """genotype (a list from Alyx) survives H5 save/load and from_h5."""

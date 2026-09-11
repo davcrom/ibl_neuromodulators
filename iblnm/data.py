@@ -63,7 +63,7 @@ from iblnm.validation import (
     InsufficientTrials, BlockStructureBug, MissingBlockInfo,
     IncompleteEventTimes, TrialsNotInPhotometryTime,
     QCValidationError, AmbiguousRegionMapping,
-    VideoLengthError,
+    VideoLengthError, MetadataMismatch,
 )
 
 # Per-mouse drop-one significance table: one row per (target_NM, event,
@@ -466,30 +466,51 @@ def _read_metadata(h5_file) -> dict:
     return row
 
 
-def _load_metadata(session, h5_file):
-    if 'metadata' not in h5_file:
-        return
-    grp = h5_file['metadata']
+def _metadata_empty(value, is_list: bool) -> bool:
+    """A metadata field holds nothing: `[]` for a list, null for a scalar."""
+    return value == [] if is_list else pd.isna(value)
+
+
+def _load_metadata(session, h5_file) -> None:
+    """Reconcile the stored `metadata` group into `session`, field by field.
+
+    The session is built from a catalog row whose metadata may have been
+    repaired since the file was written, so the file does not simply overwrite
+    it. Whichever side holds a value wins; two populated sides that disagree
+    are a fault rather than a silent choice between them.
+
+    Parameters
+    ----------
+    session : PhotometrySession
+        Mutated in place. A field it already holds is left standing, so the
+        catalog row's values survive the load.
+    h5_file : h5py.File
+        An open session file. One with no `metadata` group changes nothing.
+
+    Raises
+    ------
+    MetadataMismatch
+        A `_METADATA_FIELDS` entry is populated on both sides with different
+        values. Empty is `[]` for the list fields and null for the scalars —
+        NaN as well as None, since a catalog row carries a missing scalar as
+        NaN. An absent list dataset reads as `[]` and so leaves the session's
+        own value alone, as it did before.
+    """
+    stored = _read_metadata(h5_file)
     for attr, is_list in session._METADATA_FIELDS:
-        if is_list:
-            if attr in grp:
-                setattr(session, attr, [
-                    v.decode() if isinstance(v, bytes) else v
-                    for v in grp[attr][:]
-                ])
+        if attr not in stored:
             continue
-        if attr not in grp.attrs:
-            continue
-        value = grp.attrs[attr]
-        if isinstance(value, bytes):
-            value = value.decode()
-        elif hasattr(value, 'item'):
-            value = value.item()
-        if isinstance(value, str) and value == _METADATA_NONE_SENTINEL:
-            value = None
+        value = stored[attr]
         if attr == 'start_time' and isinstance(value, str):
             value = datetime.fromisoformat(value)
-        setattr(session, attr, value)
+        if _metadata_empty(value, is_list):
+            continue
+        current = getattr(session, attr, None)
+        if _metadata_empty(current, is_list):
+            setattr(session, attr, value)
+        elif current != value:
+            raise MetadataMismatch(
+                f"{attr}: session has {current!r}, file has {value!r}")
 
 
 def _write_error_entries(group: h5py.Group, entries: list[dict]) -> None:

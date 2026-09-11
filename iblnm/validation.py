@@ -40,6 +40,9 @@ class MissingHemisphere(Exception):
 class HemisphereMismatch(Exception):
     """Region name and fiber coordinates disagree on hemisphere."""
 
+class MetadataMismatch(Exception):
+    """Session metadata and its stored copy disagree on a populated field."""
+
 class MissingInsertion(Exception):
     """Fiber coordinates for subject not found in lookup table."""
 
