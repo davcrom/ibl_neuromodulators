@@ -781,6 +781,15 @@ class TestPlotPersessionFigures:
                     'q_value': 0.02, 'n_donors': 700})
         return pd.DataFrame(rows)
 
+    def _two_target_frame(self):
+        """The stub frame for VTA-DA plus a DR-5HT copy with its own mice and
+        three times the ΔR², so the two targets span different ranges."""
+        frame = self._stub_frame()
+        return pd.concat([frame, frame.assign(
+            target_NM='DR-5HT', brain_region='DR',
+            subject='d' + frame['subject'], eid='d' + frame['eid'],
+            delta_r2_adj=3 * frame['delta_r2_adj'])], ignore_index=True)
+
     def test_ylim_padded_around_the_class_values(self):
         """``dropone_ylim`` spans the class's values with a 5% pad, and has no
         range to give when the values are absent or all equal."""
@@ -794,52 +803,62 @@ class TestPlotPersessionFigures:
         assert dropone_ylim(flat, ['contrast']) is None  # one value repeated
         assert dropone_ylim(frame, ['no_such_term']) is None
 
-    def test_one_file_per_dropped_term(self, tmp_path):
+    def test_one_file_per_dropped_term_and_per_target_nm(self, tmp_path):
         """The frame and the output directory are the whole input — no group.
         One drop-one figure per label, named for it with the interaction colon
-        replaced, plus the single full-model R² figure. The per-mouse table is
-        absent here, so this exercises the real figures rather than a mock."""
+        replaced, one per target-NM named for it, plus the single full-model R²
+        figure, all in one directory. The per-mouse table is absent here, so
+        this exercises the real figures rather than a mock."""
         from scripts import responses
 
         fig_dir = tmp_path / 'persession'
         fig_dir.mkdir()
-        responses.plot_persession_figures(self._stub_frame(), None, fig_dir)
+        responses.plot_persession_figures(self._two_target_frame(), None,
+                                          fig_dir)
 
         names = {p.name for p in fig_dir.glob('*.svg')}
-        assert len(names) == len(RESPONSE_DROPPED_TERMS) + 1
+        assert len(names) == len(RESPONSE_DROPPED_TERMS) + 2 + 1
         assert all(':' not in name for name in names)
         assert {'contrast.svg', 'contrast-side.svg'} <= names
+        assert {'VTA-DA.svg', 'DR-5HT.svg'} <= names
         assert all(p.stat().st_size > 0 for p in fig_dir.glob('*.svg'))
 
-    @pytest.mark.parametrize('display, dropone_name, total_r2_name', [
-        ('session', 'plot_ols_dropone', 'plot_ols_total_r2'),
-        ('subject', 'plot_ols_dropone_subject', 'plot_ols_total_r2_subject'),
-        ('target', 'plot_ols_dropone_violin', 'plot_ols_total_r2_violin'),
+    @pytest.mark.parametrize(
+        'display, dropone_name, target_name, total_r2_name', [
+        ('session', 'plot_ols_dropone', 'plot_ols_dropone_target',
+         'plot_ols_total_r2'),
+        ('subject', 'plot_ols_dropone_subject',
+         'plot_ols_dropone_target_subject', 'plot_ols_total_r2_subject'),
+        ('target', 'plot_ols_dropone_violin', None, 'plot_ols_total_r2_violin'),
     ])
-    def test_display_maps_to_function_pair(self, display, dropone_name,
-                                           total_r2_name):
-        """The dispatch table pairs each display mode with its matching
-        (drop-one, full-model R²) vis functions."""
+    def test_display_maps_to_function_triple(self, display, dropone_name,
+                                             target_name, total_r2_name):
+        """The dispatch table gives each display mode its matching (per-term
+        drop-one, per-target drop-one, full-model R²) vis functions."""
         from scripts import responses
         from iblnm import vis
-        dropone_fn, total_r2_fn = responses._PERSESSION_DISPLAY_FNS[display]
+        dropone_fn, target_fn, total_r2_fn = (
+            responses._PERSESSION_DISPLAY_FNS[display])
         assert dropone_fn is getattr(vis, dropone_name)
+        assert target_fn is (getattr(vis, target_name) if target_name
+                             else None)
         assert total_r2_fn is getattr(vis, total_r2_name)
 
-    def test_invokes_mapped_pair_and_threads_pvalues(self, tmp_path):
-        """Each mode calls its dispatch-table pair — the drop-one function once
-        per dropped term, the full-model R² function once; the per-mouse
-        p-value table reaches the drop-one calls only in ``session`` mode
-        (subject/violin take none)."""
+    def test_invokes_mapped_functions_and_threads_pvalues(self, tmp_path):
+        """Each mode calls its dispatch-table functions — the per-term drop-one
+        function once per dropped term, the per-target one once per target-NM,
+        the full-model R² function once; the per-mouse p-value table reaches
+        the drop-one calls only in ``session`` mode (subject/violin take
+        none)."""
         import matplotlib.pyplot as plt
         from scripts import responses
-        results = self._stub_frame()
+        results = self._two_target_frame()
         mouse_pvalues = pd.DataFrame({'subject': ['s0'], 'p_value': [0.01]})
 
         fig_dir = tmp_path / 'persession'
         fig_dir.mkdir()
-        mocks = {mode: (MagicMock(return_value=plt.figure()),
-                        MagicMock(return_value=plt.figure()))
+        mocks = {mode: tuple(MagicMock(return_value=plt.figure())
+                             for _ in range(3))
                  for mode in ('session', 'subject', 'target')}
         with ExitStack() as stack:
             stack.enter_context(
@@ -848,13 +867,15 @@ class TestPlotPersessionFigures:
                 responses.plot_persession_figures(results, mouse_pvalues,
                                                   fig_dir, display=mode)
 
-        for mode, (dropone_mock, total_r2_mock) in mocks.items():
+        for mode, (dropone_mock, target_mock, total_r2_mock) in mocks.items():
             assert dropone_mock.call_count == len(RESPONSE_DROPPED_TERMS)
+            assert target_mock.call_count == 2
             total_r2_mock.assert_called_once()
-        session_kwargs = mocks['session'][0].call_args.kwargs
-        assert session_kwargs['mouse_pvalues'] is mouse_pvalues
+        for fn_mock in mocks['session'][:2]:
+            assert fn_mock.call_args.kwargs['mouse_pvalues'] is mouse_pvalues
         for mode in ('subject', 'target'):
-            assert 'mouse_pvalues' not in mocks[mode][0].call_args.kwargs
+            assert all('mouse_pvalues' not in fn_mock.call_args.kwargs
+                       for fn_mock in mocks[mode][:2])
 
     def test_ylim_shared_within_term_class_and_differs_between(self, tmp_path):
         """Every main-effect figure carries one range and every interaction
@@ -874,6 +895,7 @@ class TestPlotPersessionFigures:
         dropone_mock = MagicMock(return_value=plt.figure())
         with patch.dict(responses._PERSESSION_DISPLAY_FNS,
                         {'session': (dropone_mock,
+                                     MagicMock(return_value=plt.figure()),
                                      MagicMock(return_value=plt.figure()))}):
             responses.plot_persession_figures(results, None, fig_dir)
 
@@ -890,6 +912,34 @@ class TestPlotPersessionFigures:
         (int_low, int_high), = interactions
         assert main_low < 0.1 and main_high > 0.2
         assert int_low < 0.001 and int_high > 0.002 and int_high < 0.1
+
+    def test_ylim_per_target_nm_from_its_own_rows(self, tmp_path):
+        """Each per-target figure spans its own target's main-effect ΔR², so
+        two targets with different spreads get different ranges."""
+        import matplotlib.pyplot as plt
+        from scripts import responses
+        from iblnm.vis import DROPONE_TERM_CLASSES
+
+        fig_dir = tmp_path / 'persession'
+        fig_dir.mkdir()
+        results = self._two_target_frame()
+        target_mock = MagicMock(return_value=plt.figure())
+        with patch.dict(responses._PERSESSION_DISPLAY_FNS,
+                        {'session': (MagicMock(return_value=plt.figure()),
+                                     target_mock,
+                                     MagicMock(return_value=plt.figure()))}):
+            responses.plot_persession_figures(results, None, fig_dir)
+
+        ylim_by_target = {call.kwargs['target_nm']: call.kwargs['ylim']
+                          for call in target_mock.call_args_list}
+        # VTA-DA's mains span 0.10-0.20, DR-5HT's three times that.
+        mains = DROPONE_TERM_CLASSES['main']
+        assert ylim_by_target['VTA-DA'] == pytest.approx(
+            (0.1 - 0.005, 0.2 + 0.005))
+        assert ylim_by_target['DR-5HT'] == pytest.approx(
+            (0.3 - 0.015, 0.6 + 0.015))
+        assert all(call.kwargs['terms'] == mains
+                   for call in target_mock.call_args_list)
 
 
 class TestWindowOutputs:

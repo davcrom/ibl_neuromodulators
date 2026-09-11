@@ -58,6 +58,8 @@ from iblnm.vis import (
     plot_relative_contrast,
     plot_ols_dropone,
     plot_ols_dropone_subject,
+    plot_ols_dropone_target,
+    plot_ols_dropone_target_subject,
     plot_ols_dropone_violin,
     plot_ols_total_r2,
     plot_ols_total_r2_subject,
@@ -598,11 +600,13 @@ def plot_masking_figures(diagnostics: pd.DataFrame, figures_dir) -> None:
         plt.close(fig)
 
 
-# display mode → (drop-one figure fn, full-model R² figure fn)
+# display mode → (per-term drop-one figure fn, per-target drop-one figure fn,
+# full-model R² figure fn). The violin display draws no per-target figure.
 _PERSESSION_DISPLAY_FNS = {
-    'session': (plot_ols_dropone, plot_ols_total_r2),
-    'subject': (plot_ols_dropone_subject, plot_ols_total_r2_subject),
-    'target': (plot_ols_dropone_violin, plot_ols_total_r2_violin),
+    'session': (plot_ols_dropone, plot_ols_dropone_target, plot_ols_total_r2),
+    'subject': (plot_ols_dropone_subject, plot_ols_dropone_target_subject,
+                plot_ols_total_r2_subject),
+    'target': (plot_ols_dropone_violin, None, plot_ols_total_r2_violin),
 }
 
 
@@ -642,7 +646,7 @@ def dropone_ylim(results: pd.DataFrame, terms: list[str],
 def plot_persession_figures(results: pd.DataFrame,
                             mouse_pvalues: pd.DataFrame | None, figures_dir,
                             display: str = 'session') -> None:
-    """Save one drop-one ΔR² figure per dropped term, plus full-model R².
+    """Save drop-one ΔR² figures per dropped term and per target-NM, plus R².
 
     Each ``config.RESPONSE_DROPPED_TERMS`` label gets its own figure — event
     columns, no predictor axis — written as ``{predictor}.svg`` with the
@@ -651,10 +655,14 @@ def plot_persession_figures(results: pd.DataFrame,
     between the two (``vis.DROPONE_TERM_CLASSES``): main-effect ΔR² runs an
     order of magnitude above interaction ΔR², so one common axis flattens the
     interactions, and autoscaling each figure to itself removes the comparison
-    across terms. The full-model R² figure has no predictor axis and stays one
-    per display mode. ``display`` selects how each session's values are drawn —
-    per-session dots (``session``), per-subject median+IQR (``subject``), or a
-    per-target violin (``target``) — via ``_PERSESSION_DISPLAY_FNS``.
+    across terms. Each target-NM in ``results`` then gets ``{target_NM}.svg``,
+    the main effects along its x-axis so that target's terms read against each
+    other; its y-limits come from that target's rows alone, since a scale set
+    by whichever target has the largest ΔR² would flatten the rest. The
+    full-model R² figure has no predictor axis and stays one per display mode.
+    ``display`` selects how each session's values are drawn — per-session dots
+    (``session``), per-subject median+IQR (``subject``), or a per-target violin
+    (``target``) — via ``_PERSESSION_DISPLAY_FNS``.
 
     Parameters
     ----------
@@ -672,7 +680,7 @@ def plot_persession_figures(results: pd.DataFrame,
     display : {'session', 'subject', 'target'}
         Per-session value display mode.
     """
-    dropone_fn, total_r2_fn = _PERSESSION_DISPLAY_FNS[display]
+    dropone_fn, target_fn, total_r2_fn = _PERSESSION_DISPLAY_FNS[display]
     dropone_kwargs = ({'mouse_pvalues': mouse_pvalues}
                       if display == 'session' else {})
 
@@ -688,14 +696,28 @@ def plot_persession_figures(results: pd.DataFrame,
                         dpi=FIGURE_DPI, bbox_inches='tight')
             plt.close(fig)
 
+    mains = DROPONE_TERM_CLASSES['main']
+    by_target = results.groupby('target_NM') if target_fn is not None else []
+    for target_nm, target_rows in by_target:
+        fig = target_fn(
+            results,
+            title=f'Per-session OLS drop-one ΔR²: {target_nm}'
+                  '\nevery session is a point',
+            target_nm=target_nm, terms=mains,
+            ylim=dropone_ylim(target_rows, mains), **dropone_kwargs)
+        fig.savefig(figures_dir / f'{target_nm}.svg', dpi=FIGURE_DPI,
+                    bbox_inches='tight')
+        plt.close(fig)
+
     fig = total_r2_fn(
         results,
         title='Per-session full-model R²\nevery session is a point')
     fig.savefig(figures_dir / 'response_ols_persession_total_r2.svg',
                 dpi=FIGURE_DPI, bbox_inches='tight')
     plt.close(fig)
-    print(f"  {len(RESPONSE_DROPPED_TERMS)} per-session OLS drop-one figures "
-          "and the full-model R² figure saved")
+    print(f"  {len(RESPONSE_DROPPED_TERMS)} per-session OLS drop-one figures, "
+          f"{len(by_target)} per-target figures and the full-model R² figure "
+          "saved")
 
 
 # The frames --reprocess writes and the no-flag branch reads back, each under

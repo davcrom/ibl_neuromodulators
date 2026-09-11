@@ -3105,25 +3105,29 @@ DROPONE_TERM_CLASSES = {
 }
 
 
-def _dropone_rows(predictor):
-    """Grid row + shared y-label for one dropped term's ΔR² figure.
+def _dropone_rows(label, predictor=None):
+    """Grid row + shared y-label for a drop-one ΔR² figure.
 
     Parameters
     ----------
-    predictor : str
-        A ``config.RESPONSE_DROPPED_TERMS`` label. One figure covers one label,
-        so the grid it builds is a single row read off that label's frame rows.
+    label : str
+        The row label: the dropped term a per-term figure covers, or the
+        target-NM a per-target figure covers.
+    predictor : str or None
+        The ``config.RESPONSE_DROPPED_TERMS`` label the row reads. ``None`` for
+        a grid grouped by predictor, where each x group reads its own label's
+        rows instead.
 
     Returns
     -------
-    rows : list[tuple[str, str, str]]
+    rows : list[tuple[str, str, str | None]]
         The one ``(row_label, value_column, predictor)`` row, reading
         ``delta_r2_adj`` — the adjusted difference, which charges each model for
         its own parameter count and so is not inflated by the reference model's
         extra terms.
     supylabel : str
     """
-    return ([(predictor, 'delta_r2_adj', predictor)],
+    return ([(label, 'delta_r2_adj', predictor)],
             'adjusted ΔR² (per-session, in-sample)')
 
 
@@ -3403,12 +3407,54 @@ def plot_ols_dropone(df, title, predictor, mouse_pvalues=None,
         Shared y-axis range, so the figures of one term class are comparable
         (see ``DROPONE_TERM_CLASSES``). ``None`` autoscales to this term's data.
     """
-    rows, supylabel = _dropone_rows(predictor)
+    rows, supylabel = _dropone_rows(predictor, predictor)
     return _persession_subject_grid(df, title, rows, supylabel,
                                     draw_mark=_scatter_subject,
                                     pvalues=mouse_pvalues, alpha=alpha,
                                     annotate_counts=True, color_by_qvalue=True,
                                     ylim=ylim)
+
+
+def plot_ols_dropone_target(df, title, target_nm, terms, ylim=None,
+                            mouse_pvalues=None,
+                            alpha=PERSESSION_SIGNIFICANCE_ALPHA):
+    """Per-session drop-one ΔR² for one target-NM — drop-one labels along x.
+
+    The per-term figure rearranged: ``plot_ols_dropone`` fixes the dropped term
+    and groups subjects by target-NM, this fixes the target-NM and groups its
+    subjects by dropped term, so one target's terms read against each other.
+    Marks and significance coloring are ``plot_ols_dropone``'s. See
+    ``_persession_subject_grid``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The per-recording OLS frame (``config.OLS_PERSESSION_COLUMNS``); rows
+        of other target-NMs are ignored.
+    title : str
+        Figure suptitle.
+    target_nm : str
+        The target-NM this figure covers.
+    terms : sequence of str
+        Drop-one labels, one x group each, in plot order — typically
+        ``DROPONE_TERM_CLASSES['main']``.
+    ylim : tuple[float, float] or None
+        Shared y-axis range. ``None`` autoscales to this target's data.
+    mouse_pvalues : pd.DataFrame or None
+        Per-mouse permutation results, graying a non-significant subject's mean
+        dash (see ``plot_ols_dropone``).
+    alpha : float
+        False-discovery-rate threshold; a mark keeps its color when
+        ``q_value < alpha``.
+    """
+    rows, supylabel = _dropone_rows(target_nm)
+    return _persession_subject_grid(df, title, rows, supylabel,
+                                    draw_mark=_scatter_subject,
+                                    pvalues=mouse_pvalues, alpha=alpha,
+                                    annotate_counts=True, color_by_qvalue=True,
+                                    ylim=ylim, group_col='predictor',
+                                    group_order=terms,
+                                    select={'target_NM': target_nm})
 
 
 def plot_ols_total_r2(df, title):
@@ -3431,9 +3477,24 @@ def plot_ols_dropone_subject(df, title, predictor, ylim=None):
     of per-session dots. ``ylim`` fixes the shared y-axis. See
     ``_persession_subject_grid``.
     """
-    rows, supylabel = _dropone_rows(predictor)
+    rows, supylabel = _dropone_rows(predictor, predictor)
     return _persession_subject_grid(df, title, rows, supylabel,
                                     draw_mark=_median_iqr_subject, ylim=ylim)
+
+
+def plot_ols_dropone_target_subject(df, title, target_nm, terms, ylim=None):
+    """Per-session drop-one ΔR² for one target-NM — median + Q1–Q3 per subject.
+
+    Same figure as ``plot_ols_dropone_target`` (drop-one labels along x, one
+    target's subjects in each) but each subject is drawn as its median with an
+    interquartile whisker, as in ``plot_ols_dropone_subject``. See
+    ``_persession_subject_grid``.
+    """
+    rows, supylabel = _dropone_rows(target_nm)
+    return _persession_subject_grid(df, title, rows, supylabel,
+                                    draw_mark=_median_iqr_subject, ylim=ylim,
+                                    group_col='predictor', group_order=terms,
+                                    select={'target_NM': target_nm})
 
 
 def plot_ols_total_r2_subject(df, title):
@@ -3547,7 +3608,7 @@ def plot_ols_dropone_violin(df, title, predictor, ylim=None):
     all its subjects, instead of per-subject marks. ``ylim`` fixes the shared
     y-axis. See ``_persession_target_grid``.
     """
-    rows, supylabel = _dropone_rows(predictor)
+    rows, supylabel = _dropone_rows(predictor, predictor)
     return _persession_target_grid(df, title, rows, supylabel, ylim=ylim)
 
 

@@ -3386,6 +3386,68 @@ class TestPersessionSubjectGridGroupColumn:
         plt.close(fig)
 
 
+class TestPlotOlsDroponeTarget:
+    """``plot_ols_dropone_target`` — one target-NM, the main effects along x."""
+
+    @staticmethod
+    def _df():
+        """Two target-NMs × every main effect at one event, two sessions a
+        mouse. VTA-DA has mice ``v_a`` and ``v_b``, DR-5HT has ``d_a``. A
+        label's ΔR² is 0.01 × (its index + 1), so a mark's y names its label.
+        """
+        from iblnm.vis import DROPONE_TERM_CLASSES
+        mice = [('VTA-DA', 'v_a'), ('VTA-DA', 'v_b'), ('DR-5HT', 'd_a')]
+        return pd.DataFrame([
+            {'eid': f'{subject}_{session}',
+             'brain_region': tnm.split('-')[0], 'target_NM': tnm,
+             'event': 'stimOnTrigger_times', 'subject': subject,
+             'predictor': term, 'delta_r2_adj': 0.01 * (i + 1),
+             'q_value': 0.001}
+            for tnm, subject in mice
+            for i, term in enumerate(DROPONE_TERM_CLASSES['main'])
+            for session in range(2)
+        ])
+
+    def test_one_tick_per_main_effect_holding_only_the_named_target(self):
+        """One x-tick per main-effect label in class order, each counting
+        VTA-DA's population alone; every mouse mean is a VTA-DA mouse, in
+        VTA-DA's color, at its own label's ΔR²."""
+        from iblnm.config import TARGETNM_COLORS
+        from iblnm.vis import DROPONE_TERM_CLASSES, plot_ols_dropone_target
+        terms = DROPONE_TERM_CLASSES['main']
+        fig = plot_ols_dropone_target(self._df(), 't', 'VTA-DA', terms)
+        ax = fig.axes[0]
+        assert [t.get_text() for t in ax.get_xticklabels()] == [
+            f'{term}\nn=4, m=2' for term in terms]
+        means = ax.collections[1::2]
+        assert len(means) == 2 * len(terms)
+        assert {colors.to_hex(c.get_edgecolor()[0]) for c in means} == {
+            colors.to_hex(TARGETNM_COLORS['VTA-DA'])}
+        assert [round(float(c.get_offsets()[0, 1]), 6) for c in means] == [
+            round(0.01 * (i + 1), 6) for i in range(len(terms)) for _ in (0, 1)]
+        plt.close(fig)
+
+    def test_ylim_sets_the_axis_and_none_autoscales(self):
+        """``ylim`` fixes the y-axis to the range given — wider than the data —
+        while ``ylim=None`` autoscales to the data."""
+        from iblnm.vis import DROPONE_TERM_CLASSES, plot_ols_dropone_target
+        terms = DROPONE_TERM_CLASSES['main']
+        fixed = plot_ols_dropone_target(self._df(), 't', 'VTA-DA', terms,
+                                        ylim=(-2.0, 3.0))
+        assert fixed.axes[0].get_ylim() == (-2.0, 3.0)
+        auto = plot_ols_dropone_target(self._df(), 't', 'VTA-DA', terms)
+        assert auto.axes[0].get_ylim()[1] < 3.0
+        plt.close(fixed)
+        plt.close(auto)
+
+    def test_empty_frame_returns_titled_figure(self):
+        from iblnm.vis import DROPONE_TERM_CLASSES, plot_ols_dropone_target
+        fig = plot_ols_dropone_target(self._df().iloc[0:0], 'Empty', 'VTA-DA',
+                                      DROPONE_TERM_CLASSES['main'])
+        assert fig._suptitle.get_text() == 'Empty'
+        plt.close(fig)
+
+
 class TestPopulationCountsGroupColumn:
     """``_population_counts`` counts the population behind any grouping column."""
 
