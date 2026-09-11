@@ -966,16 +966,15 @@ SESSIONTYPE2COLOR = {
 SESSION_GROUPS = {
     'training': {'criteria': {'session_type': ('==', 'training')},
                  'color': SESSIONTYPE2COLOR['training']},
-    'biased': {'criteria': {'session_type': ('==', 'biased')},
-               'color': SESSIONTYPE2COLOR['biased']},
-    'ephys': {'criteria': {'session_type': ('==', 'ephys')},
-              'color': SESSIONTYPE2COLOR['ephys']},
+    'proficient': {'criteria': {'session_type': ('in', ('biased', 'ephys'))},
+                   'color': SESSIONTYPE2COLOR['ephys']},
     # A multi-column group, for the shape: training sessions that also clear
-    # the performance threshold on the full contrast set.
-    # 'proficient': {'criteria': {'session_type': ('==', 'training'),
+    # the performance threshold on the full contrast set would join the
+    # proficient sessions rather than sitting with the rest of training.
+    # 'proficient': {'criteria': {'session_type': ('in', ('training', 'biased', 'ephys')),
     #                             'fraction_correct': ('>=', MIN_TRAINING_PERFORMANCE),
     #                             'contrasts': ('superset', REQUIRED_CONTRASTS)},
-    #                'color': 'mediumseagreen'},
+    #                'color': SESSIONTYPE2COLOR['ephys']},
 }
 
 EVENT2COLOR = {

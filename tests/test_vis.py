@@ -2248,7 +2248,7 @@ class TestSessionOverviewMatrixGroupLayers:
                               required_contrasts=False, photometry_qc=False)
         ax = session_overview_matrix(group)
         labels = [t.get_text() for t in ax.get_legend().get_texts()]
-        assert labels == ['training', 'ephys']
+        assert labels == ['training', 'proficient']
         plt.close('all')
 
     def test_group_color_per_layer(self):
@@ -2264,7 +2264,7 @@ class TestSessionOverviewMatrixGroupLayers:
                               required_contrasts=False, photometry_qc=False)
         ax = session_overview_matrix(group)
         expected = [colors.to_rgba(SESSION_GROUPS[label]['color'])
-                    for label in ['training', 'biased'] for _ in range(2)]
+                    for label in ['training', 'proficient'] for _ in range(2)]
         drawn = [tuple(im.cmap(1.0)) for im in ax.images]
         assert drawn == expected
         plt.close('all')
@@ -2665,7 +2665,7 @@ def _make_barplot_recordings():
         'eid': ['e0', 'e0', 'e1', 'e1', 'e2'],
         'subject': ['s1', 's1', 's2', 's2', 's3'],
         'target_NM': ['VTA-DA', 'VTA-DA', 'DR-5HT', 'DR-5HT', 'VTA-DA'],
-        'session_group': ['biased', 'biased', 'training', 'biased', 'biased'],
+        'session_group': ['proficient', 'proficient', 'training', 'proficient', 'proficient'],
         'hemisphere': ['l', 'r', 'l', 'r', 'l'],
     })
 
@@ -2713,19 +2713,19 @@ class TestTargetOverviewBarplotGroupColoring:
                  for container in ax.containers}
         assert drawn == {
             label: colors.to_rgba(SESSION_GROUPS[label]['color'])
-            for label in ['training', 'biased']
+            for label in ['training', 'proficient']
         }
         plt.close('all')
 
     def test_stacked_bottom_to_top_in_config_order(self):
-        """`training` sits below `biased`, as SESSION_GROUPS orders them."""
+        """`training` sits below `proficient`, as SESSION_GROUPS orders them."""
         from iblnm.vis import target_overview_barplot
 
         ax = target_overview_barplot(_make_barplot_recordings())
         # DR-5HT is the only target carrying both groups (x position 1)
         bottoms = {container.get_label(): container[1].get_y()
                    for container in ax.containers}
-        assert bottoms['training'] < bottoms['biased']
+        assert bottoms['training'] < bottoms['proficient']
         plt.close('all')
 
     def test_segments_sum_to_recording_count(self):
@@ -2746,22 +2746,22 @@ class TestTargetOverviewBarplotGroupColoring:
 
         ax = target_overview_barplot(_make_barplot_recordings())
         labels = [text.get_text() for text in ax.get_legend().get_texts()]
-        assert labels == ['training', 'biased']
+        assert labels == ['training', 'proficient']
         plt.close('all')
 
 
 def _make_mouse_barplot_recordings():
     """Recordings where one mouse has sessions in two session groups.
 
-    VTA-DA carries s1 (one training, one biased session) and s2 (two training,
-    one biased); DR-5HT carries s3 (one training session).
+    VTA-DA carries s1 (one training, one proficient session) and s2 (two training,
+    one proficient); DR-5HT carries s3 (one training session).
     """
     return pd.DataFrame({
         'eid': ['e0', 'e1', 'e2', 'e3', 'e4', 'e5'],
         'subject': ['s1', 's1', 's2', 's2', 's2', 's3'],
         'target_NM': ['VTA-DA'] * 5 + ['DR-5HT'],
-        'session_group': ['training', 'biased', 'training', 'training',
-                          'biased', 'training'],
+        'session_group': ['training', 'proficient', 'training', 'training',
+                          'proficient', 'training'],
         'hemisphere': ['l', 'l', 'r', 'r', 'r', 'l'],
     })
 
@@ -2781,8 +2781,8 @@ class TestMouseOverviewBarplotStacking:
         ax = mouse_overview_barplot(_make_mouse_barplot_recordings(),
                                     min_sessions=1)
         # TARGETNM2POSITION order: VTA-DA first, DR-5HT second. Both VTA-DA
-        # mice reach 'biased', so neither is counted under 'training'.
-        assert _segment_heights(ax) == {'training': [0, 1], 'biased': [2, 0]}
+        # mice reach 'proficient', so neither is counted under 'training'.
+        assert _segment_heights(ax) == {'training': [0, 1], 'proficient': [2, 0]}
         plt.close('all')
 
     def test_segments_sum_to_mouse_count(self):
@@ -2802,7 +2802,7 @@ class TestMouseOverviewBarplotStacking:
         # s3 a single training session.
         ax = mouse_overview_barplot(_make_mouse_barplot_recordings(),
                                     min_sessions=2)
-        assert _segment_heights(ax) == {'training': [1, 0], 'biased': [0, 0]}
+        assert _segment_heights(ax) == {'training': [1, 0], 'proficient': [0, 0]}
         plt.close('all')
 
     def test_segment_colors_are_group_colors(self):
@@ -2814,7 +2814,7 @@ class TestMouseOverviewBarplotStacking:
                  for container in ax.containers}
         assert drawn == {
             label: colors.to_rgba(SESSION_GROUPS[label]['color'])
-            for label in ['training', 'biased']
+            for label in ['training', 'proficient']
         }
         plt.close('all')
 

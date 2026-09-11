@@ -1309,4 +1309,4 @@ class TestLabelSessionGroups:
         })
         labelled = label_session_groups(df, SESSION_GROUPS)
         assert list(labelled['session_group']) == [
-            'training', 'biased', 'ephys', 'other']
+            'training', 'proficient', 'proficient', 'other']

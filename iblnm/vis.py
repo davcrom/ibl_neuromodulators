@@ -226,17 +226,11 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
         if horizontal:
             ax.barh(positions, ns, left=cumulative, height=barwidth,
                     color=color, label=category)
-            for y, n, x_left in zip(positions, ns, cumulative):
-                if n > 0:
-                    ax.text(x_left + n/2, y, str(n), ha='center', va='center',
-                            fontweight='bold', color='white')
         else:
             ax.bar(positions, ns, bottom=cumulative, width=barwidth,
                    color=color, label=category)
-            for x, n, y_bottom in zip(positions, ns, cumulative):
-                if n > 0:
-                    ax.text(x, y_bottom + n/2, str(n), ha='center', va='center',
-                            fontweight='bold', color='white')
+        _add_bar_labels(ax, positions, ns, horizontal=horizontal,
+                        bottoms=cumulative)
         cumulative += ns
 
     n_mice = df_sessions.groupby('target_NM').apply(
@@ -855,12 +849,9 @@ def _add_bar_labels(ax, positions, values, hemisphere_counts=None, color='white'
                 label = f'{int(n)}\n{n_left}L/{n_right}R'
             else:
                 label = str(int(n))
-            if horizontal:
-                ax.text(bottom + n / 2, pos, label, ha='center', va='center',
-                        fontweight='bold', color=color)
-            else:
-                ax.text(pos, bottom + n / 2, label, ha='center', va='center',
-                        fontweight='bold', color=color, rotation=90)
+            x, y = (bottom + n / 2, pos) if horizontal else (pos, bottom + n / 2)
+            ax.text(x, y, label, ha='center', va='center', fontweight='bold',
+                    color=color, rotation=90)
 
 
 def _furthest_group(df_target, color_by, categories, min_sessions):
