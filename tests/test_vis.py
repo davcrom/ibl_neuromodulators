@@ -3260,6 +3260,65 @@ class TestPlotBaselineTercileDifference:
         plt.close(fig)
 
 
+class TestGroupXslots:
+    """``_group_xslots`` lays x slots in one contiguous block per group value."""
+
+    @staticmethod
+    def _df():
+        # 'contrast' has two subjects (given out of name order), 'reward' one.
+        rows = [('contrast', 'm_b'), ('contrast', 'm_a'), ('reward', 'm_a')]
+        return pd.DataFrame([
+            {'predictor': pred, 'subject': subj, 'target_NM': 'VTA-DA'}
+            for pred, subj in rows
+        ])
+
+    def test_blocks_laid_out_by_named_group_column(self):
+        """With ``group_col='predictor'`` each predictor gets one block of
+        name-sorted subject slots, blocks separated by ``_TARGETNM_GAP``."""
+        from iblnm.vis import _group_xslots, _SUBJECT_SPACING, _TARGETNM_GAP
+        subjects, slots, ticks = _group_xslots(
+            self._df(), ['contrast', 'reward'], group_col='predictor')
+        assert subjects == {'contrast': ['m_a', 'm_b'], 'reward': ['m_a']}
+        assert list(slots['contrast']) == [0.0, _SUBJECT_SPACING]
+        block_start = 2 * _SUBJECT_SPACING + _TARGETNM_GAP
+        assert list(slots['reward']) == [block_start]
+        assert ticks == [('contrast', _SUBJECT_SPACING / 2),
+                         ('reward', block_start)]
+
+    def test_default_groups_by_target_nm(self):
+        """With no ``group_col`` the blocks are target-NMs, as before."""
+        from iblnm.vis import _group_xslots, _SUBJECT_SPACING, _TARGETNM_GAP
+        df = self._df().assign(target_NM=['VTA-DA', 'VTA-DA', 'DR-5HT'])
+        subjects, slots, ticks = _group_xslots(df, ['VTA-DA', 'DR-5HT'])
+        assert subjects == {'VTA-DA': ['m_a', 'm_b'], 'DR-5HT': ['m_a']}
+        assert list(slots['VTA-DA']) == [0.0, _SUBJECT_SPACING]
+        assert list(slots['DR-5HT']) == [2 * _SUBJECT_SPACING + _TARGETNM_GAP]
+        assert [group for group, _ in ticks] == ['VTA-DA', 'DR-5HT']
+
+
+class TestPopulationCountsGroupColumn:
+    """``_population_counts`` counts the population behind any grouping column."""
+
+    @staticmethod
+    def _df():
+        # One mouse, one bilateral session (two recordings), two predictors.
+        rows = [('A', 'VTA', 'm1', 'contrast'), ('A', 'SNc', 'm1', 'contrast'),
+                ('A', 'VTA', 'm1', 'reward')]
+        return pd.DataFrame([
+            {'eid': eid, 'brain_region': region, 'subject': subj,
+             'target_NM': 'VTA-DA', 'predictor': pred,
+             'event': 'stimOnTrigger_times'}
+            for eid, region, subj, pred in rows
+        ])
+
+    def test_counts_keyed_on_named_group_column(self):
+        """Grouped by predictor, each recording is counted once per predictor."""
+        from iblnm.vis import _population_counts
+        counts = _population_counts(self._df(), group_col='predictor')
+        assert counts == {('contrast', 'stimOnTrigger_times'): (2, 1),
+                          ('reward', 'stimOnTrigger_times'): (1, 1)}
+
+
 class TestPlotOlsDroponeCounts:
     """plot_ols_dropone counts annotation — the population behind each x-tick,
     counted off the plotted frame."""

@@ -2937,43 +2937,46 @@ _MEAN_LINEWIDTH = 3.0        # '_' mean dash thickness
 _MEDIAN_MARKER_SIZE = 6      # errorbar median-point diameter (points)
 
 
-def _group_xslots(df, targets):
-    """Lay out one contiguous block of x slots per target-NM group.
+def _group_xslots(df, groups, group_col='target_NM'):
+    """Lay out one contiguous block of x slots per group.
 
-    Each target-NM with data gets one slot per subject, ``_SUBJECT_SPACING``
-    apart, with ``_TARGETNM_GAP`` blank units between groups — so a target-NM's
-    horizontal extent scales with its subject count. Subjects fill slots in the
-    name-sorted (alphanumeric) order returned here; callers no longer reorder
-    them per panel.
+    Each group with data gets one slot per subject, ``_SUBJECT_SPACING`` apart,
+    with ``_TARGETNM_GAP`` blank units between groups — so a group's horizontal
+    extent scales with its subject count. Subjects fill slots in the name-sorted
+    (alphanumeric) order returned here; callers no longer reorder them per
+    panel. The grouping column is a parameter so the same layout serves a figure
+    whose x groups are drop-one labels rather than target-NMs.
 
     Parameters
     ----------
     df : pd.DataFrame
-        One event's rows; needs ``target_NM`` and ``subject``.
-    targets : sequence of str
-        Target-NMs in plot order.
+        One event's rows; needs ``subject`` and ``group_col``.
+    groups : sequence of str
+        Values of ``group_col`` in plot order.
+    group_col : str
+        Column the x blocks are grouped by.
 
     Returns
     -------
-    subjects_by_target : dict[str, list[str]]
-        Subjects present per target-NM, name-sorted (their plot order).
-    slots_by_target : dict[str, np.ndarray]
-        The x positions available to each target-NM group.
+    subjects_by_group : dict[str, list[str]]
+        Subjects present per group, name-sorted (their plot order).
+    slots_by_group : dict[str, np.ndarray]
+        The x positions available to each group.
     ticks : list[tuple[str, float]]
-        ``(target_NM, centre_x)`` pairs, one per non-empty target-NM.
+        ``(group value, centre_x)`` pairs, one per non-empty group.
     """
-    subjects_by_target, slots_by_target, ticks = {}, {}, []
+    subjects_by_group, slots_by_group, ticks = {}, {}, []
     x = 0.0
-    for tnm in targets:
-        subjects = sorted(df.loc[df['target_NM'] == tnm, 'subject'].unique())
+    for group in groups:
+        subjects = sorted(df.loc[df[group_col] == group, 'subject'].unique())
         if not subjects:
             continue
         xs = x + np.arange(len(subjects)) * _SUBJECT_SPACING
-        subjects_by_target[tnm] = subjects
-        slots_by_target[tnm] = xs
-        ticks.append((tnm, float(xs.mean())))
+        subjects_by_group[group] = subjects
+        slots_by_group[group] = xs
+        ticks.append((group, float(xs.mean())))
         x += len(subjects) * _SUBJECT_SPACING + _TARGETNM_GAP
-    return subjects_by_target, slots_by_target, ticks
+    return subjects_by_group, slots_by_group, ticks
 
 
 def _scatter_subject(ax, x, deltas, point_colors, summary_color):
@@ -3174,42 +3177,46 @@ def _qvalue_color(base_color, q_value, alpha):
     return base_color if q_value < alpha else 'gray'
 
 
-def _population_counts(df):
-    """Recordings and mice behind each ``(target_NM, event)`` of a plotted frame.
+def _population_counts(df, group_col='target_NM'):
+    """Recordings and mice behind each ``(group value, event)`` of a frame.
 
     A recording is a distinct ``(eid, brain_region)`` pair, not a distinct
     ``eid``: a bilateral session fits one model per region and contributes both.
-    Predictor rows repeat a recording, so they are deduplicated first.
+    Rows repeat a recording across the columns not grouped on — predictors, for
+    a frame grouped by ``target_NM`` — so they are deduplicated first.
 
     Parameters
     ----------
     df : pd.DataFrame
         Long-form per-recording frame with ``eid``, ``brain_region``,
-        ``subject``, ``target_NM`` and ``event``.
+        ``subject``, ``event`` and ``group_col``.
+    group_col : str
+        Column the counts are grouped by, alongside ``event``.
 
     Returns
     -------
     dict[tuple[str, str], tuple[int, int]]
-        ``(target_NM, event) -> (n_recordings, n_mice)``.
+        ``(group value, event) -> (n_recordings, n_mice)``.
     """
-    counts = (df.drop_duplicates(['eid', 'brain_region', 'target_NM', 'event'])
-              .groupby(['target_NM', 'event'])
+    counts = (df.drop_duplicates(['eid', 'brain_region', group_col, 'event'])
+              .groupby([group_col, 'event'])
               .agg(n_recordings=('eid', 'size'),
                    n_mice=('subject', 'nunique')))
     return {key: (row['n_recordings'], row['n_mice'])
             for key, row in counts.iterrows()}
 
 
-def _target_tick_label(tnm, event, counts_lookup):
-    """Target-NM x-tick label, with a ``n=<rec>, m=<mice>`` line if counts given.
+def _group_tick_label(group, event, counts_lookup):
+    """Group x-tick label, with a ``n=<rec>, m=<mice>`` line if counts given.
 
-    ``counts_lookup`` maps ``(target_NM, event)`` to ``(n_recordings, n_mice)``;
-    a missing key (or ``None`` lookup) yields the bare target name.
+    ``counts_lookup`` maps ``(group value, event)`` to
+    ``(n_recordings, n_mice)``; a missing key (or ``None`` lookup) yields the
+    bare group name.
     """
-    if counts_lookup is None or (tnm, event) not in counts_lookup:
-        return tnm
-    n_recordings, n_mice = counts_lookup[(tnm, event)]
-    return f'{tnm}\nn={n_recordings}, m={n_mice}'
+    if counts_lookup is None or (group, event) not in counts_lookup:
+        return group
+    n_recordings, n_mice = counts_lookup[(group, event)]
+    return f'{group}\nn={n_recordings}, m={n_mice}'
 
 
 def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
@@ -3325,7 +3332,8 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
                 ax.set_ylim(ylim)
         axes[-1, c].set_xticks([centre for _, centre in ticks])
         axes[-1, c].set_xticklabels(
-            [_target_tick_label(tnm, event, counts_lookup) for tnm, _ in ticks],
+            [_group_tick_label(group, event, counts_lookup)
+             for group, _ in ticks],
             rotation=30, ha='right', fontsize=TICKFONTSIZE)
     fig.supylabel(supylabel)
     fig.suptitle(title, fontsize=LABELFONTSIZE)
