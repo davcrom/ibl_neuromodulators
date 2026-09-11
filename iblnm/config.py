@@ -964,6 +964,28 @@ SESSIONTYPE2COLOR = {
     'misc':  'sandybrown'
 }
 
+# Mutually exclusive session groups, low to high. Insertion order is match
+# precedence (a session takes the *last* group it satisfies), barplot stacking
+# order, and the rank deciding which group a mouse is counted in. Criteria name
+# session-level columns of `PhotometrySessionGroup.sessions` — the
+# `SESSION_SCHEMA` keys plus `fraction_correct`, `contrasts`, `day_n` and
+# `session_n` — and are ANDed. Operators: 'in', '>=', '<=', '==', 'superset'.
+# Sessions matching no group are labelled 'other'.
+SESSION_GROUPS = {
+    'training': {'criteria': {'session_type': ('==', 'training')},
+                 'color': SESSIONTYPE2COLOR['training']},
+    'biased': {'criteria': {'session_type': ('==', 'biased')},
+               'color': SESSIONTYPE2COLOR['biased']},
+    'ephys': {'criteria': {'session_type': ('==', 'ephys')},
+              'color': SESSIONTYPE2COLOR['ephys']},
+    # A multi-column group, for the shape: training sessions that also clear
+    # the performance threshold on the full contrast set.
+    # 'proficient': {'criteria': {'session_type': ('==', 'training'),
+    #                             'fraction_correct': ('>=', MIN_TRAINING_PERFORMANCE),
+    #                             'contrasts': ('superset', REQUIRED_CONTRASTS)},
+    #                'color': 'mediumseagreen'},
+}
+
 EVENT2COLOR = {
     'cue': 'blue',
     'movement': 'orange',

@@ -842,4 +842,79 @@ def fix_catalog(sessions: pd.DataFrame) -> pd.DataFrame:
     return enforce_schema(catalog, SESSION_SCHEMA)
 
 
+# The predicates a `config.SESSION_GROUPS` criterion can name. Each takes one
+# column and the criterion's value and returns a boolean Series. `superset`
+# reads a cell holding a collection — `contrasts` is a list or an array
+# depending on whether the catalog came from parquet or from the store — and a
+# cell holding neither fails rather than raising, so a session with no stored
+# contrasts is simply not in the group.
+_CRITERIA_OPERATORS = {
+    '==': lambda col, value: col == value,
+    '>=': lambda col, value: col >= value,
+    '<=': lambda col, value: col <= value,
+    'in': lambda col, value: col.isin(value),
+    'superset': lambda col, value: col.apply(
+        lambda cell: set(cell) >= set(value)
+        if isinstance(cell, (list, np.ndarray)) else False
+    ),
+}
+
+
+def match_criteria(df: pd.DataFrame, criteria: dict) -> pd.Series:
+    """Evaluate one group's criteria against a session table.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        One row per session. Every column a criterion names must be present.
+    criteria : dict
+        ``{column: (operator, value)}``, operators as in
+        `_CRITERIA_OPERATORS`. All entries are ANDed; an empty dict matches
+        every row.
+
+    Returns
+    -------
+    pd.Series
+        Boolean, indexed like `df`.
+
+    Raises
+    ------
+    KeyError
+        If a criterion names a column `df` does not carry.
+    """
+    mask = pd.Series(True, index=df.index)
+    for column, (operator, value) in criteria.items():
+        mask &= _CRITERIA_OPERATORS[operator](df[column], value)
+    return mask
+
+
+def label_session_groups(df: pd.DataFrame, groups: dict) -> pd.DataFrame:
+    """Label each session with the group it belongs to.
+
+    Groups are evaluated in insertion order and each session takes the **last**
+    group whose criteria it satisfies, so overlapping criteria still yield one
+    label per session. That single-valuedness is what makes the stacked barplot
+    segments sum to the session total.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        One row per session, carrying every column the criteria name.
+    groups : dict
+        `config.SESSION_GROUPS`-shaped: ``{label: {'criteria': ..., 'color':
+        ...}}``, ordered low to high. Only `criteria` is read here.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy carrying a `session_group` column. Sessions matching no group are
+        labelled ``'other'``.
+    """
+    df = df.copy()
+    df['session_group'] = 'other'
+    for label, group in groups.items():
+        df.loc[match_criteria(df, group['criteria']), 'session_group'] = label
+    return df
+
+
 

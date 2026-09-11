@@ -14,6 +14,8 @@ from iblnm.util import (
     get_session_type,
     get_targetNM,
     fill_brain_region_from_fibers,
+    match_criteria,
+    label_session_groups,
     LOG_COLUMNS,
 )
 from iblnm.validation import (
@@ -1210,3 +1212,101 @@ class TestFixCatalog:
         assert (lengths.nunique(axis=1) == 1).all()
         assert list(catalog['brain_region'].iloc[2:]) == [[], []]
         assert list(catalog['hemisphere'].iloc[2:]) == [[], []]
+
+
+class TestMatchCriteria:
+    """The predicate evaluator behind session grouping."""
+
+    def test_equality_operator(self):
+        df = pd.DataFrame({'session_type': ['training', 'biased', 'ephys']})
+        mask = match_criteria(df, {'session_type': ('==', 'biased')})
+        assert list(mask) == [False, True, False]
+
+    def test_membership_operator(self):
+        df = pd.DataFrame({'session_type': ['training', 'biased', 'ephys']})
+        mask = match_criteria(df, {'session_type': ('in', ('biased', 'ephys'))})
+        assert list(mask) == [False, True, True]
+
+    def test_threshold_operators(self):
+        df = pd.DataFrame({'fraction_correct': [0.5, 0.7, 0.9]})
+        assert list(match_criteria(df, {'fraction_correct': ('>=', 0.7)})) == \
+            [False, True, True]
+        assert list(match_criteria(df, {'fraction_correct': ('<=', 0.7)})) == \
+            [True, True, False]
+
+    def test_superset_operator_on_lists_and_arrays(self):
+        """`superset` reads the cell's collection, list or array alike."""
+        df = pd.DataFrame({'contrasts': [
+            [0, 6.25, 12.5, 25, 100],
+            np.array([0, 6.25, 12.5, 25, 100]),
+            [0, 100],
+        ]})
+        mask = match_criteria(df, {'contrasts': ('superset', {0, 25, 100})})
+        assert list(mask) == [True, True, False]
+
+    def test_criteria_are_anded(self):
+        """A row passing one criterion but not the other does not match."""
+        df = pd.DataFrame({
+            'session_type': ['training', 'training', 'biased'],
+            'fraction_correct': [0.9, 0.5, 0.9],
+        })
+        mask = match_criteria(df, {'session_type': ('==', 'training'),
+                                   'fraction_correct': ('>=', 0.7)})
+        assert list(mask) == [True, False, False]
+
+    def test_empty_criteria_matches_everything(self):
+        df = pd.DataFrame({'session_type': ['training', 'biased']})
+        assert list(match_criteria(df, {})) == [True, True]
+
+    def test_missing_column_raises(self):
+        df = pd.DataFrame({'session_type': ['training']})
+        with pytest.raises(KeyError, match='day_n'):
+            match_criteria(df, {'day_n': ('>=', 3)})
+
+
+class TestLabelSessionGroups:
+    """One `session_group` label per session, from overlapping group criteria."""
+
+    GROUPS = {
+        'training': {'criteria': {'session_type': ('==', 'training')},
+                     'color': 'cornflowerblue'},
+        'proficient': {'criteria': {'session_type': ('==', 'training'),
+                                    'fraction_correct': ('>=', 0.7)},
+                       'color': 'mediumpurple'},
+    }
+
+    def test_last_matching_group_wins(self):
+        """Groups may overlap; assignment order makes the label single-valued."""
+        df = pd.DataFrame({
+            'session_type': ['training', 'training'],
+            'fraction_correct': [0.5, 0.9],
+        })
+        labelled = label_session_groups(df, self.GROUPS)
+        assert list(labelled['session_group']) == ['training', 'proficient']
+
+    def test_unmatched_sessions_are_other(self):
+        df = pd.DataFrame({
+            'session_type': ['training', 'ephys'],
+            'fraction_correct': [0.9, 0.9],
+        })
+        labelled = label_session_groups(df, self.GROUPS)
+        assert list(labelled['session_group']) == ['proficient', 'other']
+
+    def test_every_session_gets_exactly_one_label(self):
+        df = pd.DataFrame({
+            'session_type': ['training', 'biased', 'ephys', 'training'],
+            'fraction_correct': [0.9, 0.4, np.nan, 0.6],
+        })
+        labelled = label_session_groups(df, self.GROUPS)
+        assert labelled['session_group'].notna().all()
+        assert len(labelled) == len(df)
+
+    def test_shipped_default_groups_by_session_type(self):
+        """`config.SESSION_GROUPS` reproduces the session-type split."""
+        from iblnm.config import SESSION_GROUPS
+        df = pd.DataFrame({
+            'session_type': ['training', 'biased', 'ephys', 'habituation'],
+        })
+        labelled = label_session_groups(df, SESSION_GROUPS)
+        assert list(labelled['session_group']) == [
+            'training', 'biased', 'ephys', 'other']
