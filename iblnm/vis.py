@@ -851,7 +851,7 @@ def _add_bar_labels(ax, positions, values, hemisphere_counts=None, color='white'
                 label = str(int(n))
             x, y = (bottom + n / 2, pos) if horizontal else (pos, bottom + n / 2)
             ax.text(x, y, label, ha='center', va='center', fontweight='bold',
-                    color=color, rotation=0 if horizontal else 90)
+                    color=color, rotation=-90 if horizontal else 90)
 
 
 def _furthest_group(df_target, color_by, categories, min_sessions):
