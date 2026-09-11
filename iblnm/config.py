@@ -217,7 +217,7 @@ VALID_NEUROMODULATORS = [
 
 # TEMPFIX: normalize brain_region naming errors from Alyx metadata
 # Remove once corrected upstream in Alyx
-REGION_NAME_FIXES = {'DRN': 'DR', 'SNC': 'SNc'}
+REGION_NAME_FIXES = {'DRN': 'DR', 'SNC': 'SNc', 'NMB': 'NBM'}
 
 VALID_TARGETS = [
     'VTA',
