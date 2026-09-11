@@ -948,14 +948,6 @@ QCCMAP = colors.LinearSegmentedColormap.from_list(
     N=256
 )
 
-SESSIONTYPE2FLOAT = {
-    'habituation': 0.01,
-    'training': 0.33,
-    'biased': 0.66,
-    'ephys': 0.99,
-    'misc': 1.0
-}
-
 SESSIONTYPE2COLOR = {
     'habituation': 'darkgray',
     'training': 'cornflowerblue',

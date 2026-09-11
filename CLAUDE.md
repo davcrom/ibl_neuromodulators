@@ -44,6 +44,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Analysis windows | `config.py → RESPONSE_WINDOW, BASELINE_WINDOW, RESPONSE_MAGNITUDE_WINDOW` |
 | Response OLS model, drop-one labels | `config.py → RESPONSE_MODEL_FORMULA, RESPONSE_DROPPED_TERMS, PREDICTOR_TRANSFORMS`; interpretation in `README.md` |
 | Colors and plot params | `config.py → NM_COLORS, TARGETNM_COLORS, SESSIONTYPE2COLOR` |
+| Session groups (labels, colors, stack order) | `config.py → SESSION_GROUPS`; labelled by `util.py → label_session_groups` |
 | Valid values for fields | `config.py → VALID_STRAINS, VALID_TARGETS, VALID_TARGETNMS` |
 | Session/subject exclusions | `config.py → SUBJECTS_TO_EXCLUDE, EIDS_TO_DROP, EXCLUDE_SESSION_TYPES` |
 | Custom exceptions | `validation.py` |

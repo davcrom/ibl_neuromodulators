@@ -155,6 +155,21 @@ cost one REST call per session.
 
 Joins `sessions.pqt`, `qc_photometry.pqt`, `performance.pqt`, and the errors scanned from the H5 `/errors` groups. Produces session-by-session overview matrices at each processing stage, plus barplots of complete recordings per brain target and per mouse. Writes the unified `metadata/errors.pqt`.
 
+Every figure is colored by **session group**. `config.SESSION_GROUPS` is an
+ordered `{label: {'criteria': ..., 'color': ...}}` dict; `criteria` is
+`{column: (operator, value)}` over session-level columns — the `SESSION_SCHEMA`
+keys plus `fraction_correct`, `contrasts`, `day_n` and `session_n` — ANDed, with
+operators `in`, `>=`, `<=`, `==` and `superset`. `util.label_session_groups`
+writes a `session_group` column, giving each session the **last** group it
+satisfies, so overlapping criteria still yield one label per session and
+`other` where none match. The shipped default is one group per session type.
+
+That single label carries three roles at once: the matrix draws one color layer
+per group, both barplots stack their segments in `SESSION_GROUPS` order, and
+`mouse_overview_barplot` counts each mouse once, in the furthest group where it
+reaches `min_sessions` sessions. Grouping only labels the sessions —
+`SESSION_TYPES_TO_ANALYZE` still decides which ones are plotted.
+
 **Output**: `figures/dataset_overview/`
 
 ### Analysis scripts
