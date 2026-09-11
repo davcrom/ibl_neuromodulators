@@ -829,7 +829,8 @@ class TestPlotPersessionFigures:
          'plot_ols_total_r2'),
         ('subject', 'plot_ols_dropone_subject',
          'plot_ols_dropone_target_subject', 'plot_ols_total_r2_subject'),
-        ('target', 'plot_ols_dropone_violin', None, 'plot_ols_total_r2_violin'),
+        ('target', 'plot_ols_dropone_violin', 'plot_ols_dropone_target_violin',
+         'plot_ols_total_r2_violin'),
     ])
     def test_display_maps_to_function_triple(self, display, dropone_name,
                                              target_name, total_r2_name):
@@ -840,8 +841,7 @@ class TestPlotPersessionFigures:
         dropone_fn, target_fn, total_r2_fn = (
             responses._PERSESSION_DISPLAY_FNS[display])
         assert dropone_fn is getattr(vis, dropone_name)
-        assert target_fn is (getattr(vis, target_name) if target_name
-                             else None)
+        assert target_fn is getattr(vis, target_name)
         assert total_r2_fn is getattr(vis, total_r2_name)
 
     def test_invokes_mapped_functions_and_threads_pvalues(self, tmp_path):

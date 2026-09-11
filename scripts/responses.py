@@ -60,6 +60,7 @@ from iblnm.vis import (
     plot_ols_dropone_subject,
     plot_ols_dropone_target,
     plot_ols_dropone_target_subject,
+    plot_ols_dropone_target_violin,
     plot_ols_dropone_violin,
     plot_ols_total_r2,
     plot_ols_total_r2_subject,
@@ -601,12 +602,13 @@ def plot_masking_figures(diagnostics: pd.DataFrame, figures_dir) -> None:
 
 
 # display mode → (per-term drop-one figure fn, per-target drop-one figure fn,
-# full-model R² figure fn). The violin display draws no per-target figure.
+# full-model R² figure fn).
 _PERSESSION_DISPLAY_FNS = {
     'session': (plot_ols_dropone, plot_ols_dropone_target, plot_ols_total_r2),
     'subject': (plot_ols_dropone_subject, plot_ols_dropone_target_subject,
                 plot_ols_total_r2_subject),
-    'target': (plot_ols_dropone_violin, None, plot_ols_total_r2_violin),
+    'target': (plot_ols_dropone_violin, plot_ols_dropone_target_violin,
+               plot_ols_total_r2_violin),
 }
 
 
@@ -697,7 +699,7 @@ def plot_persession_figures(results: pd.DataFrame,
             plt.close(fig)
 
     mains = DROPONE_TERM_CLASSES['main']
-    by_target = results.groupby('target_NM') if target_fn is not None else []
+    by_target = results.groupby('target_NM')
     for target_nm, target_rows in by_target:
         fig = target_fn(
             results,

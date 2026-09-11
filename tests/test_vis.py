@@ -1515,10 +1515,10 @@ class TestPlotOlsDroponeSubjectMode:
 class TestPlotOlsDroponeTargetMode:
     """Target-mode per-session figure: each target a violin of pooled sessions."""
 
-    def test_pool_by_target_maps_sessions_to_targets(self):
-        """``_pool_by_target`` pools every subject's per-session values under the
+    def test_pool_by_group_maps_sessions_to_targets(self):
+        """``_pool_by_group`` pools every subject's per-session values under the
         right target-NM, dropping targets absent from the cell."""
-        from iblnm.vis import _pool_by_target
+        from iblnm.vis import _pool_by_group
         rows = [
             {'target_NM': 'VTA-DA', 'subject': 'm_a', 'delta_r2': 0.1},
             {'target_NM': 'VTA-DA', 'subject': 'm_a', 'delta_r2': 0.3},
@@ -1526,11 +1526,30 @@ class TestPlotOlsDroponeTargetMode:
             {'target_NM': 'DR-5HT', 'subject': 'm_c', 'delta_r2': 0.2},
             {'target_NM': 'DR-5HT', 'subject': 'm_c', 'delta_r2': 0.4},
         ]
-        pooled = _pool_by_target(pd.DataFrame(rows), 'delta_r2',
-                                 ['VTA-DA', 'DR-5HT', 'SNc-DA'])
+        pooled = _pool_by_group(pd.DataFrame(rows), 'delta_r2',
+                                ['VTA-DA', 'DR-5HT', 'SNc-DA'])
         assert set(pooled) == {'VTA-DA', 'DR-5HT'}  # SNc-DA absent, dropped
         assert sorted(pooled['VTA-DA']) == [0.1, 0.3, 0.5]  # both subjects pooled
         assert sorted(pooled['DR-5HT']) == [0.2, 0.4]
+
+    def test_pool_by_group_pools_by_the_named_column(self):
+        """Grouped by ``predictor``, each label pools its sessions across
+        subjects, in the order given, omitting labels with no rows."""
+        from iblnm.vis import _pool_by_group
+        rows = [
+            {'target_NM': 'VTA-DA', 'subject': 'm_a', 'predictor': 'contrast',
+             'delta_r2': 0.1},
+            {'target_NM': 'VTA-DA', 'subject': 'm_b', 'predictor': 'contrast',
+             'delta_r2': 0.3},
+            {'target_NM': 'VTA-DA', 'subject': 'm_a', 'predictor': 'reward',
+             'delta_r2': 0.2},
+        ]
+        pooled = _pool_by_group(pd.DataFrame(rows), 'delta_r2',
+                                ['reward', 'contrast', 'side'],
+                                group_col='predictor')
+        assert list(pooled) == ['reward', 'contrast']  # side absent, dropped
+        assert sorted(pooled['contrast']) == [0.1, 0.3]
+        assert list(pooled['reward']) == [0.2]
 
     @staticmethod
     def _two_target_cell():
@@ -1557,6 +1576,8 @@ class TestPlotOlsDroponeTargetMode:
         ax = fig.axes[0]  # the 'contrast' figure, stimOn column
         bodies = [c for c in ax.collections if isinstance(c, PolyCollection)]
         assert len(bodies) == 2  # one violin per target, not per subject
+        assert [t.get_text() for t in ax.get_xticklabels()] == [
+            'VTA-DA', 'DR-5HT']
         # x order follows TARGETNM2POSITION: VTA-DA at slot 0, DR-5HT at slot 1.
         face_by_slot = sorted(
             (round(float(b.get_paths()[0].vertices[:, 0].mean())),
@@ -1613,6 +1634,69 @@ class TestPlotOlsDroponeTargetMode:
                                       'contrast')
         assert isinstance(fig, plt.Figure)
         assert fig._suptitle.get_text() == 'Empty'
+        plt.close(fig)
+
+
+class TestPlotOlsDroponeTargetViolin:
+    """``plot_ols_dropone_target_violin`` — one target-NM, one violin per
+    main-effect label."""
+
+    # Per-mouse session offsets added to a label's base ΔR². VTA-DA's two mice
+    # sit apart, so a violin spanning 0.00-0.04 must pool both; DR-5HT sits far
+    # above, so a violin reaching 0.5 has pooled the wrong target.
+    _OFFSETS = [('VTA-DA', 'v_a', (0.00, 0.01)), ('VTA-DA', 'v_b', (0.03, 0.04)),
+                ('DR-5HT', 'd_a', (0.50, 0.60))]
+
+    @classmethod
+    def _df(cls):
+        """Two target-NMs × every main effect at one event. A label's base
+        ΔR² is 0.1 × (its index + 1)."""
+        from iblnm.vis import DROPONE_TERM_CLASSES
+        return pd.DataFrame([
+            {'target_NM': tnm, 'event': 'stimOnTrigger_times',
+             'subject': subject, 'predictor': term,
+             'delta_r2_adj': 0.1 * (i + 1) + offset}
+            for tnm, subject, offsets in cls._OFFSETS
+            for i, term in enumerate(DROPONE_TERM_CLASSES['main'])
+            for offset in offsets
+        ])
+
+    @staticmethod
+    def _bodies_by_slot(ax):
+        """Violin bodies of a panel, left to right."""
+        from matplotlib.collections import PolyCollection
+        return sorted((c for c in ax.collections
+                       if isinstance(c, PolyCollection)),
+                      key=lambda b: b.get_paths()[0].vertices[:, 0].mean())
+
+    def test_one_violin_per_label_pooling_the_named_target(self):
+        """One x-tick per main-effect label in class order, and one violin per
+        label spanning exactly the pooled sessions of VTA-DA's two mice."""
+        from iblnm.vis import (DROPONE_TERM_CLASSES,
+                               plot_ols_dropone_target_violin)
+        terms = DROPONE_TERM_CLASSES['main']
+        fig = plot_ols_dropone_target_violin(self._df(), 't', 'VTA-DA', terms)
+        ax = fig.axes[0]
+        assert [t.get_text() for t in ax.get_xticklabels()] == terms
+        bodies = self._bodies_by_slot(ax)
+        assert len(bodies) == len(terms)
+        for i, body in enumerate(bodies):
+            ys = body.get_paths()[0].vertices[:, 1]
+            assert (ys.min(), ys.max()) == pytest.approx(
+                (0.1 * (i + 1), 0.1 * (i + 1) + 0.04))
+        plt.close(fig)
+
+    def test_every_violin_faced_in_the_named_targets_color(self):
+        """The slots are drop-one labels, not target-NMs, so every violin takes
+        the one selected target's color."""
+        from iblnm.config import TARGETNM_COLORS
+        from iblnm.vis import (DROPONE_TERM_CLASSES,
+                               plot_ols_dropone_target_violin)
+        fig = plot_ols_dropone_target_violin(self._df(), 't', 'DR-5HT',
+                                             DROPONE_TERM_CLASSES['main'])
+        faces = {colors.to_hex(b.get_facecolor()[0], keep_alpha=False)
+                 for b in self._bodies_by_slot(fig.axes[0])}
+        assert faces == {colors.to_hex(TARGETNM_COLORS['DR-5HT'])}
         plt.close(fig)
 
 
