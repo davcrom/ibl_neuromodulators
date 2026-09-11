@@ -2750,6 +2750,75 @@ class TestTargetOverviewBarplotGroupColoring:
         plt.close('all')
 
 
+def _make_mouse_barplot_recordings():
+    """Recordings where one mouse has sessions in two session groups.
+
+    VTA-DA carries s1 (one training, one biased session) and s2 (two training,
+    one biased); DR-5HT carries s3 (one training session).
+    """
+    return pd.DataFrame({
+        'eid': ['e0', 'e1', 'e2', 'e3', 'e4', 'e5'],
+        'subject': ['s1', 's1', 's2', 's2', 's2', 's3'],
+        'target_NM': ['VTA-DA'] * 5 + ['DR-5HT'],
+        'session_group': ['training', 'biased', 'training', 'training',
+                          'biased', 'training'],
+        'hemisphere': ['l', 'l', 'r', 'r', 'r', 'l'],
+    })
+
+
+def _segment_heights(ax):
+    """{group label: [height per target]} from the drawn bar containers."""
+    return {container.get_label(): [patch.get_height() for patch in container]
+            for container in ax.containers}
+
+
+class TestMouseOverviewBarplotStacking:
+    """Each mouse is counted once, in the furthest group it reaches."""
+
+    def test_mouse_counted_in_furthest_group_only(self):
+        from iblnm.vis import mouse_overview_barplot
+
+        ax = mouse_overview_barplot(_make_mouse_barplot_recordings(),
+                                    min_sessions=1)
+        # TARGETNM2POSITION order: VTA-DA first, DR-5HT second. Both VTA-DA
+        # mice reach 'biased', so neither is counted under 'training'.
+        assert _segment_heights(ax) == {'training': [0, 1], 'biased': [2, 0]}
+        plt.close('all')
+
+    def test_segments_sum_to_mouse_count(self):
+        from iblnm.vis import mouse_overview_barplot
+
+        df = _make_mouse_barplot_recordings()
+        ax = mouse_overview_barplot(df, min_sessions=1)
+        totals = np.sum(list(_segment_heights(ax).values()), axis=0)
+        expected = df.groupby('target_NM')['subject'].nunique()
+        assert list(totals) == [expected['VTA-DA'], expected['DR-5HT']]
+        plt.close('all')
+
+    def test_min_sessions_excludes_mouse_below_threshold(self):
+        from iblnm.vis import mouse_overview_barplot
+
+        # s1 has a single session in each group, s2 two training sessions,
+        # s3 a single training session.
+        ax = mouse_overview_barplot(_make_mouse_barplot_recordings(),
+                                    min_sessions=2)
+        assert _segment_heights(ax) == {'training': [1, 0], 'biased': [0, 0]}
+        plt.close('all')
+
+    def test_segment_colors_are_group_colors(self):
+        from iblnm.vis import mouse_overview_barplot
+
+        ax = mouse_overview_barplot(_make_mouse_barplot_recordings(),
+                                    min_sessions=1)
+        drawn = {container.get_label(): container[0].get_facecolor()
+                 for container in ax.containers}
+        assert drawn == {
+            label: colors.to_rgba(SESSION_GROUPS[label]['color'])
+            for label in ['training', 'biased']
+        }
+        plt.close('all')
+
+
 class TestMouseOverviewBarplotHorizontal:
 
     def test_horizontal_bars_use_barh(self):

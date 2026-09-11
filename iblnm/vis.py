@@ -827,9 +827,28 @@ def plot_dispersion_scatter(df, events, blocks):
 
 
 def _add_bar_labels(ax, positions, values, hemisphere_counts=None, color='white',
-                    horizontal=False):
-    """Add text labels to bars with optional L/R breakdown."""
-    for i, (pos, n) in enumerate(zip(positions, values)):
+                    horizontal=False, bottoms=None):
+    """Add text labels to bars with optional L/R breakdown.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    positions : sequence of float
+        Bar centers along the category axis.
+    values : sequence of float
+        Bar lengths along the count axis.
+    hemisphere_counts : sequence of (int, int), optional
+        Per-bar ``(n_left, n_right)``, appended to the count label.
+    color : str
+    horizontal : bool
+    bottoms : sequence of float, optional
+        Where each bar starts along the count axis, for stacked segments. The
+        label is centered on the segment rather than on the whole bar. Defaults
+        to zero, i.e. unstacked bars.
+    """
+    if bottoms is None:
+        bottoms = np.zeros(len(values))
+    for i, (pos, n, bottom) in enumerate(zip(positions, values, bottoms)):
         if n > 0:
             if hemisphere_counts is not None:
                 n_left, n_right = hemisphere_counts[i]
@@ -837,47 +856,69 @@ def _add_bar_labels(ax, positions, values, hemisphere_counts=None, color='white'
             else:
                 label = str(int(n))
             if horizontal:
-                ax.text(n / 2, pos, label, ha='center', va='center',
+                ax.text(bottom + n / 2, pos, label, ha='center', va='center',
                         fontweight='bold', color=color)
             else:
-                ax.text(pos, n / 2, label, ha='center', va='center',
+                ax.text(pos, bottom + n / 2, label, ha='center', va='center',
                         fontweight='bold', color=color, rotation=90)
 
 
-def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
-                           min_sessions=None, ax=None, barwidth=0.25,
-                           color_by='session_type', split_color_map=None,
-                           horizontal=False):
-    """
-    Barplot showing mouse training progress per target region.
-
-    When min_sessions is provided, uses a simplified single-threshold model:
-    one bar per category per target, showing mice with ≥min_sessions in that
-    category.
-
-    Legacy mode (min_sessions=None): three bars per target using min_biased_ephys
-    and min_ephys thresholds.
+def _furthest_group(df_target, color_by, categories, min_sessions):
+    """Map each mouse to the furthest group it reaches ``min_sessions`` in.
 
     Parameters
     ----------
-    df_sessions : pd.DataFrame
-        One row per recording, with 'subject', 'target_NM', and color_by columns.
-    min_biased_ephys : int
-        Legacy: minimum combined biased+ephys sessions.
-    min_ephys : int
-        Legacy: minimum ephys sessions.
-    min_sessions : int, optional
-        If set, use simplified threshold: mice with ≥min_sessions in each category.
+    df_target : pandas.DataFrame
+        Recordings of one target, with ``subject``, ``eid`` and ``color_by``.
+    color_by : str
+        Column holding the group label.
+    categories : list of str
+        Group labels, ordered low to high. A mouse takes the last of these it
+        reaches the threshold in; labels outside the list are ignored.
+    min_sessions : int
+        Distinct sessions (``eid``) a mouse needs in a group to reach it.
+
+    Returns
+    -------
+    pandas.Series
+        Group label indexed by subject. Mice below the threshold in every group
+        are absent, so they are counted nowhere.
+    """
+    n_sessions = df_target.groupby(['subject', color_by])['eid'].nunique()
+    reached = n_sessions[n_sessions >= min_sessions].reset_index()
+    reached = reached[reached[color_by].isin(categories)]
+    reached = reached.sort_values(color_by, key=lambda s: s.map(categories.index))
+    return reached.groupby('subject')[color_by].last()
+
+
+def mouse_overview_barplot(df_sessions, min_sessions, ax=None, barwidth=0.8,
+                           color_by='session_group', split_color_map=None,
+                           horizontal=False):
+    """Stacked bar plot of mouse counts per target region.
+
+    One bar per target, stacking the groups of ``color_by`` bottom to top in
+    the map's key order. Each mouse is counted exactly once, in the furthest
+    group where it has at least ``min_sessions`` sessions, so a target's
+    segments sum to the mice that reach the threshold anywhere.
+
+    Parameters
+    ----------
+    df_sessions : pandas.DataFrame
+        One row per recording, with ``subject``, ``eid``, ``target_NM``, the
+        ``color_by`` column and optionally ``hemisphere``.
+    min_sessions : int
+        Sessions a mouse needs in a group to be counted in it.
     ax : matplotlib.axes.Axes, optional
     barwidth : float
     color_by : str
-        Column to group bars by. Defaults to 'session_type'.
+        Column holding the session group label.
     split_color_map : dict, optional
-        Mapping from color_by values to colors. Defaults to SESSIONTYPE2COLOR.
+        Maps group label to fill color, in stacking and ranking order. Defaults
+        to the SESSION_GROUPS colors.
     horizontal : bool
         If True, draw horizontal bars.
     """
-    _color_map = split_color_map or SESSIONTYPE2COLOR
+    _color_map = split_color_map or _session_group_colors()
 
     if ax is None:
         fig, ax = plt.subplots()
@@ -892,82 +933,36 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
 
     has_hemisphere = 'hemisphere' in df_sessions.columns
 
-    if min_sessions is not None:
-        # Simplified mode: one bar per category per target
-        categories = [c for c in _color_map.keys() if c in df_sessions[color_by].values]
-        n_cats = len(categories)
-        offsets = np.linspace(-(n_cats - 1) / 2, (n_cats - 1) / 2, n_cats) * barwidth
+    categories = [c for c in _color_map if c in df_sessions[color_by].values]
+    by_target = {
+        target_nm: _furthest_group(df_sessions[df_sessions['target_NM'] == target_nm],
+                                   color_by, categories, min_sessions)
+        for target_nm in target_nms
+    }
 
-        for offset, category in zip(offsets, categories):
-            counts = []
-            hemi_counts = [] if has_hemisphere else None
-            for target_nm in target_nms:
-                target_df = df_sessions[df_sessions['target_NM'] == target_nm]
-                cat_df = target_df[target_df[color_by] == category]
-                n_per_subject = cat_df.groupby('subject').size()
-                qualifying = n_per_subject[n_per_subject >= min_sessions].index
-                counts.append(len(qualifying))
-                if has_hemisphere:
-                    q_df = target_df[target_df['subject'].isin(qualifying)]
-                    n_l = q_df[q_df['hemisphere'] == 'l']['subject'].nunique()
-                    n_r = q_df[q_df['hemisphere'] == 'r']['subject'].nunique()
-                    hemi_counts.append((n_l, n_r))
-            if horizontal:
-                ax.barh(xpos + offset, counts, barwidth,
-                        color=_color_map[category],
-                        label=f'≥{min_sessions} {category}')
-            else:
-                ax.bar(xpos + offset, counts, barwidth,
-                       color=_color_map[category],
-                       label=f'≥{min_sessions} {category}')
-            _add_bar_labels(ax, xpos + offset, counts, hemi_counts,
-                            horizontal=horizontal)
-    else:
-        # Legacy mode
-        session_counts = (
-            df_sessions.groupby(['target_NM', 'subject', 'session_type'])
-            .size().reset_index(name='n_sessions')
-        )
-        results = []
+    cumulative = np.zeros(len(target_nms))
+    for category in categories:
+        counts = []
+        hemi_counts = [] if has_hemisphere else None
         for target_nm in target_nms:
-            target_data = session_counts[session_counts['target_NM'] == target_nm]
-            training_mice = target_data[
-                target_data['session_type'] == 'training'
-            ]['subject'].unique()
-            biased_ephys_counts = target_data[
-                target_data['session_type'].isin(['biased', 'ephys'])
-            ].groupby('subject')['n_sessions'].sum()
-            biased_ephys_mice = biased_ephys_counts[biased_ephys_counts >= min_biased_ephys].index
-            ephys_mice = target_data[
-                (target_data['session_type'] == 'ephys') &
-                (target_data['n_sessions'] >= min_ephys)
-            ]['subject'].unique()
-            results.append({
-                'target_NM': target_nm,
-                'n_training': len(training_mice),
-                'n_biased_ephys': len(biased_ephys_mice),
-                'n_ephys': len(ephys_mice),
-            })
-        df_results = pd.DataFrame(results)
-        _bar = ax.barh if horizontal else ax.bar
-        _size_kw = 'height' if horizontal else 'width'
-        _stack_kw = 'left' if horizontal else 'bottom'
-        _bar(xpos - barwidth, df_results['n_training'].values,
-             **{_size_kw: barwidth},
-             color=SESSIONTYPE2COLOR['training'], label='training')
-        _bar(xpos, df_results['n_biased_ephys'].values,
-             **{_size_kw: barwidth},
-             color=SESSIONTYPE2COLOR['biased'],
-             label=f'≥{min_biased_ephys} biased/ephys')
-        _bar(xpos + barwidth, df_results['n_ephys'].values,
-             **{_size_kw: barwidth},
-             color=SESSIONTYPE2COLOR['ephys'], label=f'≥{min_ephys} ephys')
-        _add_bar_labels(ax, xpos - barwidth, df_results['n_training'].values,
-                        horizontal=horizontal)
-        _add_bar_labels(ax, xpos, df_results['n_biased_ephys'].values,
-                        horizontal=horizontal)
-        _add_bar_labels(ax, xpos + barwidth, df_results['n_ephys'].values,
-                        horizontal=horizontal)
+            furthest = by_target[target_nm]
+            mice = furthest[furthest == category].index
+            counts.append(len(mice))
+            if has_hemisphere:
+                target_df = df_sessions[df_sessions['target_NM'] == target_nm]
+                segment_df = target_df[target_df['subject'].isin(mice)]
+                n_l = segment_df[segment_df['hemisphere'] == 'l']['subject'].nunique()
+                n_r = segment_df[segment_df['hemisphere'] == 'r']['subject'].nunique()
+                hemi_counts.append((n_l, n_r))
+        if horizontal:
+            ax.barh(xpos, counts, barwidth, left=cumulative,
+                    color=_color_map[category], label=category)
+        else:
+            ax.bar(xpos, counts, barwidth, bottom=cumulative,
+                   color=_color_map[category], label=category)
+        _add_bar_labels(ax, xpos, counts, hemi_counts, horizontal=horizontal,
+                        bottoms=cumulative)
+        cumulative += counts
 
     if horizontal:
         ax.set_yticks(xpos)
@@ -982,7 +977,7 @@ def mouse_overview_barplot(df_sessions, min_biased_ephys=5, min_ephys=3,
         ax.set_ylabel('N Mice')
         ax.set_xlabel('Target-NM')
     ax.legend()
-    ax.set_title('Mouse training progress by target')
+    ax.set_title(f'Mouse training progress by target (≥{min_sessions} sessions)')
 
     return ax
 
