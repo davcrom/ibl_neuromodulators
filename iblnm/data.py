@@ -4190,21 +4190,23 @@ class PhotometrySession(PhotometrySessionLoader):
 def _session_for_processing(h5_path, row, one):
     """Build the session `process` hands to `fn`.
 
+    The session carries the catalog row's metadata rather than the file's, so
+    the repairs `util.fix_catalog` makes to the catalog reach the session that
+    does the work. Nothing is read from the file here, not even `errors`:
+    every read is the caller's, through `load_h5(groups=[...])` for a stored
+    group or the `load_*` tier for a product.
+
     Parameters
     ----------
     h5_path : Path
-        The session's file in the group's store. Read when it exists, so `fn`
-        sees what was already built; otherwise the session starts from `row`.
-        Adopted as `ps.filepath` either way, so a session whose file does not
-        exist yet still writes what `fn` builds into the group's store rather
-        than into the default one.
+        The session's file in the group's store, adopted as `ps.filepath` so
+        what `fn` loads and saves addresses the group's store rather than the
+        default one. It need not exist.
     row : pd.Series or dict
         The catalog row, as a dict when it has crossed a pickle boundary.
     one : one.api.One
         The connection the session queries Alyx through.
     """
-    if h5_path.exists():
-        return PhotometrySession.from_h5(h5_path, one=one)
     ps = PhotometrySession(pd.Series(row), one=one, load_data=False)
     ps.filepath = h5_path
     return ps

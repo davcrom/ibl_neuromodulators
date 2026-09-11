@@ -189,8 +189,11 @@ Three rules keep the stored log honest, all of them in `PhotometrySession`:
   the session holds is the whole log. A cleared product loses its group instead
   of keeping a stale one. The corollary is that a session constructed fresh —
   never opened from its file — must not save `errors` alone, or it writes its
-  one entry over everything the file held. Every pipeline pass opens the file
-  first, through `_session_for_processing`.
+  one entry over everything the file held. `_session_for_processing` builds
+  every processed session from its catalog row and reads nothing, so a pass
+  that rewrites part of the tree loads it first with
+  `ps.load_h5(groups=['errors'])`. A pass that clears and rebuilds the whole
+  log does not need to.
 
 `PhotometrySessionGroup.from_catalog(catalog, one, h5_dir=SESSIONS_H5_DIR)`
 opens each catalogued session's file once and reads out everything the filters

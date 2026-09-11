@@ -1,6 +1,7 @@
 """Tests for iblnm.data module."""
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pandas as pd
 import pytest
@@ -5369,6 +5370,32 @@ class TestGroupProcess:
 
         assert paths == [tmp_path / 'eid-0.h5', tmp_path / 'eid-1.h5']
 
+    def test_catalog_metadata_reaches_the_processed_session(self, tmp_path):
+        """The catalog row wins over the file, so `fix_catalog`'s repairs land.
+
+        The stored session carries no region — the defect `fix_catalog` exists
+        to repair — while the catalog row names one. The session handed to `fn`
+        must be the repaired one, still addressing the group's store.
+        """
+        from iblnm.data import PhotometrySession, _session_for_processing
+
+        h5_path = tmp_path / 'eid-0.h5'
+        stored = pd.Series({
+            'eid': 'eid-0', 'subject': 'subj-0',
+            'start_time': '2024-01-01T10:00:00', 'number': 1,
+            'session_type': 'biased', 'task_protocol': 'biased_protocol',
+            'brain_region': [], 'hemisphere': [], 'target_NM': [],
+        })
+        PhotometrySession(stored, one=MagicMock(), load_data=False).save_h5(
+            h5_path, groups=['metadata', 'errors'])
+        row = stored.copy()
+        row['brain_region'] = ['LC']
+
+        ps = _session_for_processing(h5_path, row, MagicMock())
+
+        assert ps.brain_region == ['LC']
+        assert ps.filepath == h5_path
+
     def test_process_catches_fatal_errors(self, tmp_path):
         """Fatal errors are caught and logged; processing continues."""
         group = self._make_group_with_h5(tmp_path)
@@ -7315,27 +7342,25 @@ class TestFitResponses:
 class TestModellingPass:
     """The two sequential passes over the store: donor pool, then fits."""
 
-    def test_one_store_read_per_pass_and_frames_shared_by_fits_and_null(
+    def test_passes_only_read_their_own_store_and_share_their_frames(
             self, tmp_path, monkeypatch):
-        """Each pass opens each session's H5 once, and within a session the
-        frames the fits and the permutation null see are the same objects —
-        neither stage re-derives or re-reads what the preparation built."""
+        """Each pass reads each session's own H5 and writes nothing, and within
+        a session the frames the fits and the permutation null see are the same
+        objects — neither stage re-derives or re-reads what the preparation
+        built."""
         from iblnm import analysis
-        from iblnm.data import PhotometrySession
         from scripts.responses import prepare_donor
         group = _persession_group(
             tmp_path, [('eid-0', 'subj-0', 'VTA-r', 'r', 'VTA-DA'),
                        ('eid-1', 'subj-1', 'DR-l', 'l', 'DR-5HT')])
 
         opened, fitted, permuted = [], [], []
-        real_load_h5 = PhotometrySession.load_h5
+        real_h5_file = h5py.File
         real_engine = analysis.SubstitutableOLS
 
-        def load_spy(self, fpath=None, groups=None):
-            # `from_h5` adopts the path before loading, so a call naming no
-            # path is still a read of that session's own file.
-            opened.append(str(fpath if fpath is not None else self.filepath))
-            return real_load_h5(self, fpath, groups=groups)
+        def open_spy(name, mode='r', *args, **kwargs):
+            opened.append((str(name), mode))
+            return real_h5_file(name, mode, *args, **kwargs)
 
         def engine_spy(formula, df):
             fitted.append(df)
@@ -7362,16 +7387,18 @@ class TestModellingPass:
             ps.extract_response_magnitudes(**_measurement())
             return ps.fit_responses(**kwargs)
 
-        with patch.object(PhotometrySession, 'load_h5', load_spy):
+        with patch('iblnm.data.h5py.File', open_spy):
             donors = group.collect_donor_frames(group.process(prepare_donor))
             formula, dropped_terms = _response_model()
             group.process(fit, formula=formula,
                           dropped_terms=dropped_terms, donors=donors)
 
         assert list(donors) == ['eid-0', 'eid-1']
-        # Two sessions, two passes, one open each.
-        assert len(opened) == 4
-        assert len(set(opened)) == 2
+        # An analysis pass reads the store and leaves it as it found it: every
+        # open is read-mode, and no session reaches outside its own file.
+        assert {mode for _, mode in opened} == {'r'}
+        assert {path for path, _ in opened} == {
+            str(tmp_path / 'eid-0.h5'), str(tmp_path / 'eid-1.h5')}
         # Two sessions x two response events, each coded once.
         coded = {id(df) for df in permuted}
         assert len(coded) == 4
