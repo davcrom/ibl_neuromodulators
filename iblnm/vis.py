@@ -3051,6 +3051,16 @@ def _median_iqr(vals):
     return float(np.median(vals)), float(q1), float(q3)
 
 
+def _rows_matching(df, keys):
+    """Rows of ``df`` whose every column named in ``keys`` equals its value.
+
+    ``keys`` must name at least one column.
+    """
+    match = np.logical_and.reduce([(df[col] == value).to_numpy()
+                                   for col, value in keys.items()])
+    return df[match]
+
+
 def _significance_color(base_color, pvalues, keys, alpha):
     """Resolve a marker color from a permutation q-value at either grain.
 
@@ -3076,9 +3086,7 @@ def _significance_color(base_color, pvalues, keys, alpha):
     """
     if pvalues is None:
         return base_color
-    match = np.logical_and.reduce([(pvalues[col] == value).to_numpy()
-                                   for col, value in keys.items()])
-    row = pvalues[match]
+    row = _rows_matching(pvalues, keys)
     if not len(row):
         return 'gray'
     return _qvalue_color(base_color, row['q_value'].iloc[0], alpha)
@@ -3222,21 +3230,24 @@ def _group_tick_label(group, event, counts_lookup):
 def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
                              pvalues=None, alpha=PERSESSION_SIGNIFICANCE_ALPHA,
                              annotate_counts=False, color_by_qvalue=False,
-                             ylim=None):
+                             ylim=None, group_col='target_NM',
+                             group_order=None, select=None):
     """Per-subject-slot grid: ``rows`` by event columns, sharing one y-axis.
 
     Shared layout for the per-session figures that use a subject-slot x-axis.
     Each entry of ``rows`` is one grid row; columns are events (``_sort_events``
     order). Within a panel each subject occupies its own x position, grouped by
-    target-NM with a gap so a target-NM's width scales with its subject count
+    ``group_col`` — target-NM by default, drop-one label for a figure fixed to
+    one target — with a gap so a group's width scales with its subject count
     (see ``_group_xslots``); subjects are placed left to right in the
-    alphanumeric order ``_group_xslots`` returns. Each subject's cell values are
-    drawn by ``draw_mark`` in the subject's target-NM color, grayed at whichever
-    grain is marked non-significant for that cell: ``pvalues`` grays the
-    subject's summary mark, ``color_by_qvalue`` grays individual recording marks
-    from the frame's own ``q_value``. One x-tick per target-NM is centred on its
-    subjects. All panels share one y-axis; the figure size scales with the total
-    subject count and the number of rows.
+    alphanumeric order ``_group_xslots`` returns. Each group reads its own rows
+    of the frame. Each subject's cell values are drawn by ``draw_mark`` in the
+    subject's own target-NM color, grayed at whichever grain is marked
+    non-significant for that cell: ``pvalues`` grays the subject's summary
+    mark, ``color_by_qvalue`` grays individual recording marks from the frame's
+    own ``q_value``. One x-tick per group is centred on its subjects. All
+    panels share one y-axis; the figure size scales with the total subject
+    count and the number of rows.
 
     Parameters
     ----------
@@ -3248,7 +3259,9 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
     rows : list[tuple[str, str, str]]
         ``(row_label, value_column, predictor)`` per grid row. ``predictor``
         selects the frame rows to read (and, since ``r2`` repeats across
-        predictors, dedupes a per-session value to one row).
+        predictors, dedupes a per-session value to one row), unless
+        ``group_col`` is ``'predictor'``, in which case each group's own value
+        selects them instead.
     supylabel : str
         Shared y-axis label.
     draw_mark : callable
@@ -3263,9 +3276,9 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
         False-discovery-rate threshold; a mark keeps its color when
         ``q_value < alpha``.
     annotate_counts : bool
-        Append a ``n=<recordings>, m=<mice>`` line to each target's x-tick
-        label, counted off ``df`` (``_population_counts``, which needs ``eid``
-        and ``brain_region``).
+        Append a ``n=<recordings>, m=<mice>`` line to each group's x-tick
+        label, counted off the selected ``df`` (``_population_counts``, which
+        needs ``eid`` and ``brain_region``).
     color_by_qvalue : bool
         Color each recording's mark by its own row's ``q_value`` rather than
         leaving it in the subject's summary color; requires a ``q_value``
@@ -3274,12 +3287,24 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
         ``(bottom, top)`` for the shared y-axis. ``None`` autoscales to the
         panels' own data; a range makes figures drawn from different frames
         directly comparable.
+    group_col : str
+        Column the x groups are taken from.
+    group_order : sequence of str or None
+        ``group_col`` values in plot order. ``None`` sorts the values present
+        by ``TARGETNM2POSITION``, the target-NM order.
+    select : dict[str, str] or None
+        Column -> value every plotted row must equal, applied before layout
+        and counts — e.g. ``{'target_NM': 'VTA-DA'}`` fixes a figure grouped by
+        predictor to one target's subjects. ``None`` plots every row.
 
     Returns
     -------
     plt.Figure
     """
-    counts_lookup = _population_counts(df) if annotate_counts else None
+    if select:
+        df = _rows_matching(df, select)
+    counts_lookup = (_population_counts(df, group_col) if annotate_counts
+                     else None)
     has_data = len(df) > 0
     events = _sort_events(df['event'].unique()) if has_data else []
     n_rows, n_cols = len(rows), max(len(events), 1)
@@ -3290,12 +3315,14 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
         fig.suptitle(title, fontsize=LABELFONTSIZE)
         return fig
 
-    targets = sorted(df['target_NM'].unique(),
-                     key=lambda x: TARGETNM2POSITION.get(x, 999))
-    layouts = {event: _group_xslots(df[df['event'] == event], targets)
+    if group_order is None:
+        group_order = sorted(df[group_col].unique(),
+                             key=lambda x: TARGETNM2POSITION.get(x, 999))
+    layouts = {event: _group_xslots(df[df['event'] == event], group_order,
+                                    group_col)
                for event in events}
-    col_extent = max(slots.max() + 1 for _, slots_by_target, _ in layouts.values()
-                     for slots in slots_by_target.values())
+    col_extent = max(slots.max() + 1 for _, slots_by_group, _ in layouts.values()
+                     for slots in slots_by_group.values())
     fig, axes = plt.subplots(
         n_rows, n_cols, squeeze=False, sharex='col', sharey=True,
         layout='constrained',
@@ -3303,19 +3330,24 @@ def _persession_subject_grid(df, title, rows, supylabel, draw_mark,
                  (2.0 * n_rows + 1) * 1.25))
 
     for c, event in enumerate(events):
-        subjects_by_target, slots_by_target, ticks = layouts[event]
+        subjects_by_group, slots_by_group, ticks = layouts[event]
+        df_event = df[df['event'] == event]
         for r, (label, value_col, predictor) in enumerate(rows):
             ax = axes[r, c]
-            df_cell = df[(df['event'] == event) & (df['predictor'] == predictor)]
-            for tnm, subjects in subjects_by_target.items():
-                base_color = TARGETNM_COLORS.get(tnm, 'gray')
-                for subject, x in zip(subjects, slots_by_target[tnm]):
+            for group, subjects in subjects_by_group.items():
+                # The group value overrides the row's predictor when the x
+                # groups are themselves predictors.
+                cell = {'predictor': predictor, group_col: group}
+                df_cell = _rows_matching(df_event, cell)
+                for subject, x in zip(subjects, slots_by_group[group]):
                     subject_rows = df_cell[df_cell['subject'] == subject]
                     vals = subject_rows[value_col].values
                     if len(vals):
+                        base_color = TARGETNM_COLORS.get(
+                            subject_rows['target_NM'].iloc[0], 'gray')
                         summary_color = _significance_color(
                             base_color, pvalues,
-                            {'event': event, 'predictor': predictor,
+                            {'event': event, 'predictor': cell['predictor'],
                              'subject': subject}, alpha)
                         point_colors = (
                             [_qvalue_color(base_color, q, alpha)

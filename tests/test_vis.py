@@ -3296,6 +3296,96 @@ class TestGroupXslots:
         assert [group for group, _ in ticks] == ['VTA-DA', 'DR-5HT']
 
 
+class TestPersessionSubjectGridGroupColumn:
+    """``_persession_subject_grid`` groups its x slots by any column."""
+
+    _ALPHA = 0.05
+    # Per-predictor delta_r2_adj, so a point's y names the predictor it read.
+    _PREDICTOR_VALUE = {'contrast': 0.1, 'reward': 0.2}
+
+    @classmethod
+    def _df(cls):
+        """Two target-NMs × two predictors at one event, two sessions a mouse.
+
+        VTA-DA has mice ``v_a`` and ``v_b``, DR-5HT has ``d_a``. Every
+        recording is significant except ``v_b``'s second session.
+        """
+        mice = [('VTA-DA', 'v_a'), ('VTA-DA', 'v_b'), ('DR-5HT', 'd_a')]
+        return pd.DataFrame([
+            {'eid': f'{subject}_{session}',
+             'brain_region': tnm.split('-')[0], 'target_NM': tnm,
+             'event': 'stimOnTrigger_times', 'subject': subject,
+             'predictor': pred, 'delta_r2_adj': value,
+             'q_value': 0.5 if (subject, session) == ('v_b', 1) else 0.001}
+            for tnm, subject in mice
+            for pred, value in cls._PREDICTOR_VALUE.items()
+            for session in range(2)
+        ])
+
+    @classmethod
+    def _grid(cls, df, **kwargs):
+        from iblnm.vis import _persession_subject_grid, _scatter_subject
+        return _persession_subject_grid(
+            df, 't', [('ΔR²', 'delta_r2_adj', 'contrast')], 'y',
+            draw_mark=_scatter_subject, alpha=cls._ALPHA,
+            annotate_counts=True, color_by_qvalue=True, **kwargs)
+
+    def test_default_groups_by_target_nm(self):
+        """With no grouping arguments: one tick per target-NM carrying its
+        counts, two collections per mouse (sessions + mean), and each mouse's
+        mean in its target-NM color."""
+        from iblnm.config import TARGETNM_COLORS
+        fig = self._grid(self._df())
+        ax = fig.axes[0]
+        assert [t.get_text() for t in ax.get_xticklabels()] == [
+            'VTA-DA\nn=4, m=2', 'DR-5HT\nn=2, m=1']
+        assert len(ax.collections) == 6
+        means = ax.collections[1::2]
+        assert [colors.to_hex(c.get_edgecolor()[0]) for c in means] == [
+            colors.to_hex(TARGETNM_COLORS[tnm])
+            for tnm in ('VTA-DA', 'VTA-DA', 'DR-5HT')]
+        plt.close(fig)
+
+    def test_groups_by_predictor_within_one_target(self):
+        """Grouped by predictor with the panel fixed to VTA-DA: one tick per
+        predictor, only VTA-DA's mice in each group, each group reading its own
+        predictor's rows, and a session dot in the VTA-DA color exactly where
+        its q-value clears alpha."""
+        from iblnm.config import TARGETNM_COLORS
+        fig = self._grid(self._df(), group_col='predictor',
+                         group_order=['contrast', 'reward'],
+                         select={'target_NM': 'VTA-DA'})
+        ax = fig.axes[0]
+        assert [t.get_text() for t in ax.get_xticklabels()] == [
+            'contrast\nn=4, m=2', 'reward\nn=4, m=2']
+        assert len(ax.collections) == 8  # 2 predictors × 2 VTA-DA mice × 2
+        dots = ax.collections[0::2]
+        assert [list(np.round(c.get_offsets()[:, 1], 6)) for c in dots] == [
+            [0.1, 0.1], [0.1, 0.1], [0.2, 0.2], [0.2, 0.2]]
+        vta, gray = (colors.to_hex(TARGETNM_COLORS['VTA-DA']),
+                     colors.to_hex('gray'))
+        assert [[colors.to_hex(rgba) for rgba in c.get_edgecolor()]
+                for c in dots] == [[vta, vta], [vta, gray]] * 2
+        plt.close(fig)
+
+    def test_mouse_absent_from_a_predictor_takes_no_slot_there(self):
+        """``v_b`` has contrast rows only, so the contrast group holds two
+        slots, the reward group one, and ``v_b``'s marks sit in contrast."""
+        from iblnm.vis import _SUBJECT_SPACING, _TARGETNM_GAP
+        df = self._df()
+        df = df[~((df['subject'] == 'v_b') & (df['predictor'] == 'reward'))]
+        fig = self._grid(df, group_col='predictor',
+                         group_order=['contrast', 'reward'],
+                         select={'target_NM': 'VTA-DA'})
+        ax = fig.axes[0]
+        reward_x = 2 * _SUBJECT_SPACING + _TARGETNM_GAP
+        assert np.allclose(ax.get_xticks(), [_SUBJECT_SPACING / 2, reward_x])
+        dots = ax.collections[0::2]
+        assert [float(c.get_offsets()[0, 0]) for c in dots] == pytest.approx(
+            [0.0, _SUBJECT_SPACING, reward_x])
+        plt.close(fig)
+
+
 class TestPopulationCountsGroupColumn:
     """``_population_counts`` counts the population behind any grouping column."""
 
