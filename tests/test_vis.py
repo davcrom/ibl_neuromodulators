@@ -2665,7 +2665,7 @@ def _make_barplot_recordings():
         'eid': ['e0', 'e0', 'e1', 'e1', 'e2'],
         'subject': ['s1', 's1', 's2', 's2', 's3'],
         'target_NM': ['VTA-DA', 'VTA-DA', 'DR-5HT', 'DR-5HT', 'VTA-DA'],
-        'session_type': ['biased', 'biased', 'training', 'biased', 'biased'],
+        'session_group': ['biased', 'biased', 'training', 'biased', 'biased'],
         'hemisphere': ['l', 'r', 'l', 'r', 'l'],
     })
 
@@ -2702,47 +2702,51 @@ class TestTargetOverviewBarplotHorizontal:
         plt.close('all')
 
 
-def _make_proficient_recordings():
-    """Recordings with a proficient_label column: one row per (target, label)."""
-    return pd.DataFrame({
-        'eid': ['e0', 'e1', 'e2', 'e3'],
-        'subject': ['s1', 's1', 's2', 's2'],
-        'target_NM': ['VTA-DA', 'VTA-DA', 'DR-5HT', 'DR-5HT'],
-        'proficient_label': ['proficient', 'not_proficient',
-                             'proficient', 'not_proficient'],
-        'hemisphere': ['l', 'r', 'l', 'r'],
-    })
+class TestTargetOverviewBarplotGroupColoring:
+    """Segments are stacked and colored by `config.SESSION_GROUPS`."""
 
-
-class TestTargetOverviewBarplotTargetColoring:
-
-    def test_bars_colored_by_target_with_proficiency_alpha(self):
-        """bar_color_map colors each bar by its target_NM; split_alpha_map sets
-        per-category opacity (proficient full, not_proficient faded)."""
-        import matplotlib.colors as mcolors
+    def test_segment_colors_are_group_colors(self):
         from iblnm.vis import target_overview_barplot
-        from iblnm.config import TARGETNM_COLORS
 
-        df = _make_proficient_recordings()
-        alpha_map = {'proficient': 1.0, 'not_proficient': 0.5}
-        ax = target_overview_barplot(
-            df, color_by='proficient_label',
-            bar_color_map=TARGETNM_COLORS, split_alpha_map=alpha_map,
-        )
-        sorted_targets = ['VTA-DA', 'DR-5HT']  # TARGETNM2POSITION order
-        seen_alpha = {}
-        for patch in (p for c in ax.containers for p in c):
-            if patch.get_height() == 0:
-                continue
-            pos = round(patch.get_x() + patch.get_width() / 2)
-            target = sorted_targets[pos]
-            r, g, b, a = patch.get_facecolor()
-            expected = mcolors.to_rgb(TARGETNM_COLORS[target])
-            assert tuple(round(v, 5) for v in (r, g, b)) == \
-                tuple(round(v, 5) for v in expected)
-            seen_alpha.setdefault(target, set()).add(round(a, 3))
-        assert seen_alpha['VTA-DA'] == {1.0, 0.5}
-        assert seen_alpha['DR-5HT'] == {1.0, 0.5}
+        ax = target_overview_barplot(_make_barplot_recordings())
+        drawn = {container.get_label(): container[0].get_facecolor()
+                 for container in ax.containers}
+        assert drawn == {
+            label: colors.to_rgba(SESSION_GROUPS[label]['color'])
+            for label in ['training', 'biased']
+        }
+        plt.close('all')
+
+    def test_stacked_bottom_to_top_in_config_order(self):
+        """`training` sits below `biased`, as SESSION_GROUPS orders them."""
+        from iblnm.vis import target_overview_barplot
+
+        ax = target_overview_barplot(_make_barplot_recordings())
+        # DR-5HT is the only target carrying both groups (x position 1)
+        bottoms = {container.get_label(): container[1].get_y()
+                   for container in ax.containers}
+        assert bottoms['training'] < bottoms['biased']
+        plt.close('all')
+
+    def test_segments_sum_to_recording_count(self):
+        """Each target's stacked heights sum to its number of recordings."""
+        from iblnm.vis import target_overview_barplot
+
+        df = _make_barplot_recordings()
+        ax = target_overview_barplot(df)
+        totals = np.zeros(2)
+        for container in ax.containers:
+            totals += [patch.get_height() for patch in container]
+        # TARGETNM2POSITION order: VTA-DA (3 recordings), DR-5HT (2)
+        assert list(totals) == [3, 2]
+        plt.close('all')
+
+    def test_legend_lists_groups_present(self):
+        from iblnm.vis import target_overview_barplot
+
+        ax = target_overview_barplot(_make_barplot_recordings())
+        labels = [text.get_text() for text in ax.get_legend().get_texts()]
+        assert labels == ['training', 'biased']
         plt.close('all')
 
 
@@ -2751,7 +2755,8 @@ class TestMouseOverviewBarplotHorizontal:
     def test_horizontal_bars_use_barh(self):
         from iblnm.vis import mouse_overview_barplot
         df = _make_barplot_recordings()
-        ax = mouse_overview_barplot(df, min_sessions=1, horizontal=True)
+        ax = mouse_overview_barplot(df, min_sessions=1, horizontal=True,
+                                    color_by='session_group')
         patches = [p for c in ax.containers for p in c if p.get_width() > 0]
         assert len(patches) > 0
         for p in patches:

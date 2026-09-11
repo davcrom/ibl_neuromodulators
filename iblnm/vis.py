@@ -72,6 +72,12 @@ def set_plotsize(w, h=None, ax=None):
     ax.figure.set_size_inches(figw, figh)
 
 
+def _session_group_colors() -> dict:
+    """`config.SESSION_GROUPS` as a label -> color map, in config order."""
+    return {label: group_spec['color']
+            for label, group_spec in SESSION_GROUPS.items()}
+
+
 def session_overview_matrix(group, columns='session_n', ax=None,
                             color_by='session_group', split_color_map=None):
     """
@@ -103,9 +109,7 @@ def session_overview_matrix(group, columns='session_n', ax=None,
     ValueError
         If there is more than one session per (subject, columns) cell in _catalog.
     """
-    _color_map = split_color_map or {
-        label: group_spec['color'] for label, group_spec in SESSION_GROUPS.items()
-    }
+    _color_map = split_color_map or _session_group_colors()
 
     df_base = group._catalog
     df_overlay = group.sessions
@@ -167,18 +171,13 @@ def session_overview_matrix(group, columns='session_n', ax=None,
 
 
 def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
-                            color_by='session_type', split_color_map=None,
-                            bar_color_map=None, split_alpha_map=None,
+                            color_by='session_group', split_color_map=None,
                             horizontal=False):
     """Stacked bar plot of session counts per target region.
 
-    Each bar stacks the categories of ``color_by``. By default a segment's fill
-    comes from ``split_color_map[category]`` at full opacity. Pass
-    ``bar_color_map`` (keyed by ``target_NM``) to instead color every segment by
-    its target identity, and ``split_alpha_map`` (keyed by category) to fade
-    segments by category — e.g. proficient at 1.0, not-proficient at 0.5. When
-    both are given the legend shows neutral gray swatches per category, since
-    fill color then encodes target, not category.
+    Each bar stacks the categories of ``color_by``, a segment's fill taken from
+    ``split_color_map[category]``. The map's key order is the stacking order,
+    bottom to top.
 
     Parameters
     ----------
@@ -190,18 +189,12 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
     color_by : str
         Column whose categories are stacked within each target's bar.
     split_color_map : dict, optional
-        Maps ``color_by`` category to fill color. Defaults to SESSIONTYPE2COLOR.
-        Ignored when ``bar_color_map`` is given.
-    bar_color_map : dict, optional
-        Maps ``target_NM`` to fill color. When set, segments are colored by
-        target identity instead of by category.
-    split_alpha_map : dict, optional
-        Maps ``color_by`` category to opacity. Defaults to opaque. Also fixes the
-        stacking order of categories when set.
+        Maps ``color_by`` category to fill color, in stacking order. Defaults to
+        the SESSION_GROUPS colors.
     horizontal : bool
         If True, draw horizontal bars.
     """
-    _color_map = split_color_map or SESSIONTYPE2COLOR
+    _color_map = split_color_map or _session_group_colors()
 
     if len(df_sessions) == 0:
         if ax is None:
@@ -226,27 +219,20 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
     positions = list(range(len(df_n)))
     cumulative = np.zeros(len(df_n))
 
-    # Stacking order: alpha map when given, else the color map's canonical order.
-    category_order = split_alpha_map or _color_map
-    categories = [c for c in category_order if c in df_n.columns]
+    categories = [c for c in _color_map if c in df_n.columns]
     for category in categories:
         ns = df_n[category]
-        if bar_color_map is not None:
-            color = [bar_color_map[target] for target in df_n.index]
-        else:
-            color = _color_map[category]
-        alpha = split_alpha_map.get(category, 1.0) if split_alpha_map else 1.0
-        label = None if bar_color_map is not None else category
+        color = _color_map[category]
         if horizontal:
             ax.barh(positions, ns, left=cumulative, height=barwidth,
-                    color=color, alpha=alpha, label=label)
+                    color=color, label=category)
             for y, n, x_left in zip(positions, ns, cumulative):
                 if n > 0:
                     ax.text(x_left + n/2, y, str(n), ha='center', va='center',
                             fontweight='bold', color='white')
         else:
             ax.bar(positions, ns, bottom=cumulative, width=barwidth,
-                   color=color, alpha=alpha, label=label)
+                   color=color, label=category)
             for x, n, y_bottom in zip(positions, ns, cumulative):
                 if n > 0:
                     ax.text(x, y_bottom + n/2, str(n), ha='center', va='center',
@@ -279,12 +265,7 @@ def target_overview_barplot(df_sessions, ax=None, barwidth=0.8,
     # Let matplotlib pick a handful of round count ticks instead of one per 100.
     count_axis.set_major_locator(MaxNLocator(nbins=6, integer=True))
 
-    if bar_color_map is not None and split_alpha_map is not None:
-        handles = [Patch(facecolor='gray', alpha=split_alpha_map[c], label=c)
-                   for c in categories]
-        ax.legend(handles=handles)
-    else:
-        ax.legend()
+    ax.legend()
 
     n_recordings = len(df_sessions)
     n_sessions = df_sessions['eid'].nunique()
