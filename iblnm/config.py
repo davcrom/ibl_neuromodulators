@@ -351,12 +351,15 @@ RESPONSE_EVENTS = [STIM_ONSET_EVENT, 'feedback_times']
 MIN_NTRIALS = 90
 MIN_SESSIONLENGTH = 20 * 60  # seconds
 
-# Error types that block a session from analysis
+# Error types that block a session from analysis. A region that could not be
+# read off the photometry does not block: the cross-session fill in
+# `util.fix_catalog` runs after the error is logged and repairs most of them,
+# so blocking on it would drop the sessions the fill exists to recover.
 ANALYSIS_QC_BLOCKERS = {
     'MissingExtractedData', 'MissingRawData',
     'InsufficientTrials', 'IncompleteEventTimes',
     'TrialsNotInPhotometryTime', 'QCValidationError',
-    'AmbiguousRegionMapping', 'MissingBlockInfo',
+    'MissingBlockInfo',
 }
 
 # Task performance parameters

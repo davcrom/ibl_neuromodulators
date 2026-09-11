@@ -34,6 +34,12 @@ class InvalidBrainRegion(Exception):
 class MissingBrainRegion(Exception):
     """Session has no brain region metadata."""
 
+class MissingRegion(Exception):
+    """Photometry data did not name the region it was recorded from."""
+
+class AmbiguousRegion(Exception):
+    """Photometry data did not name its region and none could be safely inferred."""
+
 class MissingHemisphere(Exception):
     """Session has no hemisphere metadata."""
 
