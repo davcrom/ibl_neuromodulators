@@ -4,10 +4,12 @@ import pandas as pd
 import pytest
 import matplotlib
 matplotlib.use('Agg')
+from matplotlib import colors
 from matplotlib import pyplot as plt
 from unittest.mock import MagicMock
 
-from iblnm.config import PERSESSION_REGRESSORS
+from iblnm.config import PERSESSION_REGRESSORS, SESSION_GROUPS
+from iblnm.util import label_session_groups
 from iblnm.vis import plot_relative_contrast
 
 
@@ -2163,6 +2165,9 @@ class TestPlotRtByContrast:
 def _make_group(subjects_targets, session_n_per_subject=2):
     """Build a minimal PhotometrySessionGroup for vis tests.
 
+    Sessions are labelled with `session_group` through the real labeller, so
+    the fixture exercises the same path as the pipeline.
+
     Parameters
     ----------
     subjects_targets : list of (subject, target_NM, start_time)
@@ -2191,13 +2196,93 @@ def _make_group(subjects_targets, session_n_per_subject=2):
                 'target_NM': [target_nm],
             })
 
-    df = pd.DataFrame(rows)
+    df = label_session_groups(pd.DataFrame(rows), SESSION_GROUPS)
     group = PhotometrySessionGroup(df, one=MagicMock())
     group.filter_sessions(
         session_types=False, qc_blockers=set(), photometry_qc=False,
         targetnms=False, min_performance=False, required_contrasts=False,
     )
     return group
+
+
+def _make_grouped_catalog(session_types, logged_errors=None):
+    """Catalog with one session per subject, one subject per session type."""
+    rows = [
+        {'eid': f'e{i}', 'subject': f'S{i}', 'session_n': 0,
+         'session_type': session_type, 'start_time': f'2024-0{i + 1}-01',
+         'brain_region': ['VTA'], 'hemisphere': ['l'],
+         'target_NM': ['VTA-DA'],
+         'logged_errors': [] if logged_errors is None else logged_errors[i]}
+        for i, session_type in enumerate(session_types)
+    ]
+    return label_session_groups(pd.DataFrame(rows), SESSION_GROUPS)
+
+
+class TestSessionOverviewMatrixGroupLayers:
+
+    def test_layer_pair_per_group(self):
+        """Each group present is drawn as a base layer and an overlay."""
+        from iblnm.vis import session_overview_matrix
+        from iblnm.data import PhotometrySessionGroup
+
+        group = PhotometrySessionGroup(
+            _make_grouped_catalog(['training', 'biased']), one=MagicMock()
+        )
+        group.filter_sessions(session_types=False, qc_blockers=set(),
+                              targetnms=False, min_performance=False,
+                              required_contrasts=False, photometry_qc=False)
+        ax = session_overview_matrix(group)
+        assert len(ax.images) == 4
+        plt.close('all')
+
+    def test_legend_labels_in_config_order(self):
+        """Legend carries the groups present, in SESSION_GROUPS order."""
+        from iblnm.vis import session_overview_matrix
+        from iblnm.data import PhotometrySessionGroup
+
+        group = PhotometrySessionGroup(
+            _make_grouped_catalog(['ephys', 'training']), one=MagicMock()
+        )
+        group.filter_sessions(session_types=False, qc_blockers=set(),
+                              targetnms=False, min_performance=False,
+                              required_contrasts=False, photometry_qc=False)
+        ax = session_overview_matrix(group)
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert labels == ['training', 'ephys']
+        plt.close('all')
+
+    def test_group_color_per_layer(self):
+        """Each layer is drawn in its group's configured color."""
+        from iblnm.vis import session_overview_matrix
+        from iblnm.data import PhotometrySessionGroup
+
+        group = PhotometrySessionGroup(
+            _make_grouped_catalog(['training', 'biased']), one=MagicMock()
+        )
+        group.filter_sessions(session_types=False, qc_blockers=set(),
+                              targetnms=False, min_performance=False,
+                              required_contrasts=False, photometry_qc=False)
+        ax = session_overview_matrix(group)
+        expected = [colors.to_rgba(SESSION_GROUPS[label]['color'])
+                    for label in ['training', 'biased'] for _ in range(2)]
+        drawn = [tuple(im.cmap(1.0)) for im in ax.images]
+        assert drawn == expected
+        plt.close('all')
+
+    def test_no_colorbar(self):
+        """The colorbar is replaced by the legend."""
+        from iblnm.vis import session_overview_matrix
+        from iblnm.data import PhotometrySessionGroup
+
+        group = PhotometrySessionGroup(
+            _make_grouped_catalog(['biased']), one=MagicMock()
+        )
+        group.filter_sessions(session_types=False, qc_blockers=set(),
+                              targetnms=False, min_performance=False,
+                              required_contrasts=False, photometry_qc=False)
+        ax = session_overview_matrix(group)
+        assert ax.images[0].colorbar is None
+        plt.close('all')
 
 
 class TestSessionOverviewMatrixSubjectOrder:
@@ -2221,7 +2306,7 @@ class TestSessionOverviewMatrixSubjectOrder:
         from unittest.mock import MagicMock
         from iblnm.data import PhotometrySessionGroup
 
-        df = pd.DataFrame([{
+        df = label_session_groups(pd.DataFrame([{
             'eid': 'eid-0',
             'subject': 'multi',
             'session_n': 0,
@@ -2230,7 +2315,7 @@ class TestSessionOverviewMatrixSubjectOrder:
             'brain_region': ['VTA', 'DR'],
             'hemisphere': ['l', 'r'],
             'target_NM': ['VTA-DA', 'DR-5HT'],
-        }])
+        }]), SESSION_GROUPS)
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(
             session_types=False, qc_blockers=set(), photometry_qc=False,
@@ -2248,14 +2333,9 @@ class TestSessionOverviewMatrixSubjectOrder:
         from iblnm.data import PhotometrySessionGroup
 
         # Two subjects; only one has logged_errors so it gets dropped by qc_blockers
-        df = pd.DataFrame([
-            {'eid': 'e0', 'subject': 'A', 'session_n': 0, 'session_type': 'biased',
-             'start_time': '2024-01-01', 'brain_region': ['VTA'], 'hemisphere': ['l'],
-             'target_NM': ['VTA-DA'], 'logged_errors': []},
-            {'eid': 'e1', 'subject': 'B', 'session_n': 0, 'session_type': 'biased',
-             'start_time': '2024-02-01', 'brain_region': ['VTA'], 'hemisphere': ['l'],
-             'target_NM': ['VTA-DA'], 'logged_errors': ['MissingRawData']},
-        ])
+        df = _make_grouped_catalog(
+            ['biased', 'biased'], logged_errors=[[], ['MissingRawData']]
+        )
         group = PhotometrySessionGroup(df, one=MagicMock())
         group.filter_sessions(session_types=False, qc_blockers={'MissingRawData'},
                               targetnms=False, min_performance=False,
@@ -2268,10 +2348,15 @@ class TestSessionOverviewMatrixSubjectOrder:
         ax = session_overview_matrix(group)
         # Both subjects appear on y-axis (from _catalog)
         labels = [t.get_text() for t in ax.get_yticklabels()]
-        assert 'A' in labels
-        assert 'B' in labels
-        # Two images: base (faded) and overlay (solid)
+        assert labels == ['S0', 'S1']
+        # One group present: one base layer (faded) and one overlay (solid)
         assert len(ax.images) == 2
+        base, overlay = [np.ma.filled(im.get_array().astype(float), np.nan)
+                         for im in ax.images]
+        # The filtered-out subject is painted in the base layer only
+        assert base[1, 0] == 1.0
+        assert np.isnan(overlay[1, 0])
+        assert overlay[0, 0] == 1.0
         plt.close('all')
 
 

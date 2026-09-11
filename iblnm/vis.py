@@ -18,7 +18,7 @@ from iblnm.config import (
     PERSESSION_SIGNIFICANCE_ALPHA, PERSESSION_REGRESSORS,
     RESPONSE_DROPPED_TERMS, RESPONSE_EVENTS, RESPONSE_MAGNITUDE_WINDOW,
     STIM_ONSET_EVENT,
-    SESSIONTYPE2COLOR, SESSIONTYPE2FLOAT, TARGETNM2POSITION,
+    SESSION_GROUPS, SESSIONTYPE2COLOR, TARGETNM2POSITION,
     TARGETNM_COLORS, TARGETNMS_TO_ANALYZE,
     TICKFONTSIZE, LABELFONTSIZE,
 )
@@ -73,13 +73,15 @@ def set_plotsize(w, h=None, ax=None):
 
 
 def session_overview_matrix(group, columns='session_n', ax=None,
-                            color_by='session_type',
-                            split_float_map=None, split_color_map=None):
+                            color_by='session_group', split_color_map=None):
     """
-    Plot a matrix of sessions per subject, colored by session type.
+    Plot a matrix of sessions per subject, one color layer per session group.
 
-    All sessions in group._catalog are shown at 50% opacity. Sessions in
-    group.sessions (passing the current filter) are overlaid at 100% opacity.
+    Each group is painted as its own layer: cells belonging to the group carry
+    the group's color, every other cell is NaN and stays transparent, so the
+    layers stack without hiding one another. All sessions in group._catalog are
+    shown at 50% opacity. Sessions in group.sessions (passing the current
+    filter) are overlaid at 100% opacity.
 
     Parameters
     ----------
@@ -91,26 +93,22 @@ def session_overview_matrix(group, columns='session_n', ax=None,
     ax : matplotlib.axes.Axes, optional
         Axes to plot on.
     color_by : str
-        Column to color cells by. Defaults to 'session_type'.
-    split_float_map : dict, optional
-        Mapping from color_by values to float positions for the colormap.
-        Defaults to SESSIONTYPE2FLOAT.
+        Column to color cells by. Defaults to 'session_group'.
     split_color_map : dict, optional
-        Mapping from color_by values to colors. Defaults to SESSIONTYPE2COLOR.
+        Mapping from color_by values to colors, in the order the layers are
+        drawn and the legend is listed. Defaults to the SESSION_GROUPS colors.
 
     Raises
     ------
     ValueError
         If there is more than one session per (subject, columns) cell in _catalog.
     """
-    _float_map = split_float_map or SESSIONTYPE2FLOAT
-    _color_map = split_color_map or SESSIONTYPE2COLOR
+    _color_map = split_color_map or {
+        label: group_spec['color'] for label, group_spec in SESSION_GROUPS.items()
+    }
 
-    df_base = group._catalog.copy()
-    df_overlay = group.sessions.copy()
-
-    df_base['_float'] = df_base[color_by].map(_float_map)
-    df_overlay['_float'] = df_overlay[color_by].map(_float_map)
+    df_base = group._catalog
+    df_overlay = group.sessions
 
     # Subject order: earliest start_time across all catalog sessions
     first_start = df_base.groupby('subject')['start_time'].min().sort_values()
@@ -125,35 +123,29 @@ def session_overview_matrix(group, columns='session_n', ax=None,
             f"Duplicates:\n{dup_cells}"
         )
 
-    base_matrix = df_base.pivot_table(
-        index='subject', columns=columns, values='_float',
-        aggfunc='first', fill_value=0,
-    )
-    overlay_matrix = df_overlay.pivot_table(
-        index='subject', columns=columns, values='_float',
-        aggfunc='first',
-    )
+    base_matrix = df_base.pivot(index='subject', columns=columns, values=color_by)
+    base_matrix = base_matrix.reindex(subject_order)
+    # Reindex overlay to the same shape as base; cells it lacks are not painted
+    overlay_matrix = df_overlay.pivot(
+        index='subject', columns=columns, values=color_by
+    ).reindex(index=subject_order, columns=base_matrix.columns)
 
-    base_matrix = base_matrix.reindex(subject_order).fillna(0)
-    # Reindex overlay to the same shape as base; missing cells stay NaN (not painted)
-    overlay_matrix = overlay_matrix.reindex(
-        index=subject_order, columns=base_matrix.columns
-    )
-
-    # Build colormap from catalog values
-    present_types = [st for st in _float_map.keys() if st in df_base[color_by].values]
-    color_list = ['white'] + [_color_map[st] for st in present_types]
-    cmap = colors.ListedColormap(color_list)
-    bounds = [0] + [_float_map[st] for st in present_types] + [1.01]
-    norm = colors.BoundaryNorm(bounds, cmap.N)
+    groups_present = [label for label in _color_map
+                      if (base_matrix == label).any().any()]
 
     if ax is None:
         fig, ax = plt.subplots(
             figsize=(0.15 * len(base_matrix.columns), 0.15 * len(base_matrix))
         )
 
-    ax.matshow(base_matrix, cmap=cmap, norm=norm, alpha=0.5)
-    ax.matshow(overlay_matrix, cmap=cmap, norm=norm, alpha=1)
+    for label in groups_present:
+        cmap = colors.ListedColormap([_color_map[label]])
+        for matrix, alpha in [(base_matrix, 0.5), (overlay_matrix, 1)]:
+            membership = np.where(matrix == label, 1.0, np.nan)
+            ax.matshow(membership, cmap=cmap, vmin=0, vmax=1, alpha=alpha)
+
+    ax.legend(handles=[Patch(facecolor=_color_map[label], label=label)
+                       for label in groups_present])
 
     # Format axes
     ax.set_yticks(np.arange(len(base_matrix)))
@@ -170,12 +162,6 @@ def session_overview_matrix(group, columns='session_n', ax=None,
         ax.axvline(xtick - 0.5, color='white')
     for ytick in np.arange(len(base_matrix)):
         ax.axhline(ytick - 0.5, color='white')
-
-    # Colorbar
-    tick_positions = [(bounds[i] + bounds[i + 1]) / 2 for i in range(1, len(bounds) - 1)]
-    cbar = plt.colorbar(ax.images[0], ax=ax, shrink=0.5, boundaries=bounds, ticks=tick_positions)
-    cbar.set_ticklabels(present_types)
-    cbar.ax.set_ylim(bounds[1], bounds[-1])
 
     return ax
 
