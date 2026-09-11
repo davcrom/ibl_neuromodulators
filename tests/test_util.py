@@ -614,48 +614,62 @@ class TestDeduplicateLog:
 
 class TestDeriveTargetNM:
 
-    def test_list_column(self):
+    def test_region_outside_target2nm_takes_the_rows_nm(self):
         from iblnm.util import derive_target_nm
         df = pd.DataFrame({
-            'brain_region': [['VTA', 'DR'], ['LC']],
+            'NM': ['NE'],
+            'brain_region': [['LC', 'CP']],
         })
         result = derive_target_nm(df)
-        assert result['target_NM'].iloc[0] == ['VTA-DA', 'DR-5HT']
+        assert result['target_NM'].iloc[0] == ['LC-NE', 'CP-NE']
+        assert result['NM'].iloc[0] == 'NE'
+
+    def test_empty_nm_falls_back_to_the_region(self):
+        from iblnm.util import derive_target_nm
+        df = pd.DataFrame({
+            'NM': [None, None],
+            'brain_region': [['VTA'], ['LC']],
+        })
+        result = derive_target_nm(df)
+        assert result['target_NM'].iloc[0] == ['VTA-DA']
         assert result['target_NM'].iloc[1] == ['LC-NE']
-        assert result['NM'].iloc[0] == 'DA'
-        assert result['NM'].iloc[1] == 'NE'
+        assert result['NM'].tolist() == ['DA', 'NE']
+
+    def test_empty_nm_and_no_mappable_region_stays_none(self):
+        from iblnm.util import derive_target_nm
+        df = pd.DataFrame({
+            'NM': [None],
+            'brain_region': [['CP', 'MGv']],
+        })
+        result = derive_target_nm(df)
+        assert result['NM'].iloc[0] is None
+        assert result['target_NM'].iloc[0] == [None, None]
 
     def test_scalar_column(self):
         from iblnm.util import derive_target_nm
         df = pd.DataFrame({
-            'brain_region': ['VTA', 'DR', 'LC'],
+            'NM': ['DA', None, 'NE'],
+            'brain_region': ['VTA', 'DR', 'CP'],
         })
         result = derive_target_nm(df)
-        assert result['target_NM'].tolist() == ['VTA-DA', 'DR-5HT', 'LC-NE']
+        assert result['target_NM'].tolist() == ['VTA-DA', 'DR-5HT', 'CP-NE']
         assert result['NM'].tolist() == ['DA', '5HT', 'NE']
 
     def test_hemisphere_suffix_stripped(self):
         from iblnm.util import derive_target_nm
         df = pd.DataFrame({
-            'brain_region': ['VTA-r', 'DR-l'],
+            'NM': ['ACh'],
+            'brain_region': [['NBM-l']],
         })
         result = derive_target_nm(df)
-        assert result['target_NM'].tolist() == ['VTA-DA', 'DR-5HT']
-
-    def test_unknown_region_returns_none(self):
-        from iblnm.util import derive_target_nm
-        df = pd.DataFrame({
-            'brain_region': ['UnknownRegion'],
-        })
-        result = derive_target_nm(df)
-        assert result['target_NM'].iloc[0] is None
-        assert result['NM'].iloc[0] is None
+        assert result['target_NM'].iloc[0] == ['NBM-ACh']
 
     def test_does_not_modify_input(self):
         from iblnm.util import derive_target_nm
-        df = pd.DataFrame({'brain_region': ['VTA']})
+        df = pd.DataFrame({'NM': [None], 'brain_region': ['VTA']})
         derive_target_nm(df)
         assert 'target_NM' not in df.columns
+        assert df['NM'].iloc[0] is None
 
 
 class TestFillParallelListsFromGroup:
@@ -1174,6 +1188,7 @@ class TestFixCatalog:
             'eid': ['a', 'b'],
             'subject': ['M1', 'M1'],
             'start_time': ['2024-01-01T10:00:00', '2024-01-03T10:00:00'],
+            'NM': [None, None],
             'brain_region': [['SNC'], []],
             'hemisphere': [['l'], []],
         })
@@ -1202,6 +1217,7 @@ class TestFixCatalog:
             'subject': ['M1'] * 4,
             'start_time': ['2024-01-01T10:00:00', '2024-01-02T10:00:00',
                            '2024-01-03T10:00:00', '2024-01-04T10:00:00'],
+            'NM': ['ACh'] * 4,
             'brain_region': [['NBM', 'PPT'], ['PPT', 'NBM'], [], []],
             'hemisphere': [['', ''], ['', ''], [], []],
         })

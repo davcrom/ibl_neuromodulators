@@ -168,12 +168,16 @@ def get_session_type(session):
     return session
 
 
+def bare_region(region: str) -> str:
+    """Drop a trailing `-l`/`-r` hemisphere suffix from a brain region name."""
+    return region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
+
+
 @exception_logger
 def get_targetNM(session):
     NM = session['NM']
     target_NMs = [
-        f"{region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region}-{NM}"
-        if region else None
+        f'{bare_region(region)}-{NM}' if region else None
         for region in session['brain_region']
     ]
     # Always set target_NM so it stays parallel with brain_region/hemisphere,
@@ -752,17 +756,28 @@ def get_contrast_coding(coding='log'):
                      f"Choose from 'log', 'log2', 'linear', 'rank'.")
 
 
-def derive_target_nm(df, brain_region_col='brain_region'):
-    """Derive target_NM and NM columns from brain_region.
+def derive_target_nm(df: pd.DataFrame,
+                     brain_region_col: str = 'brain_region') -> pd.DataFrame:
+    """Label every fiber with the session's neuromodulator.
 
-    Uses config.TARGET2NM to map bare region names (without hemisphere suffix)
-    to neuromodulator identity. Works on both list columns (sessions shape)
-    and scalar columns (recordings shape).
+    `NM` names the neuromodulatory population expressing GCaMP, a property of
+    the subject's genotype set upstream by `io.get_subject_info` as
+    `STRAIN2NM.get(strain) or LINE2NM.get(line)`. It is read off the row here;
+    the `config.TARGET2NM` region lookup is only the fallback for a row whose
+    `NM` is empty, and the resolved value is written back only there.
+
+    Each label is `{bare_region}-{NM}`, the bare region dropping a `-l`/`-r`
+    hemisphere suffix. A fiber in a region outside `config.VALID_TARGETS` (`CP`,
+    `MGv`) therefore keeps a label instead of nulling it, and no longer costs
+    the session its `NM`.
+
+    Works on both list columns (sessions shape) and scalar columns (recordings
+    shape), detected from the first row.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Must contain ``brain_region_col``.
+        Must contain ``brain_region_col`` and 'NM'.
     brain_region_col : str
         Column name containing brain region(s).
 
@@ -774,30 +789,29 @@ def derive_target_nm(df, brain_region_col='brain_region'):
     from iblnm.config import TARGET2NM
 
     df = df.copy()
-
-    def _target_nm_from_region(region):
-        bare = region.rsplit('-', 1)[0] if region.endswith(('-l', '-r')) else region
-        nm = TARGET2NM.get(bare)
-        return f'{bare}-{nm}' if nm else None
-
-    first_val = df[brain_region_col].iloc[0] if len(df) > 0 else None
-    is_list_col = isinstance(first_val, (list, np.ndarray))
-
+    is_list_col = (len(df) > 0
+                   and isinstance(df[brain_region_col].iloc[0], (list, np.ndarray)))
     if is_list_col:
-        df['target_NM'] = df[brain_region_col].apply(
-            lambda rs: [_target_nm_from_region(r) for r in rs]
-            if isinstance(rs, (list, np.ndarray)) else rs
-        )
-        df['NM'] = df['target_NM'].apply(
-            lambda ts: ts[0].split('-')[-1]
-            if isinstance(ts, (list, np.ndarray)) and len(ts) > 0 and ts[0]
-            else None
+        region_lists = df[brain_region_col].apply(
+            lambda rs: list(rs) if isinstance(rs, (list, np.ndarray)) else []
         )
     else:
-        df['target_NM'] = df[brain_region_col].apply(_target_nm_from_region)
-        df['NM'] = df['target_NM'].apply(
-            lambda t: t.split('-')[-1] if t else None
-        )
+        region_lists = df[brain_region_col].apply(lambda r: [r])
+
+    def _resolve_nm(nm, regions):
+        """The row's own NM, else the first region that maps through TARGET2NM."""
+        if isinstance(nm, str) and nm:
+            return nm
+        bares = (bare_region(region) for region in regions)
+        return next((TARGET2NM[bare] for bare in bares if bare in TARGET2NM), None)
+
+    nms = [_resolve_nm(nm, regions)
+           for nm, regions in zip(df['NM'], region_lists)]
+    labels = [[f'{bare_region(r)}-{nm}' if r and nm else None for r in regions]
+              for nm, regions in zip(nms, region_lists)]
+
+    df['NM'] = nms
+    df['target_NM'] = labels if is_list_col else [ts[0] for ts in labels]
 
     return df
 
