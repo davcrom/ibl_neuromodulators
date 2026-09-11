@@ -578,6 +578,88 @@ ones whose window was masked end to end and whose magnitude is therefore NaN.
 | `pct_fully_masked` | float | % of trials with every sample masked |
 | `pct_move_in_window` | float | % of trials whose `reaction_time` is inside the window |
 
+### The per-session response model
+
+`scripts/responses.py` fits one OLS model per recording x event: the window
+mean of the GCaMP response against six trial-level regressors and twelve of
+their two-way interactions (`config.RESPONSE_MODEL_FORMULA`). Coding comes from
+`config.PREDICTOR_TRANSFORMS`, with the two lateralized columns derived by
+`iblnm.task.add_relative_contrast` relative to the recording fiber's
+hemisphere.
+
+| Regressor | Coding |
+|---|---|
+| `contrast` | log2 of percent contrast, 0% clamped to 0, then mean-centered |
+| `side` | stimulus side: contra +0.5, ipsi -0.5 |
+| `reward` | `feedbackType`: correct +0.5, error -0.5 |
+| `choice_side` | chosen side: contra +0.5, ipsi -0.5 |
+| `log_reaction_time` | log10(`firstMovement_times` - stimOn), mean-centered |
+| `peak_velocity` | max absolute wheel speed over the trial, mean-centered |
+
+Centering is within the frame handed to `code_predictors`, one recording-event
+for these fits, so every main effect is read at that cell's own mean rather
+than at a raw zero no trial reaches. The deviation coding of the three binary
+regressors means a main effect is the average over its two levels and an
+interaction is a difference of slopes between them, with no reference level.
+
+Three two-ways are deliberately absent: `side:reward`, `choice_side:side` and
+`choice_side:reward`. On go trials the choice is determined by the stimulus
+side and the outcome (`choice_side` ~ 2 * `side` * `reward`), so `choice_side`
+enters as a main effect to keep its own interactions visible while the
+products that re-encode it are left out.
+
+#### Drop-one labels
+
+`config.RESPONSE_DROPPED_TERMS` maps a label to the formula terms removed to
+build that label's reduced model. The label's unique contribution is the R2 of
+the full model minus the R2 of that reduced model, and the label is the unit of
+identity downstream: the `predictor` value in the OLS output table, the figure
+filename and the plot label. Nothing derives a label's term list from its name.
+
+- An **interaction label** is spelled exactly as the term (`contrast:reward`)
+  and drops that one term, leaving both of its mains standing. Its delta-R2 is
+  therefore the variance that no additive combination of the two predictors can
+  explain.
+- A **main-effect label** (`contrast`) drops the main effect and every two-way
+  it enters, so its delta-R2 covers everything that predictor touches.
+
+The two grains are not comparable and do not sum: the main-effect labels
+overlap each other through the shared interaction terms.
+
+The key and the value do different jobs, which is why a label cannot be renamed
+to something biological. The value lists the terms deleted from the formula, so
+it defines the reduced fit. The key names the column swapped out in the
+permutation test: `analysis.permutation_null_delta_r2` splits it on `':'` and
+reads the donor session's columns of those names, so it must be an exact
+regressor name. A biological name belongs in a display lookup, not in this
+dict.
+
+#### Biological interpretation of the interaction terms
+
+| Term | Stimulus window | Feedback window |
+|---|---|---|
+| `contrast:reward` | Difficulty-graded covariation with the trial's eventual outcome; no outcome has occurred. | Reward prediction error: a signed error predicts no such term, an unsigned error predicts one. |
+| `contrast:side` | Lateralized visual drive. | |
+| `contrast:choice_side` | Credit is assigned in proportion to the evidence behind the action: strongly-supported choices get updated more than guesses. | |
+| `contrast:log_reaction_time` | Confidence in the action being taken. | Confidence scaling the update: an error after a confident choice is informative, an error after a guess is not. |
+| `contrast:peak_velocity` | Effort spent in proportion to expected payoff: move fast when the evidence says the reward is likely, conserve effort when it's a guess. | |
+| `side:log_reaction_time` | Spatial attention: gain applied to one hemifield, so stimuli there are detected sooner. | |
+| `side:peak_velocity` | Orienting: a stimulus in one hemifield mobilizes a more vigorous movement. | |
+| `reward:log_reaction_time` | | Payoff of deliberation; speed-accuracy tradeoff; a signal that could drive post-error slowing. |
+
+Why signed and unsigned coding separate here: expected value rises with
+contrast, so with p = p(correct | contrast), a signed prediction error is
+1 - p on correct trials and -p on error trials. Both arms fall with contrast at
+the same rate, which is a contrast main effect, and their difference is 1 at
+every contrast, so a pure signed error carries no `contrast:reward` term. An
+unsigned error, |RPE|, gives 1 - p on correct and p on error, whose arms
+diverge with contrast, which is exactly this interaction.
+
+Read this term beside `masking_diagnostics.parquet`: masking removes more of
+the window on fast trials and fast trials are more common at high contrast, so
+any contrast-dependent term is partly a statement about which trials still had
+a window to average.
+
 ### `data/qc_photometry.pqt` — one row per (session, brain region)
 
 QC is stored per region but not per band, so the band it scored is suffixed

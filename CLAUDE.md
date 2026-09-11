@@ -42,6 +42,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | QC thresholds and metrics | `config.py → QC_RAW_METRICS, QC_SLIDING_METRICS, PHOTOMETRY_QC_THRESHOLDS` |
 | Preprocessing pipeline steps | `config.py → PREPROCESSING_PIPELINES` |
 | Analysis windows | `config.py → RESPONSE_WINDOW, BASELINE_WINDOW, RESPONSE_MAGNITUDE_WINDOW` |
+| Response OLS model, drop-one labels | `config.py → RESPONSE_MODEL_FORMULA, RESPONSE_DROPPED_TERMS, PREDICTOR_TRANSFORMS`; interpretation in `README.md` |
 | Colors and plot params | `config.py → NM_COLORS, TARGETNM_COLORS, SESSIONTYPE2COLOR` |
 | Valid values for fields | `config.py → VALID_STRAINS, VALID_TARGETS, VALID_TARGETNMS` |
 | Session/subject exclusions | `config.py → SUBJECTS_TO_EXCLUDE, EIDS_TO_DROP, EXCLUDE_SESSION_TYPES` |
