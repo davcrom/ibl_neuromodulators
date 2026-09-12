@@ -4798,6 +4798,22 @@ class TestFilterPhotometryQc:
         assert list(group.recordings['brain_region']) == ['VTA']
         assert list(group.sessions['eid']) == ['eid-1']
 
+    def test_session_lists_name_only_passing_regions(self, tmp_path):
+        """The session row `process` hands out cannot reach a failed fiber."""
+        store_photometry_qc(tmp_path, 'eid-1', {
+            'VTA': {'n_unique_samples_GCaMP': 0.5,
+                    'n_unique_samples_Isosbestic': 0.4},
+            'SNc': {'n_unique_samples_GCaMP': 0.002,
+                    'n_unique_samples_Isosbestic': 0.3}})
+        group = qc_group(tmp_path, {'eid-1': ['VTA', 'SNc']})
+
+        self._filter(group)
+
+        session = group.sessions.iloc[0]
+        assert session['brain_region'] == ['VTA']
+        assert session['hemisphere'] == ['l']
+        assert session['target_NM'] == ['VTA-DA']
+
     def test_one_failing_band_fails_the_recording(self, tmp_path):
         store_photometry_qc(tmp_path, 'eid-1', {
             'VTA': {'n_unique_samples_GCaMP': 0.5,
@@ -6169,6 +6185,48 @@ class TestFilterSessions:
         )
         # Both sessions have target-0, so both survive
         assert len(group.sessions) == 2
+
+    def test_session_lists_name_only_kept_targets(self):
+        """A session kept for one target does not carry the other's fiber.
+
+        The DR+MR shape: the session survives on the analysed target, and the
+        row `process` hands `PhotometrySession` must not name the excluded one,
+        or a per-session pass measures it.
+        """
+        from iblnm.data import PhotometrySessionGroup
+        df = _make_sessions_df(n_eids=1, regions_per=2)
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            qc_blockers=set(),
+            targetnms=['target-0'],
+            photometry_qc=False,
+            min_performance=False, required_contrasts=False,
+        )
+        session = group.sessions.iloc[0]
+        assert session['target_NM'] == ['target-0']
+        assert len(session['brain_region']) == 1
+        assert len(session['hemisphere']) == 1
+
+    def test_region_less_session_keeps_empty_lists(self):
+        """With the recording filters off, `sessions` round-trips the catalog.
+
+        `scripts/download.py` writes `sessions.pqt` from `group.sessions` with
+        every recording filter off, and the catalog holds sessions Alyx gave no
+        region at all; their empty lists must come back empty.
+        """
+        from iblnm.data import PhotometrySessionGroup
+        df = _make_sessions_df(n_eids=2, regions_per=1)
+        for column in ('brain_region', 'hemisphere', 'target_NM'):
+            df.at[1, column] = []
+        group = PhotometrySessionGroup(df, one=MagicMock())
+        group.filter_sessions(
+            qc_blockers=set(), targetnms=False, photometry_qc=False,
+            min_performance=False, required_contrasts=False,
+        )
+        sessions = group.sessions.set_index('eid')
+        assert sessions.loc['eid-0', 'brain_region'] == ['VTA-r']
+        assert sessions.loc['eid-1', 'brain_region'] == []
+        assert sessions.loc['eid-1', 'target_NM'] == []
 
     def test_drops_session_with_no_valid_targets(self):
         from iblnm.data import PhotometrySessionGroup

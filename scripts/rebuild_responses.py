@@ -15,6 +15,10 @@ Usage:
     python scripts/rebuild_responses.py --workers 4       # in parallel
     python scripts/rebuild_responses.py --session-type biased
     python scripts/rebuild_responses.py --target-NM LC-NE
+
+`--target-NM` restricts the recordings re-cut as well as the sessions, so the
+fibers not named keep the responses their last run wrote — stale, if the cut
+changed. Re-cut the whole store, or name every target the session carries.
 """
 import os
 
@@ -114,7 +118,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--target-NM', nargs='+', choices=VALID_TARGETNMS,
                         default=None,
                         help='Restrict to sessions carrying a recording from '
-                             'one of these target neuromodulators '
+                             'one of these target neuromodulators. '
+                             'Only the named recordings are built '
                              '(default: all)')
     return parser.parse_args(argv)
 

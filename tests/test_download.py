@@ -556,14 +556,20 @@ class TestTargetNMFilter:
                            (['LC'], ['VTA'], ['LC', 'VTA']))
 
     def test_a_session_is_kept_for_any_of_its_recordings(self, stored):
-        """The mixed session is built whole, on the strength of its LC fiber."""
+        """The mixed session is built, and only for the fiber that was named.
+
+        The flag narrows fibers as well as sessions, because `sessions` names
+        the recordings that survived `filter_sessions`. The build then rewrites
+        the file whole, so the VTA fiber's stored products are dropped from a
+        session built under `--target-NM LC-NE`.
+        """
         eids, processed = stored
 
         download.main(['--target-NM', 'LC-NE'])
 
         built = processed[0].sessions
         assert sorted(built['eid']) == [eids[0], eids[2]]
-        assert built.set_index('eid').loc[eids[2], 'brain_region'] == ['LC', 'VTA']
+        assert built.set_index('eid').loc[eids[2], 'brain_region'] == ['LC']
 
     def test_no_flag_builds_every_target(self, stored):
         eids, processed = stored

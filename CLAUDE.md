@@ -294,13 +294,21 @@ degrades the response cut to the events that survive rather than abandoning it.
 Video's three raw fetches are caught separately, so a session with no
 LightningPose still contributes its motion energy and its camera clock.
 
-The CLI narrows which sessions run, never what is built within one:
+The CLI narrows which sessions run:
 
 | flag | effect |
 |---|---|
 | `--workers N`, `-w N` | parallel worker processes |
 | `--session-type` | restrict to the named `config.SESSION_TYPES` |
-| `--target-NM` | restrict to sessions carrying a recording from one of the named `config.VALID_TARGETNMS` |
+| `--target-NM` | restrict to sessions carrying a recording from one of the named `config.VALID_TARGETNMS`, and to those recordings |
+
+`--target-NM` narrows the recordings too, because `group.sessions` names the
+fibers that survived `filter_sessions` and `build_session` builds the fibers the
+session names. The file is rewritten whole, so a mixed-fiber session built
+under it loses the products of the fibers not named. Build the whole store, or
+name every target the session carries. `scripts/rebuild_responses.py` shares
+the flag and the consequence, less destructively: the fibers not named keep the
+responses their last run wrote, stale if the cut changed.
 
 `main` runs `fetch_catalog` first, then `filter_sessions` with every analysis
 filter switched off — those are the criteria a session must clear to be
@@ -594,12 +602,18 @@ group.filter_sessions(session_types=('biased', 'ephys'), targetnms=TARGETNMS_TO_
 group.deduplicate()
 ```
 
-- `group.sessions` — property: session-level rows passing both the filter mask
-  and the dedup mask. List columns: `brain_region`, `hemisphere`, `target_NM`.
-- `group.recordings` — property: one row per region, scalar columns, plus
-  `fiber_idx`. Derived by exploding `sessions` on the parallel list columns.
-  Filtered to `_recordings_targetnms` and `_recordings_photometry_qc` (both set
-  by `filter_sessions`). Always reflects the current filter and dedup state.
+- `group.recordings` — property, and the table of record: one row per region,
+  scalar columns, plus `fiber_idx`. Derived by exploding `_catalog`'s
+  filter-and-dedup-masked rows on the parallel list columns, then filtered to
+  `_recordings_targetnms` and `_recordings_photometry_qc` (both set by
+  `filter_sessions`). Always reflects the current filter and dedup state.
+- `group.sessions` — property: the same masked rows, one per session, with the
+  `brain_region`, `hemisphere` and `target_NM` lists rebuilt from the
+  recordings that survived. Derived from `recordings`, not the reverse, so a
+  fiber either recording-level filter dropped is absent from the row
+  `process` hands `PhotometrySession` and no per-session pass can load,
+  measure or fit it. A session left with no fiber keeps its row and carries
+  empty lists, as does one the catalog never gave a region.
 
 `from_catalog` applies `enforce_schema` and `validate_parallel_lists` before
 constructing the object. `filter_sessions(targetnms=TARGETNMS_TO_ANALYZE)` is

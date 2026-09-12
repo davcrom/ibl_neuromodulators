@@ -4539,21 +4539,46 @@ class PhotometrySessionGroup:
         self._catalog = fix_catalog(self._catalog)
 
     @property
+    def _masked_catalog(self):
+        """_catalog rows passing both the dedup and the filter mask."""
+        return self._catalog[self._dedup_mask & self._filter_mask]
+
+    @property
     def sessions(self):
-        """Session-level view: _catalog rows passing both dedup and filter masks."""
-        combined = self._dedup_mask & self._filter_mask
-        return self._catalog[combined].copy().reset_index(drop=True)
+        """Session-level view: one row per session, naming its kept fibers only.
+
+        Derived from `recordings`, not from a mask of its own: the
+        `PARALLEL_COLS` lists are rebuilt from the recordings that survived,
+        so a fiber the target-NM or photometry-QC filter dropped is absent
+        from the row a `PhotometrySession` is built from and cannot be loaded,
+        measured or fitted by a per-session pass. Every other column, the row
+        order and the dtypes are the masked catalog's.
+
+        A session left with no fiber keeps its row and carries empty lists, as
+        does one the catalog never gave a region — the two are the same thing
+        to a caller, and `process` has nothing to iterate onto in either case.
+        """
+        rows = self._masked_catalog.copy().reset_index(drop=True)
+        # Region-less catalog rows explode to a NaN fiber; dropping those here
+        # is what lets their empty lists round-trip as empty rather than [nan].
+        kept = (self.recordings.dropna(subset=['brain_region'])
+                .groupby('eid')[PARALLEL_COLS].agg(list))
+        for column in PARALLEL_COLS:
+            fibers = rows['eid'].map(kept[column])
+            rows[column] = [value if isinstance(value, list) else []
+                            for value in fibers]
+        return rows
 
     @property
     def recordings(self):
-        """Recording-level view: sessions exploded to one row per region.
+        """Recording-level view: the masked catalog exploded to one row per region.
 
         Reflects the current filter and dedup masks. Filters to
         _recordings_targetnms and to _recordings_photometry_qc, the
         (eid, brain_region) pairs clearing the QC thresholds, both set by
         filter_sessions and both skipped when False.
         """
-        df = _explode_recordings(self.sessions)
+        df = _explode_recordings(self._masked_catalog)
         if self._recordings_targetnms is not False:
             df = df[df['target_NM'].isin(self._recordings_targetnms)]
         if self._recordings_photometry_qc is not False:

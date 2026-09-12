@@ -15,6 +15,11 @@ Usage:
     python scripts/download.py --workers 4              # in parallel
     python scripts/download.py --session-type biased    # one session type
     python scripts/download.py --target-NM LC-NE        # one target population
+
+`--target-NM` restricts the recordings built as well as the sessions, and a
+session's file is rewritten whole, so a mixed-fiber session built under it
+loses the products of the fibers not named. Build the whole store, or name
+every target the session carries.
 """
 import os
 
@@ -266,7 +271,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--target-NM', nargs='+', choices=VALID_TARGETNMS,
                         default=None,
                         help='Restrict to sessions carrying a recording from '
-                             'one of these target neuromodulators '
+                             'one of these target neuromodulators. '
+                             'Only the named recordings are built '
                              '(default: all)')
     return parser.parse_args(argv)
 
