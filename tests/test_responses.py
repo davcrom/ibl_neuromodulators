@@ -7,8 +7,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from iblnm.config import (RESPONSE_DROPPED_TERMS, RESPONSES,
-                          STIM_ONSET_EVENT)
+from iblnm.config import (RESPONSE_DROPPED_TERMS, RESPONSE_MAGNITUDE_COLUMNS,
+                          RESPONSES, STIM_ONSET_EVENT)
 from iblnm.data import PhotometrySession
 
 
@@ -139,7 +139,7 @@ class TestConditionTraces:
             'contrast': contrast, 'feedbackType': feedback_type,
             'choice': 1, 'response_time': 1.0, 'reaction_time': 0.2,
             'probabilityLeft': probability_left,
-            'side': 'contra', 'reaction_time_bin': 'mid',
+            'side': 'contra',
         })
 
     def test_uncorrected_means_are_the_raw_trace_means(self):
@@ -267,6 +267,24 @@ class TestConditionTraces:
 
         assert agg['mean'].tolist() == [pytest.approx(110 / 3)] * 5
         assert agg['n'].tolist() == [3] * 5
+
+    def test_averages_a_frame_carrying_only_the_stored_columns(self):
+        """The magnitude frame the script hands in carries
+        ``RESPONSE_MAGNITUDE_COLUMNS`` plus whichever factors the run's
+        ``RESPONSES`` entry derived, so the conditions averaged within must be
+        drawn from that set alone."""
+        from scripts.responses import condition_traces
+        rec, ps = self._recording([[0., 1., 2., 3., 4.],
+                                   [2., 3., 4., 5., 6.]])
+        trials = self._trials(2)
+        stored = trials[[col for col in RESPONSE_MAGNITUDE_COLUMNS
+                         if col in trials]]
+
+        agg = condition_traces([(rec, ps)], stored, ['feedback_times'],
+                               mode='pool', correct=False)
+
+        assert agg['mean'].tolist() == [1., 2., 3., 4., 5.]
+        assert agg['n'].tolist() == [2] * 5
 
 
 class _LinkSession:

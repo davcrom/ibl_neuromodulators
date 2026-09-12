@@ -99,9 +99,11 @@ _TRACE_KEYS = ['eid', 'subject', 'target_NM', 'brain_region']
 # The trial conditions each recording's traces are averaged within, on top of
 # whichever keys the figure itself groups on. Finer than any figure's own
 # grouping, so a single pass over the store answers all of them: the averages
-# stored are the same whichever way they are later combined.
-TRACE_CELL_FACTORS = ['side', 'feedbackType', 'contrast', 'reaction_time_bin',
-                      'probabilityLeft', 'eid', 'brain_region', 'subject']
+# stored are the same whichever way they are later combined. Every one is a
+# `config.RESPONSE_MAGNITUDE_COLUMNS` column, because the magnitude frame these
+# average is narrowed to that schema before it gets here.
+TRACE_CELL_FACTORS = ['side', 'feedbackType', 'contrast', 'probabilityLeft',
+                      'eid', 'brain_region', 'subject']
 
 # A `<column>_bin` trials column is that column cut into within-session
 # terciles, labelled low to high.
