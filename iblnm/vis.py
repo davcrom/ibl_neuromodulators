@@ -4849,6 +4849,58 @@ def draw_transition_traces(
     ax.tick_params(labelsize=7)
 
 
+DOT_JITTER = 0.12  # half-width, in x units, of the per-session dot spread
+
+
+def draw_state_violins(ax, values: pd.DataFrame, column: str) -> None:
+    """One violin per state of a per-session measure, sessions overlaid.
+
+    Each state sits at an integer x position, colored by position
+    (``plt.cm.tab10``) to match the other panels, with its sessions scattered
+    over the violin at evenly spaced offsets. A dashed line marks zero, the
+    value a measure with no outcome difference takes. A frame with no rows —
+    every cell short of its trial count — leaves the axis empty.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to draw on. Its x ticks are set to the state labels.
+    values : pandas.DataFrame
+        One row per session x state, columns ``['eid', 'state']`` plus
+        ``column``.
+    column : str
+        The measure column plotted on y.
+    """
+    states = sorted(values['state'].unique())
+    positions = np.arange(len(states))
+    ax.set_xticks(positions, [str(state) for state in states])
+    if not states:  # every cell fell short of its trial count
+        return
+    ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+    state_colors = plt.cm.tab10(positions)
+    groups = [values.loc[values['state'] == state, column].to_numpy()
+              for state in states]
+    # Matplotlib's own violins rather than `violinplot`: that helper scatters a
+    # group of fewer than ten points instead of drawing a body, and a mouse
+    # contributes one point per session, so most states would lose their violin
+    # and have their sessions drawn twice.
+    violins = ax.violinplot(groups, positions, showmedians=True,
+                            showextrema=False, widths=0.6)
+    for body, color in zip(violins['bodies'], state_colors):
+        body.set_facecolor('none')
+        body.set_edgecolor(color)
+        body.set_linewidth(1)
+    violins['cmedians'].set_color(state_colors)
+    for position, group, color in zip(positions, groups, state_colors):
+        # Evenly spaced offsets, endpoints excluded: deterministic, and a lone
+        # session lands on the violin's center.
+        offsets = np.linspace(-DOT_JITTER, DOT_JITTER, len(group) + 2)[1:-1]
+        ax.scatter(position + offsets, group, s=8, color=color,
+                   alpha=POINT_ALPHA, zorder=3)
+    ax.set_xlabel('state', fontsize=8)
+    ax.tick_params(labelsize=7)
+
+
 def plot_state_behavior(
     subject: str,
     states: pd.DataFrame,
@@ -4903,6 +4955,65 @@ def plot_state_behavior(
             xlabel='trial from transition',
             line_labels=[f'state {i + 1}' for i in range(stats['mean'].shape[1])])
     fig.suptitle(subject)
+    return fig
+
+
+def plot_state_neural(
+    title: str,
+    traces: Mapping[str, Mapping[str, np.ndarray]],
+    differences: Mapping[str, pd.DataFrame],
+    measure_labels: Mapping[str, str],
+    window: int,
+) -> plt.Figure:
+    """One mouse's DDM-HMM neural figure, 3x2.
+
+    One row per ``measure_labels`` entry: on the left the measure's change
+    around entry into each state (one line per entered state), on the right the
+    per-session correct-minus-incorrect difference in that measure, one violin
+    per state. States are colored by position within the mouse; each mouse is
+    fit separately, so state labels carry no meaning across mice.
+
+    Parameters
+    ----------
+    title : str
+        Figure title; the subject and the target-NM it was recorded from.
+    traces : mapping of str to mapping
+        ``{measure: {'mean', 'sem'}}`` of shape ``(2*window+1, n_states)``, from
+        :func:`iblnm.analysis.transition_delta_stats`. A measure absent here —
+        a mouse that never switched state — leaves its trace panel blank.
+    differences : mapping of str to pandas.DataFrame
+        ``{measure: frame}``, each ``['eid', 'state', measure]``, from
+        :func:`iblnm.analysis.normalized_outcome_difference`.
+    measure_labels : mapping of str to str
+        Measure -> plain-English name, in row order.
+    window : int
+        Half-window in trials of the lag traces.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        Six axes, row-major: (trace, violins) per measure.
+    """
+    fig, axes = plt.subplots(len(measure_labels), 2,
+                             figsize=(7, len(measure_labels) * ROW_HEIGHT),
+                             layout='constrained')
+    for (measure, label), (ax_trace, ax_violin) in zip(measure_labels.items(),
+                                                       axes):
+        stats = traces.get(measure)
+        if stats is None:
+            ax_trace.axis('off')
+        else:
+            draw_transition_traces(
+                ax_trace, stats, window=window, ylabel=f'Δ {label}',
+                xlabel='trial from state onset',
+                line_labels=[f'state {i + 1}'
+                             for i in range(stats['mean'].shape[1])])
+        draw_state_violins(ax_violin, differences[measure], measure)
+        ax_violin.set_ylabel(label, fontsize=8)
+    if next(iter(measure_labels)) in traces:
+        axes[0, 0].legend(fontsize=6, frameon=False)
+    axes[0, 1].set_title('correct − incorrect (SD)', fontsize=9)
+    fig.suptitle(title)
     return fig
 
 

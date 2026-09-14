@@ -3781,6 +3781,105 @@ class TestStateBehavior:
         plt.close(fig)
 
 
+class TestStateViolins:
+    """Per-state violins of the per-session normalized outcome difference."""
+
+    @staticmethod
+    def _values():
+        """Three sessions in state 1, two in state 2, at known differences."""
+        return pd.DataFrame({
+            'eid': ['e1', 'e2', 'e3', 'e1', 'e2'],
+            'state': [1, 1, 1, 2, 2],
+            'stimulus': [0.5, 0.7, 0.9, -0.4, -0.6],
+        })
+
+    def test_one_violin_per_state_with_every_session_point(self):
+        from iblnm.vis import draw_state_violins
+        fig, ax = plt.subplots()
+
+        draw_state_violins(ax, self._values(), 'stimulus')
+
+        # One scatter collection per state, holding that state's sessions.
+        scatters = [c for c in ax.collections if c.get_offsets().shape[1] == 2
+                    and len(c.get_offsets()) in (2, 3)]
+        points = np.vstack([c.get_offsets() for c in scatters])
+        assert sorted(points[:, 1]) == [-0.6, -0.4, 0.5, 0.7, 0.9]
+        # States sit at integer positions in ascending order, dots spread
+        # around them by less than half a slot.
+        assert [t.get_text() for t in ax.get_xticklabels()] == ['1', '2']
+        assert np.allclose(ax.get_xticks(), [0, 1])
+        assert np.all(np.abs(points[:, 0] - np.round(points[:, 0])) < 0.5)
+        plt.close(fig)
+
+    def test_measure_whose_cells_all_dropped_leaves_an_empty_axis(self):
+        from iblnm.vis import draw_state_violins
+        fig, ax = plt.subplots()
+
+        draw_state_violins(ax, self._values().iloc[:0], 'stimulus')
+
+        assert len(ax.collections) == 0
+        plt.close(fig)
+
+    def test_zero_line_is_dashed(self):
+        from iblnm.vis import draw_state_violins
+        fig, ax = plt.subplots()
+
+        draw_state_violins(ax, self._values(), 'stimulus')
+
+        zero_lines = [ln for ln in ax.lines
+                      if np.allclose(ln.get_ydata(), 0.0)
+                      and ln.get_linestyle() == '--']
+        assert len(zero_lines) == 1
+        plt.close(fig)
+
+
+class TestStateNeural:
+    """The per-mouse 3x2 neural figure."""
+
+    MEASURE_LABELS = {'baseline': 'pre-stimulus baseline',
+                      'stimulus': 'stimulus response',
+                      'feedback': 'feedback response'}
+
+    def test_panels_in_documented_order(self):
+        from matplotlib.collections import PolyCollection
+        from iblnm.vis import plot_state_neural
+        traces = {measure: TestTransitionTraces._stats(0.1, 0.02, window=5, k=2)
+                  for measure in self.MEASURE_LABELS}
+        values = TestStateViolins._values()
+        differences = {measure: values.rename(columns={'stimulus': measure})
+                       for measure in self.MEASURE_LABELS}
+
+        fig = plot_state_neural('ZFM-A SNc-DA', traces, differences,
+                                self.MEASURE_LABELS, window=5)
+
+        axes = fig.axes
+        assert len(axes) == 6
+        # Rows are the measures; left panel is the lag trace, right the violins.
+        assert [ax.get_ylabel() for ax in axes] == [
+            'Δ pre-stimulus baseline', 'pre-stimulus baseline',
+            'Δ stimulus response', 'stimulus response',
+            'Δ feedback response', 'feedback response']
+        for ax in axes[1::2]:
+            bodies = [c for c in ax.collections if isinstance(c, PolyCollection)]
+            assert len(bodies) == 2  # one per state present
+        assert fig.get_suptitle() == 'ZFM-A SNc-DA'
+        plt.close(fig)
+
+    def test_measure_with_no_trace_leaves_its_panel_blank(self):
+        from iblnm.vis import plot_state_neural
+        # A mouse that never switched state has no trace for any measure; its
+        # violins are still drawn.
+        values = TestStateViolins._values()
+        differences = {measure: values.rename(columns={'stimulus': measure})
+                       for measure in self.MEASURE_LABELS}
+
+        fig = plot_state_neural('ZFM-A SNc-DA', {}, differences,
+                                self.MEASURE_LABELS, window=5)
+
+        assert [ax.axison for ax in fig.axes] == [False, True] * 3
+        plt.close(fig)
+
+
 class TestStateParamScatter:
     """Across-mouse figure: one categorical color per mouse, one point per state."""
 
