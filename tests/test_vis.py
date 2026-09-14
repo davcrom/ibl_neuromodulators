@@ -3782,7 +3782,9 @@ class TestStateBehavior:
 
 
 class TestStateParamScatter:
-    """Goal-4a figure: color encodes within-mouse state, marker encodes mouse."""
+    """Across-mouse figure: one categorical color per mouse, one point per state."""
+
+    LABELS = {'B': 'B (bound)', 'k': 'k (drift-rate gain)', 'a0': 'a₀ (bias)'}
 
     def _params(self):
         return pd.DataFrame({
@@ -3793,21 +3795,37 @@ class TestStateParamScatter:
             'a0': [1.0, 2.0, 3.0, 4.0],
         })
 
-    def test_marker_per_mouse_color_per_state(self):
+    def test_one_color_per_mouse_shared_across_its_states(self):
         from iblnm.vis import plot_state_param_scatter
-        fig = plot_state_param_scatter(self._params())
+        fig = plot_state_param_scatter(self._params(), self.LABELS)
         fig.canvas.draw()  # 3D scatter resolves per-point facecolors at draw time
         ax = fig.axes[0]  # the single 3D axes
-        # One scatter collection per mouse (each mouse = one marker shape).
+        # One scatter collection per mouse.
         assert len(ax.collections) == 2
-        # State colors match the shared tab10-by-state scheme (RGB; alpha < 1).
-        facecolors = ax.collections[0].get_facecolors()  # ZFM-A, states [1, 2]
-        assert np.allclose(facecolors[0][:3], plt.cm.tab10(0)[:3])
-        assert np.allclose(facecolors[1][:3], plt.cm.tab10(1)[:3])
-        # Different mice draw different marker shapes.
-        shape_a = ax.collections[0].get_paths()[0].vertices.shape
-        shape_b = ax.collections[1].get_paths()[0].vertices.shape
-        assert shape_a != shape_b
+        colors_a = ax.collections[0].get_facecolors()  # ZFM-A, states [1, 2]
+        colors_b = ax.collections[1].get_facecolors()  # ZFM-B, states [1, 2]
+        # Both of a mouse's states carry that mouse's one color...
+        assert np.allclose(colors_a[0][:3], colors_a[-1][:3])
+        assert np.allclose(colors_b[0][:3], colors_b[-1][:3])
+        # ...and the two mice differ.
+        assert not np.allclose(colors_a[0][:3], colors_b[0][:3])
+        plt.close(fig)
+
+    def test_axis_labels_come_from_labels_in_xyz_order(self):
+        from iblnm.vis import plot_state_param_scatter
+        fig = plot_state_param_scatter(self._params(), self.LABELS)
+        ax = fig.axes[0]
+        assert ax.get_xlabel() == 'B (bound)'
+        assert ax.get_ylabel() == 'k (drift-rate gain)'
+        assert ax.get_zlabel() == 'a₀ (bias)'
+        plt.close(fig)
+
+    def test_one_legend_entry_per_mouse(self):
+        from iblnm.vis import plot_state_param_scatter
+        fig = plot_state_param_scatter(self._params(), self.LABELS)
+        legend, = fig.legends
+        assert [text.get_text() for text in legend.get_texts()] == [
+            'ZFM-A', 'ZFM-B']
         plt.close(fig)
 
 

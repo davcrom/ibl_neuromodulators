@@ -1,4 +1,3 @@
-import itertools
 import re
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
@@ -4907,74 +4906,46 @@ def plot_state_behavior(
     return fig
 
 
-_MOUSE_MARKERS = ('o', 's', '^', 'D', 'v', 'P', 'X', '*')
-
-
-def _mouse_markers(mice: list) -> dict:
-    """Map each mouse to a distinct marker shape (mouse = shape in the scatters)."""
-    return dict(zip(mice, itertools.cycle(_MOUSE_MARKERS)))
-
-
-def _state_mouse_handles(states, markers):
-    """Legend handles for the state-color and mouse-marker encodings."""
-    state_handles = [Line2D([], [], marker='o', linestyle='none',
-                            color=plt.cm.tab10(s - 1), label=f'state {s}')
-                     for s in states]
-    mouse_handles = [Line2D([], [], marker=marker, linestyle='none', color='0.4',
-                            label=mouse) for mouse, marker in markers.items()]
-    return state_handles, mouse_handles
-
-
-def _add_state_mouse_legends(fig, states, markers) -> None:
-    """Add two outside legends: state->color and mouse->marker shape."""
-    state_handles, mouse_handles = _state_mouse_handles(states, markers)
-    fig.legend(handles=state_handles, title='state', frameon=False,
-               fontsize=TICKFONTSIZE, loc='outside right upper')
-    fig.legend(handles=mouse_handles, title='mouse', frameon=False,
-               fontsize=TICKFONTSIZE, loc='outside right lower')
-
-
 def plot_state_param_scatter(
-    params_df: pd.DataFrame, params: tuple = ('B', 'k', 'a0')
+    params_df: pd.DataFrame, labels: dict[str, str]
 ) -> plt.Figure:
-    """3D scatter of per-state DDM parameters; color = state, marker = mouse.
+    """3D scatter of per-state DDM parameters, one color per mouse.
 
-    One point per (mouse, state) in the space of the three ``params`` (default
-    B, k, a0). Within-mouse state sets the color (shared ``plt.cm.tab10`` scheme,
-    matching every other goal figure) and mouse sets the marker shape, so a
-    recurring state signature reads as a cluster of one color across marker
-    shapes. State labels are unaligned across mice.
+    One point per (mouse, state) in the space of the three parameters
+    ``labels`` names. Color encodes the mouse, so a mouse whose states spread
+    across the space reads apart from one whose states cluster. State labels
+    are unaligned across mice and so are not encoded.
 
     Parameters
     ----------
     params_df : pandas.DataFrame
-        One row per (mouse, state), with ``mouse`` and ``state`` columns and the
-        columns named in ``params`` (per-state DDM parameters from
-        ``all_mice_bestK_params.csv``).
-    params : tuple of str, optional
-        The three parameter columns forming the x/y/z axes (default
-        ``('B', 'k', 'a0')``).
+        One row per (mouse, state), with a ``mouse`` column and the parameter
+        columns ``labels`` keys name.
+    labels : dict of str to str
+        Parameter column -> axis label, in x/y/z order. Three entries.
 
     Returns
     -------
     matplotlib.figure.Figure
-        One 3D axes, with outside state-color and mouse-marker legends.
+        One 3D axes, with an outside mouse->color legend.
     """
-    x_param, y_param, z_param = params
+    x_param, y_param, z_param = labels
     mice = sorted(params_df['mouse'].unique())
-    markers = _mouse_markers(mice)
-    states = sorted(params_df['state'].unique())
+    colors = dict(zip(mice, plt.cm.tab10(range(len(mice)))))
 
     fig = plt.figure(figsize=(6, 6), layout='constrained')
     ax = fig.add_subplot(projection='3d')
-    for mouse, marker in markers.items():
+    for mouse, color in colors.items():
         sub = params_df[params_df['mouse'] == mouse]
-        ax.scatter(sub[x_param], sub[y_param], sub[z_param], marker=marker,
-                   color=plt.cm.tab10(sub['state'].to_numpy() - 1),
+        ax.scatter(sub[x_param], sub[y_param], sub[z_param], color=color,
                    alpha=POINT_ALPHA, depthshade=False)
-    ax.set_xlabel(x_param)
-    ax.set_ylabel(y_param)
-    ax.set_zlabel(z_param)
+    ax.set_xlabel(labels[x_param])
+    ax.set_ylabel(labels[y_param])
+    ax.set_zlabel(labels[z_param])
 
-    _add_state_mouse_legends(fig, states, markers)
+    fig.legend(handles=[Line2D([], [], marker='o', linestyle='none',
+                               color=color, label=mouse)
+                        for mouse, color in colors.items()],
+               title='mouse', frameon=False, fontsize=TICKFONTSIZE,
+               loc='outside right upper')
     return fig

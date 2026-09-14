@@ -11,6 +11,10 @@ behavioral figure per mouse to ``figures/ddm-hmm/{subject}_behavior.svg``, 3x2:
 5. Per-state posterior traces around L->R block switches.
 6. The same around R->L block switches.
 
+It also writes one across-mouse figure, ``ddm_param_scatter.svg``: a 3D scatter
+of every mouse's per-state ``B``, ``k`` and ``a0``, one point per (mouse, DDM
+state) and one color per mouse.
+
 The ``PhotometrySessionGroup`` is the source of truth for which sessions are in
 scope: the fit's scope, ``BEHAVIOR_QC_BLOCKERS`` and no photometry QC. Each
 session's stored trials are joined to its stored fit through
@@ -40,7 +44,7 @@ from iblnm.analysis import (
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.task import fit_psychometric
-from iblnm.vis import plot_state_behavior
+from iblnm.vis import plot_state_behavior, plot_state_param_scatter
 
 # probabilityLeft (prev, cur) pairs defining each block-transition type.
 BLOCK_TRANSITIONS = {'L->R': (0.8, 0.2), 'R->L': (0.2, 0.8)}
@@ -50,6 +54,8 @@ SWITCH_WINDOW = 5  # half-window in trials around a state switch
 SWITCH_BASELINE = 2  # trials before a switch defining the Δ-measure baseline
 # feedbackType -> outcome label; splits the chronometric curves.
 OUTCOMES = {'correct': 1, 'incorrect': -1}
+# The scattered DDM parameters, in x/y/z order, with their plain-English names.
+PARAM_LABELS = {'B': 'B (bound)', 'k': 'k (drift-rate gain)', 'a0': 'a₀ (bias)'}
 
 
 def load_session_states(ps: PhotometrySession, k: int) -> dict:
@@ -123,6 +129,31 @@ def behavioral_frame(
     labels = sorted(int(state) for state in attrs['state']
                     if state not in no_response)
     return frame, labels
+
+
+def state_params(subject: str, attrs: dict) -> pd.DataFrame:
+    """One mouse's per-state DDM parameters, the no-response state removed.
+
+    Parameters
+    ----------
+    subject : str
+        The mouse the fit belongs to; becomes the ``mouse`` column.
+    attrs : dict
+        The fit's attrs, carrying one array per parameter indexed by state:
+        ``state`` and the :data:`PARAM_LABELS` keys, plus, new format only, a
+        matching ``kind`` array (``'ddm'`` or ``'omission'``). The no-response
+        state's DDM parameters are NaN, so it is dropped; old-format attrs
+        carry no ``kind`` and no such state, and keep every row.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per DDM state, columns ``['mouse', 'state', *PARAM_LABELS]``.
+    """
+    frame = pd.DataFrame({'mouse': subject, 'state': attrs['state'],
+                          **{param: attrs[param] for param in PARAM_LABELS}})
+    kind = attrs.get('kind')
+    return frame if kind is None else frame[kind != 'omission'].reset_index(drop=True)
 
 
 def build_state_param_table(mouse_frame: pd.DataFrame) -> pd.DataFrame:
@@ -419,6 +450,7 @@ def main(one=None) -> None:
             if fit is not None]
 
     subjects = dict.fromkeys(fit['trials']['subject'].iloc[0] for fit in fits)
+    params = []
     for subject in subjects:
         mouse_fits = [fit for fit in fits
                       if fit['trials']['subject'].iloc[0] == subject]
@@ -430,8 +462,13 @@ def main(one=None) -> None:
         _save(plot_state_behavior(subject, panels['states'], panels['dwell'],
                                   panels['curves'], panels['block_traces']),
               f'{subject}_behavior')
+        # Every session of a mouse carries the same fit's attrs.
+        params.append(state_params(subject, mouse_fits[0]['attrs']))
         print(f"  {subject}: {len(mouse_fits)} sessions, {len(frame)} trials")
-    print(f"Wrote {len(subjects)} figures to {DDM_HMM_FIGURES_DIR}")
+
+    _save(plot_state_param_scatter(pd.concat(params, ignore_index=True),
+                                   PARAM_LABELS), 'ddm_param_scatter')
+    print(f"Wrote {len(subjects) + 1} figures to {DDM_HMM_FIGURES_DIR}")
 
 
 if __name__ == '__main__':

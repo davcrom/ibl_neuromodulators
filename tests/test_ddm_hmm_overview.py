@@ -103,6 +103,40 @@ def test_behavioral_frame_keeps_every_row_of_an_old_format_fit():
 
 
 # =========================================================================
+# state_params
+# =========================================================================
+
+def test_state_params_drops_the_no_response_state_of_a_new_format_fit():
+    """The `kind == 'omission'` row carries NaN DDM params and must not plot."""
+    attrs = {'state': np.array([1, 2, 3]),
+             'kind': np.array(['ddm', 'ddm', 'omission']),
+             'B': np.array([1.0, 2.0, np.nan]),
+             'k': np.array([3.0, 4.0, np.nan]),
+             'a0': np.array([5.0, 6.0, np.nan])}
+
+    params = ddm.state_params('M1', attrs)
+
+    assert list(params['state']) == [1, 2]
+    assert list(params['mouse']) == ['M1', 'M1']
+    assert list(params['B']) == [1.0, 2.0]
+    assert list(params['k']) == [3.0, 4.0]
+    assert list(params['a0']) == [5.0, 6.0]
+
+
+def test_state_params_keeps_every_state_of_an_old_format_fit():
+    """Old-format attrs carry no `kind`, and so no no-response state."""
+    attrs = {'state': np.array([1, 2, 3, 4]),
+             'B': np.array([1.0, 2.0, 3.0, 4.0]),
+             'k': np.array([1.0, 2.0, 3.0, 4.0]),
+             'a0': np.array([1.0, 2.0, 3.0, 4.0])}
+
+    params = ddm.state_params('M2', attrs)
+
+    assert list(params['state']) == [1, 2, 3, 4]
+    assert set(params['mouse']) == {'M2'}
+
+
+# =========================================================================
 # build_state_param_table, _state_curves
 # =========================================================================
 
@@ -384,7 +418,9 @@ def _session_fit(eid, subject, converged):
         'eid': eid, 'subject': subject,
     })
     return {'trials': trials,
-            'attrs': {'state': np.array([1, 2]), 'converged': converged}}
+            'attrs': {'state': np.array([1, 2]), 'converged': converged,
+                      'B': np.array([1.0, 2.0]), 'k': np.array([3.0, 4.0]),
+                      'a0': np.array([5.0, 6.0])}}
 
 
 def test_main_saves_one_behavior_figure_per_mouse_and_warns_unconverged(
@@ -420,7 +456,38 @@ def test_main_saves_one_behavior_figure_per_mouse_and_warns_unconverged(
     ddm.main(one=object())
 
     assert process_calls == [(ddm.load_session_states, {'k': ddm.DDM_HMM_K})]
-    assert saved == ['M1_behavior', 'M2_behavior']
+    assert saved == ['M1_behavior', 'M2_behavior', 'ddm_param_scatter']
     warnings = [line for line in capsys.readouterr().out.splitlines()
                 if 'converge' in line]
     assert len(warnings) == 1 and 'M1' in warnings[0]
+
+
+def test_main_scatters_one_row_per_mouse_and_state(monkeypatch):
+    """The scatter takes each mouse's fit once, not once per session.
+
+    ``M1`` has two sessions of the same K=2 fit, so it must contribute two
+    rows, not four.
+    """
+    results = [_session_fit('e1', 'M1', True), _session_fit('e2', 'M1', True),
+               _session_fit('e3', 'M2', np.nan)]
+    group = SimpleNamespace(filter_sessions=lambda **kwargs: None,
+                            deduplicate=lambda: None,
+                            process=lambda fn, **kwargs: results)
+    monkeypatch.setattr(ddm.pd, 'read_parquet', lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(ddm, 'PhotometrySessionGroup',
+                        SimpleNamespace(from_catalog=lambda *a, **k: group))
+    monkeypatch.setattr(ddm, 'build_state_param_table', lambda frame: None)
+    monkeypatch.setattr(ddm, '_state_curves', lambda frame, params: {})
+    monkeypatch.setattr(ddm, 'plot_state_behavior', lambda *args: None)
+    scattered = []
+    monkeypatch.setattr(ddm, 'plot_state_param_scatter',
+                        lambda params, labels: scattered.append((params, labels)))
+    monkeypatch.setattr(ddm, '_save', lambda fig, name: None)
+
+    ddm.main(one=object())
+
+    params, labels = scattered[0]
+    assert len(scattered) == 1
+    assert list(params['mouse']) == ['M1', 'M1', 'M2', 'M2']
+    assert list(params['state']) == [1, 2, 1, 2]
+    assert labels is ddm.PARAM_LABELS
