@@ -30,11 +30,11 @@ def test_scope_blocks_on_behavior_errors_only():
     A session whose fiber failed leaves a hole the collaborator's HMM reads as
     two consecutive days, so photometry never removes one.
     """
-    assert ct.BEHAVIOR_QC_BLOCKERS == {
+    assert config.BEHAVIOR_QC_BLOCKERS == {
         'MissingExtractedData', 'MissingRawData', 'InsufficientTrials',
         'IncompleteEventTimes', 'MissingBlockInfo',
     }
-    assert ct.BEHAVIOR_QC_BLOCKERS < config.ANALYSIS_QC_BLOCKERS
+    assert config.BEHAVIOR_QC_BLOCKERS < config.ANALYSIS_QC_BLOCKERS
 
 
 def mock_trials(n_trials=5, **overrides):

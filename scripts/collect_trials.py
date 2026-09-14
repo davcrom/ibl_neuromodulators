@@ -21,17 +21,10 @@ from tqdm import tqdm
 
 from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT, TRIALS_DIR,
-    ANALYSIS_QC_BLOCKERS,
+    BEHAVIOR_QC_BLOCKERS,
 )
 from iblnm.analysis import state_dwell_times
 from iblnm.data import PhotometrySessionGroup
-
-# The error types that disqualify a session from the export. The three
-# photometry-side blockers are dropped from the analysis set: a session removed
-# because its fiber failed QC leaves a hole the HMM reads as two consecutive
-# days, so only behavioral failures remove a day.
-BEHAVIOR_QC_BLOCKERS = ANALYSIS_QC_BLOCKERS - {
-    'TrialsNotInPhotometryTime', 'QCValidationError', 'AmbiguousRegionMapping'}
 
 # The raw task columns exported verbatim, in export order. A session whose
 # stored table lacks any of them is dropped whole, so every run writes the same

@@ -82,6 +82,9 @@ SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 DDM_HMM_DIR = PROJECT_ROOT / 'data' / 'ddm-hmm'
 DDM_HMM_PARAMS_FPATH = DDM_HMM_DIR / 'all_mice_bestK_params.csv'
 DDM_HMM_FIGURES_DIR = PROJECT_ROOT / 'figures' / 'ddm-hmm'
+# The analysis K: the number of DDM states in the fit the overview reads. The
+# fit's no-response state is not counted, so `hmm/ddm-k4` holds five states.
+DDM_HMM_K = 4
 
 # Per-script error logs (unified schema: eid, error_type, error_message, traceback)
 EVENTS_LOG_FPATH = PROJECT_ROOT / 'metadata/events_log.pqt'
@@ -361,6 +364,13 @@ ANALYSIS_QC_BLOCKERS = {
     'TrialsNotInPhotometryTime', 'QCValidationError',
     'MissingBlockInfo',
 }
+
+# The error types that disqualify a session from the behavioral DDM-HMM fit and
+# its overview. The three photometry-side blockers are dropped from the
+# analysis set: a session removed because its fiber failed QC leaves a hole the
+# HMM reads as two consecutive days, so only behavioral failures remove a day.
+BEHAVIOR_QC_BLOCKERS = ANALYSIS_QC_BLOCKERS - {
+    'TrialsNotInPhotometryTime', 'QCValidationError', 'AmbiguousRegionMapping'}
 
 # Task performance parameters
 MIN_TRAINING_PERFORMANCE = 0.70  # minimum fraction_correct for training sessions
