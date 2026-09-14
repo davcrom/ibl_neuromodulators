@@ -894,20 +894,27 @@ def permutation_pvalue(observed: float, null, alternative: str = 'two-sided') ->
     raise ValueError(f"Unrecognized alternative: {alternative!r}")
 
 
+# How :func:`bootstrap_pooled_pvalue` reduces a set of strata to one number —
+# both the observed values and each pooled null draw.
+BOOTSTRAP_POOLED_STATISTICS = {'mean': np.mean, 'median': np.median}
+
+
 def bootstrap_pooled_pvalue(
     observed_by_stratum,
     null_by_stratum: list[np.ndarray],
     rng: np.random.Generator,
     n_bootstrap: int = 1000,
     alternative: str = 'greater',
+    statistic: str = 'mean',
 ) -> tuple[float, float]:
     """Pool per-stratum nulls into a p-value by resampling one draw per stratum.
 
-    The pooled observed statistic is the mean of the per-stratum observed
-    values. The pooled null is built by, for each of ``n_bootstrap`` iterations,
-    drawing one value with replacement from every stratum's null vector and
-    averaging those draws across strata. Because each iteration samples
-    independently within a stratum, the stratum null vectors need not share a
+    The pooled observed statistic reduces the per-stratum observed values by
+    ``statistic``. The pooled null is built by, for each of ``n_bootstrap``
+    iterations, drawing one value with replacement from every stratum's null
+    vector and reducing those draws across strata the same way. Because each
+    iteration samples independently within a stratum, the stratum null vectors
+    need not share a
     length — unlike a synchronized column-wise pooling, which assumes column k
     is the same draw across strata. That assumption does not hold here (each
     stratum's null is an arbitrarily ordered donor set), so resampling is both
@@ -925,21 +932,27 @@ def bootstrap_pooled_pvalue(
         Number of pooled null draws. Sets the p-value floor 1 / (n_bootstrap+1).
     alternative : {'greater', 'less', 'two-sided'}
         Tail passed through to :func:`permutation_pvalue`.
+    statistic : {'mean', 'median'}
+        How the strata are reduced, on both sides of the comparison
+        (``BOOTSTRAP_POOLED_STATISTICS``). The median is the reduction to ask
+        for when the pooled strata are many and skewed, so that a handful of
+        large values does not carry the statistic.
 
     Returns
     -------
     observed_stat : float
-        Mean of ``observed_by_stratum``.
+        ``observed_by_stratum`` reduced by ``statistic``.
     p_value : float
         Bootstrap p-value of ``observed_stat`` against the length-``n_bootstrap``
         pooled null.
     """
-    observed_stat = float(np.mean(observed_by_stratum))
+    reduce = BOOTSTRAP_POOLED_STATISTICS[statistic]
+    observed_stat = float(reduce(observed_by_stratum))
     draws = np.column_stack([
         rng.choice(null, size=n_bootstrap, replace=True)
         for null in null_by_stratum
     ])
-    pooled_null = draws.mean(axis=1)
+    pooled_null = reduce(draws, axis=1)
     return observed_stat, permutation_pvalue(observed_stat, pooled_null, alternative)
 
 

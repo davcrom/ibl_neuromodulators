@@ -2635,6 +2635,23 @@ class TestBootstrapPooledPvalue:
         )
         assert p_value == pytest.approx(1 / 1000)
 
+    def test_median_statistic_reduces_both_sides_by_the_median(self):
+        """``statistic='median'`` takes the observed statistic and every pooled
+        draw as the median across strata rather than the mean. Three strata with
+        ΔR² 0.10, 0.06, 0.05 have median 0.06 but mean 0.07, and their constant
+        nulls 0.02, 0.01, 0.09 have median 0.02 but mean 0.04 — so both
+        reductions are visible in the returned statistic."""
+        from iblnm.analysis import bootstrap_pooled_pvalue
+        observed_stat, p_value = bootstrap_pooled_pvalue(
+            [0.10, 0.06, 0.05],
+            [np.full(3, 0.02), np.full(2, 0.01), np.full(4, 0.09)],
+            rng=np.random.default_rng(0), n_bootstrap=99,
+            alternative='greater', statistic='median',
+        )
+        assert observed_stat == pytest.approx(0.06)
+        # every pooled draw is median(0.02, 0.01, 0.09) = 0.02 < 0.06
+        assert p_value == pytest.approx(1 / 100)
+
 
 class TestFitOls:
     def test_recovers_high_r2_on_linear_signal(self):
