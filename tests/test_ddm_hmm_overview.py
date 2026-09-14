@@ -404,6 +404,120 @@ def test_state_switch_traces_zero_the_two_trials_before_the_switch():
 
 
 # =========================================================================
+# load_session_measures
+# =========================================================================
+
+class _MeasureSession(_FitSession):
+    """`_FitSession` that also measures one response magnitude per entry.
+
+    Each ``extract_response_magnitudes`` call answers for the entry's own
+    event, as the real method does, so the caller's per-measure loop gets a
+    different column of values each time. ``responses_loaded`` records that the
+    stored cut was read before any measurement.
+    """
+
+    def __init__(self, trials, fit, magnitudes, **kwargs):
+        super().__init__(trials, fit, **kwargs)
+        self._magnitudes = magnitudes
+        self.responses_loaded = False
+
+    def load_responses(self, modality):
+        self.responses_loaded = True
+
+    def extract_response_magnitudes(self, window, masking_events,
+                                    baseline_correct, events=None):
+        assert self.responses_loaded
+        return self._magnitudes[events[0], window]
+
+
+def _magnitude_frame(trials, response, region='VTA'):
+    """One event's magnitudes: one row per trial of one recording."""
+    return pd.DataFrame({
+        'trial': trials, 'target_NM': 'VTA-DA', 'brain_region': region,
+        'event': 'x', 'response': response, 'masked_fraction': 0.0,
+    })
+
+
+def test_load_session_measures_puts_one_column_per_measure_on_the_trials():
+    """The three RESPONSES entries become three columns, aligned on ``trial``.
+
+    The fit holds trials 0-2 and the magnitudes 1-3, so the inner joins keep
+    trials 1 and 2 — and the magnitudes arrive in a different row order than
+    the trials, so only a join on ``trial`` puts each value on its own trial.
+    """
+    trials = pd.DataFrame({'trial': [0, 1, 2], 'choice': [1, -1, 1]})
+    fit_trials = pd.DataFrame({'trial': [0, 1, 2], 'viterbi_state': [1, 2, 1]})
+    entries = {measure: ddm.RESPONSES[measure] for measure in ddm.MEASURE_LABELS}
+    magnitudes = {
+        (entry['event'], entry['window']):
+            _magnitude_frame([3, 2, 1], [30.0 + i, 20.0 + i, 10.0 + i])
+        for i, entry in enumerate(entries.values())
+    }
+    ps = _MeasureSession(trials, {4: {'trials': fit_trials, 'attrs': {}}},
+                         magnitudes)
+
+    frame = ddm.load_session_measures(ps, k=4)['trials']
+
+    assert list(frame['trial']) == [1, 2]
+    assert set(ddm.MEASURE_LABELS) <= set(frame.columns)
+    # Measure i's value on trial 1 is 10 + i, on trial 2 it is 20 + i.
+    for i, measure in enumerate(ddm.MEASURE_LABELS):
+        assert list(frame[measure]) == [10.0 + i, 20.0 + i]
+    assert list(frame['brain_region']) == ['VTA', 'VTA']
+
+
+def test_load_session_measures_keeps_one_row_per_recording_and_trial():
+    """A two-fiber session contributes both fibers' measures, not one merged row."""
+    trials = pd.DataFrame({'trial': [0, 1]})
+    fit_trials = pd.DataFrame({'trial': [0, 1], 'viterbi_state': [1, 2]})
+    entries = {measure: ddm.RESPONSES[measure] for measure in ddm.MEASURE_LABELS}
+    magnitudes = {
+        (entry['event'], entry['window']): pd.concat(
+            [_magnitude_frame([0, 1], [1.0, 2.0], region='VTA'),
+             _magnitude_frame([0, 1], [3.0, 4.0], region='SNc')],
+            ignore_index=True)
+        for entry in entries.values()
+    }
+    ps = _MeasureSession(trials, {4: {'trials': fit_trials, 'attrs': {}}},
+                         magnitudes)
+
+    frame = ddm.load_session_measures(ps, k=4)['trials']
+
+    assert len(frame) == 4
+    assert sorted(frame['brain_region']) == ['SNc', 'SNc', 'VTA', 'VTA']
+
+
+# =========================================================================
+# neural_panels
+# =========================================================================
+
+def test_neural_panels_difference_is_per_session_and_state():
+    """Violin values come out one row per (eid, state), traces per measure.
+
+    Each of the two sessions holds ten trials of one state, correct trials at
+    2.0 and incorrect at 0.0 in every measure, so each cell's normalized
+    difference is 2 / std([2]*5 + [0]*5, ddof=1) = 1.897.
+    """
+    rows = []
+    for eid, state in [('e1', 1), ('e2', 2)]:
+        for feedback, value in [(1, 2.0), (-1, 0.0)]:
+            rows += [{'eid': eid, 'state': state, 'feedbackType': feedback,
+                      **{measure: value for measure in ddm.MEASURE_LABELS}}
+                     for _ in range(5)]
+    frame = pd.DataFrame(rows)
+
+    panels = ddm.neural_panels(frame)
+
+    assert set(panels['differences']) == set(ddm.MEASURE_LABELS)
+    differences = panels['differences']['stimulus']
+    assert list(differences['eid']) == ['e1', 'e2']
+    assert list(differences['state']) == [1, 2]
+    assert np.allclose(differences['stimulus'], 1.8974, atol=1e-4)
+    # No state is ever entered within a session, so no mouse trace exists.
+    assert panels['traces'] == {}
+
+
+# =========================================================================
 # main
 # =========================================================================
 
@@ -423,6 +537,26 @@ def _session_fit(eid, subject, converged):
                       'a0': np.array([5.0, 6.0])}}
 
 
+def _measured_session(eid, subject, target_nm='SNc-DA'):
+    """One session as `load_session_measures` returns it: a fit plus measures."""
+    fit = _session_fit(eid, subject, True)
+    trials = fit['trials'].assign(
+        target_NM=target_nm, brain_region='SNc', feedbackType=[1, -1, 1],
+        **{measure: [0.1, 0.2, 0.3] for measure in ddm.MEASURE_LABELS})
+    return {'trials': trials, 'attrs': fit['attrs']}
+
+
+def _group(results_by_fn, process_calls=None):
+    """Stand-in group whose ``process`` answers per loaded function."""
+    def process(fn, **kwargs):
+        if process_calls is not None:
+            process_calls.append((fn, kwargs))
+        return results_by_fn.get(fn, [])
+
+    return SimpleNamespace(filter_sessions=lambda **kwargs: None,
+                           deduplicate=lambda: None, process=process)
+
+
 def test_main_saves_one_behavior_figure_per_mouse_and_warns_unconverged(
         monkeypatch, capsys):
     """One ``{subject}_behavior`` save per mouse with a fit; one warning.
@@ -435,13 +569,7 @@ def test_main_saves_one_behavior_figure_per_mouse_and_warns_unconverged(
     results = [_session_fit('e1', 'M1', False), None,
                _session_fit('e2', 'M1', False), _session_fit('e3', 'M2', np.nan)]
     process_calls = []
-
-    def process(fn, **kwargs):
-        process_calls.append((fn, kwargs))
-        return results
-
-    group = SimpleNamespace(filter_sessions=lambda **kwargs: None,
-                            deduplicate=lambda: None, process=process)
+    group = _group({ddm.load_session_states: results}, process_calls)
     monkeypatch.setattr(ddm.pd, 'read_parquet', lambda *a, **k: pd.DataFrame())
     monkeypatch.setattr(ddm, 'PhotometrySessionGroup',
                         SimpleNamespace(from_catalog=lambda *a, **k: group))
@@ -455,7 +583,9 @@ def test_main_saves_one_behavior_figure_per_mouse_and_warns_unconverged(
 
     ddm.main(one=object())
 
-    assert process_calls == [(ddm.load_session_states, {'k': ddm.DDM_HMM_K})]
+    assert process_calls == [(ddm.load_session_states, {'k': ddm.DDM_HMM_K}),
+                             (ddm.load_session_measures, {'k': ddm.DDM_HMM_K})]
+    # No session survives the neural scope here, so no mouse gets a neural figure.
     assert saved == ['M1_behavior', 'M2_behavior', 'ddm_param_scatter']
     warnings = [line for line in capsys.readouterr().out.splitlines()
                 if 'converge' in line]
@@ -470,9 +600,7 @@ def test_main_scatters_one_row_per_mouse_and_state(monkeypatch):
     """
     results = [_session_fit('e1', 'M1', True), _session_fit('e2', 'M1', True),
                _session_fit('e3', 'M2', np.nan)]
-    group = SimpleNamespace(filter_sessions=lambda **kwargs: None,
-                            deduplicate=lambda: None,
-                            process=lambda fn, **kwargs: results)
+    group = _group({ddm.load_session_states: results})
     monkeypatch.setattr(ddm.pd, 'read_parquet', lambda *a, **k: pd.DataFrame())
     monkeypatch.setattr(ddm, 'PhotometrySessionGroup',
                         SimpleNamespace(from_catalog=lambda *a, **k: group))
@@ -491,3 +619,33 @@ def test_main_scatters_one_row_per_mouse_and_state(monkeypatch):
     assert list(params['mouse']) == ['M1', 'M1', 'M2', 'M2']
     assert list(params['state']) == [1, 2, 1, 2]
     assert labels is ddm.PARAM_LABELS
+
+
+def test_main_saves_a_neural_figure_only_for_mice_in_the_neural_scope(monkeypatch):
+    """``M1`` is measured and gets a neural figure; ``M2`` is behavior-only.
+
+    The neural scope applies the photometry filters the behavioral one skips,
+    so a mouse with a fit need not have a measured session. The title names the
+    mouse and the target-NM its recordings carry.
+    """
+    behavior = [_session_fit('e1', 'M1', True), _session_fit('e3', 'M2', True)]
+    measured = [_measured_session('e1', 'M1'), None]
+    group = _group({ddm.load_session_states: behavior,
+                    ddm.load_session_measures: measured})
+    monkeypatch.setattr(ddm.pd, 'read_parquet', lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(ddm, 'PhotometrySessionGroup',
+                        SimpleNamespace(from_catalog=lambda *a, **k: group))
+    monkeypatch.setattr(ddm, 'build_state_param_table', lambda frame: None)
+    monkeypatch.setattr(ddm, '_state_curves', lambda frame, params: {})
+    monkeypatch.setattr(ddm, 'plot_state_behavior', lambda *args: None)
+    monkeypatch.setattr(ddm, 'plot_state_param_scatter', lambda *args: None)
+    titles = []
+    monkeypatch.setattr(ddm, 'plot_state_neural',
+                        lambda title, *args: titles.append(title))
+    saved = []
+    monkeypatch.setattr(ddm, '_save', lambda fig, name: saved.append(name))
+
+    ddm.main(one=object())
+
+    assert [name for name in saved if name.endswith('_neural')] == ['M1_neural']
+    assert titles == ['M1 SNc-DA']

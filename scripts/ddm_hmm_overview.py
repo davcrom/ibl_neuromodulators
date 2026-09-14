@@ -11,16 +11,25 @@ behavioral figure per mouse to ``figures/ddm-hmm/{subject}_behavior.svg``, 3x2:
 5. Per-state posterior traces around L->R block switches.
 6. The same around R->L block switches.
 
+It writes a second figure per mouse, ``figures/ddm-hmm/{subject}_neural.svg``,
+3x2, one row per ``config.RESPONSES`` window (baseline, stimulus, feedback):
+
+1. The measure's change around entry into each state, one line per state.
+2. Per-state violins of each session's correct-minus-incorrect difference in
+   that measure, in units of the session's own spread.
+
 It also writes one across-mouse figure, ``ddm_param_scatter.svg``: a 3D scatter
 of every mouse's per-state ``B``, ``k`` and ``a0``, one point per (mouse, DDM
 state) and one color per mouse.
 
 The ``PhotometrySessionGroup`` is the source of truth for which sessions are in
-scope: the fit's scope, ``BEHAVIOR_QC_BLOCKERS`` and no photometry QC. Each
-session's stored trials are joined to its stored fit through
-``group.process``; a session with no fit for ``DDM_HMM_K`` raises there and
-drops out. The fit's no-response state and trials are removed here, never in
-the store.
+scope, and the two per-mouse figures do not share one: the behavioral figures
+take the fit's scope (``BEHAVIOR_QC_BLOCKERS``, no photometry QC), the neural
+figures the responses analysis's, so a mouse whose recordings fail photometry
+QC has a behavioral figure and no neural one. Each session's stored trials are
+joined to its stored fit through ``group.process``; a session with no fit for
+``DDM_HMM_K`` raises there and drops out. The fit's no-response state and
+trials are removed here, never in the store.
 
 No tables are persisted — every quantity recomputes at runtime.
 
@@ -35,16 +44,19 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    BEHAVIOR_QC_BLOCKERS, DDM_HMM_FIGURES_DIR, DDM_HMM_K, SESSIONS_FPATH,
-    SESSIONS_H5_DIR, STIM_ONSET_EVENT,
+    BEHAVIOR_QC_BLOCKERS, DDM_HMM_FIGURES_DIR, DDM_HMM_K, RESPONSES,
+    SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
 )
 from iblnm.analysis import (
-    align_traces_at_transitions, state_dwell_times, transition_delta_stats,
+    align_traces_at_transitions, normalized_outcome_difference,
+    state_dwell_times, transition_delta_stats,
 )
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.task import fit_psychometric
-from iblnm.vis import plot_state_behavior, plot_state_param_scatter
+from iblnm.vis import (
+    plot_state_behavior, plot_state_neural, plot_state_param_scatter,
+)
 
 # probabilityLeft (prev, cur) pairs defining each block-transition type.
 BLOCK_TRANSITIONS = {'L->R': (0.8, 0.2), 'R->L': (0.2, 0.8)}
@@ -56,6 +68,16 @@ SWITCH_BASELINE = 2  # trials before a switch defining the Δ-measure baseline
 OUTCOMES = {'correct': 1, 'incorrect': -1}
 # The scattered DDM parameters, in x/y/z order, with their plain-English names.
 PARAM_LABELS = {'B': 'B (bound)', 'k': 'k (drift-rate gain)', 'a0': 'a₀ (bias)'}
+# The `config.RESPONSES` entries measured per trial, in figure row order, with
+# their plain-English names.
+MEASURE_LABELS = {'baseline': 'pre-stimulus baseline',
+                  'stimulus': 'stimulus response',
+                  'feedback': 'feedback response'}
+# Trials of each outcome a session x state cell needs to yield a violin point.
+MIN_OUTCOME_TRIALS = 5
+# What one measured row is, before the three measures are pivoted apart: one
+# fiber's response on one trial.
+MEASURE_KEYS = ['trial', 'target_NM', 'brain_region']
 
 
 def load_session_states(ps: PhotometrySession, k: int) -> dict:
@@ -90,6 +112,55 @@ def load_session_states(ps: PhotometrySession, k: int) -> dict:
     fit_columns = ['trial', *fit['trials'].columns.difference(ps.trials.columns)]
     frame = ps.trials.merge(fit['trials'][fit_columns], on='trial')
     return {'trials': frame.assign(eid=ps.eid, subject=ps.subject),
+            'attrs': fit['attrs']}
+
+
+def load_session_measures(ps: PhotometrySession, k: int) -> dict:
+    """One session's trials, its stored fit, and its three response measures.
+
+    For ``group.process``. Extends :func:`load_session_states` with one column
+    per :data:`MEASURE_LABELS` entry, measured off the stored photometry
+    response cut with that ``config.RESPONSES`` entry's window, masking
+    chronology and baseline rule — the measurement
+    ``scripts/responses.py`` fits its models on. A session recording from two
+    fibers contributes each trial twice, once per fiber, since the measures are
+    the fiber's and the trial columns are the session's.
+
+    Parameters
+    ----------
+    ps : PhotometrySession
+        The session, addressing its file in the store.
+    k : int
+        Number of DDM states in the fit to read.
+
+    Returns
+    -------
+    dict
+        ``{'trials': DataFrame, 'attrs': dict}``: the joined per-trial frame,
+        one row per fiber x trial and carrying ``brain_region`` and
+        ``target_NM``, and the fit's run summary and parameters.
+
+    Raises
+    ------
+    KeyError
+        The session holds no fit for ``k`` (from ``load_hmm``).
+    """
+    fit = load_session_states(ps, k)
+    ps.load_responses('photometry')
+    magnitudes = []
+    for measure, entry in ((measure, RESPONSES[measure])
+                           for measure in MEASURE_LABELS):
+        # Each call overwrites the session's magnitudes, so the columns this
+        # one needs are taken before the next entry is measured.
+        measured = ps.extract_response_magnitudes(
+            entry['window'], entry['masking_events'], entry['baseline_correct'],
+            events=[entry['event']])
+        magnitudes.append(measured[[*MEASURE_KEYS, 'response']]
+                          .assign(measure=measure))
+    measures = (pd.concat(magnitudes, ignore_index=True)
+                .pivot(index=MEASURE_KEYS, columns='measure', values='response')
+                .reset_index())
+    return {'trials': fit['trials'].merge(measures, on='trial'),
             'attrs': fit['attrs']}
 
 
@@ -418,6 +489,35 @@ def behavior_panels(frame: pd.DataFrame) -> dict:
     }
 
 
+def neural_panels(frame: pd.DataFrame) -> dict:
+    """One mouse's inputs to :func:`iblnm.vis.plot_state_neural`.
+
+    Parameters
+    ----------
+    frame : pandas.DataFrame
+        The mouse's concatenated :func:`behavioral_frame` output, built from
+        :func:`load_session_measures`, in trial order within each eid.
+
+    Returns
+    -------
+    dict
+        ``traces`` (each measure's Δ around entry into a state, one line per
+        entered state) and ``differences`` (each measure's per-session
+        correct-minus-incorrect difference, in units of the session x state
+        cell's own SD).
+    """
+    measures = list(MEASURE_LABELS)
+    return {
+        'traces': _state_switch_traces(frame, measures, SWITCH_WINDOW,
+                                       SWITCH_BASELINE),
+        'differences': {
+            measure: normalized_outcome_difference(
+                frame, measure, ['eid', 'state'], 'feedbackType', 1, -1,
+                MIN_OUTCOME_TRIALS)
+            for measure in measures},
+    }
+
+
 def _save(fig: plt.Figure, name: str) -> None:
     """Save ``fig`` to ``DDM_HMM_FIGURES_DIR/{name}.svg`` and close it."""
     DDM_HMM_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -430,8 +530,27 @@ def parse_args(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _by_subject(results: list[dict]) -> dict[str, list[dict]]:
+    """Group ``process`` results by the mouse their trials belong to.
+
+    Mice come out in the order the store returned them; each mouse's sessions
+    keep their relative order, which is the order their trials concatenate in.
+    """
+    subjects = dict.fromkeys(result['trials']['subject'].iloc[0]
+                             for result in results)
+    return {subject: [result for result in results
+                      if result['trials']['subject'].iloc[0] == subject]
+            for subject in subjects}
+
+
 def main(one=None) -> None:
-    """Render one behavioral figure per mouse holding a K=`DDM_HMM_K` fit.
+    """Render each mouse's behavioral and neural K=`DDM_HMM_K` figures.
+
+    Two passes over one group, differing in scope: the behavioral figures take
+    every session the fit covers (``BEHAVIOR_QC_BLOCKERS``, no photometry QC),
+    the neural figures only those the responses analysis admits, so a mouse's
+    two figures need not rest on the same sessions and a mouse may have no
+    neural figure at all.
 
     Parameters
     ----------
@@ -449,11 +568,9 @@ def main(one=None) -> None:
     fits = [fit for fit in group.process(load_session_states, k=DDM_HMM_K)
             if fit is not None]
 
-    subjects = dict.fromkeys(fit['trials']['subject'].iloc[0] for fit in fits)
     params = []
-    for subject in subjects:
-        mouse_fits = [fit for fit in fits
-                      if fit['trials']['subject'].iloc[0] == subject]
+    by_subject = _by_subject(fits)
+    for subject, mouse_fits in by_subject.items():
         if any(_unconverged(fit['attrs']) for fit in mouse_fits):
             print(f"WARNING {subject}: K={DDM_HMM_K} fit did not converge")
         frame = pd.concat([behavioral_frame(fit['trials'], fit['attrs'])[0]
@@ -468,7 +585,31 @@ def main(one=None) -> None:
 
     _save(plot_state_param_scatter(pd.concat(params, ignore_index=True),
                                    PARAM_LABELS), 'ddm_param_scatter')
-    print(f"Wrote {len(subjects) + 1} figures to {DDM_HMM_FIGURES_DIR}")
+
+    # The responses analysis's scope: the target-NM and photometry-QC filters
+    # the behavioral pass switches off, since the measures are read off the
+    # recordings those filters admit.
+    group.filter_sessions(session_types=('biased', 'ephys'))
+    group.deduplicate()
+    measured = [result
+                for result in group.process(load_session_measures, k=DDM_HMM_K)
+                if result is not None]
+
+    measured_by_subject = _by_subject(measured)
+    for subject, sessions in measured_by_subject.items():
+        frame = pd.concat([behavioral_frame(session['trials'],
+                                            session['attrs'])[0]
+                           for session in sessions], ignore_index=True)
+        panels = neural_panels(frame)
+        targets = ', '.join(dict.fromkeys(frame['target_NM']))
+        _save(plot_state_neural(f'{subject} {targets}', panels['traces'],
+                                panels['differences'], MEASURE_LABELS,
+                                SWITCH_WINDOW),
+              f'{subject}_neural')
+        print(f"  {subject}: {len(sessions)} measured sessions")
+
+    print(f"Wrote {len(by_subject) + len(measured_by_subject) + 1} figures "
+          f"to {DDM_HMM_FIGURES_DIR}")
 
 
 if __name__ == '__main__':
