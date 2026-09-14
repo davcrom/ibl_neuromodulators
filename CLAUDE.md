@@ -58,6 +58,7 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Response re-cut, the cut products alone | `scripts/rebuild_responses.py → rebuild_responses, main` |
 | DDM-HMM fit import into `hmm/ddm-k{K}` | `scripts/import_ddm_hmm.py → read_fits, check_alignment, import_session, main` |
 | Legacy old-format DDM-HMM import (`data/ddm-hmm.old/`) | `scripts/import_ddm_hmm_old.py → read_fit, align_session, import_session, select_subjects, main` |
+| DDM-HMM per-mouse behavioral figure (`{subject}_behavior.svg`) | `scripts/ddm_hmm_overview.py → load_session_states, behavioral_frame, behavior_panels, main`; drawers `vis.py → plot_state_behavior, draw_state_*, draw_transition_traces` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |
 | Psychometric fitting | `task.py → fit_psychometric, fit_psychometric_by_block, compute_fraction_correct` |
@@ -714,6 +715,7 @@ Tests use `pytest` with synthetic fixtures. No Alyx calls.
 | `test_download.py` | Catalog fixups, the per-modality build pass, the download CLI |
 | `test_rebuild_responses.py` | The photometry and wheel response re-cut, its Alyx fallback, its CLI |
 | `test_import_ddm_hmm.py` | DDM-HMM fit reading, trial alignment, the per-session `hmm` write |
+| `test_ddm_hmm_overview.py` | Stored-fit join, no-response-state stripping, state curves and transition traces, per-mouse figure loop |
 | `test_import_ddm_hmm_old.py` | Old-format fit reading and renames, reaction-time alignment, subject skip, the per-session `hmm` write |
 
 Key fixtures in test files:

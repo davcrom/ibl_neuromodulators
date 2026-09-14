@@ -1,34 +1,29 @@
-"""DDM-HMM first-look overview.
+"""DDM-HMM overview.
 
-Runs the first look at a collaborator's per-mouse drift-diffusion + hidden-Markov
-model (DDM-HMM) fit to the choice/RT behavior of the 8 LC-NE mice, and writes
-seven figures to ``figures/ddm-hmm/``:
+Reads each mouse's collaborator-fitted drift-diffusion + hidden-Markov model
+(DDM-HMM) states from the session store (`hmm/ddm-k{DDM_HMM_K}`) and writes one
+behavioral figure per mouse to ``figures/ddm-hmm/{subject}_behavior.svg``, 3x2:
 
-1. Per-state posterior histograms + MAP occupancy and state dwell-time
-   distributions (per mouse).
-2. Per-state psychometric + chronometric curves (per mouse).
-3. Per-state DDM-parameter pairwise scatter (all mice, colored by mouse).
-4. PCA of per-state behavioral-parameter features (all mice, colored by mouse).
-5. Per-state posterior traces around block transitions (per mouse).
-6. Per-state NM distributions — pre-stimulus baseline, stimulus-onset response
-   and feedback response — split into correct and incorrect trials (per mouse).
-7. Δ traces of those three NM measures around entry into each state, one line
-   per entered state (per mouse).
+1. Per-state posterior histograms + assigned-state occupancy.
+2. Per-state dwell-time distributions.
+3. Per-state psychometric curves, empirical points with the fitted overlay.
+4. Per-state chronometric curves (median RT by outcome and stimulus side).
+5. Per-state posterior traces around L->R block switches.
+6. The same around R->L block switches.
 
 The ``PhotometrySessionGroup`` is the source of truth for which sessions are in
-scope: each mouse's trial+state frame is assembled by filtering the group to that
-subject, loading H5 trials offline, and attaching the fitted per-trial states via
-``PhotometrySession.load_states``. Behavioral parameters and empirical curves are
-computed here (variable-specific analysis belongs in the script); the reusable
-computations live in ``iblnm.analysis``/``iblnm.task``/``iblnm.vis``.
+scope: the fit's scope, ``BEHAVIOR_QC_BLOCKERS`` and no photometry QC. Each
+session's stored trials are joined to its stored fit through
+``group.process``; a session with no fit for ``DDM_HMM_K`` raises there and
+drops out. The fit's no-response state and trials are removed here, never in
+the store.
 
 No tables are persisted — every quantity recomputes at runtime.
 
 Usage:
-    python scripts/ddm_hmm_overview.py            # all modeled mice
+    python scripts/ddm_hmm_overview.py
 """
 import argparse
-import warnings
 from collections.abc import Callable, Hashable
 
 import numpy as np
@@ -36,188 +31,124 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 from iblnm.config import (
-    SESSIONS_FPATH, SESSIONS_H5_DIR, DDM_HMM_PARAMS_FPATH, DDM_HMM_FIGURES_DIR,
-    RESPONSE_EVENTS, RESPONSE_MAGNITUDE_WINDOW, RESPONSE_WINDOW,
-    STIM_ONSET_EVENT,
+    BEHAVIOR_QC_BLOCKERS, DDM_HMM_FIGURES_DIR, DDM_HMM_K, SESSIONS_FPATH,
+    SESSIONS_H5_DIR, STIM_ONSET_EVENT,
 )
 from iblnm.analysis import (
-    align_traces_at_transitions, compute_response_magnitude, pca_2d,
-    transition_delta_stats,
-    state_dwell_times,
+    align_traces_at_transitions, state_dwell_times, transition_delta_stats,
 )
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 from iblnm.task import fit_psychometric
-from iblnm.vis import (
-    plot_state_measures, plot_state_param_scatter, plot_state_pca,
-    plot_state_posterior_dwell, plot_state_psychometric_chronometric,
-    plot_transition_traces,
-)
+from iblnm.vis import plot_state_behavior
 
-# Behavioral-parameter features feeding the figure-4 PCA (one per state).
-FEATURE_COLS = ['bias', 'threshold', 'lapse_left', 'lapse_right']
-# probabilityLeft (prev, cur) pairs defining each block-transition type (figure 5).
+# probabilityLeft (prev, cur) pairs defining each block-transition type.
 BLOCK_TRANSITIONS = {'L->R': (0.8, 0.2), 'R->L': (0.2, 0.8)}
 BLOCK_WINDOW = 15  # half-window in trials around a transition (spec Decision)
 BLOCK_BASELINE = 5  # trials before a transition defining the Δ-posterior baseline
-SWITCH_WINDOW = 5  # half-window in trials around a state switch (figure 7)
+SWITCH_WINDOW = 5  # half-window in trials around a state switch
 SWITCH_BASELINE = 2  # trials before a switch defining the Δ-measure baseline
-# feedbackType -> outcome label; splits the chronometric curves (figure 2).
+# feedbackType -> outcome label; splits the chronometric curves.
 OUTCOMES = {'correct': 1, 'incorrect': -1}
-# Pre-stimulus NM baseline window, s relative to STIM_ONSET_EVENT (figure 6). Not
-# config.BASELINE_WINDOW, which is (-0.1, 0) and serves evoked-response
-# subtraction — a different quantity.
-NM_BASELINE_WINDOW = [-0.4, -0.1]
-# The per-event evoked-magnitude columns `_evoked_magnitudes` produces, named
-# here so the no-measures branch blanks the same columns it would have filled.
-_MAGNITUDE_COLUMNS = [f"{event.removesuffix('_times')}_response"
-                      for event in RESPONSE_EVENTS]
-# Per-trial NM measure -> y-axis label (figure 6). Iteration order fixes the
-# figure's left-to-right panel order.
-MEASURE_LABELS = {
-    'baseline': 'pre-stim baseline (session SD)',
-    _MAGNITUDE_COLUMNS[0]: 'stimulus response (Δ session SD)',
-    'feedback_response': 'feedback response (Δ session SD)',
-}
 
 
-def _evoked_magnitudes(
-    ps: PhotometrySession, signals: pd.DataFrame, column: str
-) -> pd.DataFrame:
-    """Per-trial evoked response magnitudes for one session's single fiber.
+def load_session_states(ps: PhotometrySession, k: int) -> dict:
+    """One session's stored trials joined to its stored K-state fit.
 
-    Runs the project's canonical evoked path on ``signals[column]``: peri-event
-    matrices over ``RESPONSE_WINDOW``, samples later than the trial's next event
-    masked out, per-trial pre-event baseline subtracted, then averaged over
-    ``RESPONSE_MAGNITUDE_WINDOW``. ``mask_subsequent_events`` blanks samples
-    past feedback and leaves the feedback-locked plane whole, so a trial whose
-    feedback lands inside that window
-    averages the surviving samples only, and one whose feedback precedes the
-    window start leaves it empty and yields NaN — hence the suppressed
-    all-NaN-slice ``RuntimeWarning``.
-
-    Returns
-    -------
-    pandas.DataFrame
-        One ``{event}_response`` column per `RESPONSE_EVENTS` entry
-        (`_MAGNITUDE_COLUMNS`), in session-SD units, indexed by
-        ``ps.trials.index``.
-    """
-    responses = ps.extract_responses(
-        signals, events=RESPONSE_EVENTS, window=RESPONSE_WINDOW)[column]
-    evoked = ps.subtract_baseline(
-        ps.mask_subsequent_events(responses, ['feedback_times']))
-    tpts = evoked.coords['time'].values
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', category=RuntimeWarning)
-        magnitudes = {
-            f"{event.removesuffix('_times')}_response": compute_response_magnitude(
-                evoked.sel(event=event).values, tpts,
-                RESPONSE_MAGNITUDE_WINDOW)
-            for event in RESPONSE_EVENTS
-        }
-    return pd.DataFrame(magnitudes, index=evoked.coords['trial'].values)
-
-
-def build_mouse_states_frame(
-    group: PhotometrySessionGroup, subject: str, one
-) -> pd.DataFrame:
-    """Concatenate one mouse's per-session trials + fitted states into one frame.
-
-    Filters ``group`` to ``subject``, then for each of its sessions instantiates a
-    :class:`PhotometrySession`, loads the H5 ``trials`` and ``photometry`` groups
-    offline, and attaches the fitted per-trial states via
-    :meth:`PhotometrySession.load_states`. Sessions absent from the fit
-    (``states is None``) are dropped. The surviving per-session frames — trials
-    joined with their state columns and the three per-trial NM measures, tagged
-    with ``eid`` — are concatenated in session order.
-
-    One fiber per mouse: a session yields measures only when its data and its
-    metadata agree on exactly one fiber — ``GCaMP_preprocessed`` has one column
-    and ``brain_region`` one entry. The bilateral sessions name their columns
-    ``LC-l``/``LC-r`` (which is why the column, not ``brain_region[0]``, selects
-    the signal), and some sessions carry a duplicated ``['LC', 'LC']`` against a
-    single column. Both are ambiguous, so all three measures are NaN and the
-    trials are kept, since they still feed the behavioral figures.
+    For ``group.process``. The fit's per-trial columns join the stored trials
+    on ``trial``; a column both carry keeps the trials' value, because the fit
+    codes some of them differently (new-format ``choice`` is sign-flipped). A
+    trial the fit does not hold is dropped by the join.
 
     Parameters
     ----------
-    group : PhotometrySessionGroup
-        Filtered group; its ``sessions`` view supplies the subject's session rows.
-    subject : str
-        Mouse nickname to assemble.
-    one : ONE
-        Connection passed through to each :class:`PhotometrySession`.
+    ps : PhotometrySession
+        The session, addressing its file in the store.
+    k : int
+        Number of DDM states in the fit to read.
 
     Returns
     -------
-    pandas.DataFrame
-        Full trials columns plus ``map_state``/``state_1``…``state_K`` (NaN on
-        trials dropped from the fit), three per-trial NM measure columns in
-        session-SD units, and an ``eid`` column, one row per trial across the
-        mouse's fit sessions. ``baseline`` is the mean of the session's
-        preprocessed signal over :data:`NM_BASELINE_WINDOW` before
-        ``STIM_ONSET_EVENT``; the ``_MAGNITUDE_COLUMNS`` are the
-        baseline-subtracted evoked magnitudes from :func:`_evoked_magnitudes`.
-        All three are NaN where their window runs off the recording or the
-        session's fiber was ambiguous. Empty when no session was in the fit.
+    dict
+        ``{'trials': DataFrame, 'attrs': dict}``: the joined per-trial frame,
+        carrying ``eid`` and ``subject``, and the fit's run summary and
+        parameters.
+
+    Raises
+    ------
+    KeyError
+        The session holds no fit for ``k`` (from ``load_hmm``).
     """
-    rows = group.sessions[group.sessions['subject'] == subject]
-    frames = []
-    for _, row in rows.iterrows():
-        ps = PhotometrySession(row, one=one)
-        # load_trials only fetches, so the stored table is read off the H5.
-        ps.load_h5(groups=['trials'])
-        if not hasattr(ps, 'trials') or ps.trials.empty:
-            print(f"  {ps.eid}: no stored trials — skipped")
-            continue
-        ps.load_states()
-        if ps.states is None:
-            continue
-        frame = ps.trials.join(ps.states)
-        signals = ps.load_photometry()
-        if len(signals.columns) == 1 and len(ps.brain_region) == 1:
-            column = signals.columns[0]
-            responses = ps.extract_responses(
-                signals, events=[STIM_ONSET_EVENT], window=NM_BASELINE_WINDOW,
-            )
-            frame['baseline'] = responses[column].sel(
-                event=STIM_ONSET_EVENT).mean('time').to_series()
-            frame = frame.join(_evoked_magnitudes(ps, signals, column))
-        else:
-            print(f"  {ps.eid}: {len(signals.columns)} photometry columns, "
-                  f"{len(ps.brain_region)} brain regions — no measures")
-            frame[['baseline', *_MAGNITUDE_COLUMNS]] = np.nan
-        frame['eid'] = ps.eid
-        frames.append(frame)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    ps.load_h5(groups=['trials'])
+    fit = ps.load_hmm(k)
+    fit_columns = ['trial', *fit['trials'].columns.difference(ps.trials.columns)]
+    frame = ps.trials.merge(fit['trials'][fit_columns], on='trial')
+    return {'trials': frame.assign(eid=ps.eid, subject=ps.subject),
+            'attrs': fit['attrs']}
+
+
+def behavioral_frame(
+    fit_trials: pd.DataFrame, attrs: dict
+) -> tuple[pd.DataFrame, list[int]]:
+    """Strip the no-response state from one session's joined fit frame.
+
+    Parameters
+    ----------
+    fit_trials : pandas.DataFrame
+        One session's trials joined to its fit (``load_session_states``).
+        New-format fits carry ``omission`` and ``viterbi_state``; old-format
+        fits carry ``map_state`` and no no-response state.
+    attrs : dict
+        The fit's attrs: a per-state ``state`` array and, new format only, a
+        matching ``kind`` array (``'ddm'`` or ``'omission'``).
+
+    Returns
+    -------
+    frame : pandas.DataFrame
+        No-response trials dropped; ``state`` holds the assigned state
+        (``viterbi_state`` where the fit carries it, else ``map_state``); the
+        no-response state's ``p_state_{i}`` column dropped.
+    labels : list of int
+        The DDM states, ascending.
+    """
+    # Old-format fits carry no `kind`, and so no no-response state.
+    no_response = [int(state) for state, kind
+                   in zip(attrs['state'], attrs.get('kind', []))
+                   if kind == 'omission']
+    if 'omission' in fit_trials:
+        fit_trials = fit_trials[~fit_trials['omission'].astype(bool)]
+    assigned = 'viterbi_state' if 'viterbi_state' in fit_trials else 'map_state'
+    frame = fit_trials.drop(columns=[f'p_state_{state}' for state in no_response])
+    frame = frame.assign(state=frame[assigned].astype(int))
+    labels = sorted(int(state) for state in attrs['state']
+                    if state not in no_response)
+    return frame, labels
 
 
 def build_state_param_table(mouse_frame: pd.DataFrame) -> pd.DataFrame:
-    """Per-state behavioral-parameter table for one mouse.
+    """Per-state psychometric fit for one mouse.
 
-    Groups the mouse's trials by MAP state and fits, per state, a psychometric
-    function (via :func:`fit_psychometric`, pooling across ``probabilityLeft``
-    blocks). Feeds figure 2 (curve overlays) and figure 4 (PCA features).
+    Groups the mouse's trials by assigned state and fits, per state, a
+    psychometric function (via :func:`fit_psychometric`, pooling across
+    ``probabilityLeft`` blocks). Feeds the fitted overlay of the psychometric
+    panel.
 
     Parameters
     ----------
     mouse_frame : pandas.DataFrame
-        One mouse's concatenated trials + states (from
-        :func:`build_mouse_states_frame`). Must carry ``map_state``, ``choice``,
-        and the ``contrastLeft``/``contrastRight`` columns ``fit_psychometric``
-        reads, which the stored ``trials/table`` holds verbatim. Trials dropped
-        from the fit (``map_state`` NaN) are ignored by the ``groupby``.
+        One mouse's concatenated :func:`behavioral_frame` output. Must carry
+        ``state``, ``choice``, and the ``contrastLeft``/``contrastRight``
+        columns ``fit_psychometric`` reads, which the stored ``trials/table``
+        holds verbatim.
 
     Returns
     -------
     pandas.DataFrame
         One row per state, columns ``['state', 'bias', 'threshold', 'lapse_left',
-        'lapse_right']`` — the psychometric fit. NaN where a state has too few
-        trials to fit.
+        'lapse_right']``. NaN where a state has too few trials to fit.
     """
     rows = []
-    for state, trials in mouse_frame.groupby('map_state'):
+    for state, trials in mouse_frame.groupby('state'):
         psych = fit_psychometric(trials)
         rows.append({
             'state': int(state),
@@ -234,22 +165,22 @@ def _state_curves(
 ) -> dict[str, pd.DataFrame]:
     """Assemble one mouse's per-state psychometric + chronometric plot frames.
 
-    Builds the long frames :func:`plot_state_psychometric_chronometric` consumes:
-    the psychometric frame combines empirical P(choose right) per signed contrast
-    with the fitted params from ``param_table``; the chronometric frame is the
-    empirical median RT per signed contrast, split by trial outcome
-    correct/incorrect and by stimulus side (drawn as plain lines, no fit; sides
-    are not connected).
+    Builds the long frames :func:`iblnm.vis.draw_state_psychometric` and
+    :func:`iblnm.vis.draw_state_chronometric` consume: the psychometric frame
+    combines empirical P(choose right) per signed contrast with the fitted
+    params from ``param_table``; the chronometric frame is the empirical median
+    RT per signed contrast, split by trial outcome correct/incorrect and by
+    stimulus side (drawn as plain lines, no fit; sides are not connected).
 
     Returns
     -------
     dict of str to pandas.DataFrame
-        ``{'psychometric', 'chronometric'}``; see the plotter's docstring for the
-        column layout.
+        ``{'psychometric', 'chronometric'}``; see the drawers' docstrings for
+        the column layout.
     """
     params = param_table.set_index('state')
     psych_rows, chrono_rows = [], []
-    for state, trials in mouse_frame.groupby('map_state'):
+    for state, trials in mouse_frame.groupby('state'):
         state = int(state)
         p = params.loc[state]
         p_right = (trials['choice'] == -1).groupby(
@@ -278,7 +209,7 @@ def _state_curves(
 
 
 def _block_transition_indexers() -> dict[str, Callable[[pd.DataFrame], np.ndarray]]:
-    """Figure 5's transition indexers, one per :data:`BLOCK_TRANSITIONS` entry.
+    """Block-transition indexers, one per :data:`BLOCK_TRANSITIONS` entry.
 
     Each indexer takes one eid's sub-frame and returns the positional row indices
     of the trials at which ``probabilityLeft`` steps from ``prev`` to ``cur``. The
@@ -356,41 +287,40 @@ def _transition_traces(
 def _state_switch_indexers(
     states: list[int],
 ) -> dict[int, Callable[[pd.DataFrame], np.ndarray]]:
-    """Figure 7's transition indexers, one per entered state.
+    """State-switch indexers, one per entered state.
 
     Each indexer takes one eid's sub-frame and returns the positional row indices
-    of the trials on which ``map_state`` changes into that state. The first row of
+    of the trials on which ``state`` changes into that state. The first row of
     a sub-frame is never one, so a session boundary is never a switch, and the
     origin state does not enter the key — every switch into a state is pooled
     regardless of where it came from.
     """
     def indexer(state: int) -> Callable[[pd.DataFrame], np.ndarray]:
         def find_switches(eid_df: pd.DataFrame) -> np.ndarray:
-            map_state = eid_df['map_state'].to_numpy()
+            assigned = eid_df['state'].to_numpy()
             return np.flatnonzero(
-                (map_state[1:] != map_state[:-1]) & (map_state[1:] == state)) + 1
+                (assigned[1:] != assigned[:-1]) & (assigned[1:] == state)) + 1
         return find_switches
 
     return {state: indexer(state) for state in states}
 
 
 def _state_switch_traces(
-    frame: pd.DataFrame, window: int, baseline: int
+    frame: pd.DataFrame, measures: list[str], window: int, baseline: int
 ) -> dict[str, dict[str, np.ndarray]]:
-    """Δ traces of the NM measures around entry into each state, for one mouse.
+    """Δ traces of per-trial measures around entry into each state, for one mouse.
 
-    Runs :func:`_transition_traces` over :data:`MEASURE_LABELS` with one group per
-    state present in ``frame``, then transposes its per-state result into the
-    per-measure layout :func:`iblnm.vis.plot_transition_traces` draws: one axes per
-    measure, one line per entered state.
+    Runs :func:`_transition_traces` over ``measures`` with one group per state
+    present in ``frame``, then transposes its per-state result into a
+    per-measure layout: one panel per measure, one line per entered state.
 
     Parameters
     ----------
     frame : pandas.DataFrame
-        One mouse's fit trials (non-NaN ``map_state``), in trial order within each
-        eid, carrying ``eid``, ``map_state`` and the :data:`MEASURE_LABELS`
-        columns. No-go trials are kept: their measures are NaN, but dropping them
-        would renumber trials and shift the lag axis.
+        One mouse's fit trials, in trial order within each eid, carrying
+        ``eid``, ``state`` and the ``measures`` columns.
+    measures : list of str
+        Measure columns, in the order the result is keyed.
     window : int
         Half-window in trials around each switch.
     baseline : int
@@ -401,11 +331,11 @@ def _state_switch_traces(
     dict of str to dict of str to numpy.ndarray
         ``{measure: {'mean': arr, 'sem': arr}}`` with each ``arr`` of shape
         ``(2*window+1, n_entered_states)``, states stacked in ascending order so
-        the line colors match figure 6's. States never entered contribute no
+        line colors follow state order. States never entered contribute no
         column; a mouse with no switch at all returns an empty dict.
     """
-    states = sorted(frame['map_state'].unique().astype(int))
-    traces = _transition_traces(frame, list(MEASURE_LABELS),
+    states = sorted(frame['state'].unique().astype(int))
+    traces = _transition_traces(frame, measures,
                                 _state_switch_indexers(states), window, baseline)
     entered = [state for state in states if state in traces]
     if not entered:
@@ -414,24 +344,47 @@ def _state_switch_traces(
         measure: {stat: np.stack([traces[state][stat][:, col]
                                   for state in entered], axis=1)
                   for stat in ('mean', 'sem')}
-        for col, measure in enumerate(MEASURE_LABELS)
+        for col, measure in enumerate(measures)
     }
 
 
-def _state_line_labels(
-    traces_by_mouse: dict[str, dict[Hashable, dict[str, np.ndarray]]],
-) -> list[str]:
-    """Legend labels for the state lines of a :func:`plot_transition_traces` grid.
+def _unconverged(attrs: dict) -> bool:
+    """Whether a fit reports it did not converge; a blank (NaN) one does not."""
+    converged = attrs.get('converged', np.nan)
+    return not pd.isna(converged) and not converged
 
-    The legend sits on the first mouse's axes, but K varies across mice, so the
-    labels are sized to the widest mouse and the extras go unused. States are
-    numbered from 1, as in ``DDM_HMM_PARAMS_FPATH``, so label *i* names the same
-    state as figure 6's *i*-th x tick.
+
+def behavior_panels(frame: pd.DataFrame) -> dict:
+    """One mouse's inputs to :func:`iblnm.vis.plot_state_behavior`.
+
+    Parameters
+    ----------
+    frame : pandas.DataFrame
+        The mouse's concatenated :func:`behavioral_frame` output, in trial
+        order within each eid.
+
+    Returns
+    -------
+    dict
+        ``states`` (``state`` + posterior columns), ``dwell`` (run lengths per
+        eid), ``curves`` (psychometric + chronometric frames) and
+        ``block_traces`` (each :data:`BLOCK_TRANSITIONS` label, in order, to its
+        Δ-posterior traces, or ``None`` when the mouse never made it).
     """
-    n_states = max(stats['mean'].shape[1]
-                   for traces in traces_by_mouse.values()
-                   for stats in traces.values())
-    return [f'state {i + 1}' for i in range(n_states)]
+    # The chronometric curves' RT, on the pipeline's onset clock rather than
+    # the fit's own `rt`.
+    frame = frame.assign(rt=frame['response_times'] - frame[STIM_ONSET_EVENT])
+    posterior_cols = [c for c in frame.columns if c.startswith('p_state_')]
+    traces = _transition_traces(frame, posterior_cols,
+                                _block_transition_indexers(),
+                                BLOCK_WINDOW, BLOCK_BASELINE)
+    return {
+        'states': frame[['state', *posterior_cols]],
+        'dwell': state_dwell_times(frame['state'].to_numpy(),
+                                   frame['eid'].to_numpy()),
+        'curves': _state_curves(frame, build_state_param_table(frame)),
+        'block_traces': {label: traces.get(label) for label in BLOCK_TRANSITIONS},
+    }
 
 
 def _save(fig: plt.Figure, name: str) -> None:
@@ -441,92 +394,13 @@ def _save(fig: plt.Figure, name: str) -> None:
     plt.close(fig)
 
 
-def _assemble_mouse_views(
-    group: PhotometrySessionGroup, subjects: list[str], one
-) -> dict:
-    """Build every modeled mouse's plot inputs from the filtered group.
-
-    Iterates ``subjects``, assembling each one's trials+states frame and deriving
-    the per-mouse inputs for figures 1, 2, 5, 6 and 7 plus its per-state feature
-    rows. Mice with no session in the fit are skipped.
-
-    Returns
-    -------
-    dict
-        Keys ``'states'``, ``'dwell'``, ``'curves'``, ``'aligned'``,
-        ``'measures'``, ``'switches'`` each map subject to that figure's plot
-        input; ``'measures'`` holds the fit-only, non-no-go trials carrying at
-        least one of :data:`MEASURE_LABELS`, as ``['state', 'eid', 'outcome']``
-        plus one column per measure, and ``'switches'`` the per-measure Δ traces
-        around each state switch. Both omit a mouse whose every session had an
-        ambiguous fiber — such a mouse still appears in the other views.
-        ``'features'`` is the concatenated per-state behavioral-feature
-        table (with a ``mouse`` column) for the PCA.
-
-    Raises
-    ------
-    ValueError
-        If every subject was skipped, leaving nothing to plot.
-    """
-    views = {key: {} for key in ('states', 'dwell', 'curves', 'aligned',
-                                 'measures', 'switches')}
-    param_tables = []
-    feedback2outcome = {feedback: label for label, feedback in OUTCOMES.items()}
-    for subject in subjects:
-        frame = build_mouse_states_frame(group, subject, one)
-        if frame.empty:
-            print(f"  {subject}: no fit sessions in group — skipped")
-            continue
-        # The chronometric curves' own RT measure, on the pipeline's onset
-        # clock. Not the RT `_align_posteriors_to_trials` matches the fit's
-        # rows by, which stays on the collaborator's `stimOn_times`.
-        frame['rt'] = frame['response_times'] - frame[STIM_ONSET_EVENT]
-        posterior_cols = [c for c in frame.columns if c.startswith('state_')]
-        views['states'][subject] = frame[['map_state', *posterior_cols]]
-
-        kept = frame[frame['map_state'].notna()]
-        views['dwell'][subject] = state_dwell_times(
-            kept['map_state'].astype(int).to_numpy(), kept['eid'].to_numpy())
-        measured = (
-            kept[kept['choice'] != 0]
-            .dropna(subset=list(MEASURE_LABELS), how='all')
-            .assign(state=lambda df: df['map_state'].astype(int),
-                    outcome=lambda df: df['feedbackType'].map(feedback2outcome))
-            .dropna(subset=['outcome'])
-        )
-        if not measured.empty:
-            views['measures'][subject] = measured[
-                ['state', 'eid', 'outcome', *MEASURE_LABELS]]
-        # Same all-NaN rule as 'measures', but over every fit trial: the switch
-        # traces keep the no-go trials, which carry the lag axis.
-        if kept[list(MEASURE_LABELS)].notna().any().any():
-            views['switches'][subject] = _state_switch_traces(
-                kept, SWITCH_WINDOW, SWITCH_BASELINE)
-
-        param_table = build_state_param_table(frame)
-        param_table['mouse'] = subject
-        param_tables.append(param_table)
-        views['curves'][subject] = _state_curves(frame, param_table)
-        views['aligned'][subject] = _transition_traces(
-            kept, posterior_cols, _block_transition_indexers(),
-            BLOCK_WINDOW, BLOCK_BASELINE)
-        print(f"  {subject}: {len(kept)} fit trials, "
-              f"{param_table['state'].nunique()} states")
-
-    if not param_tables:
-        raise ValueError(
-            f"no modeled mouse survived the group filter (tried {subjects})")
-    views['features'] = pd.concat(param_tables, ignore_index=True)
-    return views
-
-
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     return parser.parse_args(argv)
 
 
 def main(one=None) -> None:
-    """Assemble every mouse's frame and render the seven overview figures.
+    """Render one behavioral figure per mouse holding a K=`DDM_HMM_K` fit.
 
     Parameters
     ----------
@@ -538,42 +412,26 @@ def main(one=None) -> None:
         one = _get_default_connection()
     group = PhotometrySessionGroup.from_catalog(
         pd.read_parquet(SESSIONS_FPATH), one=one, h5_dir=SESSIONS_H5_DIR)
-    group.filter_sessions()
+    group.filter_sessions(session_types=('biased', 'ephys'),
+                          qc_blockers=BEHAVIOR_QC_BLOCKERS, photometry_qc=False)
+    group.deduplicate()
+    fits = [fit for fit in group.process(load_session_states, k=DDM_HMM_K)
+            if fit is not None]
 
-    ddm_params = pd.read_csv(DDM_HMM_PARAMS_FPATH)
-    subjects = list(dict.fromkeys(ddm_params['mouse']))
-    views = _assemble_mouse_views(group, subjects, one)
-
-    _save(plot_state_posterior_dwell(views['states'], views['dwell']),
-          'posteriors_dwell')
-    _save(plot_state_psychometric_chronometric(views['curves']),
-          'psychometric_chronometric')
-    _save(plot_state_param_scatter(ddm_params), 'ddm_param_scatter')
-
-    features = views['features'].dropna(subset=FEATURE_COLS)
-    scores, loadings = pca_2d(features[FEATURE_COLS].to_numpy())
-    _save(plot_state_pca(scores, features['mouse'], features['state'],
-                         loadings, FEATURE_COLS), 'behavioral_pca')
-
-    _save(plot_transition_traces(
-              views['aligned'], BLOCK_TRANSITIONS, BLOCK_WINDOW,
-              ylabels=['Δ P(state)'] * len(BLOCK_TRANSITIONS),
-              xlabel='trial from transition',
-              line_labels=_state_line_labels(views['aligned'])),
-          'block_transitions')
-    _save(plot_state_measures(views['measures'], MEASURE_LABELS),
-          'state_measures')
-    # Median MAP-state run length is 1-5 trials per mouse (measured 2026-08-20
-    # from DDM_HMM_DIR/*_K*_posteriors.csv), so lags beyond about +/-2 are
-    # contaminated by neighbouring states: a flat trace out there is
-    # uninformative, not evidence of no effect.
-    _save(plot_transition_traces(
-              views['switches'], MEASURE_LABELS, SWITCH_WINDOW,
-              ylabels=list(MEASURE_LABELS.values()),
-              xlabel='trial from state switch',
-              line_labels=_state_line_labels(views['switches'])),
-          'state_switch_measures')
-    print(f"Wrote 7 figures to {DDM_HMM_FIGURES_DIR}")
+    subjects = dict.fromkeys(fit['trials']['subject'].iloc[0] for fit in fits)
+    for subject in subjects:
+        mouse_fits = [fit for fit in fits
+                      if fit['trials']['subject'].iloc[0] == subject]
+        if any(_unconverged(fit['attrs']) for fit in mouse_fits):
+            print(f"WARNING {subject}: K={DDM_HMM_K} fit did not converge")
+        frame = pd.concat([behavioral_frame(fit['trials'], fit['attrs'])[0]
+                           for fit in mouse_fits], ignore_index=True)
+        panels = behavior_panels(frame)
+        _save(plot_state_behavior(subject, panels['states'], panels['dwell'],
+                                  panels['curves'], panels['block_traces']),
+              f'{subject}_behavior')
+        print(f"  {subject}: {len(mouse_fits)} sessions, {len(frame)} trials")
+    print(f"Wrote {len(subjects)} figures to {DDM_HMM_FIGURES_DIR}")
 
 
 if __name__ == '__main__':

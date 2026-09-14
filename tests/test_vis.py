@@ -3602,25 +3602,24 @@ class TestPlotOlsDroponeCounts:
 
 
 class TestStatePosteriorHistograms:
-    """Goal-1 data-prep: state occupancy + posterior histograms per mouse."""
+    """Posterior panel: state occupancy + posterior histograms for one mouse."""
 
     def _states(self):
-        """10-trial frame: state 1 on 6 trials, state 2 on 2, two dropped.
+        """8-trial frame: state 1 on 6 trials, state 2 on 2.
 
-        Posteriors are crisp (~0/1) on kept trials and NaN on the two dropped
-        (no-go / long-RT) trials, mirroring ``PhotometrySession.load_states``.
+        Posteriors are crisp (~0/1), as on the fit's non-omission trials.
         """
-        map_state = [1, 1, 1, 1, 1, 1, 2, 2, np.nan, np.nan]
-        state_1 = [1.0, 0.99, 1.0, 0.98, 1.0, 0.99, 0.0, 0.01, np.nan, np.nan]
-        state_2 = [0.0, 0.01, 0.0, 0.02, 0.0, 0.01, 1.0, 0.99, np.nan, np.nan]
+        state = [1, 1, 1, 1, 1, 1, 2, 2]
+        p_state_1 = [1.0, 0.99, 1.0, 0.98, 1.0, 0.99, 0.0, 0.01]
+        p_state_2 = [0.0, 0.01, 0.0, 0.02, 0.0, 0.01, 1.0, 0.99]
         return pd.DataFrame(
-            {'map_state': map_state, 'state_1': state_1, 'state_2': state_2})
+            {'state': state, 'p_state_1': p_state_1, 'p_state_2': p_state_2})
 
     def test_occupancy_matches_known_fractions(self):
         from iblnm.vis import _summarize_state_posteriors
         bins = np.linspace(0, 1, 11)
         occupancy, _ = _summarize_state_posteriors(self._states(), bins)
-        # 8 MAP-assigned trials: 6 in state 1, 2 in state 2 -> 0.75 / 0.25.
+        # 8 assigned trials: 6 in state 1, 2 in state 2 -> 0.75 / 0.25.
         assert list(occupancy.index) == [1, 2]
         assert np.isclose(occupancy[1], 0.75)
         assert np.isclose(occupancy[2], 0.25)
@@ -3630,35 +3629,30 @@ class TestStatePosteriorHistograms:
         from iblnm.vis import _summarize_state_posteriors
         bins = np.linspace(0, 1, 11)
         _, histograms = _summarize_state_posteriors(self._states(), bins)
-        # 8 kept trials per column; near-0/1 posteriors land in the edge bins,
-        # nothing in the interior. NaN (dropped) trials are excluded.
+        # 8 trials per column; near-0/1 posteriors land in the edge bins,
+        # nothing in the interior.
+        assert list(histograms) == [1, 2]
         for counts in histograms.values():
             assert counts.sum() == 8
             assert counts[1:-1].sum() == 0
             assert counts[0] + counts[-1] == 8
 
-    def _dwell(self):
-        return pd.DataFrame({'state': [1, 1, 2, 2, 1], 'length': [2, 3, 1, 4, 2]})
-
-    def test_combined_figure_row_per_mouse_two_columns(self):
-        from iblnm.vis import plot_state_posterior_dwell
-        states_by_mouse = {'ZFM-A': self._states(), 'ZFM-B': self._states()}
-        dwell_by_mouse = {'ZFM-A': self._dwell(), 'ZFM-B': self._dwell()}
-        fig = plot_state_posterior_dwell(states_by_mouse, dwell_by_mouse)
-        assert isinstance(fig, plt.Figure)
-        # Two mice, each a row of two main axes (posterior | dwell); insets add
-        # occupancy axes, so the main-axes count is at least 4.
-        titles = {ax.get_title() for ax in fig.axes if ax.get_title()}
-        assert {'ZFM-A', 'ZFM-B'} <= titles
-        # One axes carries the dwell x-label, another the posterior x-label.
-        xlabels = {ax.get_xlabel() for ax in fig.axes}
-        assert 'dwell time (trials)' in xlabels
-        assert 'posterior probability' in xlabels
+    def test_draws_one_step_histogram_per_state_and_the_dwell_panel(self):
+        from iblnm.vis import draw_state_dwell, draw_state_posteriors
+        fig, (ax_post, ax_dwell) = plt.subplots(1, 2)
+        draw_state_posteriors(ax_post, self._states(), np.linspace(0, 1, 11))
+        dwell = pd.DataFrame({'state': [1, 1, 2, 2, 1], 'length': [2, 3, 1, 4, 2]})
+        draw_state_dwell(ax_dwell, dwell, n_bins=4)
+        # `stairs` draws one StepPatch per state on each panel.
+        assert len(ax_post.patches) == 2
+        assert len(ax_dwell.patches) == 2
+        assert ax_post.get_xlabel() == 'posterior probability'
+        assert ax_dwell.get_xlabel() == 'dwell time (trials)'
         plt.close(fig)
 
 
 class TestStatePsychometricChronometric:
-    """Goal-3 figure: per-state psychometric + chronometric curves per mouse."""
+    """Psychometric and chronometric panels for one mouse."""
 
     def _psychometric(self):
         """Two states, three signed-contrast points each with known P(right)."""
@@ -3685,15 +3679,11 @@ class TestStatePsychometricChronometric:
                                      'median_rt': rt0 + bump - 0.001 * abs(sc)})
         return pd.DataFrame(rows)
 
-    def _curves(self):
-        return {'ZFM-A': {'psychometric': self._psychometric(),
-                          'chronometric': self._chronometric()}}
-
     def test_psychometric_points_at_known_positions(self):
-        from iblnm.vis import plot_state_psychometric_chronometric
-        fig = plot_state_psychometric_chronometric(self._curves())
+        from iblnm.vis import draw_state_psychometric
+        fig, ax = plt.subplots()
         psych = self._psychometric()
-        ax = fig.axes[0]  # column 0 = psychometric for the single mouse
+        draw_state_psychometric(ax, psych)
         # One scatter collection per state; union of offsets = the input points.
         assert len(ax.collections) == psych['state'].nunique()
         offsets = np.vstack([c.get_offsets() for c in ax.collections])
@@ -3704,10 +3694,10 @@ class TestStatePsychometricChronometric:
         plt.close(fig)
 
     def test_chronometric_plain_lines_at_known_positions(self):
-        from iblnm.vis import plot_state_psychometric_chronometric
-        fig = plot_state_psychometric_chronometric(self._curves())
+        from iblnm.vis import draw_state_chronometric
+        fig, ax = plt.subplots()
         chrono = self._chronometric()
-        ax = fig.axes[1]  # column 1 = chronometric for the single mouse
+        draw_state_chronometric(ax, chrono)
         # One plain line per (state, outcome, side) group; no scatter collections.
         assert len(ax.collections) == 0
         assert len(ax.lines) == 8  # 2 states x 2 outcomes x 2 sides
@@ -3719,270 +3709,76 @@ class TestStatePsychometricChronometric:
         plt.close(fig)
 
     def test_nan_psychometric_params_skip_overlay_without_error(self):
-        from iblnm.vis import plot_state_psychometric_chronometric
-        curves = self._curves()
+        from iblnm.vis import draw_state_psychometric
+        fig, ax = plt.subplots()
         # State 2's psychometric fit failed (all params NaN): its points still
         # plot, but no psychometric overlay line is drawn for it.
-        psych = curves['ZFM-A']['psychometric']
+        psych = self._psychometric()
         psych.loc[psych['state'] == 2,
                   ['bias', 'threshold', 'lapse_left', 'lapse_right']] = np.nan
-        fig = plot_state_psychometric_chronometric(curves)
-        assert len(fig.axes[0].collections) == 2  # psychometric: 2 states
-        assert len(fig.axes[0].lines) == 2  # state-1 overlay + axhline
-        # Chronometric always draws plain lines: 2 states x 2 outcomes x 2 sides.
-        assert len(fig.axes[1].lines) == 8
+        draw_state_psychometric(ax, psych)
+        assert len(ax.collections) == 2  # psychometric: 2 states
+        assert len(ax.lines) == 2  # state-1 overlay + axhline
         plt.close(fig)
 
 
 class TestTransitionTraces:
-    """Lag-trace grid shared by the block-transition and state-switch figures."""
+    """Lag-trace panel shared by the block-transition and state-switch figures."""
 
     LINE_LABELS = ['state 1', 'state 2', 'state 3']
 
-    def _aligned(self, window=2, k=3):
-        """Two mice; each transition carries a constant Δ mean and SEM per state.
-
-        L->R Δ mean is 0.1 (SEM 0.02); R->L Δ mean is 0.9 (SEM 0.05).
-        """
+    @staticmethod
+    def _stats(mean, sem, window=2, k=3):
+        """Constant Δ mean and SEM per line."""
         length = 2 * window + 1
+        return {'mean': np.full((length, k), mean),
+                'sem': np.full((length, k), sem)}
 
-        def entry(mean, sem):
-            return {'mean': np.full((length, k), mean),
-                    'sem': np.full((length, k), sem)}
-
-        return {
-            'ZFM-A': {'L->R': entry(0.1, 0.02), 'R->L': entry(0.9, 0.05)},
-            'ZFM-B': {'L->R': entry(0.1, 0.02), 'R->L': entry(0.9, 0.05)},
-        }
-
-    def test_columns_are_transitions_rows_are_mice(self):
-        from iblnm.vis import plot_transition_traces
-        fig = plot_transition_traces(
-            self._aligned(), ['L->R', 'R->L'], window=2,
-            ylabels=['Δ P(state)'] * 2, xlabel='trial from transition',
-            line_labels=self.LINE_LABELS)
-        # 2 mice x 2 transitions = 4 axes, row-major: [A/LR, A/RL, B/LR, B/RL].
-        assert len(fig.axes) == 4
-        # ZFM-A, L->R (axes[0]): every state trace carries the L->R value 0.1.
-        ax_lr = fig.axes[0]
-        state_lines = [ln for ln in ax_lr.lines if len(ln.get_ydata()) > 2]
+    def test_draws_a_mean_line_and_sem_band_per_state(self):
+        from iblnm.vis import draw_transition_traces
+        fig, ax = plt.subplots()
+        draw_transition_traces(ax, self._stats(0.1, 0.02), window=2,
+                               ylabel='Δ P(state)',
+                               xlabel='trial from transition',
+                               line_labels=self.LINE_LABELS)
+        state_lines = [ln for ln in ax.lines if len(ln.get_ydata()) > 2]
         assert len(state_lines) == 3  # K states
         for ln in state_lines:
+            assert np.allclose(ln.get_xdata(), [-2, -1, 0, 1, 2])
             assert np.allclose(ln.get_ydata(), 0.1)
-        # ZFM-A, R->L (axes[1]) carries the R->L value 0.9.
-        ax_rl = fig.axes[1]
-        rl_lines = [ln for ln in ax_rl.lines if len(ln.get_ydata()) > 2]
-        assert all(np.allclose(ln.get_ydata(), 0.9) for ln in rl_lines)
-        # Each axes is titled "{mouse} {transition}".
-        assert ax_lr.get_title() == 'ZFM-A L->R'
-        assert ax_rl.get_title() == 'ZFM-A R->L'
-        plt.close(fig)
-
-    def test_draws_a_shaded_sem_band_per_state(self):
-        from iblnm.vis import plot_transition_traces
-        fig = plot_transition_traces(
-            self._aligned(), ['L->R'], window=2, ylabels=['Δ P(state)'],
-            xlabel='trial from transition', line_labels=self.LINE_LABELS)
+        assert [ln.get_label() for ln in state_lines] == self.LINE_LABELS
         # One fill_between PolyCollection per state (the SEM band).
-        assert len(fig.axes[0].collections) == 3
-        plt.close(fig)
-
-    def test_missing_column_is_hidden_and_lines_carry_caller_labels(self):
-        from iblnm.vis import plot_transition_traces
-        traces = self._aligned()
-        del traces['ZFM-B']['R->L']  # ZFM-B never entered the R->L transition
-        fig = plot_transition_traces(
-            traces, ['L->R', 'R->L'], window=2, ylabels=['Δ P(state)'] * 2,
-            xlabel='trial from transition', line_labels=['a', 'b', 'c'])
-        assert fig.axes[3].axison is False  # ZFM-B / R->L cell drawn blank
-        assert fig.axes[0].axison is True
-        legend_labels = [t.get_text() for t in fig.axes[0].get_legend().texts]
-        assert legend_labels == ['a', 'b', 'c']
-        plt.close(fig)
-
-    def test_ylabels_are_per_column_and_xlabel_is_shared(self):
-        from iblnm.vis import plot_transition_traces
-        fig = plot_transition_traces(
-            self._aligned(), ['L->R', 'R->L'], window=2,
-            ylabels=['baseline', 'stimOn'], xlabel='trial from state switch',
-            line_labels=self.LINE_LABELS)
-        # Row-major: axes 0/2 are column 0, axes 1/3 are column 1.
-        assert [ax.get_ylabel() for ax in fig.axes] == [
-            'baseline', 'stimOn', 'baseline', 'stimOn']
-        assert {ax.get_xlabel() for ax in fig.axes} == {'trial from state switch'}
+        assert len(ax.collections) == 3
+        assert ax.get_ylabel() == 'Δ P(state)'
+        assert ax.get_xlabel() == 'trial from transition'
         plt.close(fig)
 
 
-class TestStatePCA:
-    """Goal-4b figure: PCA scatter plus PC1/PC2 loading heatmaps."""
+class TestStateBehavior:
+    """The per-mouse 3x2 behavioral figure."""
 
-    def test_loading_heatmaps_match_loadings(self):
-        from iblnm.vis import plot_state_pca
-        scores = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-        mice = ['ZFM-A', 'ZFM-A', 'ZFM-B', 'ZFM-B']
-        states = [1, 2, 1, 2]
-        loadings = np.array([[0.1, 0.9], [0.2, 0.8], [0.3, 0.7],
-                             [0.4, 0.6], [0.5, 0.5]])  # 5 features x 2 PCs
-        feats = ['bias', 'threshold', 'lapse_left', 'lapse_right', 'rt_slope']
+    def test_panels_in_documented_order(self):
+        from iblnm.vis import plot_state_behavior
+        states = TestStatePosteriorHistograms()._states()
+        dwell = pd.DataFrame({'state': [1, 2], 'length': [2, 3]})
+        curves_source = TestStatePsychometricChronometric()
+        curves = {'psychometric': curves_source._psychometric(),
+                  'chronometric': curves_source._chronometric()}
+        stats = TestTransitionTraces._stats(0.1, 0.02, window=2, k=2)
+        block_traces = {'L->R': stats, 'R->L': None}
 
-        fig = plot_state_pca(scores, mice, states, loadings, feats)
+        fig = plot_state_behavior('ZFM-A', states, dwell, curves, block_traces)
 
-        images = [np.asarray(ax.images[0].get_array()).ravel()
-                  for ax in fig.axes if ax.images]
-        assert len(images) == 2  # one heatmap per principal component
-        assert any(np.allclose(img, loadings[:, 0]) for img in images)  # PC1
-        assert any(np.allclose(img, loadings[:, 1]) for img in images)  # PC2
+        axes = fig.axes
+        assert len(axes) == 6
+        assert [ax.get_title() for ax in axes] == [
+            'state posteriors', 'dwell times', 'psychometric', 'chronometric',
+            'L->R', 'R->L']
+        assert [ax.get_ylabel() for ax in axes[:5]] == [
+            'trials', 'runs', 'P(choose right)', 'median RT (s)', 'Δ P(state)']
+        assert axes[5].axison is False  # no R->L switch: blank panel
+        assert fig.get_suptitle() == 'ZFM-A'
         plt.close(fig)
-
-
-class TestStateMeasures:
-    """Goal-6 figure: per-state NM measure violins, split by outcome, per mouse."""
-
-    MEASURES = {'baseline': 'baseline (session SD)',
-                'stimOn_response': 'stimOn response (Δ session SD)'}
-
-    def _measures(self):
-        """Two mice, states 2 and 1 (unsorted), two outcomes, two sessions each.
-
-        Each ``(state, outcome)`` cell gets its own center, so a violin's y range
-        identifies both: state 1 near 0/3, state 2 near 10/13 (correct/incorrect).
-        ``stimOn_response`` is offset by 100 so a violin's y range also identifies
-        its measure column. Session medians are exactly the session's constant
-        offset from the cell center.
-        """
-        rows = []
-        for state, state_center in [(2, 10.0), (1, 0.0)]:
-            for outcome, outcome_offset in [('correct', 0.0), ('incorrect', 3.0)]:
-                for eid, session_offset in [('eid-a', -0.5), ('eid-b', 0.5)]:
-                    center = state_center + outcome_offset + session_offset
-                    rows += [{'state': state, 'eid': eid, 'outcome': outcome,
-                              'baseline': center + step,
-                              'stimOn_response': center + step + 100.0}
-                             for step in np.linspace(-0.1, 0.1, 12)]
-        frame = pd.DataFrame(rows)
-        return {'ZFM-A': frame, 'ZFM-B': frame.copy()}
-
-    @staticmethod
-    def _violin_centers(ax):
-        """(x, y) center of every violin body on ``ax``, sorted by x position."""
-        centers = []
-        for body in ax.collections:
-            if not isinstance(body, matplotlib.collections.PolyCollection):
-                continue
-            vertices = body.get_paths()[0].vertices
-            centers.append((vertices[:, 0].mean(), vertices[:, 1].mean()))
-        return sorted(centers)
-
-    def test_outcome_violins_are_dodged_around_their_state(self):
-        from iblnm.vis import plot_state_measures
-        fig = plot_state_measures(self._measures(), self.MEASURES)
-        ax = fig.axes[0]  # first mouse, first measure
-        centers = self._violin_centers(ax)
-        assert len(centers) == 4  # two states x two outcomes
-        # Correct sits left of incorrect within each state, at position ∓ 0.18.
-        assert np.allclose([x for x, _ in centers], [-0.18, 0.18, 0.82, 1.18],
-                           atol=0.02)
-        # y ranges identify the cells: state 1 correct/incorrect near 0/3,
-        # state 2 correct/incorrect near 10/13.
-        assert np.allclose([y for _, y in centers], [0.0, 3.0, 10.0, 13.0],
-                           atol=1.0)
-        plt.close(fig)
-
-    def test_incorrect_violins_are_drawn_at_half_alpha(self):
-        from iblnm.vis import plot_state_measures
-        fig = plot_state_measures(self._measures(), self.MEASURES)
-        ax = fig.axes[0]
-        alpha_by_x = {}
-        for body in ax.collections:
-            if not isinstance(body, matplotlib.collections.PolyCollection):
-                continue
-            x = body.get_paths()[0].vertices[:, 0].mean()
-            alpha_by_x[round(float(x), 2)] = body.get_alpha()
-        # Correct violins (left of each state position) are opaque, incorrect
-        # (right) half-transparent.
-        assert alpha_by_x == {-0.18: 1.0, 0.18: 0.5, 0.82: 1.0, 1.18: 0.5}
-        plt.close(fig)
-
-    def test_dots_are_per_session_medians_at_their_outcome_position(self):
-        from iblnm.vis import plot_state_measures
-        frames = self._measures()
-        fig = plot_state_measures(frames, self.MEASURES)
-        ax = fig.axes[0]
-        dots = np.vstack([c.get_offsets() for c in ax.collections
-                          if isinstance(c, matplotlib.collections.PathCollection)])
-        expected = frames['ZFM-A'].groupby(
-            ['state', 'outcome', 'eid'])['baseline'].median()
-        assert len(dots) == len(expected)  # one dot per (state, outcome, eid)
-        for position, state in enumerate([1, 2]):
-            for outcome, dodge in [('correct', -0.18), ('incorrect', 0.18)]:
-                # Dots sit within the jitter band of their own violin, not the
-                # other outcome's: the bands are 0.24 wide and 0.36 apart.
-                at_violin = dots[np.abs(dots[:, 0] - (position + dodge)) < 0.13]
-                assert len(at_violin) == 2  # two sessions
-                assert np.allclose(sorted(at_violin[:, 1]),
-                                   sorted(expected.loc[state, outcome].to_numpy()))
-        plt.close(fig)
-
-    def test_one_axis_column_per_measure_plots_its_own_column(self):
-        from iblnm.vis import plot_state_measures
-        fig = plot_state_measures(self._measures(), self.MEASURES)
-        assert len(fig.axes) == 2 * len(self.MEASURES)  # two mice x two measures
-        # The second column draws stimOn_response, offset by 100 from baseline.
-        baseline_ax, response_ax = fig.axes[0], fig.axes[1]
-        baseline_y = [y for _, y in self._violin_centers(baseline_ax)]
-        response_y = [y for _, y in self._violin_centers(response_ax)]
-        assert np.allclose(np.subtract(response_y, baseline_y), 100.0, atol=0.1)
-        plt.close(fig)
-
-    def test_state_ticks_and_measure_labels(self):
-        from iblnm.vis import plot_state_measures
-        fig = plot_state_measures(self._measures(), self.MEASURES)
-        baseline_ax, response_ax = fig.axes[0], fig.axes[1]
-        # Ticks sit at the state positions, ascending despite the input frame
-        # listing state 2 first.
-        assert list(baseline_ax.get_xticks()) == [0, 1]
-        assert [t.get_text() for t in baseline_ax.get_xticklabels()] == ['1', '2']
-        # One label per grid edge: measures title the top row, mice label the
-        # first column's y axis, and the interior axes carry neither.
-        assert baseline_ax.get_title() == self.MEASURES['baseline']
-        assert response_ax.get_title() == self.MEASURES['stimOn_response']
-        assert baseline_ax.get_ylabel() == 'ZFM-A'
-        assert response_ax.get_ylabel() == ''
-        second_row = fig.axes[2], fig.axes[3]  # ZFM-B
-        assert [ax.get_title() for ax in second_row] == ['', '']
-        assert [ax.get_ylabel() for ax in second_row] == ['ZFM-B', '']
-        # The legend labels the outcome split, on the top-left axis only.
-        assert [t.get_text() for t in baseline_ax.get_legend().get_texts()] == [
-            'correct', 'incorrect']
-        assert response_ax.get_legend() is None
-        plt.close(fig)
-
-    def test_all_nan_measure_leaves_an_empty_labeled_axis(self):
-        from iblnm.vis import plot_state_measures
-        frames = self._measures()
-        frames['ZFM-A'] = frames['ZFM-A'].assign(stimOn_response=np.nan)
-        fig = plot_state_measures(frames, self.MEASURES)
-        empty_ax = fig.axes[1]  # ZFM-A's stimOn_response panel
-        assert list(empty_ax.collections) == []  # no violins, no dots
-        assert empty_ax.get_title() == self.MEASURES['stimOn_response']
-        # The other mouse still draws that measure.
-        assert len(self._violin_centers(fig.axes[3])) == 4
-        plt.close(fig)
-
-    def test_state_missing_one_outcome_keeps_the_other_at_its_position(self):
-        from iblnm.vis import plot_state_measures
-        frames = self._measures()
-        # Drop state 1's incorrect trials, leaving that outcome unrepresented
-        # there while state 2 keeps both.
-        frame = frames['ZFM-A']
-        frames['ZFM-A'] = frame[~((frame['state'] == 1)
-                                  & (frame['outcome'] == 'incorrect'))]
-        centers = self._violin_centers(plot_state_measures(
-            frames, self.MEASURES).axes[0])
-        # Three violins: state 1 correct, state 2 correct and incorrect. The
-        # remaining ones keep the x positions they had with all four present.
-        assert np.allclose([x for x, _ in centers], [-0.18, 0.82, 1.18], atol=0.02)
-        plt.close('all')
 
 
 class TestStateParamScatter:
