@@ -387,6 +387,7 @@ ps.load_pose_qc()                 # ps.pose_xcorr, from H5 or correlated
 ps.load_responses('video')        # ps.movement_responses, from H5 or cut
 ps.fetch_video_qc()               # ps.video_qc, always from Alyx, never stored
 ps.set_manual_qc(field, value)    # a hand-set verdict, written on its own
+ps.load_hmm(k)                    # one K's DDM-HMM fit, from H5; raises if absent
 ```
 
 Three tiers of method sit under this. `fetch_*` takes Alyx in and puts a session
@@ -544,7 +545,7 @@ adopts `fpath` as `self.filepath`, so a later save writes back to the file the
 data came from. Both dispatch to per-group
 handler functions via `_SAVE_HANDLERS` / `_LOAD_HANDLERS` registries keyed
 by top-level group name (`metadata`, `errors`, `photometry`, `trials`,
-`wheel`, `video`). Adding a new top-level group means writing a handler pair
+`wheel`, `video`, `hmm`). Adding a new top-level group means writing a handler pair
 and registering it in both dicts. See README for the on-disk layout.
 
 Beneath the top-level handlers sit five save/load pairs keyed by the **data
@@ -559,13 +560,19 @@ labels, handing each pair one group and one payload.
 | `_save_peri_event_matrix` / `_load_peri_event_matrix` | `xr.DataArray(event, trial, time)` | responses, whether the label is a brain region (`photometry/`), the wheel (`wheel/`) or a movement channel (`video/`) |
 | `_save_scalars` / `_load_scalars` | flat `dict[str, float]` stored as group attrs | QC metrics, preprocessing diagnostics |
 | `_save_frame_data` / `_load_frame_data` | index-free `np.ndarray` (dataset `values`) or `pd.DataFrame` (one dataset per column) | the three raw video datasets, the wheel's per-trial `peak_velocity` |
-| `_save_manual_qc` / `_load_manual_qc` | flat `dict[str, str]` of verdicts stored as group attrs | `photometry/{region}/manual_qc`, `video/manual_qc` |
+| `_save_attrs` / `_load_attrs` | flat `dict` of scalars and 1-D arrays stored as group attrs, bytes decoded to str; `keys=` restricts the read | `photometry/{region}/manual_qc`, `video/manual_qc` (`keys=LP_QC_LABELS`), `hmm/ddm-k{K}` run summary and parameters |
 
 `_save_frame_data` replaces only the group's datasets, not the group, because
 `video/motion_energy` holds this product beside the movement channel's
-`preprocessed` and `responses` subgroups. `_save_manual_qc` likewise sets attrs
+`preprocessed` and `responses` subgroups. `_save_attrs` likewise sets attrs
 in place rather than replacing its group, so writing one verdict leaves a
 session's other verdicts standing.
+
+`hmm/ddm-k{K}` holds one imported DDM-HMM fit per K: the per-trial columns as
+datasets (`_write_dataframe`, trial identity in `trial`) and the run summary
+and parameters as attrs. `_save_hmm` replaces the whole `hmm` group, and an
+empty `ps.hmm` deletes it. `load_hmm(k)` returns the stored fit without
+assigning it to `ps.hmm`, so a later save cannot erase the other Ks.
 
 `_read_label_products(modality_group, product, read)` reads every
 `{label}/{product}` subgroup of one modality in one call, for the loads that

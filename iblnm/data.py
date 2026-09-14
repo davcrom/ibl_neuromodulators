@@ -360,7 +360,12 @@ def _write_dataframe(h5_group, dataframe):
 
 
 def _decode(value):
-    """Return an H5 string attr as str, leaving anything else alone."""
+    """Return an H5 string attr as str, and a bytes array as a str array.
+
+    Anything else is returned unchanged.
+    """
+    if isinstance(value, np.ndarray) and value.dtype.kind == 'S':
+        return value.astype(str)
     return value.decode() if isinstance(value, bytes) else value
 
 
@@ -842,24 +847,32 @@ def _load_scalars(group: h5py.Group) -> dict[str, float]:
             if key not in _STAMP_ATTRS}
 
 
-def _save_manual_qc(group: h5py.Group, labels: dict[str, str]) -> None:
-    """Write manual QC verdicts into `group` as attrs.
+def _save_attrs(group: h5py.Group, mapping: dict) -> None:
+    """Write a flat mapping into `group` as attrs, in place.
 
-    One pair serves `photometry/{region}/manual_qc` and `video/manual_qc`: the
-    payload is the same small `LP_QC_LABELS`-keyed dict of IBL verdict strings
-    either way, and only the parent group differs.
+    Serves the manual QC verdicts (`photometry/{region}/manual_qc`,
+    `video/manual_qc`) and a DDM-HMM fit's run summary and parameters
+    (`hmm/ddm-k{K}`). Values are scalars (float, int, bool, str) or 1-D
+    arrays; a numpy unicode array is stored as bytes, because h5py rejects
+    fixed-width unicode attrs.
 
     Attrs are set in place rather than the group being replaced, so writing one
-    field leaves the session's other verdicts standing.
+    field leaves the group's other attrs standing.
     """
-    for field, value in labels.items():
-        group.attrs[field] = value
+    for key, value in mapping.items():
+        if isinstance(value, np.ndarray) and value.dtype.kind == 'U':
+            value = value.astype('S')
+        group.attrs[key] = value
 
 
-def _load_manual_qc(group: h5py.Group) -> dict[str, str]:
-    """Read the verdicts written by `_save_manual_qc`, decoding bytes to str."""
-    return {field: _decode(group.attrs[field]) for field in LP_QC_LABELS
-            if field in group.attrs}
+def _load_attrs(group: h5py.Group, keys=None) -> dict:
+    """Read the attrs written by `_save_attrs`, decoding bytes to str.
+
+    `keys` restricts the result to those names, skipping any not stored.
+    """
+    names = group.attrs if keys is None else [key for key in keys
+                                              if key in group.attrs]
+    return {key: _decode(group.attrs[key]) for key in names}
 
 
 # How a metric's sliding windows are reduced to the one value that is stored.
@@ -1061,8 +1074,8 @@ def _save_photometry(session, h5_file):
             )
 
         if region in session.photometry_manual_qc:
-            _save_manual_qc(region_group.require_group('manual_qc'),
-                            session.photometry_manual_qc[region])
+            _save_attrs(region_group.require_group('manual_qc'),
+                        session.photometry_manual_qc[region])
 
 
 def _load_photometry(session, h5_file):
@@ -1083,7 +1096,8 @@ def _load_photometry(session, h5_file):
     _set_if_read(session, 'photometry_qc',
                  _read_photometry_qc(photometry_group))
     session.photometry_manual_qc = _read_label_products(
-        photometry_group, 'manual_qc', _load_manual_qc)
+        photometry_group, 'manual_qc',
+        lambda group: _load_attrs(group, keys=LP_QC_LABELS))
     if 'neurophotometrics/qc' in photometry_group:
         session.neurophotometrics_qc = _load_scalars(
             photometry_group['neurophotometrics/qc'])
@@ -1246,7 +1260,7 @@ def _save_video(session, h5_file):
         _save_pose_xcorr(_replace_group(grp.require_group('pose'), 'qc'),
                          session.pose_xcorr)
     if session.video_manual_qc:
-        _save_manual_qc(grp.require_group('manual_qc'), session.video_manual_qc)
+        _save_attrs(grp.require_group('manual_qc'), session.video_manual_qc)
 
 
 def _load_video(session, h5_file):
@@ -1265,7 +1279,8 @@ def _load_video(session, h5_file):
     if 'pose/qc' in grp:
         session.pose_xcorr = _load_pose_xcorr(grp['pose/qc'])
     if 'manual_qc' in grp:
-        session.video_manual_qc = _load_manual_qc(grp['manual_qc'])
+        session.video_manual_qc = _load_attrs(grp['manual_qc'],
+                                              keys=LP_QC_LABELS)
 
 
 # The QC check run over a session's video, and the error types that disqualify
@@ -1389,7 +1404,7 @@ def _pose_row(video: h5py.Group, video_qc: dict, error_types: set[str]) -> dict:
     movement_responses = _read_label_responses(video)
     xcorr = _load_pose_xcorr(video['pose/qc']) if 'pose/qc' in video else None
     times_qc = dict(video['times/qc'].attrs) if 'times/qc' in video else {}
-    manual_qc = (_load_manual_qc(video['manual_qc'])
+    manual_qc = (_load_attrs(video['manual_qc'], keys=LP_QC_LABELS)
                  if 'manual_qc' in video else {})
     row = {
         'lp_exists': _has_lp_channel(movement_responses),
@@ -1435,6 +1450,38 @@ _RESPONSE_MODALITIES = {
                     'window': MOVEMENT_RESPONSE_WINDOW}),
 }
 
+def _save_hmm(session, h5_file):
+    """Write each K of `session.hmm` to its own `hmm/ddm-k{K}` group.
+
+    The whole `hmm` group is replaced, so a K the session no longer holds
+    leaves nothing behind; an empty mapping deletes the group outright, which
+    is how a session absent from its mouse's fit holds no `hmm` at all. Each
+    K's per-trial columns are datasets (trial identity in the `trial` column,
+    as in `trials/table`), its run summary and parameters attrs.
+    """
+    if not session.hmm:
+        if 'hmm' in h5_file:
+            del h5_file['hmm']
+        return
+    grp = _replace_group(h5_file, 'hmm')
+    for k, fit in session.hmm.items():
+        fit_group = grp.create_group(f'ddm-k{k}')
+        _write_dataframe(fit_group, fit['trials'])
+        _save_attrs(fit_group, fit['attrs'])
+
+
+def _read_hmm_fit(group: h5py.Group) -> dict:
+    """Read one `hmm/ddm-k{K}` group as `{'trials': DataFrame, 'attrs': dict}`."""
+    return {'trials': _read_dataframe(group), 'attrs': _load_attrs(group)}
+
+
+def _load_hmm(session, h5_file):
+    if 'hmm' not in h5_file:
+        return
+    session.hmm = {int(name.removeprefix('ddm-k')): _read_hmm_fit(group)
+                   for name, group in h5_file['hmm'].items()}
+
+
 _SAVE_HANDLERS = {
     'metadata':   _save_metadata,
     'errors':     _save_errors,
@@ -1442,6 +1489,7 @@ _SAVE_HANDLERS = {
     'trials':     _save_trials,
     'wheel':      _save_wheel,
     'video':      _save_video,
+    'hmm':        _save_hmm,
 }
 
 _LOAD_HANDLERS = {
@@ -1451,6 +1499,7 @@ _LOAD_HANDLERS = {
     'trials':     _load_trials,
     'wheel':      _load_wheel,
     'video':      _load_video,
+    'hmm':        _load_hmm,
 }
 
 # The session attributes each save handler writes from, in the order the groups
@@ -1464,6 +1513,7 @@ _SAVE_GROUP_PRODUCTS = {
     'wheel':      ('wheel_position', 'wheel_velocity', 'wheel_responses'),
     'video':      ('pose_times', 'pose', 'motion_energy', 'movement_signals',
                    'movement_responses', 'pose_xcorr', 'video_times_qc'),
+    'hmm':        ('hmm',),
 }
 
 
@@ -2514,7 +2564,8 @@ class PhotometrySession(PhotometrySessionLoader):
             Output path. Defaults to ``self.filepath``.
         groups : sequence of str, optional
             Which data groups to write. Any subset of:
-            'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video'.
+            'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video',
+            'hmm'.
             None auto-detects all available data groups.
         mode : str
             HDF5 file open mode ('a' creates/appends, 'w' truncates).
@@ -2560,7 +2611,8 @@ class PhotometrySession(PhotometrySessionLoader):
             from rather than the default one for this eid.
         groups : sequence of str, optional
             Which data groups to load. Any subset of:
-            'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video'.
+            'metadata', 'errors', 'photometry', 'trials', 'wheel', 'video',
+            'hmm'.
             None loads all groups present in the file.
         """
         if fpath is None:
@@ -3040,6 +3092,39 @@ class PhotometrySession(PhotometrySessionLoader):
         self.save_h5(groups=['trials'])
         return self.performance
 
+    def load_hmm(self, k: int) -> dict:
+        """Return one K's DDM-HMM fit, from the session or from `hmm/ddm-k{k}`.
+
+        There is no fetch tier: fits are imported from collaborator CSVs by
+        `scripts/import_ddm_hmm.py`, never built here. The stored fit is
+        returned without being assigned to `self.hmm`, because `_save_hmm`
+        rewrites the whole group and a session holding one K would erase the
+        others on its next save.
+
+        Parameters
+        ----------
+        k : int
+            Number of DDM states; the no-response state is not counted.
+
+        Returns
+        -------
+        dict
+            ``{'trials': DataFrame, 'attrs': dict}`` — the per-trial columns
+            keyed by ``trial``, and the run summary and parameters.
+
+        Raises
+        ------
+        KeyError
+            The session holds no fit for `k`, in memory or in the store.
+        """
+        if hasattr(self, 'hmm') and k in self.hmm:
+            return self.hmm[k]
+        product = f'hmm/ddm-k{k}'
+        if not self.stored_product_exists(product):
+            raise KeyError(f"{self.eid}: no DDM-HMM fit stored for K={k}")
+        with h5py.File(self.filepath, 'r') as h5:
+            return _read_hmm_fit(h5[product])
+
     def fraction_correct(self, exclude_nogo=True):
         return task.compute_fraction_correct(self.trials, exclude_nogo=exclude_nogo)
 
@@ -3453,7 +3538,7 @@ class PhotometrySession(PhotometrySessionLoader):
                  else f'photometry/{region}/manual_qc')
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
         with h5py.File(self.filepath, 'a') as h5:
-            _save_manual_qc(h5.require_group(group), labels)
+            _save_attrs(h5.require_group(group), labels)
 
     def _clear_manual_qc(self, modality: str) -> None:
         """Drop one modality's manual QC verdicts, in memory and on disk.

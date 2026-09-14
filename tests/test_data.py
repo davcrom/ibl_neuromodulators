@@ -2832,6 +2832,83 @@ class TestManualQC:
         assert fresh.photometry_manual_qc == {}
 
 
+def _hmm_fit(n_states=3):
+    """One K's DDM-HMM fit as `ps.hmm` holds it: per-trial frame plus attrs."""
+    trials = pd.DataFrame({
+        'trial': [0, 1, 2], 'viterbi_state': [1, 2, n_states],
+        'p_state_1': [.9, .1, 0.], 'omission': [False, False, True],
+        'eid': ['e', 'e', 'e'],
+    })
+    attrs = {
+        'BIC': 1.5, 'converged': False, 'host': 'scc',
+        'B': np.r_[np.arange(1., n_states), np.nan],
+        'kind': np.array(['ddm'] * (n_states - 1) + ['omission']),
+    }
+    return {'trials': trials, 'attrs': attrs}
+
+
+class TestHmmProduct:
+    """The `hmm/ddm-k{K}` product: handlers and `load_hmm`."""
+
+    def _session(self, mock_session_series, tmp_path):
+        from iblnm.data import PhotometrySession
+        ps = PhotometrySession(mock_session_series, one=MagicMock(),
+                               load_data=False)
+        ps.filepath = tmp_path / f'{ps.eid}.h5'
+        return ps
+
+    def _assert_fit_equal(self, actual, expected):
+        pd.testing.assert_frame_equal(
+            actual['trials'][expected['trials'].columns],
+            expected['trials'], check_dtype=False)
+        assert set(actual['attrs']) == set(expected['attrs'])
+        for key, value in expected['attrs'].items():
+            np.testing.assert_array_equal(actual['attrs'][key], value)
+        assert actual['attrs']['kind'].dtype.kind == 'U'
+
+    def test_round_trips_every_k(self, mock_session_series, tmp_path):
+        """Each K's frame and attrs come back as written, strings as str."""
+        ps = self._session(mock_session_series, tmp_path)
+        ps.hmm = {4: _hmm_fit(5), 3: _hmm_fit(4)}
+        ps.save_h5(groups=['hmm'])
+
+        fresh = self._session(mock_session_series, tmp_path)
+        fresh.load_h5(groups=['hmm'])
+        assert set(fresh.hmm) == {3, 4}
+        for k, fit in ps.hmm.items():
+            self._assert_fit_equal(fresh.hmm[k], fit)
+
+    def test_empty_mapping_deletes_group(self, mock_session_series, tmp_path):
+        """A session absent from its mouse's fit keeps no stale `hmm` group."""
+        ps = self._session(mock_session_series, tmp_path)
+        ps.hmm = {4: _hmm_fit()}
+        ps.save_h5(groups=['hmm'])
+        ps.hmm = {}
+        ps.save_h5(groups=['hmm'])
+        with h5py.File(ps.filepath, 'r') as h5:
+            assert 'hmm' not in h5
+
+    def test_load_hmm_reads_store(self, mock_session_series, tmp_path):
+        """With no attribute held, the stored K is read back."""
+        writer = self._session(mock_session_series, tmp_path)
+        writer.hmm = {4: _hmm_fit(5)}
+        writer.save_h5(groups=['hmm'])
+
+        ps = self._session(mock_session_series, tmp_path)
+        self._assert_fit_equal(ps.load_hmm(4), writer.hmm[4])
+
+    def test_load_hmm_raises_for_missing_k(self, mock_session_series,
+                                           tmp_path):
+        """A K the store does not hold raises, naming the eid and the K."""
+        writer = self._session(mock_session_series, tmp_path)
+        writer.hmm = {4: _hmm_fit(5)}
+        writer.save_h5(groups=['hmm'])
+
+        ps = self._session(mock_session_series, tmp_path)
+        with pytest.raises(KeyError, match=f'{ps.eid}.*6'):
+            ps.load_hmm(6)
+
+
 class TestFetchVideoQC:
     """PhotometrySession.fetch_video_qc selects the 8 VIDEO_QC_COLS, unstored."""
 

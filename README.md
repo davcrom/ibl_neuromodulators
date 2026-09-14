@@ -715,7 +715,7 @@ into each metric name: `n_unique_samples_GCaMP`, `n_unique_samples_Isosbestic`.
 ### HDF5: `data/sessions/{eid}.h5`
 
 File is organized into top-level groups (`metadata`, `errors`, `photometry`,
-`trials`, `wheel`, `video`) that mirror the `PhotometrySession` attributes.
+`trials`, `wheel`, `video`, `hmm`) that mirror the `PhotometrySession` attributes.
 Each group is read/written by a dedicated handler pair registered in
 `_SAVE_HANDLERS` and `_LOAD_HANDLERS` in `iblnm/data.py`. Photometry data is
 organized per brain region so single-region loads do not require reading the
@@ -811,6 +811,16 @@ movement channel.
 │                                       from the responses matrix; NaN where
 │                                       the trial has no wheel samples
 │
+├── hmm/                             DDM-HMM fits imported from collaborator CSVs;
+│   └── ddm-k{K}/                    one group per fitted K (DDM states, the
+│       │                            no-response state not counted)
+│       ├── trial          int64   (Tf,)   H5 trials `trial`; trial identity
+│       ├── {column}       (Tf,)   every per-trial column of the fit file
+│       │                          (viterbi_state, p_state_{i}, rt, ...)
+│       └── attrs: run summary (BIC, loglik, converged, ...) and parameters,
+│                  per-state arrays (B, k, alpha, a0, tau, init, kind,
+│                  trans_to_{j})
+│
 └── video/
     ├── manual_qc/                   verdicts set by hand, one set per session
     │   └── attrs: qc_lp, qc_movement, qc_timing
@@ -883,7 +893,7 @@ movement samples at POSE_FS.
 
 `save_h5(groups=...)` and `load_h5(groups=...)` accept the top-level group
 names (`'metadata'`, `'errors'`, `'photometry'`, `'trials'`, `'wheel'`,
-`'video'`) to restrict which handlers run. Omit `groups` to process everything
+`'video'`, `'hmm'`) to restrict which handlers run. Omit `groups` to process everything
 present.
 
 ---
