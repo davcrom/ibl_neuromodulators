@@ -80,7 +80,6 @@ TASK_ENCODING_DIR = RESULTS_DIR / 'task_encoding'
 DISPERSION_FIGURES_DIR = PROJECT_ROOT / 'figures/task_encoding/dispersion'
 SESSIONS_H5_DIR = PROJECT_ROOT / 'data' / 'sessions'
 DDM_HMM_DIR = PROJECT_ROOT / 'data' / 'ddm-hmm'
-DDM_HMM_PARAMS_FPATH = DDM_HMM_DIR / 'all_mice_bestK_params.csv'
 DDM_HMM_FIGURES_DIR = PROJECT_ROOT / 'figures' / 'ddm-hmm'
 # The analysis K: the number of DDM states in the fit the overview reads. The
 # fit's no-response state is not counted, so `hmm/ddm-k4` holds five states.

@@ -22,7 +22,7 @@ from one.alf.exceptions import ALFObjectNotFound
 
 from iblnm.config import (
     ANALYSIS_QC_BLOCKERS, BASELINE_WINDOW,
-    DDM_HMM_DIR, EIDS_TO_DROP,
+    EIDS_TO_DROP,
     EVENT_COMPLETENESS_THRESHOLD, IBL_QC_VALUES,
     LABEL2EVENT, LENGTH_MISMATCH_THRESHOLD, LP_QC_LABELS,
     MIN_NTRIALS, MIN_PERFORMANCE, MIN_TRIALS_PERSESSION,
@@ -1517,62 +1517,6 @@ _SAVE_GROUP_PRODUCTS = {
 }
 
 
-def _align_posteriors_to_trials(
-    block: pd.DataFrame, trials: pd.DataFrame, atol: float = 1e-3
-) -> np.ndarray:
-    """Match each DDM-HMM posterior row to its canonical trial by ordered RT.
-
-    The posteriors CSV is a chronological subsequence of the session's trials
-    (the fit dropped some trials by a preprocessing rule not recoverable from
-    the trial columns). Both are walked in order — ``block`` by
-    ``trial_in_dataset``, ``trials`` by ``stimOn_times`` — matching each block
-    ``rt`` to the next trial whose ``response_times - stimOn_times`` equals it.
-    Order preservation makes RT collisions harmless.
-
-    ``stimOn_times`` here is not the pipeline's onset clock
-    (``config.STIM_ONSET_EVENT``, the Bpod trigger) but the column the
-    collaborator's fit measured its RTs from. It is a matching key against a
-    foreign file, so it tracks that file's definition; the two clocks differ by
-    ~60 ms, far more than ``atol``, and nothing would match if this drifted.
-
-    Parameters
-    ----------
-    block : pandas.DataFrame
-        Posterior rows for one eid, sorted by ``trial_in_dataset``; needs an
-        ``rt`` column (seconds).
-    trials : pandas.DataFrame
-        Session trials sorted by ``stimOn_times``; needs ``response_times`` and
-        ``stimOn_times`` (seconds).
-    atol : float
-        RT match tolerance in seconds.
-
-    Returns
-    -------
-    numpy.ndarray
-        ``trials`` index labels, one per ``block`` row, in block order.
-
-    Raises
-    ------
-    ValueError
-        If a block row has no ordered RT match (the CSV is not a subsequence of
-        these trials — fail loud).
-    """
-    block_rt = block['rt'].to_numpy()
-    trial_rt = (trials['response_times'] - trials['stimOn_times']).to_numpy()
-    trial_labels = trials.index.to_numpy()
-    matched = np.empty(len(block_rt), dtype=trial_labels.dtype)
-    j = 0
-    for i, rt in enumerate(block_rt):
-        while j < len(trial_rt) and abs(trial_rt[j] - rt) > atol:
-            j += 1
-        if j >= len(trial_rt):
-            raise ValueError(
-                f"posteriors row {i} (rt={rt}) has no ordered RT match in trials")
-        matched[i] = trial_labels[j]
-        j += 1
-    return matched
-
-
 # Data fields the loader parent declares as dataclass fields, and so sets to an
 # empty DataFrame or dict on every construction. `PhotometrySession` guards its
 # loads on the attribute being there, so those empty containers are deleted
@@ -2094,60 +2038,6 @@ class PhotometrySession(PhotometrySessionLoader):
         self.trials['signed_contrast'] = contrasts['signed_contrast']
         self.trials['contrast'] = contrasts['contrast']
         return self.trials
-
-    def load_states(self) -> None:
-        """Attach per-trial DDM-HMM state posteriors to ``self.states``.
-
-        Locates this mouse's ``{subject}_K*_posteriors.csv`` in
-        ``config.DDM_HMM_DIR`` and aligns its rows for this eid to the canonical
-        H5 trials by ordered RT-subsequence matching (see
-        :func:`_align_posteriors_to_trials`). The match is verified by requiring
-        ``|signed_contrast|`` to agree on every matched trial (CSV as a fraction,
-        H5 as a percent), which catches any RT-collision misalignment.
-
-        Sets ``self.states`` to a DataFrame indexed like ``self.trials`` with
-        columns ``map_state, state_1 … state_K`` filled on the trials that are in
-        the fit and NaN on those the fit dropped. Leaves it ``None`` when the
-        mouse was not modeled or this session is absent from the fit.
-
-        Raises
-        ------
-        ValueError
-            If ``self.trials`` is not loaded, a CSV row has no ordered RT match,
-            or a matched trial's ``|contrast|`` disagrees with the CSV (fail
-            loud — the alignment is wrong).
-        """
-        matches = sorted(DDM_HMM_DIR.glob(f'{self.subject}_K*_posteriors.csv'))
-        if not matches:
-            self.states = None
-            return
-        posteriors = pd.read_csv(matches[0])
-        block = posteriors[posteriors['eid'] == self.eid].sort_values(
-            'trial_in_dataset')
-        if block.empty:
-            self.states = None
-            return
-
-        if not hasattr(self, 'trials'):
-            raise ValueError(
-                f"load_states requires loaded trials (eid {self.eid})")
-
-        trials = self.trials.sort_values('stimOn_times')
-        matched = _align_posteriors_to_trials(block, trials)
-
-        csv_abs_contrast = block['signed_contrast'].abs().to_numpy() * 100
-        h5_abs_contrast = self.trials.loc[matched, 'signed_contrast'].abs().to_numpy()
-        if not np.allclose(csv_abs_contrast, h5_abs_contrast, atol=1e-2):
-            raise ValueError(
-                f"|contrast| mismatch between posteriors and trials for eid "
-                f"{self.eid} (RT-collision misalignment)")
-
-        state_cols = ['map_state'] + [c for c in block.columns
-                                      if c.startswith('state_')]
-        states = pd.DataFrame(np.nan, index=self.trials.index,
-                              columns=state_cols)
-        states.loc[matched, state_cols] = block[state_cols].to_numpy()
-        self.states = states
 
     def load_photometry(self) -> pd.DataFrame:
         """Return the preprocessed photometry signal, building it if absent.
