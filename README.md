@@ -129,6 +129,22 @@ file holds no preprocessed signal is the one case that reaches Alyx:
 its raw encoder samples, as the download pass would. The three flags narrow
 which sessions run, as they do there.
 
+### Importing DDM-HMM fits
+
+`scripts/import_ddm_hmm.py` writes a collaborator's per-mouse DDM-HMM fits from
+`data/ddm-hmm/` into each session's `hmm/ddm-k{K}`, every K the fit carries.
+Run it after every `download.py`, whose whole-file rewrite erases `hmm`, and
+whenever new fits arrive. Each session's `hmm` group is replaced whole, so a
+session its mouse's fit no longer holds ends with none. A session with no stored
+trials, or whose fit rows disagree with its trials (count, `trial`, contrast,
+sign-flipped choice), raises and is skipped with its file untouched; nothing is
+logged to the store.
+
+```bash
+python scripts/import_ddm_hmm.py                        # every fitted mouse
+python scripts/import_ddm_hmm.py --subject ZFM-04019
+```
+
 **Analysis scripts build nothing in bulk.** A session missing a product builds
 it through that session's `load_*` when the analysis reaches it. With the
 download all-or-nothing, that should not happen: an analysis running over a
