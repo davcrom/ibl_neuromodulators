@@ -11,6 +11,7 @@ from iblnm.analysis import (
     transition_delta_stats,
     get_responses,
     normalize_responses,
+    normalized_outcome_difference,
     resample_signal,
     state_dwell_times,
     tercile_split_curves,
@@ -3818,6 +3819,58 @@ class TestTransitionDeltaStats:
 
         np.testing.assert_allclose(stats['mean'][:, 0], [0.0, 0.0, 0.6, 0.6, 0.6])
         assert np.isnan(stats['sem']).all()
+
+
+class TestNormalizedOutcomeDifference:
+    @staticmethod
+    def _cell(eid, state, correct, incorrect):
+        """One cell's rows: ``correct`` and ``incorrect`` value lists."""
+        return pd.DataFrame({
+            'eid': eid, 'state': state,
+            'feedbackType': [1] * len(correct) + [-1] * len(incorrect),
+            'value': [*correct, *incorrect],
+        })
+
+    def test_difference_is_scaled_by_the_whole_cell_sd(self):
+        # (2 - 0) / std([2]*5 + [0]*5, ddof=1) = 2 / 1.0541 = 1.897. The
+        # normalizer is the SD over every row of the cell, not a within-outcome
+        # one, which would be zero here.
+        frame = self._cell('e1', 1, [2.0] * 5, [0.0] * 5)
+
+        out = normalized_outcome_difference(
+            frame, 'value', ['eid', 'state'], 'feedbackType', 1, -1,
+            min_trials=5)
+
+        assert list(out.columns) == ['eid', 'state', 'value']
+        assert len(out) == 1
+        assert out['value'].iloc[0] == pytest.approx(1.8974, abs=1e-4)
+
+    def test_cell_short_of_min_trials_in_one_outcome_is_absent(self):
+        # State 2 has 5 correct but only 4 incorrect, so it yields no row.
+        frame = pd.concat([self._cell('e1', 1, [2.0] * 5, [0.0] * 5),
+                           self._cell('e1', 2, [2.0] * 5, [0.0] * 4)],
+                          ignore_index=True)
+
+        out = normalized_outcome_difference(
+            frame, 'value', ['eid', 'state'], 'feedbackType', 1, -1,
+            min_trials=5)
+
+        assert list(out['state']) == [1]
+
+    def test_nan_values_are_excluded_from_means_and_counts(self):
+        # Six correct rows, one NaN: five count, and the mean is of the five.
+        frame = self._cell('e1', 1, [2.0] * 5 + [np.nan], [0.0] * 5)
+
+        out = normalized_outcome_difference(
+            frame, 'value', ['eid', 'state'], 'feedbackType', 1, -1,
+            min_trials=5)
+
+        assert out['value'].iloc[0] == pytest.approx(1.8974, abs=1e-4)
+        # One fewer non-NaN correct row and the cell drops out entirely.
+        short = self._cell('e1', 1, [2.0] * 4 + [np.nan], [0.0] * 5)
+        assert len(normalized_outcome_difference(
+            short, 'value', ['eid', 'state'], 'feedbackType', 1, -1,
+            min_trials=5)) == 0
 
 
 class TestAddFdrQvalues:

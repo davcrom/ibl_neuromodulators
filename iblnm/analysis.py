@@ -3666,6 +3666,65 @@ def state_dwell_times(states, reset_labels=None):
     return dwell.reset_index(drop=True)
 
 
+def normalized_outcome_difference(
+    frame: pd.DataFrame,
+    value: str,
+    group_cols: list[str],
+    outcome_col: str,
+    positive,
+    negative,
+    min_trials: int,
+) -> pd.DataFrame:
+    """Per-cell difference between two outcomes, in units of the cell's SD.
+
+    Within each ``group_cols`` cell, the mean of ``value`` over the rows whose
+    ``outcome_col`` is ``negative`` is subtracted from the mean over the rows
+    whose outcome is ``positive``, and the difference is divided by the standard
+    deviation (``ddof=1``) of ``value`` over every row of the cell — both
+    outcomes pooled, so the scale is the cell's own variability rather than a
+    within-outcome one, which a cell with constant values per outcome would put
+    at zero.
+
+    NaN values are excluded from the means, the SD and the occupancy counts, so
+    a row carrying no measurement neither shifts a mean nor helps a cell reach
+    ``min_trials``.
+
+    Variable-agnostic: no outcome coding, measure name or grouping is baked in.
+
+    Parameters
+    ----------
+    frame : pandas.DataFrame
+        Rows to reduce, carrying ``group_cols``, ``value`` and ``outcome_col``.
+    value : str
+        Column reduced; the result names its column the same.
+    group_cols : list of str
+        Columns defining a cell (e.g. session x state).
+    outcome_col : str
+        Column holding the two outcomes compared.
+    positive, negative : hashable
+        The ``outcome_col`` values whose means are differenced, in that order.
+    min_trials : int
+        Non-NaN rows each outcome must reach for the cell to be returned.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``[*group_cols, value]``, one row per surviving cell. Cells
+        short of ``min_trials`` in either outcome are absent, as is a cell whose
+        outcome is missing entirely.
+    """
+    measured = frame[frame[value].notna()]
+    per_outcome = measured.groupby([*group_cols, outcome_col])[value].agg(
+        ['mean', 'size']).unstack(outcome_col)
+    cell = measured.groupby(group_cols)[value].std(ddof=1)
+    keep = (per_outcome['size'].reindex(columns=[positive, negative])
+            >= min_trials).all(axis=1)
+    difference = (per_outcome['mean'][positive]
+                  - per_outcome['mean'][negative]) / cell
+    return (difference[keep].dropna().rename(value)
+            .reset_index())
+
+
 def align_traces_at_transitions(
     values: np.ndarray, transition_idx, window: int
 ) -> np.ndarray:
