@@ -145,6 +145,22 @@ python scripts/import_ddm_hmm.py                        # every fitted mouse
 python scripts/import_ddm_hmm.py --subject ZFM-04019
 ```
 
+`scripts/import_ddm_hmm_old.py` is the legacy counterpart for the first-round
+fits in `data/ddm-hmm.old/`, kept until those mice are refit. It writes each
+mouse's best K, renamed to the new format's names (`state_{i}` →
+`p_state_{i}`, `pi0` → `init`, `to_{j}` → `trans_to_{j}`, `K` → `K_ddm`,
+`logL` → `loglik`, `bic` → `BIC`; new-format summary fields the old fit lacks
+are NaN). `map_state` keeps its own name: it is not `viterbi_state`. The old fit
+dropped trials without naming the ones it kept, so its rows are matched to the
+stored trials by ordered reaction time and checked by absolute contrast; only
+matched trials are written. Any mouse with a directory in `data/ddm-hmm/` is
+skipped, even when named. Run both importers after every download.
+
+```bash
+python scripts/import_ddm_hmm_old.py                    # every old-only mouse
+python scripts/import_ddm_hmm_old.py --subject ZFM-06271
+```
+
 **Analysis scripts build nothing in bulk.** A session missing a product builds
 it through that session's `load_*` when the analysis reaches it. With the
 download all-or-nothing, that should not happen: an analysis running over a
