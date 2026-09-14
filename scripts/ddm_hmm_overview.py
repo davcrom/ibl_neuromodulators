@@ -124,7 +124,9 @@ def load_session_measures(ps: PhotometrySession, k: int) -> dict:
     chronology and baseline rule — the measurement
     ``scripts/responses.py`` fits its models on. A session recording from two
     fibers contributes each trial twice, once per fiber, since the measures are
-    the fiber's and the trial columns are the session's.
+    the fiber's and the trial columns are the session's. A fit column named like
+    a measure is dropped for the measure, as the stored trials' columns win over
+    the fit's in :func:`load_session_states`.
 
     Parameters
     ----------
@@ -144,6 +146,12 @@ def load_session_measures(ps: PhotometrySession, k: int) -> dict:
     ------
     KeyError
         The session holds no fit for ``k`` (from ``load_hmm``).
+    ValueError
+        Nothing was measured. The photometry-QC filter cuts recordings rather
+        than sessions, so a session whose every fiber fails it keeps its row
+        with an empty ``brain_region`` and measures nothing; the session
+        contributes no neural figure and is skipped rather than carried as an
+        empty frame.
     """
     fit = load_session_states(ps, k)
     ps.load_responses('photometry')
@@ -160,8 +168,16 @@ def load_session_measures(ps: PhotometrySession, k: int) -> dict:
     measures = (pd.concat(magnitudes, ignore_index=True)
                 .pivot(index=MEASURE_KEYS, columns='measure', values='response')
                 .reset_index())
-    return {'trials': fit['trials'].merge(measures, on='trial'),
-            'attrs': fit['attrs']}
+    # The old format's fit carries a `stimulus` column of its own — the
+    # collaborator's stimulus-side coding, unused here — which the measure of
+    # that name would otherwise suffix into `stimulus_x`/`stimulus_y`.
+    collides = [measure for measure in MEASURE_LABELS if measure in fit['trials']]
+    frame = fit['trials'].drop(columns=collides).merge(measures, on='trial')
+    if frame.empty:
+        raise ValueError(
+            f"no measured trial for eid {ps.eid}: the session has no recording "
+            f"the response cut holds, or none of the fit's trials")
+    return {'trials': frame, 'attrs': fit['attrs']}
 
 
 def behavioral_frame(

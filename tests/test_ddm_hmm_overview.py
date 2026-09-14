@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import scripts.ddm_hmm_overview as ddm
 
@@ -485,6 +486,53 @@ def test_load_session_measures_keeps_one_row_per_recording_and_trial():
 
     assert len(frame) == 4
     assert sorted(frame['brain_region']) == ['SNc', 'SNc', 'VTA', 'VTA']
+
+
+def test_load_session_measures_measure_wins_a_name_shared_with_the_fit():
+    """A fit column named like a measure is dropped, not suffixed.
+
+    The old format's posteriors carry a ``stimulus`` column (the collaborator's
+    stimulus-side coding, unused here) that collides with the ``stimulus``
+    measure; pandas would suffix both to ``stimulus_x``/``stimulus_y`` and the
+    per-mouse figure would find neither.
+    """
+    trials = pd.DataFrame({'trial': [0, 1]})
+    fit_trials = pd.DataFrame({'trial': [0, 1], 'map_state': [1, 2],
+                               'stimulus': [-1, 1]})
+    entries = {measure: ddm.RESPONSES[measure] for measure in ddm.MEASURE_LABELS}
+    magnitudes = {
+        (entry['event'], entry['window']):
+            _magnitude_frame([0, 1], [10.0 + i, 20.0 + i])
+        for i, entry in enumerate(entries.values())
+    }
+    ps = _MeasureSession(trials, {4: {'trials': fit_trials, 'attrs': {}}},
+                         magnitudes)
+
+    frame = ddm.load_session_measures(ps, k=4)['trials']
+
+    stimulus = list(ddm.MEASURE_LABELS).index('stimulus')
+    assert list(frame['stimulus']) == [10.0 + stimulus, 20.0 + stimulus]
+    assert not [column for column in frame.columns if column.endswith('_x')]
+
+
+def test_load_session_measures_raises_when_nothing_was_measured():
+    """A session whose every recording is gone fails loud rather than empty.
+
+    The photometry-QC filter cuts recordings, not sessions, so a session whose
+    only fiber fails it keeps its row with an empty ``brain_region`` and
+    measures nothing. Returning that empty frame would put a mouse with no
+    measured trial into the per-mouse loop.
+    """
+    trials = pd.DataFrame({'trial': [0, 1]})
+    fit_trials = pd.DataFrame({'trial': [0, 1], 'viterbi_state': [1, 2]})
+    entries = {measure: ddm.RESPONSES[measure] for measure in ddm.MEASURE_LABELS}
+    magnitudes = {(entry['event'], entry['window']): _magnitude_frame([], [])
+                  for entry in entries.values()}
+    ps = _MeasureSession(trials, {4: {'trials': fit_trials, 'attrs': {}}},
+                         magnitudes)
+
+    with pytest.raises(ValueError, match='e1'):
+        ddm.load_session_measures(ps, k=4)
 
 
 # =========================================================================
