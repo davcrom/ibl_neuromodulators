@@ -1700,6 +1700,81 @@ class TestPlotOlsDroponeTargetViolin:
         plt.close(fig)
 
 
+class TestPlotOlsDroponePooledMode:
+    """Pooled-mode per-session figure: every recording a dot, one median bar
+    per target-NM colored by the target-level permutation q-value."""
+
+    @staticmethod
+    def _two_target_cell():
+        """One event × 'contrast' cell: VTA-DA (3 recordings, 2 mice) and
+        DR-5HT (1). The per-recording q-values split VTA-DA's dots."""
+        rows = [
+            ('VTA-DA', 'm_a', 0.1, 0.01), ('VTA-DA', 'm_a', 0.3, 0.5),
+            ('VTA-DA', 'm_b', 0.5, 0.01), ('DR-5HT', 'm_c', 0.2, 0.01),
+        ]
+        return pd.DataFrame([
+            {'target_NM': tnm, 'event': 'stimOnTrigger_times', 'subject': subj,
+             'predictor': 'contrast', 'delta_r2_adj': value, 'q_value': q}
+            for tnm, subj, value, q in rows
+        ])
+
+    @staticmethod
+    def _bars_by_slot(ax):
+        """Median bars of a panel, left to right, as (x centre, y, rgb)."""
+        from matplotlib.collections import LineCollection
+        bars = [c for c in ax.collections if isinstance(c, LineCollection)]
+        return sorted(
+            ((float(np.mean(c.get_segments()[0][:, 0])),
+              float(c.get_segments()[0][0, 1]),
+              tuple(np.asarray(c.get_color())[0][:3]))
+             for c in bars),
+            key=lambda bar: bar[0])
+
+    def test_median_bar_colored_by_the_target_level_qvalue(self):
+        """One bar per target at the pooled median of its recordings, in the
+        target's color when its target-level q-value clears alpha and gray when
+        it does not. VTA-DA pools [0.1, 0.3, 0.5] across both mice → 0.3."""
+        from iblnm.vis import plot_ols_dropone_pooled
+        from iblnm.config import TARGETNM_COLORS
+        target_pvalues = pd.DataFrame([
+            {'target_NM': 'VTA-DA', 'event': 'stimOnTrigger_times',
+             'predictor': 'contrast', 'q_value': 0.001},
+            {'target_NM': 'DR-5HT', 'event': 'stimOnTrigger_times',
+             'predictor': 'contrast', 'q_value': 0.5},
+        ])
+        fig = plot_ols_dropone_pooled(self._two_target_cell(), 't', 'contrast',
+                                      target_pvalues=target_pvalues, alpha=0.05)
+        ax = fig.axes[0]
+        bars = self._bars_by_slot(ax)
+        assert len(bars) == 2  # one per target, not per mouse
+        assert bars[0][1] == pytest.approx(0.3)  # VTA-DA pooled median
+        assert np.allclose(bars[0][2],
+                           colors.to_rgb(TARGETNM_COLORS['VTA-DA']))
+        assert bars[1][1] == pytest.approx(0.2)  # DR-5HT, single recording
+        assert np.allclose(bars[1][2], colors.to_rgb('gray'))
+        plt.close(fig)
+
+    def test_each_dot_keeps_its_own_recordings_qvalue_color(self):
+        """Every recording of a target is drawn, colored by its own q-value, so
+        a significant target can hold non-significant dots. VTA-DA's three
+        recordings carry q 0.01, 0.5, 0.01 → two colored, one gray."""
+        from iblnm.vis import plot_ols_dropone_pooled
+        from iblnm.config import TARGETNM_COLORS
+        fig = plot_ols_dropone_pooled(self._two_target_cell(), 't', 'contrast',
+                                      alpha=0.05)
+        ax = fig.axes[0]
+        # The VTA-DA strip is the collection at slot 0; DR-5HT sits at slot 1.
+        strips = sorted((c for c in ax.collections if c.get_offsets().size),
+                        key=lambda c: c.get_offsets()[:, 0].mean())
+        vta = strips[0]
+        assert len(vta.get_offsets()) == 3  # every recording, both mice
+        edge_colors = [colors.to_hex(rgba) for rgba in vta.get_edgecolor()]
+        assert edge_colors.count(colors.to_hex('gray')) == 1
+        assert edge_colors.count(
+            colors.to_hex(TARGETNM_COLORS['VTA-DA'])) == 2
+        plt.close(fig)
+
+
 # =============================================================================
 # plot_within_target_similarity Tests
 # =============================================================================

@@ -3510,7 +3510,7 @@ def plot_ols_total_r2_subject(df, title):
                                     draw_mark=_median_iqr_subject)
 
 
-def _target_violin(ax, slot, vals, color):
+def _target_violin(ax, slot, vals, point_colors, summary_color):
     """Draw one group's pooled per-session values as a violin at ``slot``.
 
     Parameters
@@ -3520,19 +3520,64 @@ def _target_violin(ax, slot, vals, color):
         The group's x position (its index in the group order).
     vals : np.ndarray
         Pooled per-session values across the group's subjects in one cell.
-    color : color
+    point_colors : sequence of color
+        Unused; accepted for the shared draw-mark signature, since this mode
+        draws no per-recording mark.
+    summary_color : color
         Violin face/edge color (the target-NM color).
     """
     parts = ax.violinplot([vals], positions=[slot], showextrema=False)
     for body in parts['bodies']:
-        body.set_facecolor(color)
-        body.set_edgecolor(color)
+        body.set_facecolor(summary_color)
+        body.set_edgecolor(summary_color)
         body.set_alpha(0.7)
+
+
+# Jitter spreading a group's pooled dots around its slot, and the half-width of
+# the median bar drawn over them. The jitter is cosmetic — it only stops equal
+# values from hiding each other — so it draws from its own fixed-seed generator
+# and a figure redrawn from the same frame is identical.
+_POOLED_JITTER_SEED = 0
+_POOLED_JITTER_HALFWIDTH = 0.12
+_POOLED_MEDIAN_HALFWIDTH = 0.3
+
+
+def _strip_median(ax, slot, vals, point_colors, summary_color):
+    """Draw one group's pooled values as jittered dots under a median bar.
+
+    The pooled counterpart of ``_scatter_subject``: every recording of the
+    group is one translucent open dot, edge-colored by its own entry of
+    ``point_colors``, and the group's median is a horizontal bar in
+    ``summary_color`` spanning the slot.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    slot : float
+        The group's x position (its index in the group order).
+    vals : np.ndarray
+        Pooled per-recording values across the group's subjects in one cell.
+    point_colors : sequence of color
+        One color per value, aligned element-wise to ``vals``.
+    summary_color : color
+        Color of the median bar (the target-NM color, or gray).
+    """
+    rng = np.random.default_rng(_POOLED_JITTER_SEED)
+    jitter = rng.uniform(-_POOLED_JITTER_HALFWIDTH, _POOLED_JITTER_HALFWIDTH,
+                         len(vals))
+    ax.scatter(slot + jitter, vals, marker='o', facecolors='none',
+               edgecolors=point_colors, s=_SESSION_MARKER_SIZE, alpha=0.5,
+               zorder=3)
+    ax.hlines(np.median(vals), slot - _POOLED_MEDIAN_HALFWIDTH,
+              slot + _POOLED_MEDIAN_HALFWIDTH, color=summary_color,
+              linewidth=_MEAN_LINEWIDTH, zorder=4)
 
 
 def _persession_target_grid(df, title, rows, supylabel, ylim=None,
                             group_col='target_NM', group_order=None,
-                            select=None):
+                            select=None, draw_mark=_target_violin,
+                            pvalues=None, alpha=PERSESSION_SIGNIFICANCE_ALPHA,
+                            color_by_qvalue=False):
     """Pooled-violin grid: ``rows`` by event columns, sharing one y-axis.
 
     Shared layout for the per-session figures that pool subjects into one
@@ -3570,6 +3615,22 @@ def _persession_target_grid(df, title, rows, supylabel, ylim=None,
         Column -> value every plotted row must equal, applied before layout —
         e.g. ``{'target_NM': 'VTA-DA'}`` fixes a figure grouped by predictor to
         one target's sessions. ``None`` plots every row.
+    draw_mark : callable
+        ``draw_mark(ax, slot, vals, point_colors, summary_color)`` drawing one
+        group's pooled values at ``slot`` — a violin by default,
+        ``_strip_median`` for the pooled-dot display.
+    pvalues : pd.DataFrame or None
+        Per-target permutation results carrying ``q_value`` keyed on
+        ``target_NM``, ``event`` and ``predictor``. When given, a group whose
+        cell is not significant has its summary mark grayed rather than drawn
+        in the target-NM color (see ``_significance_color``).
+    alpha : float
+        False-discovery-rate threshold; a mark keeps its color when
+        ``q_value < alpha``.
+    color_by_qvalue : bool
+        Color each pooled recording's mark by its own row's ``q_value`` rather
+        than by the group's summary color; requires a ``q_value`` column on
+        ``df``.
 
     Returns
     -------
@@ -3604,12 +3665,29 @@ def _persession_target_grid(df, title, rows, supylabel, ylim=None,
             df_cell = (df_event if group_col == 'predictor'
                        else df_event[df_event['predictor'] == predictor])
             pooled = _pool_by_group(df_cell, value_col, group_order, group_col)
+            # Pooled the same way off the same rows, so a group's q-values stay
+            # aligned element-wise with its values.
+            pooled_qvalues = (
+                _pool_by_group(df_cell, 'q_value', group_order, group_col)
+                if color_by_qvalue else {})
             target_by_group = df_cell.groupby(group_col)['target_NM'].first()
             for slot, group in enumerate(group_order):
-                if group in pooled:
-                    _target_violin(
-                        ax, slot, pooled[group],
-                        TARGETNM_COLORS.get(target_by_group[group], 'gray'))
+                if group not in pooled:
+                    continue
+                target_nm = target_by_group[group]
+                base_color = TARGETNM_COLORS.get(target_nm, 'gray')
+                summary_color = _significance_color(
+                    base_color, pvalues,
+                    {'event': event, 'target_NM': target_nm,
+                     'predictor': group if group_col == 'predictor'
+                     else predictor},
+                    alpha)
+                point_colors = (
+                    [_qvalue_color(base_color, q, alpha)
+                     for q in pooled_qvalues[group]]
+                    if color_by_qvalue
+                    else [summary_color] * len(pooled[group]))
+                draw_mark(ax, slot, pooled[group], point_colors, summary_color)
             ax.axhline(0, ls='--', color='gray', lw=0.5)
             if r == 0:
                 ax.set_title(event)
@@ -3660,6 +3738,80 @@ def plot_ols_total_r2_violin(df, title):
     """
     rows, supylabel = _total_r2_rows()
     return _persession_target_grid(df, title, rows, supylabel)
+
+
+def plot_ols_dropone_pooled(df, title, predictor, ylim=None,
+                            target_pvalues=None,
+                            alpha=PERSESSION_SIGNIFICANCE_ALPHA):
+    """Per-session drop-one ΔR² — every recording a dot, one median per target.
+
+    The summary form of ``plot_ols_dropone``: the mouse axis is dropped, so a
+    target-NM's recordings pool into one jittered strip of dots at one x-slot
+    with the pooled median drawn over them. Each dot keeps its own recording's
+    q-value coloring; the median bar takes the target-level q-value. See
+    ``_persession_target_grid``.
+
+    The dots and the bar are the adjusted ΔR² the other displays plot, while
+    the test behind the bar's color pools the raw ``delta_r2`` its permutation
+    null was built from — the same split as the per-mouse dashes of
+    ``plot_ols_dropone``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The per-recording OLS frame (``config.OLS_PERSESSION_COLUMNS``),
+        carrying each recording's own ``q_value``.
+    title : str
+        Figure suptitle.
+    predictor : str
+        The dropped-term label this figure covers.
+    ylim : tuple[float, float] or None
+        Shared y-axis range. ``None`` autoscales to this term's data.
+    target_pvalues : pd.DataFrame or None
+        Per-target permutation results
+        (``data.assemble_pvalue_table(grain='target')``). When given, a target
+        whose cell is not significant has its median bar grayed.
+    alpha : float
+        False-discovery-rate threshold; a mark keeps its color when
+        ``q_value < alpha``.
+    """
+    rows, supylabel = _dropone_rows(predictor, predictor)
+    return _persession_target_grid(df, title, rows, supylabel, ylim=ylim,
+                                   draw_mark=_strip_median,
+                                   pvalues=target_pvalues, alpha=alpha,
+                                   color_by_qvalue=True)
+
+
+def plot_ols_dropone_target_pooled(df, title, target_nm, terms, ylim=None,
+                                   target_pvalues=None,
+                                   alpha=PERSESSION_SIGNIFICANCE_ALPHA):
+    """Per-session drop-one ΔR² for one target-NM — pooled dots per label.
+
+    ``plot_ols_dropone_pooled`` rearranged the way
+    ``plot_ols_dropone_target_violin`` rearranges the violin figure: the
+    target-NM is fixed and its drop-one labels run along x, each a strip of
+    that target's pooled recordings under its median bar. See
+    ``_persession_target_grid``.
+    """
+    rows, supylabel = _dropone_rows(target_nm)
+    return _persession_target_grid(df, title, rows, supylabel, ylim=ylim,
+                                   group_col='predictor', group_order=terms,
+                                   select={'target_NM': target_nm},
+                                   draw_mark=_strip_median,
+                                   pvalues=target_pvalues, alpha=alpha,
+                                   color_by_qvalue=True)
+
+
+def plot_ols_total_r2_pooled(df, title):
+    """Per-session full-model R² — pooled dots and a median per target-NM.
+
+    Same figure as ``plot_ols_total_r2_violin`` but each target-NM is drawn as
+    its recordings' dots under their median. No test scores a full model, so
+    every mark takes the target-NM color. See ``_persession_target_grid``.
+    """
+    rows, supylabel = _total_r2_rows()
+    return _persession_target_grid(df, title, rows, supylabel,
+                                   draw_mark=_strip_median)
 
 
 def plot_decoding_summary(coefficients, contributions, fig=None):
