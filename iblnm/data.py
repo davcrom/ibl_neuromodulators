@@ -67,13 +67,41 @@ from iblnm.validation import (
     VideoLengthError, MetadataMismatch,
 )
 
-# Per-mouse drop-one significance table: one row per (target_NM, event,
-# predictor, subject) cell, pooling the cell's sessions by bootstrap resampling
-# their per-session donor null ΔR² vectors.
-RESPONSE_OLS_MOUSE_PVAL_COLUMNS = [
-    'target_NM', 'event', 'predictor', 'subject', 'mean_delta_r2', 'p_value',
-    'q_value', 'n_sessions',
-]
+class PvalueGrain(NamedTuple):
+    """How one grain of drop-one significance pools and names its results.
+
+    A grain is a set of cell keys plus the reduction applied across the
+    recordings falling in a cell. Everything else — the bootstrap, the
+    one-sided tail, the empty ``q_value`` the caller's FDR correction fills —
+    is shared, which is why the two grains are one function.
+    """
+
+    group_keys: list[str]
+    statistic: str
+    statistic_col: str
+    count_col: str
+
+    @property
+    def columns(self) -> list[str]:
+        """The table's columns, in order: cell keys, then its statistics."""
+        return [*self.group_keys, self.statistic_col, 'p_value', 'q_value',
+                self.count_col]
+
+
+# The two coarser grains the per-recording drop-one fits pool into, each keyed
+# on the cells its rows cover. The per-mouse grain averages a mouse's own
+# sessions; the per-target grain takes the median over every recording of a
+# cohort, across its mice, so a cohort's bar is not carried by a handful of
+# large values. Both pool by bootstrap-resampling the per-recording donor null
+# ΔR² vectors the fits were scored against.
+PVALUE_TABLE_GRAINS = {
+    'mouse': PvalueGrain(['target_NM', 'event', 'predictor', 'subject'],
+                         'mean', 'mean_delta_r2', 'n_sessions'),
+    'target': PvalueGrain(['target_NM', 'event', 'predictor'],
+                          'median', 'median_delta_r2', 'n_recordings'),
+}
+RESPONSE_OLS_MOUSE_PVAL_COLUMNS = PVALUE_TABLE_GRAINS['mouse'].columns
+RESPONSE_OLS_TARGET_PVAL_COLUMNS = PVALUE_TABLE_GRAINS['target'].columns
 
 # One recording's magnitude rows, before the trial regressors are merged onto
 # them: the `config.RESPONSE_MAGNITUDE_COLUMNS` entries that come from the
@@ -133,33 +161,44 @@ _SESSION_DONOR_SCOPES = {
 }
 
 
-def assemble_mouse_pvalue_table(
+def assemble_pvalue_table(
     observed: pd.DataFrame,
+    grain: str = 'mouse',
     n_bootstrap: int = 1000,
     random_state: int | None = 0,
 ) -> pd.DataFrame:
-    """Pool per-session drop-one ΔR² into a per-mouse permutation p-value table.
+    """Pool per-recording drop-one ΔR² into a coarser permutation p-value table.
 
-    Pure assembler: groups the observed drop-one frame by
-    ``(target_NM, event, predictor, subject)`` and tests each mouse's pooled
-    ΔR² against its sessions' donor null vectors by bootstrap resampling
-    (:func:`iblnm.analysis.bootstrap_pooled_pvalue`). A mouse's sessions can
-    carry different-length null vectors — each is an arbitrarily ordered donor
-    set — so the pooling resamples one draw per session rather than aligning
-    columns; the vectors need not share a length.
+    Pure assembler: groups the observed drop-one frame by the grain's cell keys
+    and tests each cell's pooled ΔR² against its recordings' donor null vectors
+    by bootstrap resampling (:func:`iblnm.analysis.bootstrap_pooled_pvalue`).
+    A cell's recordings can carry different-length null vectors — each is an
+    arbitrarily ordered donor set — so the pooling resamples one draw per
+    recording rather than aligning columns; the vectors need not share a length.
+
+    The target grain pools every recording of a cohort regardless of which
+    mouse it came from, so its p-value asks whether these recordings encode the
+    predictor, not whether mice in general do: a mouse contributing many
+    sessions weighs more than one contributing a single session, and the pooled
+    null of a hundred-odd recordings is narrow enough that small cohort medians
+    clear it.
 
     Parameters
     ----------
     observed : pd.DataFrame
-        Per-session fits (``config.OLS_PERSESSION_COLUMNS``), one row per
+        Per-recording fits (``config.OLS_PERSESSION_COLUMNS``), one row per
         ``(eid, target_NM, brain_region, event, predictor)`` carrying the
         in-sample ``delta_r2`` beside the ``null`` vector it was scored against
         and the ``n_donors`` that null was built from. Vector lengths may differ
-        across sessions — each is an arbitrarily ordered donor set — and a row
+        across recordings — each is an arbitrarily ordered donor set — and a row
         whose ``null`` is empty was not scorable and is dropped from its group.
-        Each session's null holds its whole donor pool, unresampled, so a
-        pooled draw combines distinct donors across sessions and the cell's
+        Each recording's null holds its whole donor pool, unresampled, so a
+        pooled draw combines distinct donors across recordings and the cell's
         p-value floor is the pooling bootstrap's own 1 / (``n_bootstrap`` + 1).
+    grain : {'mouse', 'target'}
+        Which ``PVALUE_TABLE_GRAINS`` entry to assemble: the per-mouse mean over
+        a mouse's own sessions, or the per-target median over every recording of
+        a cohort.
     n_bootstrap : int
         Pooled-null draws per cell, which set the cell's p-value floor.
     random_state : int or None
@@ -168,19 +207,18 @@ def assemble_mouse_pvalue_table(
     Returns
     -------
     pd.DataFrame
-        One row per scorable ``(target_NM, event, predictor, subject)`` cell in
-        ``RESPONSE_OLS_MOUSE_PVAL_COLUMNS`` order. ``mean_delta_r2`` is the
+        One row per scorable cell in the grain's ``columns`` order. The
+        statistic column (``mean_delta_r2`` or ``median_delta_r2``) is the
         pooled observed statistic, ``p_value`` the one-sided (greater) bootstrap
-        p, and ``n_sessions`` the pooled session count. ``q_value`` is present
-        but NaN — the caller fills it with
+        p, and the count column the number of recordings pooled. ``q_value`` is
+        present but NaN — the caller fills it with
         :func:`iblnm.analysis.add_fdr_qvalues`, which chooses the correction
         families.
     """
+    spec = PVALUE_TABLE_GRAINS[grain]
     rng = np.random.default_rng(random_state)
     rows = []
-    group_keys = ['target_NM', 'event', 'predictor', 'subject']
-    for (target_NM, event, predictor, subject), group in observed.groupby(
-            group_keys, sort=True):
+    for cell, group in observed.groupby(spec.group_keys, sort=True):
         scorable = [
             (row['delta_r2'], np.asarray(row['null']))
             for _, row in group.iterrows()
@@ -190,15 +228,17 @@ def assemble_mouse_pvalue_table(
             continue
         observed_by_stratum = [delta_r2 for delta_r2, _ in scorable]
         null_by_stratum = [null for _, null in scorable]
-        mean_delta_r2, p_value = analysis.bootstrap_pooled_pvalue(
+        pooled_delta_r2, p_value = analysis.bootstrap_pooled_pvalue(
             observed_by_stratum, null_by_stratum, rng=rng,
-            n_bootstrap=n_bootstrap, alternative='greater')
+            n_bootstrap=n_bootstrap, alternative='greater',
+            statistic=spec.statistic)
         rows.append({
-            'target_NM': target_NM, 'event': event, 'predictor': predictor,
-            'subject': subject, 'mean_delta_r2': mean_delta_r2,
-            'p_value': p_value, 'n_sessions': len(scorable),
+            **dict(zip(spec.group_keys, cell)),
+            spec.statistic_col: pooled_delta_r2,
+            'p_value': p_value,
+            spec.count_col: len(scorable),
         })
-    return pd.DataFrame(rows, columns=RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
+    return pd.DataFrame(rows, columns=spec.columns)
 
 
 # =============================================================================
@@ -5037,7 +5077,7 @@ class PhotometrySessionGroup:
         mouse : pandas.DataFrame
             `RESPONSE_OLS_MOUSE_PVAL_COLUMNS`, one row per (target_NM, event,
             predictor, subject), pooled from those rows' own `null` vectors
-            (:func:`assemble_mouse_pvalue_table`) and corrected over the same
+            (:func:`assemble_pvalue_table`) and corrected over the same
             families at that coarser grain.
         """
         ols = analysis.add_fdr_qvalues(
@@ -5045,8 +5085,8 @@ class PhotometrySessionGroup:
                            _SESSION_OLS_COLUMNS),
             group_cols=PERSESSION_FDR_GROUP_COLS)
         mouse = analysis.add_fdr_qvalues(
-            assemble_mouse_pvalue_table(ols, n_bootstrap=n_bootstrap,
-                                        random_state=random_state),
+            assemble_pvalue_table(ols, n_bootstrap=n_bootstrap,
+                                  random_state=random_state),
             group_cols=PERSESSION_FDR_GROUP_COLS)
         return ols[OLS_PERSESSION_COLUMNS], mouse
 

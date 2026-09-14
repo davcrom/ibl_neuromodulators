@@ -7746,7 +7746,7 @@ class TestCollectFits:
         """The per-mouse table has one row per (target_NM, event, predictor,
         subject) in the input, counting only that mouse's sessions, and its
         p-values are those the nulls carried on the frame give."""
-        from iblnm.data import (assemble_mouse_pvalue_table,
+        from iblnm.data import (assemble_pvalue_table,
                                 RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
         group = _bare_group([('e1', 'm1', 'VTA', 'r', 'VTA-DA'),
                              ('e2', 'm1', 'VTA', 'r', 'VTA-DA'),
@@ -7762,7 +7762,7 @@ class TestCollectFits:
                                  ('feedback_times', 'reward', 'm2')]
         assert dict(zip(mouse['subject'], mouse['n_sessions']))['m1'] == 2
         assert dict(zip(mouse['subject'], mouse['n_sessions']))['m2'] == 1
-        expected = assemble_mouse_pvalue_table(ols)
+        expected = assemble_pvalue_table(ols)
         assert mouse['p_value'].tolist() == expected['p_value'].tolist()
         assert mouse['q_value'].notna().all()
 
@@ -8653,7 +8653,7 @@ def _donor_counts(null_vectors, n_donors=1000):
 
 
 class TestAssembleMousePvalueTable:
-    """assemble_mouse_pvalue_table — per-mouse drop-one permutation p."""
+    """assemble_pvalue_table — per-mouse drop-one permutation p."""
 
     def _observed(self, rows, null_vectors, n_donors=None):
         """Per-session fits from (eid, subject, delta_r2) rows and their nulls.
@@ -8680,7 +8680,7 @@ class TestAssembleMousePvalueTable:
         to mean 0.08; every bootstrap draw is mean(0.02, 0.01) = 0.015 < 0.08, so
         p hits its floor 1/(n_bootstrap+1). Ragged lengths do not raise (the
         crash this fixes)."""
-        from iblnm.data import assemble_mouse_pvalue_table
+        from iblnm.data import assemble_pvalue_table
 
         null_vectors = {
             ('e1', 'feedback', 'reward'): np.full(3, 0.02),
@@ -8689,7 +8689,7 @@ class TestAssembleMousePvalueTable:
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)],
                                   null_vectors)
 
-        table = assemble_mouse_pvalue_table(
+        table = assemble_pvalue_table(
             observed, n_bootstrap=99, random_state=0)
 
         assert len(table) == 1
@@ -8701,7 +8701,7 @@ class TestAssembleMousePvalueTable:
     def test_two_mice_pool_only_their_own_sessions(self):
         """Two mice in the same cell yield two rows; each mouse's mean pools
         only its own sessions."""
-        from iblnm.data import assemble_mouse_pvalue_table
+        from iblnm.data import assemble_pvalue_table
 
         null_vectors = {
             ('e1', 'feedback', 'reward'): np.array([0.02, 0.01, 0.03]),
@@ -8711,7 +8711,7 @@ class TestAssembleMousePvalueTable:
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06),
                                    ('e3', 'm2', 0.20)], null_vectors)
 
-        table = assemble_mouse_pvalue_table(observed)
+        table = assemble_pvalue_table(observed)
 
         by_subject = table.set_index('subject')
         assert set(by_subject.index) == {'m1', 'm2'}
@@ -8722,13 +8722,13 @@ class TestAssembleMousePvalueTable:
 
     def test_output_columns_match_schema(self):
         """Output columns equal RESPONSE_OLS_MOUSE_PVAL_COLUMNS in order."""
-        from iblnm.data import (assemble_mouse_pvalue_table,
+        from iblnm.data import (assemble_pvalue_table,
                                 RESPONSE_OLS_MOUSE_PVAL_COLUMNS)
 
         null_vectors = {('e1', 'feedback', 'reward'): np.array([0.02, 0.01])}
         observed = self._observed([('e1', 'm1', 0.10)], null_vectors)
 
-        table = assemble_mouse_pvalue_table(observed)
+        table = assemble_pvalue_table(observed)
 
         assert list(table.columns) == RESPONSE_OLS_MOUSE_PVAL_COLUMNS
         # q_value sits between p_value and n_sessions and is left for the
@@ -8741,7 +8741,7 @@ class TestAssembleMousePvalueTable:
         """The p-value floor at this grain is the pooling bootstrap's own
         1/(n_bootstrap+1), whatever the sessions' donor counts: a mouse pooling
         a 500-donor and a 4-donor session reports 1/100 off 99 draws."""
-        from iblnm.data import assemble_mouse_pvalue_table
+        from iblnm.data import assemble_pvalue_table
 
         null_vectors = {
             ('e1', 'feedback', 'reward'): np.full(99, 0.02),
@@ -8752,7 +8752,7 @@ class TestAssembleMousePvalueTable:
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm1', 0.06)],
                                   null_vectors, n_donors)
 
-        table = assemble_mouse_pvalue_table(
+        table = assemble_pvalue_table(
             observed, n_bootstrap=99, random_state=0)
 
         assert table.iloc[0]['p_value'] == pytest.approx(1 / 100)
@@ -8760,16 +8760,84 @@ class TestAssembleMousePvalueTable:
     def test_group_with_no_null_vectors_is_skipped(self):
         """A cell whose sessions have no null vectors produces no row; sessions
         that do have vectors still pool."""
-        from iblnm.data import assemble_mouse_pvalue_table
+        from iblnm.data import assemble_pvalue_table
 
         null_vectors = {('e2', 'feedback', 'reward'): np.array([0.04, 0.05])}
         observed = self._observed([('e1', 'm1', 0.10), ('e2', 'm2', 0.20)],
                                   null_vectors)
 
-        table = assemble_mouse_pvalue_table(observed)
+        table = assemble_pvalue_table(observed)
 
         assert list(table['subject']) == ['m2']
         assert table.iloc[0]['n_sessions'] == 1
+
+
+class TestAssembleTargetPvalueTable:
+    """assemble_pvalue_table(grain='target') — the pooled-median cohort test."""
+
+    def _observed(self, rows, null_vectors):
+        """Per-session fits from (eid, subject, target_NM, delta_r2) rows.
+
+        The target grain pools every recording of a cohort, so the fixture
+        varies both the subject and the target-NM, unlike the per-mouse one.
+        """
+        return pd.DataFrame(
+            [{'eid': eid, 'subject': subject, 'target_NM': target_NM,
+              'brain_region': target_NM.split('-')[0], 'event': 'feedback',
+              'predictor': 'reward', 'r2': 0.3, 'delta_r2': delta_r2,
+              'n_trials': 100, 'null': null_vectors[eid],
+              'n_donors': len(null_vectors[eid])}
+             for eid, subject, target_NM, delta_r2 in rows]
+        )
+
+    def test_pools_every_recording_of_a_target_by_the_median(self):
+        """One row per (target_NM, event, predictor) — no subject axis — whose
+        statistic is the median ΔR² over every recording of the cohort, across
+        mice. Recordings 0.10, 0.06, 0.05 have median 0.06; their constant
+        nulls 0.02, 0.01, 0.09 make every pooled draw median 0.02, so p hits
+        its floor 1/(n_bootstrap+1)."""
+        from iblnm.data import assemble_pvalue_table
+
+        null_vectors = {'e1': np.full(3, 0.02), 'e2': np.full(2, 0.01),
+                        'e3': np.full(4, 0.09)}
+        observed = self._observed(
+            [('e1', 'm1', 'VTA-DA', 0.10), ('e2', 'm1', 'VTA-DA', 0.06),
+             ('e3', 'm2', 'VTA-DA', 0.05)], null_vectors)
+
+        table = assemble_pvalue_table(observed, grain='target',
+                                      n_bootstrap=99, random_state=0)
+
+        assert len(table) == 1
+        row = table.iloc[0]
+        assert row['target_NM'] == 'VTA-DA'
+        assert row['median_delta_r2'] == pytest.approx(0.06)
+        assert row['p_value'] == pytest.approx(1 / 100)
+        assert row['n_recordings'] == 3
+        assert 'subject' not in table.columns
+
+    def test_each_target_pools_only_its_own_recordings(self):
+        """Two cohorts in the same cell yield one row each, in
+        RESPONSE_OLS_TARGET_PVAL_COLUMNS order, with q_value left for the
+        caller's FDR correction to fill."""
+        from iblnm.data import (assemble_pvalue_table,
+                                RESPONSE_OLS_TARGET_PVAL_COLUMNS)
+
+        null_vectors = {'e1': np.full(3, 0.02), 'e2': np.full(2, 0.01),
+                        'e3': np.full(4, 0.03)}
+        observed = self._observed(
+            [('e1', 'm1', 'VTA-DA', 0.10), ('e2', 'm2', 'VTA-DA', 0.06),
+             ('e3', 'm3', 'LC-NE', 0.20)], null_vectors)
+
+        table = assemble_pvalue_table(observed, grain='target')
+
+        by_target = table.set_index('target_NM')
+        assert set(by_target.index) == {'VTA-DA', 'LC-NE'}
+        assert by_target.loc['VTA-DA', 'median_delta_r2'] == pytest.approx(0.08)
+        assert by_target.loc['VTA-DA', 'n_recordings'] == 2
+        assert by_target.loc['LC-NE', 'median_delta_r2'] == pytest.approx(0.20)
+        assert by_target.loc['LC-NE', 'n_recordings'] == 1
+        assert list(table.columns) == RESPONSE_OLS_TARGET_PVAL_COLUMNS
+        assert table['q_value'].isna().all()
 
 
 class TestFitResponsesPermutation:
