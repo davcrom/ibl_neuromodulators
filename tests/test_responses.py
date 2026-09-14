@@ -775,6 +775,44 @@ class TestPlotMaskingFigures:
             'DR-5HT_stimOnTrigger_masking.svg', 'DR-5HT_feedback_masking.svg'}
 
 
+class TestTargetPvalueTable:
+    """The per-target pooled-median test the pooled display colors its median
+    bars by, derived from the stored nulls without refitting."""
+
+    @staticmethod
+    def _ols(rows):
+        """Per-recording OLS rows from (eid, subject, target_NM, delta_r2),
+        each carrying a constant null vector so its p-value is deterministic."""
+        return pd.DataFrame([
+            {'eid': eid, 'subject': subject, 'target_NM': target_NM,
+             'brain_region': target_NM.split('-')[0],
+             'event': 'stimOnTrigger_times', 'predictor': 'contrast',
+             'n_trials': 100, 'delta_r2': delta_r2, 'delta_r2_adj': delta_r2,
+             'null': np.full(5, 0.01), 'n_donors': 5}
+            for eid, subject, target_NM, delta_r2 in rows
+        ])
+
+    def test_one_qvalued_row_per_target_pooling_across_mice(self):
+        """One row per (target_NM, event, predictor), its statistic the median
+        ΔR² over every recording of the cohort across mice, carrying the FDR
+        q-value the figure reads. VTA-DA pools [0.10, 0.20, 0.30] → 0.20."""
+        from scripts.responses import target_pvalue_table
+
+        table = target_pvalue_table(self._ols([
+            ('e0', 'm_a', 'VTA-DA', 0.10), ('e1', 'm_a', 'VTA-DA', 0.20),
+            ('e2', 'm_b', 'VTA-DA', 0.30), ('e3', 'm_c', 'DR-5HT', 0.05),
+        ]))
+
+        by_target = table.set_index('target_NM')
+        assert set(by_target.index) == {'VTA-DA', 'DR-5HT'}
+        assert by_target.loc['VTA-DA', 'median_delta_r2'] == pytest.approx(0.20)
+        assert by_target.loc['VTA-DA', 'n_recordings'] == 3
+        # Every observed median beats the constant 0.01 null, so both cells sit
+        # at the bootstrap floor and their q-values are finite, not NaN.
+        assert by_target['q_value'].notna().all()
+        assert (by_target['q_value'] < 0.05).all()
+
+
 class TestPlotPersessionFigures:
     """The persession figure step plots from the merged OLS frame it is
     handed, at the grain the caller read it in."""
@@ -849,6 +887,8 @@ class TestPlotPersessionFigures:
          'plot_ols_dropone_target_subject', 'plot_ols_total_r2_subject'),
         ('target', 'plot_ols_dropone_violin', 'plot_ols_dropone_target_violin',
          'plot_ols_total_r2_violin'),
+        ('pooled', 'plot_ols_dropone_pooled', 'plot_ols_dropone_target_pooled',
+         'plot_ols_total_r2_pooled'),
     ])
     def test_display_maps_to_function_triple(self, display, dropone_name,
                                              target_name, total_r2_name):
@@ -894,6 +934,31 @@ class TestPlotPersessionFigures:
         for mode in ('subject', 'target'):
             assert all('mouse_pvalues' not in fn_mock.call_args.kwargs
                        for fn_mock in mocks[mode][:2])
+
+    def test_pooled_mode_threads_the_target_table_and_not_the_mouse_one(
+            self, tmp_path):
+        """``pooled`` mode colors its median bars by the per-target table, so
+        that table reaches the drop-one calls under ``target_pvalues`` and the
+        per-mouse one — which has no bearing on a figure with no mouse axis —
+        reaches nothing."""
+        import matplotlib.pyplot as plt
+        from scripts import responses
+        mouse_pvalues = pd.DataFrame({'subject': ['s0'], 'p_value': [0.01]})
+        target_pvalues = pd.DataFrame({'target_NM': ['VTA-DA'],
+                                       'q_value': [0.01]})
+
+        fig_dir = tmp_path / 'persession'
+        fig_dir.mkdir()
+        mocks = tuple(MagicMock(return_value=plt.figure()) for _ in range(3))
+        with patch.dict(responses._PERSESSION_DISPLAY_FNS,
+                        {'pooled': mocks}):
+            responses.plot_persession_figures(
+                self._two_target_frame(), mouse_pvalues, fig_dir,
+                display='pooled', target_pvalues=target_pvalues)
+
+        for fn_mock in mocks[:2]:
+            assert fn_mock.call_args.kwargs['target_pvalues'] is target_pvalues
+            assert 'mouse_pvalues' not in fn_mock.call_args.kwargs
 
     def test_ylim_shared_within_term_class_and_differs_between(self, tmp_path):
         """Every main-effect figure carries one range and every interaction
@@ -1031,6 +1096,14 @@ class TestParseArgs:
                            '--persession-display', 'target'])
 
         assert (args.reprocess, args.persession_display) == (True, 'target')
+
+    def test_persession_display_takes_the_pooled_summary_mode(self):
+        """The summary display — every recording a dot, one median bar per
+        target-NM — is selectable from the command line."""
+        from scripts.responses import parse_args
+        args = parse_args(['feedback', '--persession-display', 'pooled'])
+
+        assert args.persession_display == 'pooled'
 
 
 class TestReadResultFrames:

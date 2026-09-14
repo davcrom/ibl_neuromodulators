@@ -681,6 +681,31 @@ reads the donor session's columns of those names, so it must be an exact
 regressor name. A biological name belongs in a display lookup, not in this
 dict.
 
+#### Significance grains
+
+Each recording's delta-R2 is scored against its own cross-session swap null.
+Two coarser grains pool those stored nulls by drawing one value per recording
+and reducing the draws the same way as the observed values
+(`data.assemble_pvalue_table`), so neither costs a refit:
+
+| Grain | Cell | Statistic | What it colors |
+|---|---|---|---|
+| recording | `(eid, brain_region, event, predictor)` | the fit's own delta-R2 | every dot |
+| mouse | `(target_NM, event, predictor, subject)` | mean over that mouse's recordings | the subject mean dash (`--persession-display session`) |
+| target | `(target_NM, event, predictor)` | median over every recording of the cohort | the pooled median bar (`--persession-display pooled`) |
+
+Every grain is FDR-corrected within `config.PERSESSION_FDR_GROUP_COLS`. All
+three pool the raw `delta_r2` the nulls were built from, while the figures plot
+`delta_r2_adj`, so a bar's height and the statistic behind its color differ by
+the parameter-count charge.
+
+The target grain pools recordings, not mice: a mouse contributing ten sessions
+weighs ten times one contributing a single session, and its pooled null of
+~100-200 recordings is narrow. It asks whether these recordings encode the
+predictor, not whether mice in general do — read it as a description of the
+cohort, and use the per-mouse grain for a claim that generalizes across
+animals.
+
 #### Biological interpretation of the interaction terms
 
 | Term | Stimulus window | Feedback window |

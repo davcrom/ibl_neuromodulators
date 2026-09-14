@@ -46,10 +46,11 @@ from iblnm.config import (
     MASKING_DIAGNOSTIC_STATISTICS,
     RESPONSE_EVENTS, RESPONSES, FIGURE_DPI, RESPONSE_MODEL_FORMULA,
     RESPONSE_DROPPED_TERMS, TRACE_INSET_TARGETNMS,
-    MIN_RESPONSE_TIME,
+    MIN_RESPONSE_TIME, PERSESSION_FDR_GROUP_COLS, PERSESSION_PVAL_SEED,
 )
 from iblnm import task
-from iblnm.data import DonorFrame, PhotometrySession, PhotometrySessionGroup
+from iblnm.data import (assemble_pvalue_table, DonorFrame, PhotometrySession,
+                        PhotometrySessionGroup)
 from iblnm.io import _get_default_connection
 from iblnm.vis import (
     DROPONE_TERM_CLASSES,
@@ -57,16 +58,19 @@ from iblnm.vis import (
     plot_mean_response_traces,
     plot_relative_contrast,
     plot_ols_dropone,
+    plot_ols_dropone_pooled,
     plot_ols_dropone_subject,
     plot_ols_dropone_target,
+    plot_ols_dropone_target_pooled,
     plot_ols_dropone_target_subject,
     plot_ols_dropone_target_violin,
     plot_ols_dropone_violin,
     plot_ols_total_r2,
+    plot_ols_total_r2_pooled,
     plot_ols_total_r2_subject,
     plot_ols_total_r2_violin,
 )
-from iblnm.analysis import aggregate_conditions
+from iblnm.analysis import add_fdr_qvalues, aggregate_conditions
 
 
 # =========================================================================
@@ -611,7 +615,37 @@ _PERSESSION_DISPLAY_FNS = {
                 plot_ols_total_r2_subject),
     'target': (plot_ols_dropone_violin, plot_ols_dropone_target_violin,
                plot_ols_total_r2_violin),
+    'pooled': (plot_ols_dropone_pooled, plot_ols_dropone_target_pooled,
+               plot_ols_total_r2_pooled),
 }
+
+
+def target_pvalue_table(ols: pd.DataFrame) -> pd.DataFrame:
+    """Pool the per-recording fits into the per-target permutation test.
+
+    Derived from the stored per-recording null vectors, so it costs a bootstrap
+    rather than a refit and is computed at plot time instead of being cached
+    beside the fits. The pooling takes every recording of a cohort, across its
+    mice: the question it answers is whether these recordings encode the
+    predictor, not whether mice in general do.
+
+    Parameters
+    ----------
+    ols : pandas.DataFrame
+        The merged per-recording OLS frame (``config.OLS_PERSESSION_COLUMNS``),
+        carrying the ``null`` vector each ``delta_r2`` was scored against.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``data.RESPONSE_OLS_TARGET_PVAL_COLUMNS``, one row per (target_NM,
+        event, predictor), ``q_value`` corrected within the same
+        ``config.PERSESSION_FDR_GROUP_COLS`` families as the finer grains.
+    """
+    return add_fdr_qvalues(
+        assemble_pvalue_table(ols, grain='target',
+                              random_state=PERSESSION_PVAL_SEED),
+        group_cols=PERSESSION_FDR_GROUP_COLS)
 
 
 def dropone_ylim(results: pd.DataFrame, terms: list[str],
@@ -649,7 +683,8 @@ def dropone_ylim(results: pd.DataFrame, terms: list[str],
 
 def plot_persession_figures(results: pd.DataFrame,
                             mouse_pvalues: pd.DataFrame | None, figures_dir,
-                            display: str = 'session') -> None:
+                            display: str = 'session',
+                            target_pvalues: pd.DataFrame | None = None) -> None:
     """Save drop-one ΔR² figures per dropped term and per target-NM, plus R².
 
     Each ``config.RESPONSE_DROPPED_TERMS`` label gets its own figure — event
@@ -665,8 +700,9 @@ def plot_persession_figures(results: pd.DataFrame,
     by whichever target has the largest ΔR² would flatten the rest. The
     full-model R² figure has no predictor axis and stays one per display mode.
     ``display`` selects how each session's values are drawn — per-session dots
-    (``session``), per-subject median+IQR (``subject``), or a per-target violin
-    (``target``) — via ``_PERSESSION_DISPLAY_FNS``.
+    (``session``), per-subject median+IQR (``subject``), a per-target violin
+    (``target``), or every recording as a dot under its target's median bar
+    (``pooled``, the summary display) — via ``_PERSESSION_DISPLAY_FNS``.
 
     Parameters
     ----------
@@ -674,19 +710,28 @@ def plot_persession_figures(results: pd.DataFrame,
         The merged per-recording OLS frame
         (``config.OLS_PERSESSION_COLUMNS``), one row per recording x event x
         dropped predictor. It carries each recording's own q-value, so the
-        ``session`` mode figure colors its dots from it directly.
+        ``session`` and ``pooled`` mode figures color their dots from it
+        directly.
     mouse_pvalues : pandas.DataFrame or None
-        The per-mouse p-value table, the coarser grain that colors the subject
-        mean dashes. Read in ``session`` mode alone; the other two modes take
-        none, so None is fine there.
+        The per-mouse p-value table, the grain that colors the subject mean
+        dashes. Read in ``session`` mode alone; the other modes take none, so
+        None is fine there.
     figures_dir : Path
         Output directory for the SVG figures.
-    display : {'session', 'subject', 'target'}
+    display : {'session', 'subject', 'target', 'pooled'}
         Per-session value display mode.
+    target_pvalues : pandas.DataFrame or None
+        The per-target p-value table (``target_pvalue_table``), the grain that
+        colors the pooled median bars. Read in ``pooled`` mode alone.
     """
     dropone_fn, target_fn, total_r2_fn = _PERSESSION_DISPLAY_FNS[display]
-    dropone_kwargs = ({'mouse_pvalues': mouse_pvalues}
-                      if display == 'session' else {})
+    # Each mode's drop-one figures read the one significance grain their
+    # summary mark is drawn at, and the modes that summarize without a test
+    # read none.
+    dropone_kwargs = {
+        'session': {'mouse_pvalues': mouse_pvalues},
+        'pooled': {'target_pvalues': target_pvalues},
+    }.get(display, {})
 
     for terms in DROPONE_TERM_CLASSES.values():
         ylim = dropone_ylim(results, terms)
@@ -829,12 +874,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--reprocess', action='store_true',
                         help='re-extract responses and re-fit per-session models; '
                              'default plots from existing parquet files')
-    parser.add_argument('--persession-display', choices=('session', 'subject',
-                                                         'target'),
+    parser.add_argument('--persession-display',
+                        choices=tuple(_PERSESSION_DISPLAY_FNS),
                         default='session',
                         help='per-session OLS figure display mode: per-session '
                              'dots (session), per-subject median+IQR (subject), '
-                             'or per-target violin (target)')
+                             'per-target violin (target), or every recording a '
+                             'dot under its target-NM median bar, colored by '
+                             'the per-target permutation test (pooled)')
     return parser.parse_args(argv)
 
 
@@ -1009,6 +1056,12 @@ if __name__ == '__main__':
     # Per-session OLS drop-one
     # =====================================================================
     print("\nGenerating per-session OLS drop-one figure...")
+    # The pooled display is the only one colored at target grain, and that test
+    # is a bootstrap over the stored nulls rather than a refit, so it is run
+    # here for the figures that read it instead of cached with the fits.
+    target_pvalues = (target_pvalue_table(ols)
+                      if args.persession_display == 'pooled' else None)
     plot_persession_figures(ols, ols_mouse, fig_dirs['persession'],
-                            display=args.persession_display)
+                            display=args.persession_display,
+                            target_pvalues=target_pvalues)
     print(f"Per-session OLS figures saved to {fig_dirs['persession']}")
