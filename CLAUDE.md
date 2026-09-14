@@ -58,8 +58,8 @@ schema definition, or visualization parameter. Everything is centralized there.
 | Response re-cut, the cut products alone | `scripts/rebuild_responses.py → rebuild_responses, main` |
 | DDM-HMM fit import into `hmm/ddm-k{K}` | `scripts/import_ddm_hmm.py → read_fits, check_alignment, import_session, main` |
 | Legacy old-format DDM-HMM import (`data/ddm-hmm.old/`) | `scripts/import_ddm_hmm_old.py → read_fit, align_session, import_session, select_subjects, main` |
-| DDM-HMM per-mouse behavioral figure (`{subject}_behavior.svg`) | `scripts/ddm_hmm_overview.py → load_session_states, behavioral_frame, behavior_panels, main`; drawers `vis.py → plot_state_behavior, draw_state_*, draw_transition_traces` |
-| DDM-HMM per-mouse neural figure (`{subject}_neural.svg`) | `scripts/ddm_hmm_overview.py → load_session_measures, neural_panels, MEASURE_LABELS, main`; drawers `vis.py → plot_state_neural, draw_state_violins, draw_transition_traces`; measure `analysis.py → normalized_outcome_difference` |
+| DDM-HMM per-mouse behavioral figure (`{subject}_behavior.svg`) | `scripts/ddm_hmm_overview.py → load_session_states, behavioral_frame, behavior_panels, main`; drawers `vis.py → plot_state_behavior, draw_state_*, draw_lag_lines` |
+| DDM-HMM per-mouse neural figure (`{subject}_neural.svg`) | `scripts/ddm_hmm_overview.py → load_session_measures, neural_panels, MEASURE_LABELS, main`; drawers `vis.py → plot_state_neural, draw_state_violins, draw_lag_lines`; measures `analysis.py → normalized_outcome_difference, fit_lagged_kernels` (`KERNEL_WINDOW`, `KERNEL_ALPHA`) |
 | DDM-HMM across-mouse parameter figure (`ddm_param_scatter.svg`) | `scripts/ddm_hmm_overview.py → state_params, PARAM_LABELS, main`; drawer `vis.py → plot_state_param_scatter` |
 | PhotometrySession class | `data.py` |
 | Signal processing | `analysis.py → get_responses, resample_signal, compute_bleaching_tau` |

@@ -3802,3 +3802,63 @@ def transition_delta_stats(
         n_valid = np.sum(~np.isnan(delta), axis=0)
         return {'mean': np.nanmean(delta, axis=0),
                 'sem': np.nanstd(delta, axis=0, ddof=1) / np.sqrt(n_valid)}
+
+
+def fit_lagged_kernels(
+    frame: pd.DataFrame,
+    value: str,
+    regressors: Sequence[str],
+    group_col: str,
+    window: int,
+    alpha: float = 1.0,
+) -> np.ndarray:
+    """Ridge kernels of ``value`` on ``regressors`` taken at a range of lags.
+
+    One regression per call: every regressor at every lag in ``-window …
+    +window`` enters the same design, so a kernel weight reads as that
+    regressor's contribution at that lag given the others. Lag ``l`` is the
+    regressor's value ``l`` rows later, matching the lag axis of
+    :func:`align_traces_at_transitions` — negative lags are earlier rows.
+
+    Ridge rather than ordinary least squares because regressors that sum to a
+    constant per row (state posteriors) leave an unpenalized fit without a
+    unique solution. The penalty is applied on the regressors' own scale;
+    nothing is standardized, so kernels are comparable across lags only when
+    the regressors share a scale, as posteriors on [0, 1] do.
+
+    Variable-agnostic: no measure name, regressor meaning or grouping is baked
+    in.
+
+    Parameters
+    ----------
+    frame : pandas.DataFrame
+        Rows in order within each group, carrying ``value``, ``regressors``
+        and ``group_col``.
+    value : str
+        Column regressed.
+    regressors : Sequence[str]
+        Columns lagged into the design, in kernel column order.
+    group_col : str
+        Column whose changes break the lag window (e.g. eid), so no lag
+        reaches across a session boundary.
+    window : int
+        Half-window in rows; lags span ``2 * window + 1`` values.
+    alpha : float
+        Ridge penalty.
+
+    Returns
+    -------
+    numpy.ndarray
+        Shape ``(2 * window + 1, len(regressors))``, lags ascending. Rows whose
+        ``value`` or any lagged regressor is NaN — the edges of every group —
+        are left out of the fit.
+    """
+    from sklearn.linear_model import Ridge
+
+    lags = range(-window, window + 1)
+    design = pd.concat(
+        [frame.groupby(group_col)[list(regressors)].shift(-lag).add_suffix(f'@{lag}')
+         for lag in lags], axis=1)
+    fitted = design.notna().all(axis=1) & frame[value].notna()
+    model = Ridge(alpha=alpha).fit(design[fitted], frame.loc[fitted, value])
+    return model.coef_.reshape(len(lags), len(regressors))

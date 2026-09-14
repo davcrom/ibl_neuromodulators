@@ -4806,7 +4806,7 @@ def draw_state_chronometric(ax, chrono: pd.DataFrame) -> None:
         fontsize=6, frameon=False)
 
 
-def draw_transition_traces(
+def draw_lag_lines(
     ax,
     stats: Mapping[str, np.ndarray],
     window: int,
@@ -4814,20 +4814,22 @@ def draw_transition_traces(
     xlabel: str,
     line_labels: Sequence[str],
 ) -> None:
-    """Lag traces with SEM bands around one kind of transition.
+    """One line per column against a lag axis, with an optional SEM band.
 
-    Overlays the mean trace of every column of ``stats['mean']`` — Δ from each
-    window's own pre-transition baseline — colored by position
-    (``plt.cm.tab10``), with a shaded ±SEM band. Dashed lines mark the
-    transition (vertical) and zero change (horizontal). What the transition
-    and the lines mean is the caller's.
+    Overlays every column of ``stats['mean']`` colored by position
+    (``plt.cm.tab10``), each with a shaded ±SEM band where ``stats`` carries
+    one. Dashed lines mark lag zero (vertical) and zero value (horizontal).
+    What the lag axis and the lines mean is the caller's: a Δ from a
+    pre-transition baseline around a transition, or a regression kernel
+    against the lag its weights were fitted at.
 
     Parameters
     ----------
     ax : matplotlib.axes.Axes
         Axes to draw on.
     stats : mapping of str to numpy.ndarray
-        ``{'mean': arr, 'sem': arr}``, each of shape ``(2*window+1, n_lines)``.
+        ``{'mean': arr}`` and optionally ``'sem'``, each of shape
+        ``(2*window+1, n_lines)``. Without ``'sem'`` the lines are drawn bare.
     window : int
         Half-window in trials; the x-axis spans ``[-window, window]``.
     ylabel, xlabel : str
@@ -4836,17 +4838,23 @@ def draw_transition_traces(
         Label per overlaid line, at least ``n_lines`` long.
     """
     lag = np.arange(-window, window + 1)
-    mean, sem = stats['mean'], stats['sem']
+    mean, sem = stats['mean'], stats.get('sem')
     for line, color in enumerate(plt.cm.tab10(np.arange(mean.shape[1]))):
-        ax.fill_between(lag, mean[:, line] - sem[:, line],
-                        mean[:, line] + sem[:, line],
-                        color=color, alpha=0.2, linewidth=0)
+        if sem is not None:
+            ax.fill_between(lag, mean[:, line] - sem[:, line],
+                            mean[:, line] + sem[:, line],
+                            color=color, alpha=0.2, linewidth=0)
         ax.plot(lag, mean[:, line], color=color, label=line_labels[line])
     ax.axvline(0, color='gray', linestyle='--', alpha=0.5)
     ax.axhline(0, color='gray', linestyle=':', alpha=0.5)
     ax.set_xlabel(xlabel, fontsize=8)
     ax.set_ylabel(ylabel, fontsize=8)
     ax.tick_params(labelsize=7)
+
+
+def _state_line_labels(n_states: int) -> list[str]:
+    """Legend labels for a panel's state lines, numbered from 1 as the fit is."""
+    return [f'state {i + 1}' for i in range(n_states)]
 
 
 DOT_JITTER = 0.12  # half-width, in x units, of the per-session dot spread
@@ -4950,69 +4958,85 @@ def plot_state_behavior(
         if stats is None:
             ax.axis('off')
             continue
-        draw_transition_traces(
+        draw_lag_lines(
             ax, stats, window=stats['mean'].shape[0] // 2, ylabel='Δ P(state)',
             xlabel='trial from transition',
-            line_labels=[f'state {i + 1}' for i in range(stats['mean'].shape[1])])
+            line_labels=_state_line_labels(stats['mean'].shape[1]))
     fig.suptitle(subject)
     return fig
 
 
 def plot_state_neural(
     title: str,
-    traces: Mapping[str, Mapping[str, np.ndarray]],
-    differences: Mapping[str, pd.DataFrame],
+    panels: Mapping[str, Mapping],
     measure_labels: Mapping[str, str],
     window: int,
+    kernel_window: int,
 ) -> plt.Figure:
-    """One mouse's DDM-HMM neural figure, 3x2.
+    """One mouse's DDM-HMM neural figure, 3x3.
 
-    One row per ``measure_labels`` entry: on the left the measure's change
-    around entry into each state (one line per entered state), on the right the
-    per-session correct-minus-incorrect difference in that measure, one violin
-    per state. States are colored by position within the mouse; each mouse is
-    fit separately, so state labels carry no meaning across mice.
+    One row per ``measure_labels`` entry, three columns: the measure's change
+    around entry into each state (one line per entered state), the per-session
+    correct-minus-incorrect difference in that measure (one violin per state),
+    and the measure's ridge kernel on the state posteriors (one line per
+    state). States are colored by position within the mouse; each mouse is fit
+    separately, so state labels carry no meaning across mice.
+
+    The first two columns read against a state assignment and the third does
+    not: the kernel regresses on the posteriors themselves, so it stands
+    whether or not a trial's state is crisp.
 
     Parameters
     ----------
     title : str
         Figure title; the subject and the target-NM it was recorded from.
-    traces : mapping of str to mapping
-        ``{measure: {'mean', 'sem'}}`` of shape ``(2*window+1, n_states)``, from
-        :func:`iblnm.analysis.transition_delta_stats`. A measure absent here —
-        a mouse that never switched state — leaves its trace panel blank.
-    differences : mapping of str to pandas.DataFrame
-        ``{measure: frame}``, each ``['eid', 'state', measure]``, from
-        :func:`iblnm.analysis.normalized_outcome_difference`.
+    panels : mapping of str to mapping
+        ``'traces'``: ``{measure: {'mean', 'sem'}}`` of shape
+        ``(2*window+1, n_states)``, from
+        :func:`iblnm.analysis.transition_delta_stats`; a measure absent — a
+        mouse that never switched state — leaves its trace panel blank.
+        ``'differences'``: ``{measure: frame}``, each ``['eid', 'state',
+        measure]``, from :func:`iblnm.analysis.normalized_outcome_difference`.
+        ``'kernels'``: ``{measure: array}`` of shape
+        ``(2*kernel_window+1, n_states)``, from
+        :func:`iblnm.analysis.fit_lagged_kernels`.
     measure_labels : mapping of str to str
         Measure -> plain-English name, in row order.
-    window : int
-        Half-window in trials of the lag traces.
+    window, kernel_window : int
+        Half-window in trials of the lag traces and of the kernels; the two
+        columns carry their own x axes.
 
     Returns
     -------
     matplotlib.figure.Figure
-        Six axes, row-major: (trace, violins) per measure.
+        Nine axes, row-major: (trace, violins, kernel) per measure.
     """
-    fig, axes = plt.subplots(len(measure_labels), 2,
-                             figsize=(7, len(measure_labels) * ROW_HEIGHT),
+    traces, differences, kernels = (panels['traces'], panels['differences'],
+                                    panels['kernels'])
+    fig, axes = plt.subplots(len(measure_labels), 3,
+                             figsize=(10.5, len(measure_labels) * ROW_HEIGHT),
                              layout='constrained')
-    for (measure, label), (ax_trace, ax_violin) in zip(measure_labels.items(),
-                                                       axes):
+    for (measure, label), (ax_trace, ax_violin, ax_kernel) in zip(
+            measure_labels.items(), axes):
         stats = traces.get(measure)
         if stats is None:
             ax_trace.axis('off')
         else:
-            draw_transition_traces(
+            draw_lag_lines(
                 ax_trace, stats, window=window, ylabel=f'Δ {label}',
                 xlabel='trial from state onset',
-                line_labels=[f'state {i + 1}'
-                             for i in range(stats['mean'].shape[1])])
+                line_labels=_state_line_labels(stats['mean'].shape[1]))
         draw_state_violins(ax_violin, differences[measure], measure)
         ax_violin.set_ylabel(label, fontsize=8)
+        kernel = kernels[measure]
+        draw_lag_lines(ax_kernel, {'mean': kernel}, window=kernel_window,
+                       ylabel=f'{label} weight',
+                       xlabel='trial from measured trial',
+                       line_labels=_state_line_labels(kernel.shape[1]))
     if next(iter(measure_labels)) in traces:
         axes[0, 0].legend(fontsize=6, frameon=False)
     axes[0, 1].set_title('correct − incorrect (SD)', fontsize=9)
+    axes[0, 2].set_title('posterior kernel', fontsize=9)
     fig.suptitle(title)
     return fig
 

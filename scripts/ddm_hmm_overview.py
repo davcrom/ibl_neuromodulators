@@ -12,11 +12,15 @@ behavioral figure per mouse to ``figures/ddm-hmm/{subject}_behavior.svg``, 3x2:
 6. The same around R->L block switches.
 
 It writes a second figure per mouse, ``figures/ddm-hmm/{subject}_neural.svg``,
-3x2, one row per ``config.RESPONSES`` window (baseline, stimulus, feedback):
+3x3, one row per ``config.RESPONSES`` window (baseline, stimulus, feedback):
 
 1. The measure's change around entry into each state, one line per state.
 2. Per-state violins of each session's correct-minus-incorrect difference in
    that measure, in units of the session's own spread.
+3. The measure's ridge kernel on the state posteriors at lags
+   ``-KERNEL_WINDOW … +KERNEL_WINDOW``, one line per state. The first two
+   panels read against an assigned state; this one regresses on the posteriors
+   themselves, so it stands whether or not a trial's state is crisp.
 
 It also writes one across-mouse figure, ``ddm_param_scatter.svg``: a 3D scatter
 of every mouse's per-state ``B``, ``k`` and ``a0``, one point per (mouse, DDM
@@ -48,8 +52,9 @@ from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
 )
 from iblnm.analysis import (
-    align_traces_at_transitions, normalized_outcome_difference,
-    state_dwell_times, transition_delta_stats,
+    align_traces_at_transitions, fit_lagged_kernels,
+    normalized_outcome_difference, state_dwell_times,
+    transition_delta_stats,
 )
 from iblnm.data import PhotometrySession, PhotometrySessionGroup
 from iblnm.io import _get_default_connection
@@ -75,6 +80,11 @@ MEASURE_LABELS = {'baseline': 'pre-stimulus baseline',
                   'feedback': 'feedback response'}
 # Trials of each outcome a session x state cell needs to yield a violin point.
 MIN_OUTCOME_TRIALS = 5
+# Half-window in trials of the posterior kernels, and their ridge penalty.
+# Narrower than SWITCH_WINDOW: the median state run is ~2 trials, so the
+# outer lags of a wider kernel sit in neighbouring states.
+KERNEL_WINDOW = 3
+KERNEL_ALPHA = 1.0
 # What one measured row is, before the three measures are pivoted apart: one
 # fiber's response on one trial.
 MEASURE_KEYS = ['trial', 'target_NM', 'brain_region']
@@ -518,11 +528,15 @@ def neural_panels(frame: pd.DataFrame) -> dict:
     -------
     dict
         ``traces`` (each measure's Δ around entry into a state, one line per
-        entered state) and ``differences`` (each measure's per-session
+        entered state), ``differences`` (each measure's per-session
         correct-minus-incorrect difference, in units of the session x state
-        cell's own SD).
+        cell's own SD) and ``kernels`` (each measure's ridge weights on the
+        state posteriors at lags ``-KERNEL_WINDOW … +KERNEL_WINDOW``, one
+        column per posterior in ascending state order).
     """
     measures = list(MEASURE_LABELS)
+    posteriors = sorted((column for column in frame if column.startswith('p_state_')),
+                        key=lambda column: int(column.rsplit('_', 1)[1]))
     return {
         'traces': _state_switch_traces(frame, measures, SWITCH_WINDOW,
                                        SWITCH_BASELINE),
@@ -530,6 +544,10 @@ def neural_panels(frame: pd.DataFrame) -> dict:
             measure: normalized_outcome_difference(
                 frame, measure, ['eid', 'state'], 'feedbackType', 1, -1,
                 MIN_OUTCOME_TRIALS)
+            for measure in measures},
+        'kernels': {
+            measure: fit_lagged_kernels(frame, measure, posteriors, 'eid',
+                                        KERNEL_WINDOW, KERNEL_ALPHA)
             for measure in measures},
     }
 
@@ -618,9 +636,8 @@ def main(one=None) -> None:
                            for session in sessions], ignore_index=True)
         panels = neural_panels(frame)
         targets = ', '.join(dict.fromkeys(frame['target_NM']))
-        _save(plot_state_neural(f'{subject} {targets}', panels['traces'],
-                                panels['differences'], MEASURE_LABELS,
-                                SWITCH_WINDOW),
+        _save(plot_state_neural(f'{subject} {targets}', panels,
+                                MEASURE_LABELS, SWITCH_WINDOW, KERNEL_WINDOW),
               f'{subject}_neural')
         print(f"  {subject}: {len(sessions)} measured sessions")
 

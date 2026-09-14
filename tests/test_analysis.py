@@ -8,6 +8,7 @@ from scipy.stats import sem as scipy_sem
 from iblnm.analysis import (
     add_fdr_qvalues,
     align_traces_at_transitions,
+    fit_lagged_kernels,
     transition_delta_stats,
     get_responses,
     normalize_responses,
@@ -3954,3 +3955,24 @@ class TestAddFdrQvalues:
         add_fdr_qvalues(df)
 
         pd.testing.assert_frame_equal(df, before)
+
+
+class TestFitLaggedKernels:
+    @staticmethod
+    def _frame(n=600, seed=0):
+        """Two posterior columns; the value is driven by ``p1`` one trial back."""
+        rng = np.random.default_rng(seed)
+        p1 = rng.random(n)
+        p2 = rng.random(n)
+        value = np.full(n, np.nan)
+        value[1:] = 2.0 * p1[:-1]
+        return pd.DataFrame({'eid': 'e1', 'p1': p1, 'p2': p2, 'value': value})
+
+    def test_kernel_peaks_at_the_planted_lag(self):
+        kernels = fit_lagged_kernels(
+            self._frame(), 'value', ['p1', 'p2'], 'eid', window=2, alpha=0.01)
+
+        assert kernels.shape == (5, 2)
+        # Lags run -2..2, so the planted lag -1 is row 1 of the p1 column.
+        assert np.unravel_index(np.argmax(np.abs(kernels)), kernels.shape) == (1, 0)
+        assert kernels[1, 0] > 1.5

@@ -550,6 +550,7 @@ def test_neural_panels_difference_is_per_session_and_state():
     for eid, state in [('e1', 1), ('e2', 2)]:
         for feedback, value in [(1, 2.0), (-1, 0.0)]:
             rows += [{'eid': eid, 'state': state, 'feedbackType': feedback,
+                      'p_state_1': 0.9, 'p_state_2': 0.1,
                       **{measure: value for measure in ddm.MEASURE_LABELS}}
                      for _ in range(5)]
     frame = pd.DataFrame(rows)
@@ -563,6 +564,32 @@ def test_neural_panels_difference_is_per_session_and_state():
     assert np.allclose(differences['stimulus'], 1.8974, atol=1e-4)
     # No state is ever entered within a session, so no mouse trace exists.
     assert panels['traces'] == {}
+
+
+def test_neural_panels_kernels_span_the_states_and_kernel_lags():
+    """One kernel per measure, a column per posterior, a row per kernel lag.
+
+    The measure follows ``p_state_1`` one trial back, so its kernel peaks on
+    that state at lag -1 — the posteriors themselves carry the fit, with no
+    state assignment involved.
+    """
+    rng = np.random.default_rng(0)
+    p1 = rng.random(400)
+    frame = pd.DataFrame({
+        'eid': 'e1', 'state': 1,
+        'feedbackType': np.tile([1, -1], len(p1) // 2),
+        'p_state_1': p1, 'p_state_2': 1.0 - p1,
+        **{measure: np.r_[np.nan, 2.0 * p1[:-1]]
+           for measure in ddm.MEASURE_LABELS},
+    })
+
+    kernels = ddm.neural_panels(frame)['kernels']
+
+    assert set(kernels) == set(ddm.MEASURE_LABELS)
+    kernel = kernels['stimulus']
+    assert kernel.shape == (2 * ddm.KERNEL_WINDOW + 1, 2)
+    peak = np.unravel_index(np.argmax(np.abs(kernel)), kernel.shape)
+    assert peak == (ddm.KERNEL_WINDOW - 1, 0)
 
 
 # =========================================================================
@@ -585,12 +612,20 @@ def _session_fit(eid, subject, converged):
                       'a0': np.array([5.0, 6.0])}}
 
 
-def _measured_session(eid, subject, target_nm='SNc-DA'):
-    """One session as `load_session_measures` returns it: a fit plus measures."""
+def _measured_session(eid, subject, target_nm='SNc-DA', repeats=4):
+    """One session as `load_session_measures` returns it: a fit plus measures.
+
+    The fit's three trials are repeated so the session outlives the kernel
+    window, which drops ``KERNEL_WINDOW`` trials at each end of every session.
+    """
     fit = _session_fit(eid, subject, True)
-    trials = fit['trials'].assign(
-        target_NM=target_nm, brain_region='SNc', feedbackType=[1, -1, 1],
-        **{measure: [0.1, 0.2, 0.3] for measure in ddm.MEASURE_LABELS})
+    trials = pd.concat([fit['trials']] * repeats, ignore_index=True)
+    trials['trial'] = np.arange(len(trials))
+    trials = trials.assign(
+        target_NM=target_nm, brain_region='SNc',
+        feedbackType=np.tile([1, -1, 1], repeats),
+        **{measure: np.tile([0.1, 0.2, 0.3], repeats)
+           for measure in ddm.MEASURE_LABELS})
     return {'trials': trials, 'attrs': fit['attrs']}
 
 

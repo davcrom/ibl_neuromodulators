@@ -3735,9 +3735,9 @@ class TestTransitionTraces:
                 'sem': np.full((length, k), sem)}
 
     def test_draws_a_mean_line_and_sem_band_per_state(self):
-        from iblnm.vis import draw_transition_traces
+        from iblnm.vis import draw_lag_lines
         fig, ax = plt.subplots()
-        draw_transition_traces(ax, self._stats(0.1, 0.02), window=2,
+        draw_lag_lines(ax, self._stats(0.1, 0.02), window=2,
                                ylabel='Δ P(state)',
                                xlabel='trial from transition',
                                line_labels=self.LINE_LABELS)
@@ -3751,6 +3751,20 @@ class TestTransitionTraces:
         assert len(ax.collections) == 3
         assert ax.get_ylabel() == 'Δ P(state)'
         assert ax.get_xlabel() == 'trial from transition'
+        plt.close(fig)
+
+    def test_stats_without_sem_draw_lines_alone(self):
+        """Kernels carry no error, so the band is skipped rather than zeroed."""
+        from iblnm.vis import draw_lag_lines
+        fig, ax = plt.subplots()
+        stats = {'mean': self._stats(0.1, 0.02)['mean']}
+
+        draw_lag_lines(ax, stats, window=2, ylabel='weight',
+                       xlabel='trial from measure',
+                       line_labels=self.LINE_LABELS)
+
+        assert len([ln for ln in ax.lines if len(ln.get_ydata()) > 2]) == 3
+        assert not ax.collections
         plt.close(fig)
 
 
@@ -3834,49 +3848,75 @@ class TestStateViolins:
 
 
 class TestStateNeural:
-    """The per-mouse 3x2 neural figure."""
+    """The per-mouse 3x3 neural figure."""
 
     MEASURE_LABELS = {'baseline': 'pre-stimulus baseline',
                       'stimulus': 'stimulus response',
                       'feedback': 'feedback response'}
+    KERNEL_WINDOW = 3
+
+    @classmethod
+    def _panels(cls, traces=True):
+        values = TestStateViolins._values()
+        stats = TestTransitionTraces._stats(0.1, 0.02, window=5, k=2)
+        return {
+            'traces': {measure: stats for measure in cls.MEASURE_LABELS}
+                      if traces else {},
+            'differences': {measure: values.rename(columns={'stimulus': measure})
+                            for measure in cls.MEASURE_LABELS},
+            'kernels': {measure: np.full((2 * cls.KERNEL_WINDOW + 1, 2), 0.3)
+                        for measure in cls.MEASURE_LABELS},
+        }
 
     def test_panels_in_documented_order(self):
         from matplotlib.collections import PolyCollection
         from iblnm.vis import plot_state_neural
-        traces = {measure: TestTransitionTraces._stats(0.1, 0.02, window=5, k=2)
-                  for measure in self.MEASURE_LABELS}
-        values = TestStateViolins._values()
-        differences = {measure: values.rename(columns={'stimulus': measure})
-                       for measure in self.MEASURE_LABELS}
 
-        fig = plot_state_neural('ZFM-A SNc-DA', traces, differences,
-                                self.MEASURE_LABELS, window=5)
+        fig = plot_state_neural('ZFM-A SNc-DA', self._panels(),
+                                self.MEASURE_LABELS, window=5,
+                                kernel_window=self.KERNEL_WINDOW)
 
         axes = fig.axes
-        assert len(axes) == 6
-        # Rows are the measures; left panel is the lag trace, right the violins.
+        assert len(axes) == 9
+        # Rows are the measures; the columns are trace, violins, kernel.
         assert [ax.get_ylabel() for ax in axes] == [
             'Δ pre-stimulus baseline', 'pre-stimulus baseline',
+            'pre-stimulus baseline weight',
             'Δ stimulus response', 'stimulus response',
-            'Δ feedback response', 'feedback response']
-        for ax in axes[1::2]:
+            'stimulus response weight',
+            'Δ feedback response', 'feedback response',
+            'feedback response weight']
+        for ax in axes[1::3]:
             bodies = [c for c in ax.collections if isinstance(c, PolyCollection)]
             assert len(bodies) == 2  # one per state present
         assert fig.get_suptitle() == 'ZFM-A SNc-DA'
         plt.close(fig)
 
+    def test_kernel_panel_draws_one_line_per_state_over_its_own_lags(self):
+        from iblnm.vis import plot_state_neural
+
+        fig = plot_state_neural('ZFM-A SNc-DA', self._panels(),
+                                self.MEASURE_LABELS, window=5,
+                                kernel_window=self.KERNEL_WINDOW)
+
+        ax = fig.axes[2]
+        kernels = [ln for ln in ax.lines if len(ln.get_ydata()) > 2]
+        assert len(kernels) == 2  # K states
+        # The kernel column spans its own window, not the lag traces'.
+        assert np.allclose(kernels[0].get_xdata(), [-3, -2, -1, 0, 1, 2, 3])
+        assert np.allclose(kernels[0].get_ydata(), 0.3)
+        plt.close(fig)
+
     def test_measure_with_no_trace_leaves_its_panel_blank(self):
         from iblnm.vis import plot_state_neural
         # A mouse that never switched state has no trace for any measure; its
-        # violins are still drawn.
-        values = TestStateViolins._values()
-        differences = {measure: values.rename(columns={'stimulus': measure})
-                       for measure in self.MEASURE_LABELS}
+        # violins and kernels are still drawn.
 
-        fig = plot_state_neural('ZFM-A SNc-DA', {}, differences,
-                                self.MEASURE_LABELS, window=5)
+        fig = plot_state_neural('ZFM-A SNc-DA', self._panels(traces=False),
+                                self.MEASURE_LABELS, window=5,
+                                kernel_window=self.KERNEL_WINDOW)
 
-        assert [ax.axison for ax in fig.axes] == [False, True] * 3
+        assert [ax.axison for ax in fig.axes] == [False, True, True] * 3
         plt.close(fig)
 
 
