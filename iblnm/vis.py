@@ -2930,7 +2930,8 @@ def plot_lmm_reliability(reliability_df, full_r2, title):
 # x-axis layout (units where one subject occupies a width of 1):
 _SUBJECT_SPACING = 0.7       # x between consecutive subjects within a target-NM
 _TARGETNM_GAP = 1.0          # blank x between consecutive target-NM groups
-_SESSION_MARKER_SIZE = 40    # open-dot marker size for a single session
+_SESSION_MARKER_SIZE = 27    # open-dot marker area for a single session
+_SESSION_MARKER_LINEWIDTH = 2.0  # that dot's ring thickness
 _MEAN_MARKER_SIZE = 260      # '_' marker size for a subject's mean dash
 _MEAN_LINEWIDTH = 3.0        # '_' mean dash thickness
 _MEDIAN_MARKER_SIZE = 6      # errorbar median-point diameter (points)
@@ -3001,8 +3002,8 @@ def _scatter_subject(ax, x, deltas, point_colors, summary_color):
         Color of the mean dash (the subject's target-NM color, or gray).
     """
     ax.scatter(np.full(len(deltas), x), deltas, marker='o', facecolors='none',
-               edgecolors=point_colors, s=_SESSION_MARKER_SIZE, alpha=0.5,
-               zorder=3)
+               edgecolors=point_colors, s=_SESSION_MARKER_SIZE,
+               linewidths=_SESSION_MARKER_LINEWIDTH, alpha=0.5, zorder=3)
     ax.scatter(x, np.mean(deltas), marker='_', color=summary_color,
                s=_MEAN_MARKER_SIZE, linewidths=_MEAN_LINEWIDTH, zorder=4)
 
@@ -3614,7 +3615,8 @@ def _strip_median(ax, slot, vals, point_colors, summary_color):
     """
     ax.scatter(slot + _beeswarm_offsets(vals), vals, marker='o',
                facecolors='none', edgecolors=point_colors,
-               s=_SESSION_MARKER_SIZE, alpha=0.5, zorder=3)
+               s=_SESSION_MARKER_SIZE, linewidths=_SESSION_MARKER_LINEWIDTH,
+               alpha=0.5, zorder=3)
     ax.hlines(np.median(vals), slot - _POOLED_MEDIAN_HALFWIDTH,
               slot + _POOLED_MEDIAN_HALFWIDTH, color=summary_color,
               linewidth=_MEAN_LINEWIDTH, zorder=4)
