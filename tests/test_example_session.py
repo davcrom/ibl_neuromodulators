@@ -83,6 +83,14 @@ def snippet_data():
     return photometry, wheel, pose_df, pose_times, trials, t_start, t_end
 
 
+@pytest.fixture
+def motion_energy():
+    """Whisker-pad ROI motion energy on its own 30 Hz time axis."""
+    rng = np.random.default_rng(7)
+    times = np.arange(0, 300, 1 / 30)
+    return pd.Series(rng.gamma(2.0, 1.0, len(times)), index=times)
+
+
 # =========================================================================
 # camera_timing_ok
 # =========================================================================
@@ -244,32 +252,49 @@ class TestNormalizeWindow:
 # =========================================================================
 
 class TestBuildTraces:
-    def test_six_traces_in_order_with_labels(self, snippet_data):
+    def test_seven_traces_in_order_with_labels(self, snippet_data, motion_energy):
         phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
-        traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
-        assert len(traces) == 6
+        traces = build_traces(phot, wheel, motion_energy, pose_df, pose_times,
+                              'VTA-DA')
+        assert len(traces) == 7
         assert [t['label'] for t in traces] == [
-            'Photometry', 'Wheel', 'Left paw', 'Right paw', 'Nose', 'Tongue']
+            'Photometry', 'Wheel', 'Left paw', 'Right paw', 'Whisker pad',
+            'Nose', 'Tongue']
 
-    def test_photometry_keeps_target_color_rest_unique(self, snippet_data):
+    def test_whisker_pad_trace_carries_motion_energy(self, snippet_data,
+                                                    motion_energy):
         phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
-        traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
+        traces = build_traces(phot, wheel, motion_energy, pose_df, pose_times,
+                              'VTA-DA')
+        whisker = next(t for t in traces if t['label'] == 'Whisker pad')
+        np.testing.assert_array_equal(whisker['values'], motion_energy.values)
+        np.testing.assert_array_equal(whisker['times'], motion_energy.index.values)
+
+    def test_photometry_keeps_target_color_rest_unique(self, snippet_data,
+                                                      motion_energy):
+        phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
+        traces = build_traces(phot, wheel, motion_energy, pose_df, pose_times,
+                              'VTA-DA')
         assert traces[0]['color'] == TARGETNM_COLORS['VTA-DA']
         movement_colors = [t['color'] for t in traces[1:]]
-        assert movement_colors == list(plt.cm.Set2.colors[0:5])
-        assert len({to_rgba(t['color']) for t in traces}) == 6
+        assert movement_colors == list(plt.cm.Set2.colors[0:6])
+        assert len({to_rgba(t['color']) for t in traces}) == 7
 
-    def test_pose_trace_lengths_match_pose_times(self, snippet_data):
+    def test_pose_trace_lengths_match_pose_times(self, snippet_data, motion_energy):
         phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
-        traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
-        for trace in traces[2:]:
+        traces = build_traces(phot, wheel, motion_energy, pose_df, pose_times,
+                              'VTA-DA')
+        pose_labels = {'Left paw', 'Right paw', 'Nose', 'Tongue'}
+        for trace in (t for t in traces if t['label'] in pose_labels):
             assert len(trace['values']) == len(pose_times)
             assert len(trace['times']) == len(pose_times)
 
-    def test_tongue_trace_is_likelihood_in_unit_range(self, snippet_data):
+    def test_tongue_trace_is_likelihood_in_unit_range(self, snippet_data,
+                                                     motion_energy):
         phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
-        traces = build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
-        tongue = traces[5]['values']
+        traces = build_traces(phot, wheel, motion_energy, pose_df, pose_times,
+                              'VTA-DA')
+        tongue = traces[-1]['values']
         assert np.nanmin(tongue) >= 0.0
         assert np.nanmax(tongue) <= 1.0
 
@@ -301,20 +326,21 @@ class TestMarkers:
 # =========================================================================
 
 class TestPlotExampleSession:
-    def _traces(self, snippet_data):
+    def _traces(self, snippet_data, motion_energy):
         phot, wheel, pose_df, pose_times, _, _, _ = snippet_data
-        return build_traces(phot, wheel, pose_df, pose_times, 'VTA-DA')
+        return build_traces(phot, wheel, motion_energy, pose_df, pose_times,
+                            'VTA-DA')
 
-    def test_returns_figure_single_axes(self, snippet_data):
+    def test_returns_figure_single_axes(self, snippet_data, motion_energy):
         *_, trials, t0, t1 = snippet_data
-        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        fig = plot_example_session(self._traces(snippet_data, motion_energy), trials, t0, t1)
         assert isinstance(fig, plt.Figure)
         assert len(fig.axes) == 1
         plt.close(fig)
 
-    def test_axes_frameless(self, snippet_data):
+    def test_axes_frameless(self, snippet_data, motion_energy):
         *_, trials, t0, t1 = snippet_data
-        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        fig = plot_example_session(self._traces(snippet_data, motion_energy), trials, t0, t1)
         ax = fig.axes[0]
         assert all(not sp.get_visible() for sp in ax.spines.values())
         assert len(ax.get_xticklabels()) == 0 or all(
@@ -323,40 +349,40 @@ class TestPlotExampleSession:
             lbl.get_text() == '' for lbl in ax.get_yticklabels())
         plt.close(fig)
 
-    def test_each_trace_labeled(self, snippet_data):
+    def test_each_trace_labeled(self, snippet_data, motion_energy):
         *_, trials, t0, t1 = snippet_data
-        traces = self._traces(snippet_data)
+        traces = self._traces(snippet_data, motion_energy)
         fig = plot_example_session(traces, trials, t0, t1)
         ax = fig.axes[0]
         texts = {t.get_text() for t in ax.texts}
         assert {tr['label'] for tr in traces} <= texts
         plt.close(fig)
 
-    def test_six_data_lines_non_overlapping(self, snippet_data):
+    def test_seven_data_lines_non_overlapping(self, snippet_data, motion_energy):
         *_, trials, t0, t1 = snippet_data
-        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        fig = plot_example_session(self._traces(snippet_data, motion_energy), trials, t0, t1)
         ax = fig.axes[0]
         data_lines = [ln for ln in ax.get_lines() if len(ln.get_ydata()) > 10]
-        assert len(data_lines) == 6
+        assert len(data_lines) == 7
         baselines = sorted(np.nanmin(ln.get_ydata()) for ln in data_lines)
         gaps = np.diff(baselines)
         assert np.all(gaps >= 1.0)  # unit-height bands do not overlap
         plt.close(fig)
 
-    def test_photometry_line_color(self, snippet_data):
+    def test_photometry_line_color(self, snippet_data, motion_energy):
         *_, trials, t0, t1 = snippet_data
-        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        fig = plot_example_session(self._traces(snippet_data, motion_energy), trials, t0, t1)
         ax = fig.axes[0]
         data_lines = [ln for ln in ax.get_lines() if len(ln.get_ydata()) > 10]
         colors = {ln.get_color() for ln in data_lines}
         assert TARGETNM_COLORS['VTA-DA'] in colors
         plt.close(fig)
 
-    def test_event_line_per_in_window_event(self, snippet_data):
+    def test_event_line_per_in_window_event(self, snippet_data, motion_energy):
         *_, trials, t0, t1 = snippet_data
         n_stim = int(trials['stimOnTrigger_times'].between(t0, t1).sum())
         n_fb = int(trials['feedback_times'].between(t0, t1).sum())
-        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        fig = plot_example_session(self._traces(snippet_data, motion_energy), trials, t0, t1)
         ax = fig.axes[0]
         event_lines = [ln for ln in ax.get_lines() if len(ln.get_ydata()) == 2]
         assert len(event_lines) == n_stim + n_fb
@@ -375,9 +401,9 @@ class TestPlotExampleSession:
                 stim = col
         return stim, feedback
 
-    def test_feedback_circles_match_feedbacktype(self, snippet_data):
+    def test_feedback_circles_match_feedbacktype(self, snippet_data, motion_energy):
         *_, trials, t0, t1 = snippet_data
-        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        fig = plot_example_session(self._traces(snippet_data, motion_energy), trials, t0, t1)
         _, feedback = self._split_marker_collections(fig.axes[0])
         in_window = trials['feedback_times'].between(t0, t1)
         expected = [to_rgba(c)
@@ -385,17 +411,17 @@ class TestPlotExampleSession:
         assert [tuple(fc) for fc in feedback.get_facecolors()] == expected
         plt.close(fig)
 
-    def test_stim_circles_have_black_edges(self, snippet_data):
+    def test_stim_circles_have_black_edges(self, snippet_data, motion_energy):
         *_, trials, t0, t1 = snippet_data
-        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        fig = plot_example_session(self._traces(snippet_data, motion_energy), trials, t0, t1)
         stim, _ = self._split_marker_collections(fig.axes[0])
         assert all(tuple(e) == to_rgba('black')
                    for e in stim.get_edgecolors())
         plt.close(fig)
 
-    def test_markers_share_y_above_photometry_band(self, snippet_data):
+    def test_markers_share_y_above_photometry_band(self, snippet_data, motion_energy):
         *_, trials, t0, t1 = snippet_data
-        fig = plot_example_session(self._traces(snippet_data), trials, t0, t1)
+        fig = plot_example_session(self._traces(snippet_data, motion_energy), trials, t0, t1)
         ax = fig.axes[0]
         stim, feedback = self._split_marker_collections(ax)
         marker_ys = np.concatenate([

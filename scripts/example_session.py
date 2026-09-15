@@ -2,8 +2,8 @@
 Example Session Viewer
 
 Selects a high-quality VTA-DA session with lightning pose tracking and plots
-a ~30s snippet showing preprocessed photometry, wheel velocity, and pose
-estimates aligned to trial events.
+a ~30s snippet showing preprocessed photometry, wheel velocity, whisker-pad
+motion energy, and pose estimates aligned to trial events.
 
 Output:
     figures/example_session/   — SVG and PNG figures
@@ -25,7 +25,7 @@ from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
     WHEEL_FS, POSE_FS, FIGURE_DPI, TARGETNM_COLORS, ANALYSIS_QC_BLOCKERS,
 )
-from iblnm.analysis import resample_pose, movement_trace
+from iblnm.analysis import resample_pose, resample_signal, movement_trace
 from iblnm.data import PhotometrySessionGroup
 from iblnm.io import _get_default_connection
 
@@ -256,8 +256,9 @@ def _normalize_window(values, t, t_start, t_end):
     return (window - lo) / (hi - lo)
 
 
-def build_traces(photometry, wheel, pose_df, pose_times, target_nm):
-    """Assemble the six ordered figure traces (top → bottom).
+def build_traces(photometry, wheel, motion_energy, pose_df, pose_times,
+                 target_nm):
+    """Assemble the seven ordered figure traces (top → bottom).
 
     Parameters
     ----------
@@ -265,47 +266,48 @@ def build_traces(photometry, wheel, pose_df, pose_times, target_nm):
         Preprocessed photometry signal, time-indexed (seconds).
     wheel : pd.Series
         Wheel velocity, time-indexed (seconds).
+    motion_energy : pd.Series
+        Camera ROI motion energy, time-indexed (seconds). The left camera's ROI
+        is the whisker pad, which is how this trace is labelled. It carries its
+        own time axis rather than sharing ``pose_times``, since the two come
+        from separate datasets.
     pose_df : pd.DataFrame
         Resampled LightningPose columns (``{part}_x/_y/_likelihood``) on the
         uniform ``pose_times`` grid.
     pose_times : np.ndarray
-        Uniform pose time axis (seconds), shared by traces 3–6.
+        Uniform pose time axis (seconds), shared by the four keypoint traces.
     target_nm : str
         Target-NM cohort; selects the photometry trace color.
 
     Returns
     -------
     list of dict
-        Six entries, each ``{'times', 'values', 'color', 'label'}``: photometry,
-        wheel, left-paw speed, right-paw speed, nose speed, tongue likelihood.
-        Photometry carries the target-NM color; the five movement traces take
-        the first five distinct ``Set2`` colors so they stay distinguishable
-        from the photometry trace.
+        Seven entries, each ``{'times', 'values', 'color', 'label'}``:
+        photometry, wheel, left-paw speed, right-paw speed, whisker-pad motion
+        energy, nose speed, tongue likelihood. Photometry carries the target-NM
+        color; the six movement traces take the first six distinct ``Set2``
+        colors so they stay distinguishable from the photometry trace.
     """
-    movement_colors = plt.cm.Set2.colors[0:5]
+    movement = [
+        ('Wheel', wheel.index.values, wheel.values),
+        ('Left paw', pose_times, movement_trace(pose_df, ['paw_l'], 'speed')),
+        ('Right paw', pose_times, movement_trace(pose_df, ['paw_r'], 'speed')),
+        ('Whisker pad', motion_energy.index.values, motion_energy.values),
+        ('Nose', pose_times, movement_trace(pose_df, ['nose_tip'], 'speed')),
+        ('Tongue', pose_times,
+         movement_trace(pose_df, ['tongue_end_l', 'tongue_end_r'],
+                        'max_likelihood')),
+    ]
     return [
         {'times': photometry.index.values, 'values': photometry.values,
          'color': TARGETNM_COLORS[target_nm], 'label': 'Photometry'},
-        {'times': wheel.index.values, 'values': wheel.values,
-         'color': movement_colors[0], 'label': 'Wheel'},
-        {'times': pose_times,
-         'values': movement_trace(pose_df, ['paw_l'], 'speed'),
-         'color': movement_colors[1], 'label': 'Left paw'},
-        {'times': pose_times,
-         'values': movement_trace(pose_df, ['paw_r'], 'speed'),
-         'color': movement_colors[2], 'label': 'Right paw'},
-        {'times': pose_times,
-         'values': movement_trace(pose_df, ['nose_tip'], 'speed'),
-         'color': movement_colors[3], 'label': 'Nose'},
-        {'times': pose_times,
-         'values': movement_trace(pose_df, ['tongue_end_l', 'tongue_end_r'],
-                                  'max_likelihood'),
-         'color': movement_colors[4], 'label': 'Tongue'},
+        *({'times': times, 'values': values, 'color': color, 'label': label}
+          for (label, times, values), color in zip(movement, plt.cm.Set2.colors)),
     ]
 
 
 def plot_example_session(traces, trials, t_start, t_end):
-    """Render the floating six-trace example-session figure.
+    """Render the floating seven-trace example-session figure.
 
     Each trace is sliced to ``[t_start, t_end]``, normalized to its in-window
     ``[0, 1]`` range, and stacked top → bottom at non-overlapping unit-height
@@ -452,6 +454,14 @@ if __name__ == '__main__':
     pose_df, pose_times = resample_pose(ps.pose, ps.pose_times, POSE_FS)
     print(f"  {len(pose_times)} frames after resampling to {POSE_FS} Hz")
 
+    print("Loading whisker-pad motion energy...")
+    # The left camera's motion-energy ROI is the whisker pad. It is frame-
+    # indexed like the pose, so it goes onto the camera clock and the same
+    # POSE_FS grid before plotting.
+    motion_energy = resample_signal(
+        pd.Series(ps.load_motion_energy(), index=ps.pose_times), POSE_FS)
+    print(f"  {len(motion_energy)} samples")
+
     print("Loading trials...")
     # load_trials only fetches, so the stored table is read off the H5 instead.
     ps.load_h5(groups=['trials'])
@@ -470,7 +480,8 @@ if __name__ == '__main__':
     # Plot
     # -----------------------------------------------------------------
     print("Plotting...")
-    traces = build_traces(photometry, wheel, pose_df, pose_times, target_nm)
+    traces = build_traces(photometry, wheel, motion_energy, pose_df,
+                          pose_times, target_nm)
     fig = plot_example_session(traces, trials, t_start, t_end)
 
     for ext in ('svg', 'png'):
