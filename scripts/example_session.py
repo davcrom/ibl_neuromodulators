@@ -23,7 +23,7 @@ from matplotlib.transforms import blended_transform_factory
 
 from iblnm.config import (
     PROJECT_ROOT, SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
-    WHEEL_FS, POSE_FS, FIGURE_DPI, TARGETNM_COLORS, ANALYSIS_QC_BLOCKERS,
+    POSE_FS, FIGURE_DPI, TARGETNM_COLORS, ANALYSIS_QC_BLOCKERS,
 )
 from iblnm.analysis import resample_pose, resample_signal, movement_trace
 from iblnm.data import PhotometrySessionGroup
@@ -144,27 +144,6 @@ def select_example_session(group, target_nm=DEFAULT_TARGET_NM):
             return rec
 
     raise ValueError(f"No {target_nm} session passed the camera-timing gate")
-
-
-# =========================================================================
-# Data loading
-# =========================================================================
-
-def load_continuous_wheel(one, eid):
-    """Load continuous wheel velocity from ONE.
-
-    Returns
-    -------
-    pd.Series
-        Velocity indexed by time in seconds.
-    """
-    from brainbox.behavior.wheel import interpolate_position, velocity_filtered
-    wheel_raw = one.load_object(eid, 'wheel', collection='alf')
-    pos, times = interpolate_position(
-        wheel_raw['timestamps'], wheel_raw['position'], freq=WHEEL_FS,
-    )
-    vel, _ = velocity_filtered(pos, fs=WHEEL_FS)
-    return pd.Series(vel.astype(np.float32), index=times.astype(np.float32), name='wheel_velocity')
 
 
 # =========================================================================
@@ -445,7 +424,7 @@ if __name__ == '__main__':
     print(f"  {len(photometry)} samples, {photometry.index[-1] - photometry.index[0]:.0f}s")
 
     print("Loading wheel...")
-    wheel = load_continuous_wheel(one, eid)
+    wheel = ps.load_wheel()
     print(f"  {len(wheel)} samples")
 
     print(f"Loading {args.camera} camera pose...")
