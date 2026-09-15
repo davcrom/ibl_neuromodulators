@@ -3977,23 +3977,41 @@ class TestAddFdrQvalues:
 
 class TestFitLaggedKernels:
     @staticmethod
-    def _frame(n=600, seed=0):
+    def _frame(n=600, seed=0, noise=0.0):
         """Two posterior columns; the value is driven by ``p1`` one trial back."""
         rng = np.random.default_rng(seed)
         p1 = rng.random(n)
         p2 = rng.random(n)
         value = np.full(n, np.nan)
-        value[1:] = 2.0 * p1[:-1]
+        value[1:] = 2.0 * p1[:-1] + noise * rng.normal(size=n - 1)
         return pd.DataFrame({'eid': 'e1', 'p1': p1, 'p2': p2, 'value': value})
 
     def test_kernel_peaks_at_the_planted_lag(self):
-        kernels = fit_lagged_kernels(
+        stats = fit_lagged_kernels(
             self._frame(), 'value', ['p1', 'p2'], 'eid', window=2, alpha=0.01)
 
-        assert kernels.shape == (5, 2)
+        kernel = stats['mean']
+        assert kernel.shape == (5, 2)
         # Lags run -2..2, so the planted lag -1 is row 1 of the p1 column.
-        assert np.unravel_index(np.argmax(np.abs(kernels)), kernels.shape) == (1, 0)
-        assert kernels[1, 0] > 1.5
+        assert np.unravel_index(np.argmax(np.abs(kernel)), kernel.shape) == (1, 0)
+        assert kernel[1, 0] > 1.5
+
+    def test_standard_error_covers_the_planted_weight_and_shrinks_with_trials(self):
+        kwargs = dict(value='value', regressors=['p1', 'p2'], group_col='eid',
+                      window=2, alpha=0.01)
+        small = fit_lagged_kernels(self._frame(n=400, noise=1.0), **kwargs)
+        large = fit_lagged_kernels(self._frame(n=6400, noise=1.0), **kwargs)
+
+        assert small['sem'].shape == small['mean'].shape
+        assert np.all(small['sem'] > 0) and np.all(np.isfinite(small['sem']))
+        # Sixteen times as many rows quarters the standard error, give or take
+        # the sampling spread of the residual variance itself.
+        ratio = small['sem'].mean() / large['sem'].mean()
+        assert 3.0 < ratio < 5.0
+        # The planted weight of 2.0 sits within a few standard errors of its
+        # estimate, so the band is on the scale of the weights it shades.
+        planted = abs(large['mean'][1, 0] - 2.0) / large['sem'][1, 0]
+        assert planted < 3.0
 
 
 class TestFirstComponentScores:

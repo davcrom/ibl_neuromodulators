@@ -3824,7 +3824,7 @@ def fit_lagged_kernels(
     group_col: str,
     window: int,
     alpha: float = 1.0,
-) -> np.ndarray:
+) -> dict[str, np.ndarray]:
     """Ridge kernels of ``value`` on ``regressors`` taken at a range of lags.
 
     One regression per call: every regressor at every lag in ``-window …
@@ -3861,10 +3861,16 @@ def fit_lagged_kernels(
 
     Returns
     -------
-    numpy.ndarray
-        Shape ``(2 * window + 1, len(regressors))``, lags ascending. Rows whose
-        ``value`` or any lagged regressor is NaN — the edges of every group —
-        are left out of the fit.
+    dict of str to numpy.ndarray
+        ``{'mean': arr, 'sem': arr}``, each of shape ``(2 * window + 1,
+        len(regressors))``, lags ascending. Rows whose ``value`` or any lagged
+        regressor is NaN — the edges of every group — are left out of the fit.
+        ``'sem'`` is the standard error of the penalized weight itself,
+        :math:`\\sigma^2 (X^TX + \\alpha I)^{-1} X^TX (X^TX + \\alpha I)^{-1}`
+        with :math:`\\sigma^2` the residual variance over the residual degrees
+        of freedom. It is conditional on ``alpha`` and carries no shrinkage
+        bias term, so it describes how tightly the data pin this estimator down
+        rather than bounding the unpenalized weight.
     """
     from sklearn.linear_model import Ridge
 
@@ -3873,8 +3879,22 @@ def fit_lagged_kernels(
         [frame.groupby(group_col)[list(regressors)].shift(-lag).add_suffix(f'@{lag}')
          for lag in lags], axis=1)
     fitted = design.notna().all(axis=1) & frame[value].notna()
-    model = Ridge(alpha=alpha).fit(design[fitted], frame.loc[fitted, value])
-    return model.coef_.reshape(len(lags), len(regressors))
+    predictors = design[fitted].to_numpy()
+    observed = frame.loc[fitted, value].to_numpy()
+    model = Ridge(alpha=alpha).fit(predictors, observed)
+
+    # Ridge centers the design around its intercept, so the covariance is taken
+    # over the centered gram matrix and the intercept costs one degree of
+    # freedom on top of the fit's effective ones.
+    centered = predictors - predictors.mean(axis=0)
+    gram = centered.T @ centered
+    penalized_inv = np.linalg.inv(gram + alpha * np.eye(gram.shape[0]))
+    residuals = observed - model.predict(predictors)
+    dof = len(observed) - np.trace(penalized_inv @ gram) - 1
+    variance = penalized_inv @ gram @ penalized_inv * (residuals @ residuals / dof)
+    shape = (len(lags), len(regressors))
+    return {'mean': model.coef_.reshape(shape),
+            'sem': np.sqrt(np.diag(variance)).reshape(shape)}
 
 
 def first_component_scores(matrix: np.ndarray) -> np.ndarray:

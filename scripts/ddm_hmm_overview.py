@@ -18,9 +18,10 @@ It writes a second figure per mouse, ``figures/ddm-hmm/{subject}_neural.svg``,
 2. Per-state violins of each session's correct-minus-incorrect difference in
    that measure, in units of the session's own spread.
 3. The measure's ridge kernel on the state posteriors at lags
-   ``-KERNEL_WINDOW … +KERNEL_WINDOW``, one line per state. The first two
-   panels read against an assigned state; this one regresses on the posteriors
-   themselves, so it stands whether or not a trial's state is crisp.
+   ``-KERNEL_WINDOW … +KERNEL_WINDOW``, one line per state, shaded with the
+   weight's standard error. The first two panels read against an assigned
+   state; this one regresses on the posteriors themselves, so it stands
+   whether or not a trial's state is crisp.
 4. Panel 1 again, its states colored by where they sit on the first principal
    component of the pooled DDM parameters rather than by their within-mouse
    order, so one mouse's panel can be read against another's.
@@ -537,9 +538,9 @@ def neural_panels(frame: pd.DataFrame) -> dict:
         ``traces`` (each measure's Δ around entry into a state, one line per
         entered state), ``differences`` (each measure's per-session
         correct-minus-incorrect difference, in units of the session x state
-        cell's own SD) and ``kernels`` (each measure's ridge weights on the
-        state posteriors at lags ``-KERNEL_WINDOW … +KERNEL_WINDOW``, one
-        column per posterior in ascending state order).
+        cell's own SD) and ``kernels`` (each measure's ridge weights and their
+        standard errors on the state posteriors at lags ``-KERNEL_WINDOW …
+        +KERNEL_WINDOW``, one column per posterior in ascending state order).
     """
     measures = list(MEASURE_LABELS)
     posteriors = sorted((column for column in frame if column.startswith('p_state_')),

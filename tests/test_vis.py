@@ -3959,7 +3959,9 @@ class TestStateNeural:
                       if traces else {},
             'differences': {measure: values.rename(columns={'stimulus': measure})
                             for measure in cls.MEASURE_LABELS},
-            'kernels': {measure: np.full((2 * cls.KERNEL_WINDOW + 1, 2), 0.3)
+            'kernels': {measure: {
+                            'mean': np.full((2 * cls.KERNEL_WINDOW + 1, 2), 0.3),
+                            'sem': np.full((2 * cls.KERNEL_WINDOW + 1, 2), 0.05)}
                         for measure in cls.MEASURE_LABELS},
         }
 
@@ -3989,6 +3991,7 @@ class TestStateNeural:
         plt.close(fig)
 
     def test_kernel_panel_draws_one_line_per_state_over_its_own_lags(self):
+        from matplotlib.collections import PolyCollection
         from iblnm.vis import plot_state_neural
 
         fig = plot_state_neural('ZFM-A SNc-DA', self._panels(),
@@ -4002,6 +4005,11 @@ class TestStateNeural:
         # The kernel column spans its own window, not the lag traces'.
         assert np.allclose(kernels[0].get_xdata(), [-3, -2, -1, 0, 1, 2, 3])
         assert np.allclose(kernels[0].get_ydata(), 0.3)
+        # One SE band per state, spanning mean +/- sem.
+        bands = [c for c in ax.collections if isinstance(c, PolyCollection)]
+        assert len(bands) == 2
+        extent = bands[0].get_paths()[0].get_extents()
+        assert np.allclose([extent.y0, extent.y1], [0.25, 0.35])
         plt.close(fig)
 
     def test_last_column_repeats_the_onset_traces_in_the_given_colors(self):

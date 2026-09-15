@@ -5208,9 +5208,10 @@ def plot_state_neural(
         mouse that never switched state — leaves its trace panel blank.
         ``'differences'``: ``{measure: frame}``, each ``['eid', 'state',
         measure]``, from :func:`iblnm.analysis.normalized_outcome_difference`.
-        ``'kernels'``: ``{measure: array}`` of shape
+        ``'kernels'``: ``{measure: {'mean', 'sem'}}`` of shape
         ``(2*kernel_window+1, n_states)``, from
-        :func:`iblnm.analysis.fit_lagged_kernels`.
+        :func:`iblnm.analysis.fit_lagged_kernels`; the SEM shades the kernel
+        as the traces' does.
     measure_labels : mapping of str to str
         Measure -> plain-English name, in row order.
     window, kernel_window : int
@@ -5247,10 +5248,10 @@ def plot_state_neural(
         draw_state_violins(ax_violin, differences[measure], measure)
         ax_violin.set_ylabel(label, fontsize=8)
         kernel = kernels[measure]
-        draw_lag_lines(ax_kernel, {'mean': kernel}, window=kernel_window,
+        draw_lag_lines(ax_kernel, kernel, window=kernel_window,
                        ylabel=f'{label} weight',
                        xlabel='trial from measured trial',
-                       line_labels=_state_line_labels(kernel.shape[1]))
+                       line_labels=_state_line_labels(kernel['mean'].shape[1]))
     if next(iter(measure_labels)) in traces:
         axes[0, 0].legend(fontsize=6, frameon=False)
     axes[0, 1].set_title('correct − incorrect (SD)', fontsize=9)

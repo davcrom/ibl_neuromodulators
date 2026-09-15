@@ -586,8 +586,9 @@ def test_neural_panels_kernels_span_the_states_and_kernel_lags():
     kernels = ddm.neural_panels(frame)['kernels']
 
     assert set(kernels) == set(ddm.MEASURE_LABELS)
-    kernel = kernels['stimulus']
+    kernel = kernels['stimulus']['mean']
     assert kernel.shape == (2 * ddm.KERNEL_WINDOW + 1, 2)
+    assert kernels['stimulus']['sem'].shape == kernel.shape
     peak = np.unravel_index(np.argmax(np.abs(kernel)), kernel.shape)
     assert peak == (ddm.KERNEL_WINDOW - 1, 0)
 
