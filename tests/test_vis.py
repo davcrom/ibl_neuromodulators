@@ -1754,6 +1754,25 @@ class TestPlotOlsDroponePooledMode:
         assert np.allclose(bars[1][2], colors.to_rgb('gray'))
         plt.close(fig)
 
+    def test_offsets_widen_where_values_pile_up(self):
+        """``_beeswarm_offsets`` spreads values sideways by local density: five
+        recordings sharing a value fan out symmetrically around the slot, while
+        a value alone in its row stays on the centre line."""
+        from iblnm.vis import _beeswarm_offsets
+        offsets = _beeswarm_offsets([0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+        crowded, alone = offsets[:5], offsets[5]
+        assert alone == 0.0
+        assert sum(crowded) == pytest.approx(0.0)  # symmetric about the slot
+        assert len(set(np.round(crowded, 6))) == 5  # no two dots on top
+        assert max(abs(crowded)) > 0
+
+    def test_offsets_never_leave_the_slot(self):
+        """A dense row is squeezed to the slot's half-width rather than running
+        into its neighbour: 300 equal values still span at most that width."""
+        from iblnm.vis import _beeswarm_offsets, _POOLED_MAX_HALFWIDTH
+        offsets = _beeswarm_offsets(np.zeros(300))
+        assert max(abs(offsets)) == pytest.approx(_POOLED_MAX_HALFWIDTH)
+
     def test_each_dot_keeps_its_own_recordings_qvalue_color(self):
         """Every recording of a target is drawn, colored by its own q-value, so
         a significant target can hold non-significant dots. VTA-DA's three
@@ -3923,12 +3942,13 @@ class TestStateViolins:
 
 
 class TestStateNeural:
-    """The per-mouse 3x3 neural figure."""
+    """The per-mouse 3x4 neural figure."""
 
     MEASURE_LABELS = {'baseline': 'pre-stimulus baseline',
                       'stimulus': 'stimulus response',
                       'feedback': 'feedback response'}
     KERNEL_WINDOW = 3
+    STATE_COLORS = [(1.0, 0.0, 0.0, 1.0), (0.0, 0.0, 1.0, 1.0)]
 
     @classmethod
     def _panels(cls, traces=True):
@@ -3949,19 +3969,20 @@ class TestStateNeural:
 
         fig = plot_state_neural('ZFM-A SNc-DA', self._panels(),
                                 self.MEASURE_LABELS, window=5,
-                                kernel_window=self.KERNEL_WINDOW)
+                                kernel_window=self.KERNEL_WINDOW,
+                                state_colors=self.STATE_COLORS)
 
         axes = fig.axes
-        assert len(axes) == 9
-        # Rows are the measures; the columns are trace, violins, kernel.
+        assert len(axes) == 12
+        # Rows are the measures; columns are trace, violins, kernel, recolored.
         assert [ax.get_ylabel() for ax in axes] == [
             'Δ pre-stimulus baseline', 'pre-stimulus baseline',
-            'pre-stimulus baseline weight',
+            'pre-stimulus baseline weight', 'Δ pre-stimulus baseline',
             'Δ stimulus response', 'stimulus response',
-            'stimulus response weight',
+            'stimulus response weight', 'Δ stimulus response',
             'Δ feedback response', 'feedback response',
-            'feedback response weight']
-        for ax in axes[1::3]:
+            'feedback response weight', 'Δ feedback response']
+        for ax in axes[1::4]:
             bodies = [c for c in ax.collections if isinstance(c, PolyCollection)]
             assert len(bodies) == 2  # one per state present
         assert fig.get_suptitle() == 'ZFM-A SNc-DA'
@@ -3972,7 +3993,8 @@ class TestStateNeural:
 
         fig = plot_state_neural('ZFM-A SNc-DA', self._panels(),
                                 self.MEASURE_LABELS, window=5,
-                                kernel_window=self.KERNEL_WINDOW)
+                                kernel_window=self.KERNEL_WINDOW,
+                                state_colors=self.STATE_COLORS)
 
         ax = fig.axes[2]
         kernels = [ln for ln in ax.lines if len(ln.get_ydata()) > 2]
@@ -3982,6 +4004,26 @@ class TestStateNeural:
         assert np.allclose(kernels[0].get_ydata(), 0.3)
         plt.close(fig)
 
+    def test_last_column_repeats_the_onset_traces_in_the_given_colors(self):
+        """Same data as column 1, drawn under the caller's state colors."""
+        from iblnm.vis import plot_state_neural
+
+        fig = plot_state_neural('ZFM-A SNc-DA', self._panels(),
+                                self.MEASURE_LABELS, window=5,
+                                kernel_window=self.KERNEL_WINDOW,
+                                state_colors=self.STATE_COLORS)
+
+        onset = [ln for ln in fig.axes[0].lines if len(ln.get_ydata()) > 2]
+        recolored = [ln for ln in fig.axes[3].lines if len(ln.get_ydata()) > 2]
+        assert len(recolored) == len(onset) == 2
+        for drawn, same in zip(recolored, onset):
+            assert np.allclose(drawn.get_ydata(), same.get_ydata())
+            assert np.allclose(drawn.get_xdata(), same.get_xdata())
+        assert [ln.get_color() for ln in recolored] == self.STATE_COLORS
+        assert not np.allclose(np.array([ln.get_color() for ln in onset]),
+                               np.array(self.STATE_COLORS))
+        plt.close(fig)
+
     def test_measure_with_no_trace_leaves_its_panel_blank(self):
         from iblnm.vis import plot_state_neural
         # A mouse that never switched state has no trace for any measure; its
@@ -3989,9 +4031,10 @@ class TestStateNeural:
 
         fig = plot_state_neural('ZFM-A SNc-DA', self._panels(traces=False),
                                 self.MEASURE_LABELS, window=5,
-                                kernel_window=self.KERNEL_WINDOW)
+                                kernel_window=self.KERNEL_WINDOW,
+                                state_colors=self.STATE_COLORS)
 
-        assert [ax.axison for ax in fig.axes] == [False, True, True] * 3
+        assert [ax.axison for ax in fig.axes] == [False, True, True, False] * 3
         plt.close(fig)
 
 

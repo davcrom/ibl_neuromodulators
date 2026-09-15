@@ -3533,22 +3533,72 @@ def _target_violin(ax, slot, vals, point_colors, summary_color):
         body.set_alpha(0.7)
 
 
-# Jitter spreading a group's pooled dots around its slot, and the half-width of
-# the median bar drawn over them. The jitter is cosmetic — it only stops equal
-# values from hiding each other — so it draws from its own fixed-seed generator
-# and a figure redrawn from the same frame is identical.
-_POOLED_JITTER_SEED = 0
-_POOLED_JITTER_HALFWIDTH = 0.12
-_POOLED_MEDIAN_HALFWIDTH = 0.3
+# How a group's pooled dots are laid out around its slot. Values are binned
+# along y and the dots sharing a bin are fanned out sideways, so a slot's width
+# reads as the density at that height rather than as noise. Spacing is the gap
+# between neighbours in a row, in x units where slots sit 1.0 apart; a row too
+# wide for `_POOLED_MAX_HALFWIDTH` is squeezed to it rather than run into the
+# neighbouring slot. The median bar is drawn narrower than that allowance so it
+# stays legible against the dots it crosses.
+_SWARM_BINS = 40
+_SWARM_SPACING = 0.035
+_POOLED_MAX_HALFWIDTH = 0.4
+_POOLED_MEDIAN_HALFWIDTH = 0.2
+
+
+def _beeswarm_offsets(vals, n_bins: int = _SWARM_BINS,
+                      spacing: float = _SWARM_SPACING,
+                      max_halfwidth: float = _POOLED_MAX_HALFWIDTH):
+    """X offsets laying one group's values out as a beeswarm.
+
+    Values falling in the same y bin form a row and are fanned out symmetrically
+    around the slot in value order, so the cloud is widest where the recordings
+    pile up. Deterministic — the same values always draw the same shape.
+
+    Parameters
+    ----------
+    vals : 1-D array-like
+        The group's pooled values, in the order they will be plotted.
+    n_bins : int
+        Rows the value range is cut into. More bins means finer vertical
+        resolution and narrower rows.
+    spacing : float
+        Gap between neighbouring dots in a row, in x units where adjacent slots
+        sit 1.0 apart.
+    max_halfwidth : float
+        Widest half-row allowed. A row wider than this scales the whole group
+        down, keeping relative widths intact rather than clipping the densest
+        row into the neighbouring slot.
+
+    Returns
+    -------
+    np.ndarray
+        One offset per value, aligned element-wise to ``vals`` and centred on
+        zero within every row.
+    """
+    vals = np.asarray(vals, dtype=float)
+    edges = np.histogram_bin_edges(vals, bins=n_bins)
+    rows = np.clip(np.digitize(vals, edges[1:-1]), 0, n_bins - 1)
+    offsets = np.zeros(len(vals))
+    for row in np.unique(rows):
+        in_row = np.flatnonzero(rows == row)
+        rank = np.empty(len(in_row))
+        rank[np.argsort(vals[in_row], kind='stable')] = np.arange(len(in_row))
+        offsets[in_row] = (rank - (len(in_row) - 1) / 2) * spacing
+    widest = np.abs(offsets).max(initial=0.0)
+    if widest > max_halfwidth:
+        offsets *= max_halfwidth / widest
+    return offsets
 
 
 def _strip_median(ax, slot, vals, point_colors, summary_color):
-    """Draw one group's pooled values as jittered dots under a median bar.
+    """Draw one group's pooled values as a beeswarm under a median bar.
 
     The pooled counterpart of ``_scatter_subject``: every recording of the
     group is one translucent open dot, edge-colored by its own entry of
-    ``point_colors``, and the group's median is a horizontal bar in
-    ``summary_color`` spanning the slot.
+    ``point_colors`` and placed sideways by ``_beeswarm_offsets``, so the cloud
+    is widest where the recordings pile up. The group's median is a horizontal
+    bar in ``summary_color`` across the middle of the slot.
 
     Parameters
     ----------
@@ -3562,12 +3612,9 @@ def _strip_median(ax, slot, vals, point_colors, summary_color):
     summary_color : color
         Color of the median bar (the target-NM color, or gray).
     """
-    rng = np.random.default_rng(_POOLED_JITTER_SEED)
-    jitter = rng.uniform(-_POOLED_JITTER_HALFWIDTH, _POOLED_JITTER_HALFWIDTH,
-                         len(vals))
-    ax.scatter(slot + jitter, vals, marker='o', facecolors='none',
-               edgecolors=point_colors, s=_SESSION_MARKER_SIZE, alpha=0.5,
-               zorder=3)
+    ax.scatter(slot + _beeswarm_offsets(vals), vals, marker='o',
+               facecolors='none', edgecolors=point_colors,
+               s=_SESSION_MARKER_SIZE, alpha=0.5, zorder=3)
     ax.hlines(np.median(vals), slot - _POOLED_MEDIAN_HALFWIDTH,
               slot + _POOLED_MEDIAN_HALFWIDTH, color=summary_color,
               linewidth=_MEAN_LINEWIDTH, zorder=4)
@@ -4965,6 +5012,7 @@ def draw_lag_lines(
     ylabel: str,
     xlabel: str,
     line_labels: Sequence[str],
+    colors: Sequence | None = None,
 ) -> None:
     """One line per column against a lag axis, with an optional SEM band.
 
@@ -4988,10 +5036,16 @@ def draw_lag_lines(
         Axis labels.
     line_labels : sequence of str
         Label per overlaid line, at least ``n_lines`` long.
+    colors : sequence or None
+        Color per line, at least ``n_lines`` long. None colors by position
+        (``plt.cm.tab10``), which reads as the caller's own line ordering and
+        nothing more.
     """
     lag = np.arange(-window, window + 1)
     mean, sem = stats['mean'], stats.get('sem')
-    for line, color in enumerate(plt.cm.tab10(np.arange(mean.shape[1]))):
+    if colors is None:
+        colors = plt.cm.tab10(np.arange(mean.shape[1]))
+    for line, color in enumerate(colors[:mean.shape[1]]):
         if sem is not None:
             ax.fill_between(lag, mean[:, line] - sem[:, line],
                             mean[:, line] + sem[:, line],
@@ -5124,15 +5178,18 @@ def plot_state_neural(
     measure_labels: Mapping[str, str],
     window: int,
     kernel_window: int,
+    state_colors: Sequence,
 ) -> plt.Figure:
-    """One mouse's DDM-HMM neural figure, 3x3.
+    """One mouse's DDM-HMM neural figure, 3x4.
 
-    One row per ``measure_labels`` entry, three columns: the measure's change
+    One row per ``measure_labels`` entry, four columns: the measure's change
     around entry into each state (one line per entered state), the per-session
     correct-minus-incorrect difference in that measure (one violin per state),
-    and the measure's ridge kernel on the state posteriors (one line per
-    state). States are colored by position within the mouse; each mouse is fit
-    separately, so state labels carry no meaning across mice.
+    the measure's ridge kernel on the state posteriors (one line per state),
+    and the first column again under ``state_colors``. The first three columns
+    color states by position within the mouse, which carries no meaning across
+    mice; the fourth recolors the onset traces by a quantity shared across
+    mice, so one mouse's panel can be read against another's.
 
     The first two columns read against a state assignment and the third does
     not: the kernel regresses on the posteriors themselves, so it stands
@@ -5157,27 +5214,34 @@ def plot_state_neural(
     window, kernel_window : int
         Half-window in trials of the lag traces and of the kernels; the two
         columns carry their own x axes.
+    state_colors : sequence
+        Line color per state for the fourth column, in the state order the
+        ``'traces'`` arrays are stacked in.
 
     Returns
     -------
     matplotlib.figure.Figure
-        Nine axes, row-major: (trace, violins, kernel) per measure.
+        Twelve axes, row-major: (trace, violins, kernel, recolored trace) per
+        measure.
     """
     traces, differences, kernels = (panels['traces'], panels['differences'],
                                     panels['kernels'])
-    fig, axes = plt.subplots(len(measure_labels), 3,
-                             figsize=(10.5, len(measure_labels) * ROW_HEIGHT),
+    fig, axes = plt.subplots(len(measure_labels), 4,
+                             figsize=(14, len(measure_labels) * ROW_HEIGHT),
                              layout='constrained')
-    for (measure, label), (ax_trace, ax_violin, ax_kernel) in zip(
-            measure_labels.items(), axes):
+    for (measure, label), row in zip(measure_labels.items(), axes):
+        ax_trace, ax_violin, ax_kernel, ax_recolored = row
         stats = traces.get(measure)
         if stats is None:
             ax_trace.axis('off')
+            ax_recolored.axis('off')
         else:
-            draw_lag_lines(
-                ax_trace, stats, window=window, ylabel=f'Δ {label}',
-                xlabel='trial from state onset',
-                line_labels=_state_line_labels(stats['mean'].shape[1]))
+            for ax, colors in ((ax_trace, None), (ax_recolored, state_colors)):
+                draw_lag_lines(
+                    ax, stats, window=window, ylabel=f'Δ {label}',
+                    xlabel='trial from state onset',
+                    line_labels=_state_line_labels(stats['mean'].shape[1]),
+                    colors=colors)
         draw_state_violins(ax_violin, differences[measure], measure)
         ax_violin.set_ylabel(label, fontsize=8)
         kernel = kernels[measure]
@@ -5189,6 +5253,7 @@ def plot_state_neural(
         axes[0, 0].legend(fontsize=6, frameon=False)
     axes[0, 1].set_title('correct − incorrect (SD)', fontsize=9)
     axes[0, 2].set_title('posterior kernel', fontsize=9)
+    axes[0, 3].set_title('states colored by parameter PC1', fontsize=9)
     fig.suptitle(title)
     return fig
 
