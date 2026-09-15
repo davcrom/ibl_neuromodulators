@@ -42,6 +42,7 @@ No tables are persisted — every quantity recomputes at runtime.
 
 Usage:
     python scripts/ddm_hmm_overview.py
+    python scripts/ddm_hmm_overview.py --show   # rotate the 3D scatter by hand
 """
 import argparse
 from collections.abc import Callable, Hashable
@@ -588,15 +589,25 @@ def state_colors(params: pd.DataFrame) -> dict[tuple[str, int], tuple]:
             in zip(params['mouse'], params['state'], colors)}
 
 
-def _save(fig: plt.Figure, name: str) -> None:
-    """Save ``fig`` to ``DDM_HMM_FIGURES_DIR/{name}.svg`` and close it."""
+def _save(fig: plt.Figure, name: str, keep_open: bool = False) -> None:
+    """Save ``fig`` to ``DDM_HMM_FIGURES_DIR/{name}.svg``, then close it.
+
+    ``keep_open`` leaves the figure in matplotlib's registry so a later
+    ``plt.show()`` can put it on screen — the parameter scatter is 3D and worth
+    rotating by hand, where the flat figures are not.
+    """
     DDM_HMM_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(DDM_HMM_FIGURES_DIR / f'{name}.svg', bbox_inches='tight')
-    plt.close(fig)
+    if not keep_open:
+        plt.close(fig)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--show', action='store_true',
+        help="leave the 3D parameter scatter open for rotating by hand; the "
+             "run blocks on the window until it is closed")
     return parser.parse_args(argv)
 
 
@@ -613,7 +624,7 @@ def _by_subject(results: list[dict]) -> dict[str, list[dict]]:
             for subject in subjects}
 
 
-def main(one=None) -> None:
+def main(one=None, show: bool = False) -> None:
     """Render each mouse's behavioral and neural K=`DDM_HMM_K` figures.
 
     Two passes over one group, differing in scope: the behavioral figures take
@@ -627,6 +638,9 @@ def main(one=None) -> None:
     one : ONE, optional
         Connection for offline H5 access; a default read-only connection is
         created when omitted.
+    show : bool
+        Keep the 3D parameter scatter on screen once every figure is written,
+        and block until the window is closed.
     """
     if one is None:
         one = _get_default_connection()
@@ -654,7 +668,8 @@ def main(one=None) -> None:
         print(f"  {subject}: {len(mouse_fits)} sessions, {len(frame)} trials")
 
     params = pd.concat(params, ignore_index=True)
-    _save(plot_state_param_scatter(params, PARAM_LABELS), 'ddm_param_scatter')
+    _save(plot_state_param_scatter(params, PARAM_LABELS), 'ddm_param_scatter',
+          keep_open=show)
     # Every mouse's states on one scale, so the recolored neural panels can be
     # read against each other. Built here because it needs every mouse's fit.
     colors = state_colors(params)
@@ -686,8 +701,10 @@ def main(one=None) -> None:
 
     print(f"Wrote {len(by_subject) + len(measured_by_subject) + 1} figures "
           f"to {DDM_HMM_FIGURES_DIR}")
+    if show:
+        print("Close the parameter-scatter window to finish.")
+        plt.show()
 
 
 if __name__ == '__main__':
-    parse_args()
-    main()
+    main(show=parse_args().show)

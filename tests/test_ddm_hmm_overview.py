@@ -662,7 +662,7 @@ def test_main_saves_one_behavior_figure_per_mouse_and_warns_unconverged(
     monkeypatch.setattr(ddm, 'plot_state_behavior',
                         lambda subject, *args: figures.append(subject) or subject)
     saved = []
-    monkeypatch.setattr(ddm, '_save', lambda fig, name: saved.append(name))
+    monkeypatch.setattr(ddm, '_save', lambda fig, name, **kwargs: saved.append(name))
 
     ddm.main(one=object())
 
@@ -693,7 +693,7 @@ def test_main_scatters_one_row_per_mouse_and_state(monkeypatch):
     scattered = []
     monkeypatch.setattr(ddm, 'plot_state_param_scatter',
                         lambda params, labels: scattered.append((params, labels)))
-    monkeypatch.setattr(ddm, '_save', lambda fig, name: None)
+    monkeypatch.setattr(ddm, '_save', lambda fig, name, **kwargs: None)
 
     ddm.main(one=object())
 
@@ -726,7 +726,7 @@ def test_main_saves_a_neural_figure_only_for_mice_in_the_neural_scope(monkeypatc
     monkeypatch.setattr(ddm, 'plot_state_neural',
                         lambda title, *args: titles.append(title))
     saved = []
-    monkeypatch.setattr(ddm, '_save', lambda fig, name: saved.append(name))
+    monkeypatch.setattr(ddm, '_save', lambda fig, name, **kwargs: saved.append(name))
 
     ddm.main(one=object())
 
@@ -756,3 +756,16 @@ def test_state_colors_place_every_mouse_on_one_shared_scale():
     # M1 state 1 and M2 state 3 carry the same parameters, so the same color.
     assert colors[('M1', 1)] == colors[('M2', 3)]
     assert colors[('M1', 1)] != colors[('M1', 3)]
+
+
+def test_show_keeps_the_parameter_scatter_open(monkeypatch):
+    """``--show`` leaves the 3D scatter on screen; every other figure closes."""
+    closed = []
+    monkeypatch.setattr(ddm.plt, 'close', lambda fig: closed.append(fig))
+    fig = ddm.plt.figure()
+
+    ddm._save(fig, 'ddm_param_scatter', keep_open=True)
+
+    assert closed == []
+    ddm._save(fig, 'ddm_param_scatter')
+    assert closed == [fig]
