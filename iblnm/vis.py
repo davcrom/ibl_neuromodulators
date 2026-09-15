@@ -5250,7 +5250,7 @@ def plot_state_neural(
         kernel = kernels[measure]
         draw_lag_lines(ax_kernel, kernel, window=kernel_window,
                        ylabel=f'{label} weight',
-                       xlabel='trial from measured trial',
+                       xlabel='Lag (trials)',
                        line_labels=_state_line_labels(kernel['mean'].shape[1]))
     if next(iter(measure_labels)) in traces:
         axes[0, 0].legend(fontsize=6, frameon=False)
