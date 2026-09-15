@@ -12,7 +12,7 @@ behavioral figure per mouse to ``figures/ddm-hmm/{subject}_behavior.svg``, 3x2:
 6. The same around R->L block switches.
 
 It writes a second figure per mouse, ``figures/ddm-hmm/{subject}_neural.svg``,
-3x3, one row per ``config.RESPONSES`` window (baseline, stimulus, feedback):
+3x4, one row per ``config.RESPONSES`` window (baseline, stimulus, feedback):
 
 1. The measure's change around entry into each state, one line per state.
 2. Per-state violins of each session's correct-minus-incorrect difference in
@@ -21,6 +21,9 @@ It writes a second figure per mouse, ``figures/ddm-hmm/{subject}_neural.svg``,
    ``-KERNEL_WINDOW … +KERNEL_WINDOW``, one line per state. The first two
    panels read against an assigned state; this one regresses on the posteriors
    themselves, so it stands whether or not a trial's state is crisp.
+4. Panel 1 again, its states colored by where they sit on the first principal
+   component of the pooled DDM parameters rather than by their within-mouse
+   order, so one mouse's panel can be read against another's.
 
 It also writes one across-mouse figure, ``ddm_param_scatter.svg``: a 3D scatter
 of every mouse's per-state ``B``, ``k`` and ``a0``, one point per (mouse, DDM
@@ -52,7 +55,7 @@ from iblnm.config import (
     SESSIONS_FPATH, SESSIONS_H5_DIR, STIM_ONSET_EVENT,
 )
 from iblnm.analysis import (
-    align_traces_at_transitions, fit_lagged_kernels,
+    align_traces_at_transitions, first_component_scores, fit_lagged_kernels,
     normalized_outcome_difference, state_dwell_times,
     transition_delta_stats,
 )
@@ -85,6 +88,9 @@ MIN_OUTCOME_TRIALS = 5
 # outer lags of a wider kernel sit in neighbouring states.
 KERNEL_WINDOW = 3
 KERNEL_ALPHA = 1.0
+# Colormap of the states' position on the parameters' first principal
+# component, shared by every mouse's recolored panel.
+PARAM_COMPONENT_CMAP = plt.cm.viridis
 # What one measured row is, before the three measures are pivoted apart: one
 # fiber's response on one trial.
 MEASURE_KEYS = ['trial', 'target_NM', 'brain_region']
@@ -552,6 +558,36 @@ def neural_panels(frame: pd.DataFrame) -> dict:
     }
 
 
+def state_colors(params: pd.DataFrame) -> dict[tuple[str, int], tuple]:
+    """Color every mouse's states by where they sit on the parameters' PC1.
+
+    The component is taken over every mouse's states at once, on z-scored
+    ``log10 B``, ``log10 k`` and ``a0`` — the two rates are logged because both
+    span more than two orders of magnitude across states, which would otherwise
+    let a single extreme state define the axis. The color scale spans the
+    pooled scores, so the same color means the same position in every mouse's
+    panel.
+
+    Parameters
+    ----------
+    params : pandas.DataFrame
+        Every mouse's per-state rows, ``['mouse', 'state', *PARAM_LABELS]``,
+        concatenated from :func:`state_params`.
+
+    Returns
+    -------
+    dict of (str, int) to tuple
+        ``(mouse, state)`` -> RGBA.
+    """
+    scores = first_component_scores(
+        np.column_stack([np.log10(params['B']), np.log10(params['k']),
+                         params['a0']]))
+    colors = PARAM_COMPONENT_CMAP(
+        plt.Normalize(scores.min(), scores.max())(scores))
+    return {(mouse, int(state)): tuple(color) for mouse, state, color
+            in zip(params['mouse'], params['state'], colors)}
+
+
 def _save(fig: plt.Figure, name: str) -> None:
     """Save ``fig`` to ``DDM_HMM_FIGURES_DIR/{name}.svg`` and close it."""
     DDM_HMM_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -617,8 +653,11 @@ def main(one=None) -> None:
         params.append(state_params(subject, mouse_fits[0]['attrs']))
         print(f"  {subject}: {len(mouse_fits)} sessions, {len(frame)} trials")
 
-    _save(plot_state_param_scatter(pd.concat(params, ignore_index=True),
-                                   PARAM_LABELS), 'ddm_param_scatter')
+    params = pd.concat(params, ignore_index=True)
+    _save(plot_state_param_scatter(params, PARAM_LABELS), 'ddm_param_scatter')
+    # Every mouse's states on one scale, so the recolored neural panels can be
+    # read against each other. Built here because it needs every mouse's fit.
+    colors = state_colors(params)
 
     # The responses analysis's scope: the target-NM and photometry-QC filters
     # the behavioral pass switches off, since the measures are read off the
@@ -636,8 +675,12 @@ def main(one=None) -> None:
                            for session in sessions], ignore_index=True)
         panels = neural_panels(frame)
         targets = ', '.join(dict.fromkeys(frame['target_NM']))
+        # The traces stack the states ascending, which is the order the colors
+        # are read in.
+        states = sorted(frame['state'].unique().astype(int))
         _save(plot_state_neural(f'{subject} {targets}', panels,
-                                MEASURE_LABELS, SWITCH_WINDOW, KERNEL_WINDOW),
+                                MEASURE_LABELS, SWITCH_WINDOW, KERNEL_WINDOW,
+                                [colors[(subject, state)] for state in states]),
               f'{subject}_neural')
         print(f"  {subject}: {len(sessions)} measured sessions")
 

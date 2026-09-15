@@ -3875,3 +3875,31 @@ def fit_lagged_kernels(
     fitted = design.notna().all(axis=1) & frame[value].notna()
     model = Ridge(alpha=alpha).fit(design[fitted], frame.loc[fitted, value])
     return model.coef_.reshape(len(lags), len(regressors))
+
+
+def first_component_scores(matrix: np.ndarray) -> np.ndarray:
+    """Project rows onto the first principal component of the z-scored columns.
+
+    Columns are standardized before the decomposition, so features on different
+    scales weigh equally. The component's sign is arbitrary in the
+    decomposition and is fixed here by making its largest-magnitude loading
+    positive, so repeated calls on the same data order the rows the same way.
+
+    Variable-agnostic: the caller assembles the matrix and names its columns.
+
+    Parameters
+    ----------
+    matrix : numpy.ndarray, shape (n_samples, n_features)
+        Numeric feature matrix; no column may be constant.
+
+    Returns
+    -------
+    numpy.ndarray, shape (n_samples,)
+        Each row's coordinate on the first component, in units of the z-scored
+        features.
+    """
+    matrix = np.asarray(matrix, dtype=float)
+    standardized = (matrix - matrix.mean(axis=0)) / matrix.std(axis=0)
+    loadings = np.linalg.svd(standardized, full_matrices=False)[2][0]
+    loadings = loadings * np.sign(loadings[np.argmax(np.abs(loadings))])
+    return standardized @ loadings

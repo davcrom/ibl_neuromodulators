@@ -732,3 +732,27 @@ def test_main_saves_a_neural_figure_only_for_mice_in_the_neural_scope(monkeypatc
 
     assert [name for name in saved if name.endswith('_neural')] == ['M1_neural']
     assert titles == ['M1 SNc-DA']
+
+
+def test_state_colors_place_every_mouse_on_one_shared_scale():
+    """Colors come from PC1 of the pooled parameters, one entry per state.
+
+    Two mice, four states each: the mapping is keyed by (mouse, state), and a
+    state of one mouse scoring like a state of the other takes the same color,
+    which is what makes the recolored panels comparable across mice.
+    """
+    params = pd.DataFrame({
+        'mouse': ['M1'] * 3 + ['M2'] * 3,
+        'state': [1, 2, 3, 1, 2, 3],
+        'B': [1.0, 3.0, 9.0, 9.0, 3.0, 1.0],
+        'k': [9.0, 3.0, 1.0, 1.0, 3.0, 9.0],
+        'a0': [0.4, 0.5, 0.6, 0.6, 0.5, 0.4],
+    })
+
+    colors = ddm.state_colors(params)
+
+    assert set(colors) == {('M1', 1), ('M1', 2), ('M1', 3),
+                           ('M2', 1), ('M2', 2), ('M2', 3)}
+    # M1 state 1 and M2 state 3 carry the same parameters, so the same color.
+    assert colors[('M1', 1)] == colors[('M2', 3)]
+    assert colors[('M1', 1)] != colors[('M1', 3)]

@@ -8,6 +8,7 @@ from scipy.stats import sem as scipy_sem
 from iblnm.analysis import (
     add_fdr_qvalues,
     align_traces_at_transitions,
+    first_component_scores,
     fit_lagged_kernels,
     transition_delta_stats,
     get_responses,
@@ -3993,3 +3994,27 @@ class TestFitLaggedKernels:
         # Lags run -2..2, so the planted lag -1 is row 1 of the p1 column.
         assert np.unravel_index(np.argmax(np.abs(kernels)), kernels.shape) == (1, 0)
         assert kernels[1, 0] > 1.5
+
+
+class TestFirstComponentScores:
+    def test_scores_follow_the_planted_axis(self):
+        # Two correlated columns define the dominant axis; the third is noise.
+        rng = np.random.default_rng(0)
+        axis = rng.normal(size=200)
+        matrix = np.column_stack([axis, axis + 0.01 * rng.normal(size=200),
+                                  0.01 * rng.normal(size=200)])
+
+        scores = first_component_scores(matrix)
+
+        assert scores.shape == (200,)
+        assert abs(np.corrcoef(scores, axis)[0, 1]) > 0.99
+
+    def test_sign_is_fixed_by_the_largest_loading(self):
+        """The component's sign is a convention, so pin it down."""
+        rng = np.random.default_rng(1)
+        axis = rng.normal(size=50)
+        matrix = np.column_stack([axis, -axis + 0.01 * rng.normal(size=50)])
+
+        scores = first_component_scores(matrix)
+
+        assert np.corrcoef(scores, matrix[:, 0])[0, 1] > 0
