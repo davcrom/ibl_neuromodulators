@@ -9,6 +9,7 @@ import patsy
 from scipy.stats import sem as scipy_sem
 from tqdm import tqdm
 
+from brainbox.behavior.dlc import get_pupil_diameter, get_smooth_pupil_diameter
 from brainbox.behavior.wheel import interpolate_position, velocity_filtered
 
 from iblnm.config import (
@@ -378,24 +379,44 @@ def movement_trace(pose, keypoints, reduction, threshold=LIKELIHOOD_THRESHOLD):
         ``{part}_likelihood`` for each keypoint.
     keypoints : list of str
         Keypoint name(s) to reduce into one trace.
-    reduction : {'speed', 'sum_speed', 'max_likelihood'}
+    reduction : {'speed', 'sum_speed', 'max_likelihood', 'centroid_speed', 'pupil_diameter'}
         - ``speed``/``sum_speed``: NaN-aware sum of per-keypoint
           likelihood-gated speeds (a frame is NaN only where every keypoint is
           NaN).
         - ``max_likelihood``: per-frame max of the keypoints' tracking
           likelihoods, ungated.
+        - ``centroid_speed``: speed of the keypoints' mean position, NaN
+          wherever any keypoint is below ``threshold`` (a dropped keypoint
+          would otherwise shift the centroid and read as movement). With the
+          four pupil keypoints this is eye speed.
+        - ``pupil_diameter``: IBL's pupil diameter (pixels), the median of six
+          estimates from the four ``pupil_{top,bottom,left,right}_r``
+          keypoints, which ``keypoints`` must name. Each keypoint is gated at
+          ``threshold``, then the trace is outlier-cleaned and smoothed with
+          ``get_smooth_pupil_diameter``, whose window assumes the left
+          camera's frame count per second.
     threshold : float
-        Likelihood gate for the speed reductions (ignored for ``max_likelihood``).
+        Likelihood gate for every reduction except ``max_likelihood``.
 
     Returns
     -------
     1D array
         Per-frame trace, length matching ``pose``.
     """
+    likelihoods = np.column_stack([pose[f'{k}_likelihood'].values
+                                   for k in keypoints])
     if reduction == 'max_likelihood':
-        likelihoods = np.column_stack([pose[f'{k}_likelihood'].values
-                                       for k in keypoints])
         return np.nanmax(likelihoods, axis=1)
+    if reduction == 'pupil_diameter':
+        gated = pd.DataFrame({
+            f'{k}_{axis}': pose[f'{k}_{axis}'].where(pose[f'{k}_likelihood'] >= threshold)
+            for k in keypoints for axis in ('x', 'y')})
+        return get_smooth_pupil_diameter(get_pupil_diameter(gated), 'left')
+    if reduction == 'centroid_speed':
+        centroid = {axis: pose[[f'{k}_{axis}' for k in keypoints]].mean(axis=1).values
+                    for axis in ('x', 'y')}
+        return keypoint_speed(centroid['x'], centroid['y'],
+                              likelihoods.min(axis=1), threshold)
     speeds = np.column_stack([
         keypoint_speed(pose[f'{k}_x'].values, pose[f'{k}_y'].values,
                        pose[f'{k}_likelihood'].values, threshold)

@@ -419,6 +419,42 @@ class TestMovementTrace:
                                'max_likelihood', threshold=0.9)
         np.testing.assert_allclose(trace, [0.7, 0.8, 0.2])
 
+    def test_centroid_speed_tracks_mean_position(self):
+        """centroid_speed is the speed of the keypoints' mean position, NaN
+        wherever any keypoint is below threshold."""
+        from iblnm.analysis import movement_trace
+        n = 6
+        like_b = np.ones(n)
+        like_b[3] = 0.5  # one of the two keypoints untracked at frame 3
+        # a moves 3 px/frame in x, b moves 5 px/frame in x: centroid moves 4.
+        pose = _pose_df(
+            a_x=np.arange(n) * 3.0, a_y=np.zeros(n), a_likelihood=np.ones(n),
+            b_x=np.arange(n) * 5.0, b_y=np.full(n, 10.0), b_likelihood=like_b,
+        )
+        trace = movement_trace(pose, ['a', 'b'], 'centroid_speed', threshold=0.9)
+        assert np.isnan(trace[[0, 3]]).all()
+        np.testing.assert_allclose(trace[[1, 2, 4, 5]], 4.0)
+
+    def test_pupil_diameter_ignores_gated_keypoints(self):
+        """pupil_diameter recovers a circle's diameter; an untracked keypoint
+        with a wild position does not corrupt the estimate."""
+        from iblnm.analysis import movement_trace
+        n, radius = 100, 10.0
+        cx = np.linspace(50, 60, n)  # the eye drifts, the pupil does not change
+        offsets = {'top': (0, -radius), 'bottom': (0, radius),
+                   'left': (-radius, 0), 'right': (radius, 0)}
+        columns = {}
+        for point, (dx, dy) in offsets.items():
+            columns[f'pupil_{point}_r_x'] = cx + dx
+            columns[f'pupil_{point}_r_y'] = np.full(n, 40.0 + dy)
+            columns[f'pupil_{point}_r_likelihood'] = np.ones(n)
+        columns['pupil_top_r_y'][20] = 500.0
+        columns['pupil_top_r_likelihood'][20] = 0.1
+        keypoints = [f'pupil_{point}_r' for point in offsets]
+        trace = movement_trace(_pose_df(**columns), keypoints, 'pupil_diameter',
+                               threshold=0.9)
+        np.testing.assert_allclose(trace, 2 * radius)
+
 
 class TestEventLockedScalar:
     def _step_trace(self, n_trials, baseline_val, response_val):
