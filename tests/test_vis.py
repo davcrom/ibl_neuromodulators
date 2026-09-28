@@ -2110,6 +2110,7 @@ class TestPlotMeanResponseTraces:
         fig = plot_mean_response_traces(traces, 'VTA-DA')
         top, bottom = fig.axes
         assert top.get_ylabel() == bottom.get_ylabel() == r'$\Delta F/F$ (z)'
+        assert top.get_xlabel() == bottom.get_xlabel() == 'Time (s)'
         assert top.get_title() == 'stimOnTrigger, Reward'
         assert bottom.get_title() == 'stimOnTrigger, Omission'
         assert fig._suptitle.get_text() == 'VTA-DA'

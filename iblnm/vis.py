@@ -4127,8 +4127,7 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None,
             ax.axvspan(*RESPONSE_MAGNITUDE_WINDOW, alpha=0.12, color='gray',
                        zorder=0)
 
-            if row == 1:
-                ax.set_xlabel('Time (s)')
+            ax.set_xlabel('Time (s)')
             if col == 0:
                 ax.set_ylabel(r'$\Delta F/F$ (z)')
             ax.set_title(f"{event.replace('_times', '')}, {fb_labels[fb]}")
