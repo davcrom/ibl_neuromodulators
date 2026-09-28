@@ -38,6 +38,9 @@ def set_plotsize(w, h=None, ax=None):
     """
     Set the size of a matplotlib axes object in cm.
 
+    Resizes the figure, not the axes, so every axes in the grid ``ax`` belongs
+    to comes out ``w × h``.
+
     Parameters
     ----------
     w, h : float
@@ -49,10 +52,12 @@ def set_plotsize(w, h=None, ax=None):
 
     Notes
     -----
-    - Use after subplots_adjust (if adjustment is needed)
-    - Matplotlib axis size is determined by the figure size and the subplot
-      margins (r, l; given as a fraction of the figure size), i.e.
-      w_ax = w_fig * (r - l)
+    - Use after subplots_adjust (if adjustment is needed), and do not call
+      tight_layout or use a layout engine afterwards: both re-set the margins.
+    - Matplotlib axis size is determined by the figure size, the subplot
+      margins (r, l; given as a fraction of the figure size) and the gap
+      between panels (wspace; a fraction of the axis width), i.e. for a grid
+      of n columns w_fig * (r - l) = w_ax * (n + (n - 1) * wspace)
     """
     if h is None: # assume square
         h = w
@@ -60,14 +65,12 @@ def set_plotsize(w, h=None, ax=None):
     h /= 2.54
     if not ax: # get current axes
         ax = plt.gca()
-    # get margins
-    left = ax.figure.subplotpars.left
-    r = ax.figure.subplotpars.right
-    t = ax.figure.subplotpars.top
-    b = ax.figure.subplotpars.bottom
+    gridspec = ax.get_subplotspec().get_gridspec()
+    nrows, ncols = gridspec.get_geometry()
+    pars = gridspec.get_subplot_params(ax.figure)
     # set fig dimensions to produce desired ax dimensions
-    figw = float(w)/(r-left)
-    figh = float(h)/(t-b)
+    figw = w * (ncols + (ncols - 1) * pars.wspace) / (pars.right - pars.left)
+    figh = h * (nrows + (nrows - 1) * pars.hspace) / (pars.top - pars.bottom)
     ax.figure.set_size_inches(figw, figh)
 
 

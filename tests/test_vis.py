@@ -27,6 +27,33 @@ def df_group():
     return pd.DataFrame(rows)
 
 
+def _axes_size_cm(ax):
+    bbox = ax.get_position()
+    fig_w, fig_h = ax.figure.get_size_inches()
+    return bbox.width * fig_w * 2.54, bbox.height * fig_h * 2.54
+
+
+class TestSetPlotsize:
+
+    def test_single_axes_gets_requested_size(self):
+        from iblnm.vis import set_plotsize
+        fig, ax = plt.subplots()
+        set_plotsize(w=6, h=3, ax=ax)
+        np.testing.assert_allclose(_axes_size_cm(ax), (6, 3))
+        plt.close(fig)
+
+    def test_every_axes_in_a_grid_gets_requested_size(self):
+        """In a 2 × 3 grid with gaps between panels, each panel — not the
+        grid as a whole — is ``w × h`` cm."""
+        from iblnm.vis import set_plotsize
+        fig, axes = plt.subplots(2, 3)
+        fig.subplots_adjust(wspace=0.5, hspace=0.8)
+        set_plotsize(w=4, h=2, ax=axes[0, 0])
+        for ax in axes.flat:
+            np.testing.assert_allclose(_axes_size_cm(ax), (4, 2))
+        plt.close(fig)
+
+
 class TestPlotMaskingDiagnostics:
     """The masking diagnostics figure: a pure drawer over the cell frame
     ``compute_masking_diagnostics`` writes."""
