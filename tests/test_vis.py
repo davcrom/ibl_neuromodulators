@@ -2143,6 +2143,16 @@ class TestPlotMeanResponseTraces:
         assert fig._suptitle.get_text() == 'VTA-DA'
         plt.close(fig)
 
+    def test_ax_size_sets_every_panel(self):
+        """``ax_size`` is each panel's size in cm, whatever the event count."""
+        from iblnm.vis import plot_mean_response_traces
+        traces = _make_traces_df(
+            events=['stimOnTrigger_times', 'feedback_times'])
+        fig = plot_mean_response_traces(traces, 'VTA-DA', ax_size=(6, 3))
+        for ax in fig.axes:
+            np.testing.assert_allclose(_axes_size_cm(ax), (6, 3))
+        plt.close(fig)
+
     def test_response_window_shading(self):
         """RESPONSE_MAGNITUDE_WINDOW is shaded on every panel."""
         from iblnm.vis import plot_mean_response_traces
