@@ -2099,7 +2099,20 @@ class TestPlotMeanResponseTraces:
         fig = plot_mean_response_traces(traces, 'VTA-DA')
         # Top row: col 0, 1 → axes[0], axes[1]
         titles = [fig.axes[col].get_title() for col in range(2)]
-        assert titles == ['stimOnTrigger', 'feedback']
+        assert titles == ['stimOnTrigger, Reward', 'feedback, Reward']
+        plt.close(fig)
+
+    def test_panels_name_quantity_event_and_target(self):
+        """The y axis names the plotted quantity, each panel title names its
+        event and feedback type, and the figure title names the target-NM."""
+        from iblnm.vis import plot_mean_response_traces
+        traces = _make_traces_df(events=['stimOnTrigger_times'])
+        fig = plot_mean_response_traces(traces, 'VTA-DA')
+        top, bottom = fig.axes
+        assert top.get_ylabel() == bottom.get_ylabel() == r'$\Delta F/F$ (z)'
+        assert top.get_title() == 'stimOnTrigger, Reward'
+        assert bottom.get_title() == 'stimOnTrigger, Omission'
+        assert fig._suptitle.get_text() == 'VTA-DA'
         plt.close(fig)
 
     def test_response_window_shading(self):

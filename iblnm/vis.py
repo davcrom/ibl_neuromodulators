@@ -4062,9 +4062,10 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None,
     with :func:`iblnm.analysis.aggregate_conditions`, grouping on
     ``event``, ``contrast``, ``feedbackType`` and ``time``.
 
-    Layout: 2 rows (reward top, omission bottom) × n_events columns.
-    Each panel has one line per contrast level, colored by the NM colormap,
-    shaded ± SEM.
+    Layout: 2 rows (reward top, omission bottom) × n_events columns, each
+    panel titled with its event and feedback type, the figure with the
+    target-NM. Each panel has one line per contrast level, colored by the NM
+    colormap, shaded ± SEM.
 
     Parameters
     ----------
@@ -4129,10 +4130,8 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None,
             if row == 1:
                 ax.set_xlabel('Time (s)')
             if col == 0:
-                ax.set_ylabel(fb_labels[fb])
-            if row == 0:
-                event_label = event.replace('_times', '')
-                ax.set_title(event_label)
+                ax.set_ylabel(r'$\Delta F/F$ (z)')
+            ax.set_title(f"{event.replace('_times', '')}, {fb_labels[fb]}")
 
     # Each inset redraws its panel's traces and autoscales, leaving the shared
     # limits to the panel underneath.
