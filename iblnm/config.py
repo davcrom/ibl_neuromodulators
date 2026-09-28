@@ -944,8 +944,6 @@ CCA_MOVEMENT_MAINS = ['choice_side', 'log_reaction_time', 'peak_velocity']
 FIGURE_DPI = 150
 TICKFONTSIZE = 12
 LABELFONTSIZE = 14
-# Panel sizes (width, height) in cm, applied per axes by vis.set_plotsize
-AXES_SIZES = {'small': (4, 2)}
 plt.rcParams.update({
     'font.size': TICKFONTSIZE,
     'axes.labelsize': LABELFONTSIZE,

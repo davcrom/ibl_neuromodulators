@@ -13,7 +13,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import quantile_transform
 
 from iblnm.config import (
-    ANALYSIS_CONTRASTS, AXES_SIZES, NM_CMAPS, QCCMAP,
+    ANALYSIS_CONTRASTS, NM_CMAPS, QCCMAP,
     PERSESSION_SIGNIFICANCE_ALPHA, PERSESSION_REGRESSORS,
     RESPONSE_DROPPED_TERMS, RESPONSE_EVENTS, RESPONSE_MAGNITUDE_WINDOW,
     STIM_ONSET_EVENT,
@@ -4057,7 +4057,7 @@ def _draw_traces(ax, df_cell, contrasts, shade_map):
 
 
 def plot_mean_response_traces(agg_df, target_nm, count_label=None,
-                              inset=False, ax_size=AXES_SIZES['small']):
+                              inset=False):
     """Aggregated peri-event response traces for one target-NM.
 
     A pure drawer: the means and SEMs are drawn exactly as given, with no
@@ -4086,9 +4086,6 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None,
         Add an inset to every panel redrawing the same traces on their own
         y-scale, for cohorts whose responses are too small to read at the
         shared limits.
-    ax_size : tuple of float
-        (width, height) of each panel in cm; the figure is sized around the
-        grid. Save with ``bbox_inches='tight'`` to trim the margins.
 
     Returns
     -------
@@ -4110,7 +4107,9 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None,
     shade_map = {c: cmap(0.3 + 0.7 * i / (n_levels - 1))
                  for i, c in enumerate(ANALYSIS_CONTRASTS)}
 
-    fig, axes = plt.subplots(2, n_events, sharey=True, squeeze=False)
+    fig, axes = plt.subplots(2, n_events,
+                             figsize=(4 * n_events, 6),
+                             sharey=True, squeeze=False)
 
     cells = {}
     for col, event in enumerate(events):
@@ -4158,9 +4157,7 @@ def plot_mean_response_traces(agg_df, target_nm, count_label=None,
         )
 
     fig.suptitle(target_nm, fontsize=LABELFONTSIZE)
-    # Gaps, as fractions of a panel, clear each title of the x label above it
-    fig.subplots_adjust(wspace=0.6, hspace=1.1, top=0.78)
-    set_plotsize(*ax_size, ax=axes[0, 0])
+    fig.tight_layout()
     return fig
 
 
